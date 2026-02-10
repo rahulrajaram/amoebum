@@ -66,6 +66,9 @@ require_cmd script
 require_cmd stty
 require_cmd sbcl
 
+# Modularity: each ASDF system must load independently.
+"${ROOT_DIR}/bin/check-systems.sh" >/dev/null
+
 # Activity 1 closure: renderer emits clear-screen op and ANSI backend maps it to ESC[2J.
 rg -n 'make-draw-op :clear-screen' "${ROOT_DIR}/src/render/diff.lisp" >/dev/null \
   || fail "activity-1 missing clear-screen draw-op emission"
