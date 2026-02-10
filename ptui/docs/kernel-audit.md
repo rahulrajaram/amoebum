@@ -30,7 +30,7 @@ PTUI_EXIT_AFTER_MS=500 ./ptui/dist/metrics-dashboard
 
 **Status:** PASS (binary builds; terminal restore is gated by compliance PTY checks).
 
-**Deviation note:** Spec lists ASDF systems `ptui` + `ptui-examples`. Repo currently uses `ptui/examples` (plus modular `ptui/*` systems). We will add a compatibility alias system `ptui-examples`.
+**Spec-compat note:** Spec lists ASDF systems `ptui` + `ptui-examples`. Repo provides `ptui/examples` as the primary examples system and a compatibility alias system `ptui-examples` (defined in `ptui/ptui-examples.asd`).
 
 ---
 
@@ -298,4 +298,3 @@ PTUI_EXIT_AFTER_MS=250 ./ptui/dist/metrics-dashboard
 ```
 
 **Status:** PASS.
-

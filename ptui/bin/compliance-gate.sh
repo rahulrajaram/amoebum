@@ -21,6 +21,7 @@ require_cmd() {
 
 required_files=(
   "ptui.asd"
+  "ptui-examples.asd"
   "src/core/types.lisp"
   "src/core/color.lisp"
   "src/core/events.lisp"

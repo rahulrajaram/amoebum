@@ -21,6 +21,7 @@ systems=(
   "ptui/standalone"
   "ptui"
   "ptui/examples"
+  "ptui-examples"
   "ptui/examples-standalone"
 )
 
@@ -31,6 +32,7 @@ for sys in "${systems[@]}"; do
     --eval "(when (find-package :ql) (ql:quickload '(:cffi :bordeaux-threads) :silent t))" \
     --eval "(require :asdf)" \
     --eval "(asdf:load-asd (merge-pathnames #P\"ptui.asd\" (truename #P\"${ROOT_DIR}/\")))" \
+    --eval "(asdf:load-asd (merge-pathnames #P\"ptui-examples.asd\" (truename #P\"${ROOT_DIR}/\")))" \
     --eval "(asdf:load-system \"${sys}\")" \
     --eval "(quit)" >/dev/null
   echo "OK: ${sys}"

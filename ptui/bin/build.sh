@@ -6,6 +6,7 @@ DIST_DIR="${ROOT_DIR}/dist"
 TOOLS_DIR="${ROOT_DIR}/.tools"
 BUILDAPP_BIN="${TOOLS_DIR}/buildapp/buildapp"
 ASD_PATH="${ROOT_DIR}/ptui.asd"
+ASD_EXAMPLES_PATH="${ROOT_DIR}/ptui-examples.asd"
 NATIVE_DIR="${ROOT_DIR}/native"
 NATIVE_LIB="${NATIVE_DIR}/libptui_native.so"
 
@@ -36,7 +37,8 @@ fi
   --eval '(require :asdf)' \
   --eval "(load \"${ROOT_DIR}/.tools/quicklisp/setup.lisp\")" \
   --eval "(asdf:load-asd \"${ASD_PATH}\")" \
-  --load-system ptui/examples \
+  --eval "(asdf:load-asd \"${ASD_EXAMPLES_PATH}\")" \
+  --load-system ptui-examples \
   --entry ptui.examples.metrics-dashboard:main \
   --output "${DIST_DIR}/metrics-dashboard"
 
