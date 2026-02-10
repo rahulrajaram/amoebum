@@ -10,6 +10,19 @@ DIST_URL="$(sed -n '1p' "${ROOT_DIR}/deps/quicklisp-dist.txt")"
 
 mkdir -p "${TOOLS_DIR}"
 
+LOCKFILE="${TOOLS_DIR}/quicklisp.lock"
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"${LOCKFILE}"
+  flock 9
+else
+  # Best-effort lock for environments without flock.
+  LOCKDIR="${TOOLS_DIR}/quicklisp.lock.d"
+  while ! mkdir "${LOCKDIR}" 2>/dev/null; do
+    sleep 0.1
+  done
+  trap 'rmdir "${LOCKDIR}" >/dev/null 2>&1 || true' EXIT
+fi
+
 if [[ ! -f "${QL_SETUP}" ]]; then
   curl -fsSL "https://beta.quicklisp.org/quicklisp.lisp" -o "${QL_BOOTSTRAP}"
   sbcl --non-interactive \

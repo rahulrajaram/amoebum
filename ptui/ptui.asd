@@ -79,6 +79,31 @@
   :components
   ((:file "src/engine/loop")))
 
+(asdf:defsystem "ptui/standalone"
+  :description "PTUI standalone system (monolithic; no internal ptui/* dependencies)"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ("cffi" "bordeaux-threads")
+  :serial t
+  :components
+  ((:file "src/term/caps")
+   (:file "src/core/color")
+   (:file "src/core/types")
+   (:file "src/core/events")
+   (:file "src/util/log")
+   (:file "src/util/time")
+   (:file "src/runtime/queue")
+   (:file "src/runtime/scheduler")
+   (:file "src/term/tty")
+   (:file "src/term/signals")
+   (:file "src/term/input")
+   (:file "src/render/buffer")
+   (:file "src/render/diff")
+   (:file "src/backend/protocol")
+   (:file "src/backend/ansi")
+   #+ptui-ncurses (:file "src/backend/ncurses")
+   (:file "src/engine/loop")))
+
 (asdf:defsystem "ptui"
   :description "PTUI umbrella system"
   :author "Ralph"
@@ -92,6 +117,15 @@
   :author "Ralph"
   :license "MIT"
   :depends-on ("ptui")
+  :serial t
+  :components
+  ((:file "examples/metrics-dashboard")))
+
+(asdf:defsystem "ptui/examples-standalone"
+  :description "PTUI examples (standalone dependency)"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ("ptui/standalone")
   :serial t
   :components
   ((:file "examples/metrics-dashboard")))
