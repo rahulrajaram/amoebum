@@ -36,7 +36,7 @@ fi
   --eval '(require :asdf)' \
   --eval "(load \"${ROOT_DIR}/.tools/quicklisp/setup.lisp\")" \
   --eval "(asdf:load-asd \"${ASD_PATH}\")" \
-  --load-system ptui-examples \
+  --load-system ptui/examples \
   --entry ptui.examples.metrics-dashboard:main \
   --output "${DIST_DIR}/metrics-dashboard"
 
