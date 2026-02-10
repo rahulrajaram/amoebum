@@ -1,5 +1,7 @@
 .agent/
 .ralph/
+.yarl/
+yarli.toml
 
 # Local build artifacts / caches
 ptui/.tools/
