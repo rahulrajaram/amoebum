@@ -68,33 +68,60 @@
 (defun emit-row-run-diff (ops prev next row full-row-p)
   (let ((cols (ptui.core.types:cell-buffer-cols next))
         (col 0))
-    (loop while (< col cols) do
-      (let* ((next-cell (buffer-cell-at next row col))
-             (needs-update (or full-row-p
-                               (not (same-buffer-shape-p prev next))
-                               (not (cell-equal-p (buffer-cell-at prev row col) next-cell)))))
-        (if (not needs-update)
+    (labels ((update-needed-p (c)
+               (or full-row-p
+                   (not (same-buffer-shape-p prev next))
+                   (not (cell-equal-p (buffer-cell-at prev row c)
+                                      (buffer-cell-at next row c)))))
+             (trailing-clearable-p (start next-cell)
+               ;; If the rest of the row is spaces with the same style, prefer :clear-eol
+               ;; to avoid emitting long runs of spaces (common when text shrinks).
+               (and (< start cols)
+                    (loop for c from start below cols
+                          for cell = (buffer-cell-at next row c)
+                          always (and (string= (ptui.core.types:cell-glyph cell) " ")
+                                      (cell-style-equal-p cell next-cell)))
+                    (loop for c from start below cols
+                          thereis (update-needed-p c))))
+             (emit-text-run (next-cell)
+               (let* ((clear-col nil)
+                      (text
+                       (with-output-to-string (out)
+                         (loop while (< col cols) do
+                           (let ((cell (buffer-cell-at next row col)))
+                             (cond
+                               ((or (not (update-needed-p col))
+                                    (not (cell-style-equal-p cell next-cell)))
+                                (return))
+                               ;; If we've reached a run of spaces, prefer clear-eol for the tail.
+                               ((and (string= (ptui.core.types:cell-glyph cell) " ")
+                                     (trailing-clearable-p col cell))
+                                (setf clear-col col)
+                                (return))
+                               (t
+                                (write-string (ptui.core.types:cell-glyph cell) out)
+                                (incf col))))))))
+                 (push (make-draw-op :write :text text) ops)
+                 (when clear-col
+                   (push (make-draw-op :move :row row :col clear-col) ops)
+                   (push (make-draw-op :clear-eol) ops)
+                   (setf col cols)))))
+      (loop while (< col cols) do
+        (if (not (update-needed-p col))
             (incf col)
-            (let* ((start col)
+            (let* ((next-cell (buffer-cell-at next row col))
+                   (start col)
                    (fg (ptui.core.types:cell-fg next-cell))
                    (bg (ptui.core.types:cell-bg next-cell))
-                   (attrs (ptui.core.types:cell-attrs next-cell))
-                   (text (with-output-to-string (out)
-                           (loop while (< col cols) do
-                             (let* ((cell (buffer-cell-at next row col))
-                                    (updatep (or full-row-p
-                                                 (not (same-buffer-shape-p prev next))
-                                                 (not (cell-equal-p (buffer-cell-at prev row col) cell)))))
-                               (if (or (not updatep)
-                                       (not (cell-style-equal-p cell next-cell)))
-                                   (return)
-                                   (progn
-                                     (write-string (ptui.core.types:cell-glyph cell) out)
-                                     (incf col))))))))
+                   (attrs (ptui.core.types:cell-attrs next-cell)))
               (push (make-draw-op :move :row row :col start) ops)
               (push (make-draw-op :style :fg fg :bg bg :attrs attrs) ops)
-              (push (make-draw-op :write :text text) ops))))))
-  ops)
+              (if (trailing-clearable-p start next-cell)
+                  (progn
+                    (push (make-draw-op :clear-eol) ops)
+                    (setf col cols))
+                  (emit-text-run next-cell))))))
+    ops))
 
 (defun diff-buffers (prev next &key (full-redraw nil))
   (let* ((force-full (should-use-full-redraw-p prev next full-redraw))

@@ -22,6 +22,8 @@ require_cmd() {
 required_files=(
   "ptui.asd"
   "ptui-examples.asd"
+  "bin/test.sh"
+  "test/run.lisp"
   "src/core/types.lisp"
   "src/core/color.lisp"
   "src/core/events.lisp"
@@ -69,6 +71,9 @@ require_cmd sbcl
 
 # Modularity: each ASDF system must load independently.
 "${ROOT_DIR}/bin/check-systems.sh" >/dev/null
+
+# Kernel regression tests.
+"${ROOT_DIR}/bin/test.sh" >/dev/null
 
 # Activity 1 closure: renderer emits clear-screen op and ANSI backend maps it to ESC[2J.
 rg -n 'make-draw-op :clear-screen' "${ROOT_DIR}/src/render/diff.lisp" >/dev/null \
