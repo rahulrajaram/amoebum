@@ -1,0 +1,14 @@
+.agent/
+.ralph/
+
+# Local build artifacts / caches
+ptui/.tools/
+ptui/dist/
+ptui/native/*.so
+ptui/dist/*.so
+
+# Scratch outputs
+*.out
+*.log
+nohup.out
+tmp/
