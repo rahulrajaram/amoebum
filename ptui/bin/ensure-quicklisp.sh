@@ -31,9 +31,28 @@ if [[ ! -f "${QL_SETUP}" ]]; then
     --eval "(quit)"
 fi
 
+# Avoid re-installing the Quicklisp dist on every run. Replacing the dist rebuilds
+# cdb indexes and can race if multiple processes run in parallel.
+DIST_STAMP="${TOOLS_DIR}/quicklisp-dist-url.txt"
+DIST_INSTALLED=0
+if [[ -f "${QL_DIR}/dists/quicklisp/distinfo.txt" && -f "${DIST_STAMP}" ]]; then
+  if [[ "$(cat "${DIST_STAMP}")" == "${DIST_URL}" ]]; then
+    DIST_INSTALLED=1
+  fi
+fi
+
+FORCE_REPLACE="${PTUI_FORCE_QL_DIST_REPLACE:-}"
+
+if [[ "${DIST_INSTALLED}" -ne 1 || "${FORCE_REPLACE}" == "1" ]]; then
+  echo "${DIST_URL}" >"${DIST_STAMP}"
+  sbcl --non-interactive \
+    --load "${QL_SETUP}" \
+    --eval "(ql-dist:install-dist \"${DIST_URL}\" :prompt nil :replace t)" \
+    --eval "(quit)"
+fi
+
 sbcl --non-interactive \
   --load "${QL_SETUP}" \
-  --eval "(ql-dist:install-dist \"${DIST_URL}\" :prompt nil :replace t)" \
   --eval "(ql:quickload '(:cffi :bordeaux-threads))" \
   --eval "(when (string= (or (sb-ext:posix-getenv \"PTUI_ENABLE_NCURSES\") \"\") \"1\") (ql:quickload '(:cl-charms)))" \
   --eval "(quit)"
