@@ -15,6 +15,7 @@ systems=(
   "ptui/util"
   "ptui/runtime"
   "ptui/term"
+  "ptui/text"
   "ptui/render"
   "ptui/backend"
   "ptui/engine"

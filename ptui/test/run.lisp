@@ -27,6 +27,9 @@
 (defun draw-op-kinds (ops)
   (mapcar #'ptui.render.diff::draw-op-kind ops))
 
+(defun string-from-codepoints (&rest codepoints)
+  (coerce (mapcar #'code-char codepoints) 'string))
+
 (defun run-all-tests ()
   (let ((passed 0)
         (failed 0))
@@ -114,8 +117,66 @@
     (assert-true (search "38;5;" (ptui.core.color:color->sgr rgb :mode :x256 :fg-or-bg :fg))
                  "expected x256 sgr fragment")))
 
+(deftest text-ascii-baseline
+  (assert-true (eql (ptui.text.grapheme:grapheme-engine) :fallback)
+               "expected fallback grapheme engine")
+  (assert-true (equal (ptui.text.grapheme:split-graphemes "abc") '("a" "b" "c"))
+               "unexpected grapheme split for ascii")
+  (assert-true (= (ptui.text.width:string-width "abc") 3)
+               "unexpected ascii width")
+  (assert-true (equal (ptui.text.layout:wrap-by-width "abcdef" 3) '("abc" "def"))
+               "unexpected wrap result")
+  (assert-true (string= (ptui.text.layout:truncate-to-width "abcdef" 4) "abcd")
+               "unexpected truncate result"))
+
+(deftest text-native-engine-currently-aliases-fallback
+  (let ((text (string-from-codepoints #x0065 #x0301 #x1F468 #x200D #x1F469)))
+    (assert-true
+     (equal (ptui.text.grapheme:split-graphemes text :engine :native)
+            (ptui.text.grapheme:split-graphemes text :engine :fallback))
+     "native engine should currently alias fallback behavior")))
+
+(deftest text-symbol-width-not-overclassified-as-emoji
+  (let ((scissors (string-from-codepoints #x2702))
+        (airplane (string-from-codepoints #x2708)))
+    (assert-true (= (ptui.text.width:string-width scissors) 1)
+                 "U+2702 should be width=1 in fallback policy")
+    (assert-true (= (ptui.text.width:string-width airplane) 1)
+                 "U+2708 should be width=1 in fallback policy")))
+
+(deftest text-combining-characters
+  (let ((text (string-from-codepoints #x0065 #x0301)))
+    (assert-true (= (length (ptui.text.grapheme:split-graphemes text)) 1)
+                 "combining cluster should remain one grapheme")
+    (assert-true (= (ptui.text.width:string-width text) 1)
+                 "combining sequence should be width=1")
+    (assert-true (string= (ptui.text.layout:truncate-to-width text 1) text)
+                 "combining sequence should survive width=1 truncate")))
+
+(deftest text-emoji-zwj-sequence
+  (let* ((family (string-from-codepoints #x1F468 #x200D #x1F469 #x200D #x1F467 #x200D #x1F466))
+         (text (concatenate 'string "A" family "B")))
+    (assert-true (= (length (ptui.text.grapheme:split-graphemes family)) 1)
+                 "emoji ZWJ sequence should be one grapheme")
+    (assert-true (= (ptui.text.width:string-width family) 2)
+                 "emoji ZWJ sequence should be width=2")
+    (assert-true (= (ptui.text.width:string-width text) 4)
+                 "A + family + B should be width=4")
+    (assert-true (string= (ptui.text.layout:truncate-to-width text 3 :ellipsis t) "A…")
+                 "unexpected emoji truncation behavior")))
+
+(deftest text-cjk-wide-characters
+  (let ((text (string-from-codepoints #x0041 #x754C #x0042)))
+    (assert-true (= (ptui.text.width:string-width text) 4)
+                 "A界B should be width=4")
+    (assert-true (equal (ptui.text.layout:wrap-by-width text 3)
+                        (list (string-from-codepoints #x0041 #x754C)
+                              "B"))
+                 "unexpected CJK wrap result")
+    (assert-true (string= (ptui.text.layout:width-safe-slice text 0 2) "A")
+                 "slice should not split wide grapheme")))
+
 ;; Script entry
 (multiple-value-bind (passed failed) (run-all-tests)
   (declare (ignore passed))
   (uiop:quit (if (zerop failed) 0 1)))
-

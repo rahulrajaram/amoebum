@@ -18,6 +18,10 @@
    (max 2 (- cols 2))
    (max 2 (- rows 2))))
 
+(defun %fit-line (text)
+  ;; Exercise the width-safe text pipeline without changing output semantics.
+  (ptui.text.layout:truncate-to-width text (ptui.text.width:string-width text)))
+
 (defun %draw-gradient (buf x y width)
   (loop for i from 0 below (max 0 width) do
     (let* ((ratio (if (> width 1)
@@ -48,13 +52,13 @@
     (ptui.render.buffer:buffer-draw-border buf panel)
     (ptui.render.buffer:buffer-draw-text
      buf 3 2
-     (list (list "PTUI Metrics Dashboard" title-cell)))
+     (list (list (%fit-line "PTUI Metrics Dashboard") title-cell)))
     (ptui.render.buffer:buffer-draw-text
      buf 3 info-y
-     (list (list (format nil "Terminal size: ~Dx~D" cols rows) muted-cell)))
+     (list (list (%fit-line (format nil "Terminal size: ~Dx~D" cols rows)) muted-cell)))
     (ptui.render.buffer:buffer-draw-text
      buf 3 (1+ info-y)
-     (list (list "Press q or Ctrl-C to quit" muted-cell)))
+     (list (list (%fit-line "Press q or Ctrl-C to quit") muted-cell)))
     (%draw-gradient buf bar-x bar-y bar-w)
     buf))
 

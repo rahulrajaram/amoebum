@@ -59,6 +59,17 @@
   ((:file "src/render/buffer")
    (:file "src/render/diff")))
 
+(asdf:defsystem "ptui/text"
+  :description "PTUI text pipeline (grapheme/width/layout)"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ()
+  :serial t
+  :components
+  ((:file "src/text/grapheme")
+   (:file "src/text/width")
+   (:file "src/text/layout")))
+
 (asdf:defsystem "ptui/backend"
   :description "PTUI backend boundary and implementations"
   :author "Ralph"
@@ -99,6 +110,9 @@
    (:file "src/term/tty")
    (:file "src/term/signals")
    (:file "src/term/input")
+   (:file "src/text/grapheme")
+   (:file "src/text/width")
+   (:file "src/text/layout")
    (:file "src/render/buffer")
    (:file "src/render/diff")
    (:file "src/backend/protocol")
@@ -110,7 +124,7 @@
   :description "PTUI umbrella system"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui/core" "ptui/util" "ptui/runtime" "ptui/term" "ptui/render" "ptui/backend" "ptui/engine")
+  :depends-on ("ptui/core" "ptui/util" "ptui/runtime" "ptui/term" "ptui/text" "ptui/render" "ptui/backend" "ptui/engine")
   :serial t
   :components ())
 
