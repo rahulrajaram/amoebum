@@ -6,7 +6,7 @@ Notes:
 
 * “PASS” means the step’s functional intent and “Done when” criteria are met.
 * “FAIL” means missing, incomplete, or a spec deviation that should be reconciled.
-* Step 15 (ncurses) is explicitly optional in the spec; it is tracked separately.
+* Step 15 (ncurses) is the required fallback path when truecolor is not available (policy in `IMPLEMENTATION_PLAN.md`), exercised by `ptui/bin/compliance-gate.sh` via `:backend :auto` in a non-truecolor environment.
 
 ---
 
@@ -270,9 +270,9 @@ PTUI_EXIT_AFTER_MS=500 ./ptui/dist/metrics-dashboard
 
 ---
 
-## 15) ncurses backend (optional) (`src/backend/ncurses.lisp`)
+## 15) ncurses backend (`src/backend/ncurses.lisp`)
 
-**Spec:** optional compat backend; degraded color; translate draw-ops to ncurses calls; example runs with `:backend :ncurses` when `:ptui-ncurses` enabled.
+**Spec:** ncurses backend used as the functional fallback when truecolor isn’t possible; translate draw-ops to ncurses calls; example runs with `:backend :ncurses` when `:ptui-ncurses` enabled.
 
 **Implementation:**
 
@@ -286,22 +286,12 @@ PTUI_EXIT_AFTER_MS=500 ./ptui/dist/metrics-dashboard
 PTUI_ENABLE_NCURSES=1 ./ptui/bin/ensure-quicklisp.sh
 PTUI_ENABLE_NCURSES=1 ./ptui/bin/check-systems.sh
 PTUI_ENABLE_NCURSES=1 ./ptui/bin/build.sh
+./ptui/bin/compliance-gate.sh
 
-# PTY smoke (curses requires a terminal); exit + terminal restore asserted.
-script -q -c 'cd ./ptui && PTUI_EXIT_AFTER_MS=250 sbcl --noinform --non-interactive \
-  --eval "(load \"./.tools/quicklisp/setup.lisp\")" \
-  --eval "(require :asdf)" \
-  --eval "(pushnew :ptui-ncurses *features*)" \
-  --eval "(asdf:load-asd \"./ptui.asd\")" \
-  --eval "(asdf:load-asd \"./ptui-examples.asd\")" \
-  --eval "(asdf:load-system \"ptui/examples\")" \
-  --eval "(ptui.engine.loop:run (function ptui.examples.metrics-dashboard::%render-dashboard) :backend :ncurses :fps 20)" \
-  --eval "(quit)"; rc=$?; stty -a >/dev/null 2>&1; stty_ok=$?; \
-  if [ $stty_ok -eq 0 ]; then stty_yes=yes; else stty_yes=no; fi; \
-  printf "NCURSES_SMOKE_RC=%s STTY_OK=%s\n" "$rc" "$stty_yes"' /tmp/ptui-ncurses-smoke.log
+# Compliance gate includes PTY smoke for ncurses, and asserts terminal restoration.
 ```
 
-**Status:** PASS (optional).
+**Status:** PASS (required fallback path).
 
 ---
 

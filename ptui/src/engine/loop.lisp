@@ -4,6 +4,13 @@
 
 (in-package :ptui.engine.loop)
 
+(defun %ncurses-backend-available-p ()
+  (let ((pkg (find-package "PTUI.BACKEND.NCURSES")))
+    (and pkg
+         (multiple-value-bind (sym status) (find-symbol "MAKE-NCURSES-BACKEND" pkg)
+           (declare (ignore status))
+           (and sym (fboundp sym))))))
+
 (defun %make-ncurses-backend-or-die ()
   ;; Avoid hard package references so `ptui/engine` is loadable even when
   ;; `ptui-ncurses` is not in *features* (or fasls were compiled under
@@ -17,10 +24,21 @@
         (error "The optional ncurses backend is not available (MAKE-NCURSES-BACKEND not found)."))
       (funcall (symbol-function sym)))))
 
+(defun %resolve-backend-keyword (backend)
+  (case backend
+    (:auto
+     (let* ((caps (ptui.term.caps:probe-terminal-caps))
+            (truecolorp (ptui.term.caps:terminal-caps-truecolorp caps)))
+       (cond
+         (truecolorp :ansi)
+         ((%ncurses-backend-available-p) :ncurses)
+         (t :ansi))))
+    (otherwise backend)))
+
 (defun %make-backend (backend)
   (etypecase backend
     (keyword
-     (case backend
+     (case (%resolve-backend-keyword backend)
        (:ansi (ptui.backend.ansi:make-ansi-backend))
        (:ncurses
         (%make-ncurses-backend-or-die))

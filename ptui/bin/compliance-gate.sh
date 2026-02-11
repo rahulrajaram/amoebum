@@ -89,11 +89,14 @@ TMP_CAPTURE="$(mktemp)"
 TMP_SBCL_ERR="$(mktemp)"
 TMP_PTY_TIMED="$(mktemp)"
 TMP_PTY_SIGINT="$(mktemp)"
-trap 'rm -f "${TMP_STDOUT}" "${TMP_STDERR}" "${TMP_CAPTURE}" "${TMP_SBCL_ERR}" "${TMP_PTY_TIMED}" "${TMP_PTY_SIGINT}"' EXIT
+TMP_AUTO_RESOLVE="$(mktemp)"
+TMP_PTY_AUTO_NCURSES="$(mktemp)"
+trap 'rm -f "${TMP_STDOUT}" "${TMP_STDERR}" "${TMP_CAPTURE}" "${TMP_SBCL_ERR}" "${TMP_PTY_TIMED}" "${TMP_PTY_SIGINT}" "${TMP_AUTO_RESOLVE}" "${TMP_PTY_AUTO_NCURSES}"' EXIT
 
 if ! (
   cd "${ROOT_DIR}"
-  PTUI_EXIT_AFTER_MS=250 ./dist/metrics-dashboard >"${TMP_STDOUT}" 2>"${TMP_STDERR}"
+  # Force ANSI path for deterministic Activity 1 capture even on non-truecolor hosts.
+  COLORTERM=truecolor TERM=xterm-256color PTUI_EXIT_AFTER_MS=250 ./dist/metrics-dashboard >"${TMP_STDOUT}" 2>"${TMP_STDERR}"
 ); then
   echo "smoke run failed" >&2
   sed -n '1,120p' "${TMP_STDERR}" >&2
@@ -103,7 +106,7 @@ fi
 # Activity 1 evidence smoke: force at least one full redraw and assert ESC[2J.
 if ! (
   cd "${ROOT_DIR}"
-  PTUI_EXIT_AFTER_MS=120 ./dist/metrics-dashboard >"${TMP_CAPTURE}" 2>/dev/null
+  COLORTERM=truecolor TERM=xterm-256color PTUI_EXIT_AFTER_MS=120 ./dist/metrics-dashboard >"${TMP_CAPTURE}" 2>/dev/null
 ); then
   fail "activity-1 capture run failed"
 fi
@@ -129,9 +132,11 @@ fi
 rg -n 'SIGINT_EXIT_RC=0 STTY_OK=yes' "${TMP_PTY_SIGINT}" >/dev/null \
   || fail "activity-2 SIGINT PTY smoke did not confirm clean exit/stty"
 
-# Activity 3 closure: accept either successful ncurses feature path OR blocker evidence.
-if (
+# Activity 3 closure (updated): require the ncurses feature path to load successfully.
+if ! (
   cd "${ROOT_DIR}"
+  # Ensure optional deps are installed in the pinned Quicklisp dist.
+  PTUI_ENABLE_NCURSES=1 "${ROOT_DIR}/bin/ensure-quicklisp.sh" >/dev/null
   sbcl --non-interactive \
     --eval '(require :asdf)' \
     --eval "(load \"${ROOT_DIR}/.tools/quicklisp/setup.lisp\")" \
@@ -139,19 +144,37 @@ if (
     --eval "(asdf:load-asd \"${ROOT_DIR}/ptui.asd\")" \
     --eval '(asdf:load-system :ptui)'
 ) > /dev/null 2>"${TMP_SBCL_ERR}"; then
-  # Implemented path: ncurses-enabled build loads successfully.
-  rg -n 'defmethod ptui\.backend\.protocol:backend-commit' "${ROOT_DIR}/src/backend/ncurses.lisp" >/dev/null \
-    || fail "activity-3 ncurses load passed but backend-commit method missing"
-else
-  # Blocker path: require explicit, reproducible blocker evidence.
-  BLOCKER_FILE="${REPO_DIR}/.agent/ncurses-backend-blocker.md"
-  [[ -f "${BLOCKER_FILE}" ]] || fail "activity-3 blocker evidence missing (.agent/ncurses-backend-blocker.md)"
-  rg -n 'Activity 3 Blocker|Exit code: `1`|Command:' "${BLOCKER_FILE}" >/dev/null \
-    || fail "activity-3 blocker file missing required structure"
-  if rg -n 'cl-charms|Component ".*" not found|Missing dependency' "${TMP_SBCL_ERR}" >/dev/null; then
-    rg -n 'cl-charms|Component ".*" not found|Missing dependency' "${BLOCKER_FILE}" >/dev/null \
-      || fail "activity-3 blocker file missing matching dependency-failure evidence"
-  fi
+  sed -n '1,120p' "${TMP_SBCL_ERR}" >&2
+  fail "activity-3 ncurses feature load failed (expected success)"
 fi
+
+# K3: `:backend :auto` must resolve to ncurses when truecolor is unavailable and ncurses is present.
+if ! (
+  cd "${ROOT_DIR}"
+  COLORTERM= TERM=xterm-256color sbcl --non-interactive \
+    --eval '(require :asdf)' \
+    --eval "(load \"${ROOT_DIR}/.tools/quicklisp/setup.lisp\")" \
+    --eval '(pushnew :ptui-ncurses *features*)' \
+    --eval "(asdf:load-asd \"${ROOT_DIR}/ptui.asd\")" \
+    --eval "(asdf:load-system :ptui)" \
+    --eval '(format t "AUTO_BACKEND=~S~%" (ptui.engine.loop::%resolve-backend-keyword :auto))'
+) >"${TMP_AUTO_RESOLVE}" 2>/dev/null; then
+  fail "k3 auto-backend resolve check failed"
+fi
+rg -n 'AUTO_BACKEND=:NCURSES' "${TMP_AUTO_RESOLVE}" >/dev/null \
+  || fail "k3 expected :auto to resolve to :ncurses under non-truecolor when ncurses is available"
+
+# K3: non-truecolor smoke should be able to run with ncurses-enabled build under PTY.
+if ! (
+  cd "${ROOT_DIR}"
+  PTUI_ENABLE_NCURSES=1 "${ROOT_DIR}/bin/build.sh" >/dev/null
+); then
+  fail "k3 ncurses-enabled build failed"
+fi
+if ! script -q -c "cd '${ROOT_DIR}' && COLORTERM= TERM=xterm-256color PTUI_EXIT_AFTER_MS=120 ./dist/metrics-dashboard; rc=\$?; stty -a >/dev/null; stty_ok=\$?; printf 'AUTO_NCURSES_EXIT_RC=%s STTY_OK=%s\n' \"\$rc\" \"\$([[ \$stty_ok -eq 0 ]] && echo yes || echo no)\"" "${TMP_PTY_AUTO_NCURSES}" >/dev/null 2>&1; then
+  fail "k3 non-truecolor :auto PTY smoke harness failed"
+fi
+rg -n 'AUTO_NCURSES_EXIT_RC=0 STTY_OK=yes' "${TMP_PTY_AUTO_NCURSES}" >/dev/null \
+  || fail "k3 non-truecolor :auto PTY smoke did not confirm clean exit/stty"
 
 echo "COMPLIANCE_OK"

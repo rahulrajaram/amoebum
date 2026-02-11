@@ -60,4 +60,4 @@
 
 (defun main (&rest argv)
   (declare (ignore argv))
-  (ptui.engine.loop:run #'%render-dashboard :backend :ansi :fps 20))
+  (ptui.engine.loop:run #'%render-dashboard :backend :auto :fps 20))
