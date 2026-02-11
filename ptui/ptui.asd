@@ -91,6 +91,16 @@
   :components
   (#+ptui-layout-yoga (:file "src/layout/yoga")))
 
+(asdf:defsystem "ptui/ui"
+  :description "PTUI component runtime core (tree/reconcile/lifecycle/focus)"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ("ptui/core" "ptui/layout")
+  :serial t
+  :components
+  ((:file "src/ui/elements")
+   (:file "src/ui/runtime")))
+
 (asdf:defsystem "ptui/backend"
   :description "PTUI backend boundary and implementations"
   :author "Ralph"
@@ -139,6 +149,8 @@
    (:file "src/text/layout")
    (:file "src/layout/api")
    #+ptui-layout-yoga (:file "src/layout/yoga")
+   (:file "src/ui/elements")
+   (:file "src/ui/runtime")
    (:file "src/render/buffer")
    (:file "src/render/diff")
    (:file "src/backend/protocol")
@@ -150,7 +162,7 @@
   :description "PTUI umbrella system"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui/core" "ptui/util" "ptui/runtime" "ptui/term" "ptui/text" "ptui/layout" "ptui/render" "ptui/backend" "ptui/engine")
+  :depends-on ("ptui/core" "ptui/util" "ptui/runtime" "ptui/term" "ptui/text" "ptui/layout" "ptui/ui" "ptui/render" "ptui/backend" "ptui/engine")
   :serial t
   :components ())
 

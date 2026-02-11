@@ -18,6 +18,7 @@ Defined in `ptui/ptui.asd`:
 | `ptui/text` | Grapheme/width/layout text pipeline | none |
 | `ptui/layout` | Layout contracts + deterministic bounds solver | none |
 | `ptui/layout/yoga` | Optional Yoga boundary adapter (`:ptui-layout-yoga`) | none |
+| `ptui/ui` | Component runtime core (element tree/reconcile/lifecycle/focus) | none |
 | `ptui/render` | Cell buffer + diff | none |
 | `ptui/backend` | Backend protocol + ANSI backend (ncurses optional) | none |
 | `ptui/engine` | Engine loop (`ptui.engine.loop:run`) | none |

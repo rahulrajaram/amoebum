@@ -42,6 +42,21 @@
 (defun string-from-codepoints (&rest codepoints)
   (coerce (mapcar #'code-char codepoints) 'string))
 
+(defun ui-op-kinds (ops)
+  (mapcar #'ptui.ui.runtime:patch-op-kind ops))
+
+(defun ui-op-ids (ops)
+  (mapcar #'ptui.ui.runtime:patch-op-node-id ops))
+
+(defun make-ui-node (type &key id key props children (focusablep nil))
+  (ptui.ui.elements:make-element
+   type
+   :id id
+   :key key
+   :props props
+   :children children
+   :focusablep focusablep))
+
 (defun run-all-tests ()
   (let ((passed 0)
         (failed 0))
@@ -306,6 +321,83 @@
                      "measure contract should expose available-height for row child A")
         (assert-true (member (list :c nil 2) measure-calls :test #'equal)
                      "measure contract should expose available-height for row child C")))))
+
+(deftest ui-reconcile-deterministic-order
+  (let* ((old-tree (make-ui-node
+                    :root
+                    :id :root
+                    :children
+                    (list
+                     (make-ui-node :label :id :a :props '((:text . "A")))
+                     (make-ui-node :label :id :b :props '((:text . "B"))))))
+         (new-tree (make-ui-node
+                    :root
+                    :id :root
+                    :children
+                    (list
+                     (make-ui-node :label :id :a :props '((:text . "A2")))
+                     (make-ui-node :label :id :c :props '((:text . "C"))))))
+         (ops (ptui.ui.runtime:reconcile-trees old-tree new-tree)))
+    (assert-true (equal (ui-op-kinds ops) '(:update :mount :unmount))
+                 "unexpected reconcile op kinds: ~S" (ui-op-kinds ops))
+    (assert-true (equal (ui-op-ids ops) '(:a :c :b))
+                 "unexpected reconcile node ids: ~S" (ui-op-ids ops))))
+
+(deftest ui-runtime-update-ordering
+  (let* ((runtime (ptui.ui.runtime:make-runtime))
+         (effects-ran '())
+         (tree (make-ui-node :root :id :root)))
+    (ptui.ui.runtime:enqueue-effect runtime
+                                    (lambda () (setf effects-ran (append effects-ran (list :effect-1)))))
+    (ptui.ui.runtime:set-runtime-state runtime :counter 1)
+    (ptui.ui.runtime:update-runtime runtime tree)
+    (assert-true (= (ptui.ui.runtime:runtime-revision runtime) 1)
+                 "runtime revision should increment to 1")
+    (assert-true (eql (ptui.ui.runtime:runtime-state runtime :counter) 1)
+                 "runtime state should persist")
+    (assert-true (equal effects-ran '(:effect-1))
+                 "effects should run exactly once in order: ~S" effects-ran)
+    (assert-true (equal (ptui.ui.runtime:runtime-lifecycle-log runtime)
+                        '(:reconcile-begin :reconcile-end :commit (:effect 1)))
+                 "unexpected lifecycle ordering: ~S"
+                 (ptui.ui.runtime:runtime-lifecycle-log runtime))))
+
+(deftest ui-focus-routing-contract
+  (let* ((runtime (ptui.ui.runtime:make-runtime))
+         (tree-1 (make-ui-node
+                  :root
+                  :id :root
+                  :children
+                  (list
+                   (make-ui-node :input :id :a :focusablep t)
+                   (make-ui-node :input :id :b :focusablep t)
+                   (make-ui-node :input :id :c :focusablep t))))
+         (tree-2 (make-ui-node
+                  :root
+                  :id :root
+                  :children
+                  (list
+                   (make-ui-node :input :id :c :focusablep t)))))
+    (ptui.ui.runtime:update-runtime runtime tree-1)
+    (assert-true (equal (ptui.ui.runtime:runtime-focus-order runtime) '(:a :b :c))
+                 "unexpected initial focus order")
+    (assert-true (eql (ptui.ui.runtime:runtime-focus-id runtime) :a)
+                 "initial focus should land on first focusable node")
+    (let* ((route-1 (ptui.ui.runtime:route-event runtime (ptui.core.events:make-key-event :tab)))
+           (route-2 (ptui.ui.runtime:route-event runtime
+                                                 (ptui.core.events:make-key-event :tab :shiftp t)))
+           (route-3 (ptui.ui.runtime:route-event runtime (ptui.core.events:make-key-event :enter))))
+      (assert-true (equal (getf route-1 :target) :b)
+                   "tab should advance focus to :b, got ~S" route-1)
+      (assert-true (equal (getf route-2 :target) :a)
+                   "shift-tab should move focus back to :a, got ~S" route-2)
+      (assert-true (equal (getf route-3 :target) :a)
+                   "key events should route to current focus, got ~S" route-3))
+    (ptui.ui.runtime:update-runtime runtime tree-2)
+    (assert-true (equal (ptui.ui.runtime:runtime-focus-order runtime) '(:c))
+                 "focus order should update after tree change")
+    (assert-true (eql (ptui.ui.runtime:runtime-focus-id runtime) :c)
+                 "focus should stabilize onto surviving focusable node")))
 
 ;; Script entry
 (multiple-value-bind (passed failed) (run-all-tests)

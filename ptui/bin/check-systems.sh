@@ -18,6 +18,7 @@ systems=(
   "ptui/text"
   "ptui/layout"
   "ptui/layout/yoga"
+  "ptui/ui"
   "ptui/render"
   "ptui/backend"
   "ptui/engine"
