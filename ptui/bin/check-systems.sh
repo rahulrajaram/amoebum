@@ -16,6 +16,8 @@ systems=(
   "ptui/runtime"
   "ptui/term"
   "ptui/text"
+  "ptui/layout"
+  "ptui/layout/yoga"
   "ptui/render"
   "ptui/backend"
   "ptui/engine"
@@ -49,4 +51,16 @@ if [[ "${PTUI_ENABLE_NCURSES:-}" == "1" ]]; then
     --eval "(asdf:load-system \"ptui\")" \
     --eval "(quit)" >/dev/null
   echo "OK: ptui (ptui-ncurses)"
+fi
+
+if [[ "${PTUI_ENABLE_LAYOUT_YOGA:-}" == "1" ]]; then
+  echo "==> loading ptui/layout/yoga with :ptui-layout-yoga feature"
+  sbcl --noinform --non-interactive \
+    --eval "(load \"${ROOT_DIR}/.tools/quicklisp/setup.lisp\")" \
+    --eval "(require :asdf)" \
+    --eval '(pushnew :ptui-layout-yoga *features*)' \
+    --eval "(asdf:load-asd (merge-pathnames #P\"ptui.asd\" (truename #P\"${ROOT_DIR}/\")))" \
+    --eval "(asdf:load-system \"ptui/layout/yoga\")" \
+    --eval "(quit)" >/dev/null
+  echo "OK: ptui/layout/yoga (ptui-layout-yoga)"
 fi

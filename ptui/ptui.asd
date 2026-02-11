@@ -66,9 +66,30 @@
   :depends-on ()
   :serial t
   :components
-  ((:file "src/text/grapheme")
+  ((:file "src/text/engine")
+   (:file "src/text/adapters/fallback")
+   (:file "src/text/adapters/native")
+   (:file "src/text/grapheme")
    (:file "src/text/width")
    (:file "src/text/layout")))
+
+(asdf:defsystem "ptui/layout"
+  :description "PTUI layout foundation (node contracts + deterministic solver)"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ("ptui/text")
+  :serial t
+  :components
+  ((:file "src/layout/api")))
+
+(asdf:defsystem "ptui/layout/yoga"
+  :description "PTUI optional Yoga adapter boundary (feature-gated)"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ("ptui/layout")
+  :serial t
+  :components
+  (#+ptui-layout-yoga (:file "src/layout/yoga")))
 
 (asdf:defsystem "ptui/backend"
   :description "PTUI backend boundary and implementations"
@@ -110,9 +131,14 @@
    (:file "src/term/tty")
    (:file "src/term/signals")
    (:file "src/term/input")
+   (:file "src/text/engine")
+   (:file "src/text/adapters/fallback")
+   (:file "src/text/adapters/native")
    (:file "src/text/grapheme")
    (:file "src/text/width")
    (:file "src/text/layout")
+   (:file "src/layout/api")
+   #+ptui-layout-yoga (:file "src/layout/yoga")
    (:file "src/render/buffer")
    (:file "src/render/diff")
    (:file "src/backend/protocol")
@@ -124,7 +150,7 @@
   :description "PTUI umbrella system"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui/core" "ptui/util" "ptui/runtime" "ptui/term" "ptui/text" "ptui/render" "ptui/backend" "ptui/engine")
+  :depends-on ("ptui/core" "ptui/util" "ptui/runtime" "ptui/term" "ptui/text" "ptui/layout" "ptui/render" "ptui/backend" "ptui/engine")
   :serial t
   :components ())
 

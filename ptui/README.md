@@ -15,6 +15,9 @@ Defined in `ptui/ptui.asd`:
 | `ptui/util` | Logging + monotonic time | none |
 | `ptui/runtime` | Queue + scheduler primitives | `bordeaux-threads` |
 | `ptui/term` | TTY/input/signal integration | `cffi` |
+| `ptui/text` | Grapheme/width/layout text pipeline | none |
+| `ptui/layout` | Layout contracts + deterministic bounds solver | none |
+| `ptui/layout/yoga` | Optional Yoga boundary adapter (`:ptui-layout-yoga`) | none |
 | `ptui/render` | Cell buffer + diff | none |
 | `ptui/backend` | Backend protocol + ANSI backend (ncurses optional) | none |
 | `ptui/engine` | Engine loop (`ptui.engine.loop:run`) | none |
@@ -27,6 +30,12 @@ Notes:
 
 1. `ptui/standalone` means "one ASDF system loads the kernel". It does not mean "no Quicklisp" or "no native deps".
 2. The "External deps" column above is what you need beyond ASDF itself; internal `ptui/*` dependencies are managed by ASDF.
+
+## API Notes (`ptui/text`, `ptui/layout`)
+
+Short API docs for the reusable text and layout systems:
+
+- `ptui/docs/text-layout-api.md`
 
 ## Quicklisp + Dependency Setup
 
@@ -56,4 +65,3 @@ PTUI_EXIT_AFTER_MS=5000 ./ptui/dist/metrics-dashboard
 ```bash
 ./ptui/bin/compliance-gate.sh
 ```
-

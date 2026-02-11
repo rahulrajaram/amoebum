@@ -24,6 +24,18 @@
   (unless cond
     (apply #'error fmt args)))
 
+(defun assert-layout-bound (layout node-id x y w h)
+  (let ((bounds (ptui.layout:layout-bound layout node-id)))
+    (assert-true bounds "missing layout bounds for ~S" node-id)
+    (assert-true (= (ptui.layout:layout-bounds-x bounds) x)
+                 "unexpected x for ~S: ~S" node-id bounds)
+    (assert-true (= (ptui.layout:layout-bounds-y bounds) y)
+                 "unexpected y for ~S: ~S" node-id bounds)
+    (assert-true (= (ptui.layout:layout-bounds-width bounds) w)
+                 "unexpected width for ~S: ~S" node-id bounds)
+    (assert-true (= (ptui.layout:layout-bounds-height bounds) h)
+                 "unexpected height for ~S: ~S" node-id bounds)))
+
 (defun draw-op-kinds (ops)
   (mapcar #'ptui.render.diff::draw-op-kind ops))
 
@@ -129,6 +141,16 @@
   (assert-true (string= (ptui.text.layout:truncate-to-width "abcdef" 4) "abcd")
                "unexpected truncate result"))
 
+(deftest text-engine-adapters-available
+  (assert-true (member :fallback (ptui.text.engine:available-text-engines))
+               "fallback adapter should be registered")
+  (assert-true (member :native (ptui.text.engine:available-text-engines))
+               "native adapter stub should be registered")
+  (assert-true (not (ptui.text.engine:engine-available-p :native))
+               "native adapter should be unavailable until native hooks are wired")
+  (assert-true (eql (ptui.text.engine:resolve-text-engine :native) :fallback)
+               "native requests should resolve to fallback while unavailable"))
+
 (deftest text-native-engine-currently-aliases-fallback
   (let ((text (string-from-codepoints #x0065 #x0301 #x1F468 #x200D #x1F469)))
     (assert-true
@@ -153,6 +175,19 @@
     (assert-true (string= (ptui.text.layout:truncate-to-width text 1) text)
                  "combining sequence should survive width=1 truncate")))
 
+(deftest text-flags-and-regional-indicators
+  (let* ((flag-us (string-from-codepoints #x1F1FA #x1F1F8))
+         (flag-jp (string-from-codepoints #x1F1EF #x1F1F5))
+         (both (concatenate 'string flag-us flag-jp)))
+    (assert-true (= (length (ptui.text.grapheme:split-graphemes flag-us)) 1)
+                 "US flag should be one grapheme")
+    (assert-true (= (ptui.text.width:string-width flag-us) 2)
+                 "US flag should be width=2")
+    (assert-true (= (ptui.text.width:string-width both) 4)
+                 "two flags should be width=4")
+    (assert-true (equal (ptui.text.layout:wrap-by-width both 2) (list flag-us flag-jp))
+                 "flags should wrap by full grapheme width")))
+
 (deftest text-emoji-zwj-sequence
   (let* ((family (string-from-codepoints #x1F468 #x200D #x1F469 #x200D #x1F467 #x200D #x1F466))
          (text (concatenate 'string "A" family "B")))
@@ -165,6 +200,23 @@
     (assert-true (string= (ptui.text.layout:truncate-to-width text 3 :ellipsis t) "A…")
                  "unexpected emoji truncation behavior")))
 
+(deftest text-variation-selectors-and-keycaps
+  (let* ((rainbow-flag (string-from-codepoints #x1F3F3 #xFE0F #x200D #x1F308))
+         (kiss (string-from-codepoints #x1F469 #x200D #x2764 #xFE0F #x200D #x1F48B #x200D #x1F468))
+         (keycap (string-from-codepoints #x0023 #xFE0F #x20E3)))
+    (assert-true (= (length (ptui.text.grapheme:split-graphemes rainbow-flag)) 1)
+                 "rainbow flag should remain one grapheme")
+    (assert-true (= (ptui.text.width:string-width rainbow-flag) 2)
+                 "rainbow flag should be width=2")
+    (assert-true (= (length (ptui.text.grapheme:split-graphemes kiss)) 1)
+                 "kiss ZWJ sequence should remain one grapheme")
+    (assert-true (= (ptui.text.width:string-width kiss) 2)
+                 "kiss ZWJ sequence should be width=2")
+    (assert-true (= (length (ptui.text.grapheme:split-graphemes keycap)) 1)
+                 "keycap sequence should remain one grapheme")
+    (assert-true (= (ptui.text.width:string-width keycap) 2)
+                 "keycap sequence should be width=2")))
+
 (deftest text-cjk-wide-characters
   (let ((text (string-from-codepoints #x0041 #x754C #x0042)))
     (assert-true (= (ptui.text.width:string-width text) 4)
@@ -175,6 +227,85 @@
                  "unexpected CJK wrap result")
     (assert-true (string= (ptui.text.layout:width-safe-slice text 0 2) "A")
                  "slice should not split wide grapheme")))
+
+(deftest text-cjk-and-ambiguous-width-edges
+  (let* ((fullwidth-bang (string-from-codepoints #xFF01))
+         (middle-dot (string-from-codepoints #x00B7))
+         (em-dash (string-from-codepoints #x2014))
+         (mixed (concatenate 'string fullwidth-bang middle-dot em-dash)))
+    (assert-true (= (ptui.text.width:string-width fullwidth-bang) 2)
+                 "fullwidth punctuation should be width=2")
+    (assert-true (= (ptui.text.width:string-width middle-dot) 1)
+                 "middle dot should remain ambiguous width=1 in fallback policy")
+    (assert-true (= (ptui.text.width:string-width em-dash) 1)
+                 "em dash should remain ambiguous width=1 in fallback policy")
+    (assert-true (= (ptui.text.width:string-width mixed) 4)
+                 "mixed string width should be 4")
+    (assert-true (equal (ptui.text.layout:wrap-by-width mixed 3)
+                        (list (concatenate 'string fullwidth-bang middle-dot)
+                              em-dash))
+                 "mixed width wrapping should stay grapheme-safe")))
+
+(deftest layout-golden-column-contract
+  (let* ((root (ptui.layout:make-layout-node
+                :id :root
+                :direction :column
+                :width 12
+                :gap 1
+                :children
+                (list
+                 (ptui.layout:make-layout-node
+                  :id :title
+                  :measure (lambda (avail-w avail-h)
+                             (declare (ignore avail-w avail-h))
+                             (ptui.layout:make-layout-size 8 1)))
+                 (ptui.layout:make-layout-node
+                  :id :body
+                  :height 3)
+                 (ptui.layout:make-layout-node
+                  :id :footer
+                  :measure (lambda (avail-w avail-h)
+                             (declare (ignore avail-w avail-h))
+                             (ptui.layout:make-layout-size 10 1))))))
+         (layout (ptui.layout:compute-layout root :x 2 :y 4)))
+    (assert-layout-bound layout :root 2 4 12 7)
+    (assert-layout-bound layout :title 2 4 8 1)
+    (assert-layout-bound layout :body 2 6 12 3)
+    (assert-layout-bound layout :footer 2 10 10 1)))
+
+(deftest layout-golden-row-contract
+  (let ((measure-calls '()))
+    (flet ((track (id w h)
+             (push (list id w h) measure-calls)))
+      (let* ((root (ptui.layout:make-layout-node
+                    :id :root
+                    :direction :row
+                    :height 2
+                    :gap 1
+                    :children
+                    (list
+                     (ptui.layout:make-layout-node
+                      :id :a
+                      :measure (lambda (avail-w avail-h)
+                                 (track :a avail-w avail-h)
+                                 (ptui.layout:make-layout-size 3 1)))
+                     (ptui.layout:make-layout-node
+                      :id :b
+                      :width 4)
+                     (ptui.layout:make-layout-node
+                      :id :c
+                      :measure (lambda (avail-w avail-h)
+                                 (track :c avail-w avail-h)
+                                 (ptui.layout:make-layout-size 2 2))))))
+             (layout (ptui.layout:compute-layout root)))
+        (assert-layout-bound layout :root 0 0 11 2)
+        (assert-layout-bound layout :a 0 0 3 1)
+        (assert-layout-bound layout :b 4 0 4 2)
+        (assert-layout-bound layout :c 9 0 2 2)
+        (assert-true (member (list :a nil 2) measure-calls :test #'equal)
+                     "measure contract should expose available-height for row child A")
+        (assert-true (member (list :c nil 2) measure-calls :test #'equal)
+                     "measure contract should expose available-height for row child C")))))
 
 ;; Script entry
 (multiple-value-bind (passed failed) (run-all-tests)
