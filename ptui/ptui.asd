@@ -101,6 +101,15 @@
   ((:file "src/ui/elements")
    (:file "src/ui/runtime")))
 
+(asdf:defsystem "ptui/widgets"
+  :description "PTUI reusable widget primitives"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ("ptui/ui" "ptui/layout" "ptui/text")
+  :serial t
+  :components
+  ((:file "src/widgets/core")))
+
 (asdf:defsystem "ptui/backend"
   :description "PTUI backend boundary and implementations"
   :author "Ralph"
@@ -151,6 +160,7 @@
    #+ptui-layout-yoga (:file "src/layout/yoga")
    (:file "src/ui/elements")
    (:file "src/ui/runtime")
+   (:file "src/widgets/core")
    (:file "src/render/buffer")
    (:file "src/render/diff")
    (:file "src/backend/protocol")
@@ -162,7 +172,7 @@
   :description "PTUI umbrella system"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui/core" "ptui/util" "ptui/runtime" "ptui/term" "ptui/text" "ptui/layout" "ptui/ui" "ptui/render" "ptui/backend" "ptui/engine")
+  :depends-on ("ptui/core" "ptui/util" "ptui/runtime" "ptui/term" "ptui/text" "ptui/layout" "ptui/ui" "ptui/widgets" "ptui/render" "ptui/backend" "ptui/engine")
   :serial t
   :components ())
 

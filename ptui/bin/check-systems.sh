@@ -19,6 +19,7 @@ systems=(
   "ptui/layout"
   "ptui/layout/yoga"
   "ptui/ui"
+  "ptui/widgets"
   "ptui/render"
   "ptui/backend"
   "ptui/engine"

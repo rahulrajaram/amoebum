@@ -399,6 +399,61 @@
     (assert-true (eql (ptui.ui.runtime:runtime-focus-id runtime) :c)
                  "focus should stabilize onto surviving focusable node")))
 
+(deftest widgets-sizing-primitives
+  (let* ((text (ptui.widgets.core:make-text-widget "AB"))
+         (spacer (ptui.widgets.core:make-spacer-widget 3 2))
+         (stack (ptui.widgets.core:make-stack-widget (list text spacer)
+                                                     :direction :row
+                                                     :gap 1))
+         (box (ptui.widgets.core:make-box-widget stack :padding 1 :borderp t))
+         (text-size (ptui.widgets.core:widget-measure text))
+         (stack-size (ptui.widgets.core:widget-measure stack))
+         (box-size (ptui.widgets.core:widget-measure box)))
+    (assert-true (= (ptui.layout:layout-size-width text-size) 2)
+                 "text width should follow text width policy")
+    (assert-true (= (ptui.layout:layout-size-height text-size) 1)
+                 "text height should be 1")
+    (assert-true (= (ptui.layout:layout-size-width stack-size) 6)
+                 "stack row width should include child widths + gap")
+    (assert-true (= (ptui.layout:layout-size-height stack-size) 2)
+                 "stack row height should match max child height")
+    (assert-true (= (ptui.layout:layout-size-width box-size) 10)
+                 "box width should include padding + border")
+    (assert-true (= (ptui.layout:layout-size-height box-size) 6)
+                 "box height should include padding + border")))
+
+(deftest widgets-input-scroll-and-event-dispatch
+  (let* ((captured '())
+         (input (ptui.widgets.core:make-input-widget
+                 "abc"
+                 :id :input-1
+                 :min-width 5
+                 :on-event (lambda (event node)
+                             (setf captured
+                                   (list :key (ptui.core.events:key-event-key event)
+                                         :id (ptui.ui.elements:ui-element-id node))))))
+         (scroll (ptui.widgets.core:make-scroll-widget
+                  (ptui.widgets.core:make-text-widget "1234567")
+                  :viewport-width 4
+                  :viewport-height 2))
+         (root (ptui.widgets.core:make-stack-widget (list input scroll) :id :root))
+         (runtime (ptui.ui.runtime:make-runtime))
+         (input-size (ptui.widgets.core:widget-measure input))
+         (scroll-size (ptui.widgets.core:widget-measure scroll)))
+    (ptui.ui.runtime:update-runtime runtime root)
+    (assert-true (= (ptui.layout:layout-size-width input-size) 5)
+                 "input width should honor min-width")
+    (assert-true (= (ptui.layout:layout-size-height input-size) 1)
+                 "input height should be 1")
+    (assert-true (= (ptui.layout:layout-size-width scroll-size) 4)
+                 "scroll width should honor viewport width")
+    (assert-true (= (ptui.layout:layout-size-height scroll-size) 2)
+                 "scroll height should honor viewport height")
+    (let ((route (ptui.ui.runtime:route-event runtime (ptui.core.events:make-key-event :enter))))
+      (ptui.widgets.core:dispatch-widget-event root route))
+    (assert-true (equal captured '(:key :enter :id :input-1))
+                 "event dispatch should invoke target input handler, got ~S" captured)))
+
 ;; Script entry
 (multiple-value-bind (passed failed) (run-all-tests)
   (declare (ignore passed))
