@@ -20,11 +20,11 @@
 (deftype index ()
   '(integer 0 #.most-positive-fixnum))
 
-(defun ensure-single-codepoint-glyph (glyph)
-  "Step 03 contract: accept one codepoint for now."
-  (unless (and (stringp glyph)
-               (= (length glyph) 1))
-    (error "GLYPH must be a string with exactly one codepoint, got: ~S" glyph))
+(defun ensure-cell-glyph (glyph)
+  "Cell glyph may be a grapheme cluster string.
+An empty string is reserved for width-continuation cells."
+  (unless (stringp glyph)
+    (error "GLYPH must be a string, got: ~S" glyph))
   glyph)
 
 (defstruct (size (:constructor make-size (cols rows)))
@@ -83,7 +83,7 @@
      (error "Unsupported color value: ~S" value))))
 
 (defun make-cell (glyph fg bg attrs)
-  (%make-cell (ensure-single-codepoint-glyph glyph)
+  (%make-cell (ensure-cell-glyph glyph)
               (normalize-cell-color fg)
               (normalize-cell-color bg)
               attrs))

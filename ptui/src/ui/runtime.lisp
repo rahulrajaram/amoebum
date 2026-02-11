@@ -43,12 +43,18 @@
   (focus-order '() :type list)
   (focus-id nil))
 
+(defparameter *runtime-lifecycle-log-limit* 512)
+
 (defun make-runtime ()
   (%make-runtime))
 
 (defun %log! (runtime event)
-  (setf (runtime-lifecycle-log runtime)
-        (nconc (runtime-lifecycle-log runtime) (list event)))
+  (let ((entries (nconc (runtime-lifecycle-log runtime) (list event))))
+    (when (> (length entries) *runtime-lifecycle-log-limit*)
+      (setf entries
+            (nthcdr (- (length entries) *runtime-lifecycle-log-limit*)
+                    entries)))
+    (setf (runtime-lifecycle-log runtime) entries))
   runtime)
 
 (defun %normalize-path (path)

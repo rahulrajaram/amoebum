@@ -57,6 +57,10 @@
    :children children
    :focusablep focusablep))
 
+(defun buffer-cell-at (buf x y)
+  (svref (ptui.core.types:cell-buffer-cells buf)
+         (+ x (* y (ptui.core.types:cell-buffer-cols buf)))))
+
 (defun run-all-tests ()
   (let ((passed 0)
         (failed 0))
@@ -109,6 +113,41 @@
       (assert-true (eql (first (draw-op-kinds ops)) :clear-screen)
                    "expected leading :clear-screen, got: ~S" (draw-op-kinds ops)))))
 
+(deftest diff-prev-nil-safe-without-full-redraw-flag
+  (let ((buf (ptui.render.buffer:make-buffer 3 1)))
+    (ptui.render.buffer:buffer-draw-text buf 0 0 "A")
+    (multiple-value-bind (ops count)
+        (ptui.render.diff:diff-buffers nil buf :full-redraw nil)
+      (declare (ignore count))
+      (assert-true (member :clear-screen (draw-op-kinds ops))
+                   "prev=nil should force safe full redraw path"))))
+
+(deftest render-wide-grapheme-occupies-multiple-cells
+  (let* ((buf (ptui.render.buffer:make-buffer 5 1))
+         (text (concatenate 'string "A" (string-from-codepoints #x754C) "B")))
+    (ptui.render.buffer:buffer-draw-text buf 0 0 text)
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 0 0)) "A")
+                 "col0 should be A")
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 1 0))
+                          (string-from-codepoints #x754C))
+                 "col1 should be wide grapheme")
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 2 0)) "")
+                 "col2 should be continuation cell")
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 3 0)) "B")
+                 "col3 should be B")))
+
+(deftest render-emoji-zwj-occupies-two-cells
+  (let* ((buf (ptui.render.buffer:make-buffer 5 1))
+         (emoji (string-from-codepoints #x1F469 #x200D #x1F4BB))
+         (text (concatenate 'string emoji "X")))
+    (ptui.render.buffer:buffer-draw-text buf 0 0 text)
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 0 0)) emoji)
+                 "col0 should hold ZWJ grapheme")
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 1 0)) "")
+                 "col1 should be continuation for ZWJ grapheme")
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 2 0)) "X")
+                 "col2 should hold trailing ASCII")))
+
 (deftest input-parser-split-csi-arrow
   (let ((p (ptui.term.input:make-input-parser)))
     (ptui.term.input:input-feed p (make-array 2 :element-type '(unsigned-byte 8)
@@ -143,6 +182,26 @@
                  "expected x256 mode")
     (assert-true (search "38;5;" (ptui.core.color:color->sgr rgb :mode :x256 :fg-or-bg :fg))
                  "expected x256 sgr fragment")))
+
+(deftest diff-style-equality-treats-equal-rgb-values-as-equal
+  (let* ((buf1 (ptui.render.buffer:make-buffer 2 1))
+         (buf2 (ptui.render.buffer:make-buffer 2 1))
+         (a1 (ptui.core.types:make-cell "X" (ptui.core.color:make-color-rgb 1 2 3) :default
+                                        (ptui.core.types:make-attrs)))
+         (a2 (ptui.core.types:make-cell "X" (ptui.core.color:make-color-rgb 1 2 3) :default
+                                        (ptui.core.types:make-attrs))))
+    (ptui.render.buffer:buffer-draw-text buf1 0 0 a1)
+    (ptui.render.buffer:buffer-draw-text buf2 0 0 a2)
+    (multiple-value-bind (ops count)
+        (ptui.render.diff:diff-buffers buf1 buf2 :full-redraw nil)
+      (assert-true (= count 0)
+                   "equal rgb values should not produce diff ops, got ~D (~S)" count (draw-op-kinds ops)))))
+
+(deftest cell-glyph-allows-grapheme-clusters
+  (let* ((glyph (string-from-codepoints #x0065 #x0301))
+         (cell (ptui.core.types:make-cell glyph :default :default (ptui.core.types:make-attrs))))
+    (assert-true (string= (ptui.core.types:cell-glyph cell) glyph)
+                 "cell glyph should preserve full grapheme cluster")))
 
 (deftest text-ascii-baseline
   (assert-true (eql (ptui.text.grapheme:grapheme-engine) :fallback)
@@ -362,6 +421,17 @@
                  "unexpected lifecycle ordering: ~S"
                  (ptui.ui.runtime:runtime-lifecycle-log runtime))))
 
+(deftest ui-runtime-lifecycle-log-bounded
+  (let* ((runtime (ptui.ui.runtime:make-runtime))
+         (tree (make-ui-node :root :id :root))
+         (limit ptui.ui.runtime::*runtime-lifecycle-log-limit*))
+    (loop repeat (+ limit 40) do
+      (ptui.ui.runtime:update-runtime runtime tree))
+    (assert-true (<= (length (ptui.ui.runtime:runtime-lifecycle-log runtime)) limit)
+                 "lifecycle log should be bounded by limit")
+    (assert-true (member :commit (ptui.ui.runtime:runtime-lifecycle-log runtime))
+                 "bounded lifecycle log should still contain commit events")))
+
 (deftest ui-focus-routing-contract
   (let* ((runtime (ptui.ui.runtime:make-runtime))
          (tree-1 (make-ui-node
@@ -398,6 +468,16 @@
                  "focus order should update after tree change")
     (assert-true (eql (ptui.ui.runtime:runtime-focus-id runtime) :c)
                  "focus should stabilize onto surviving focusable node")))
+
+(deftest ui-duplicate-child-selectors-rejected
+  (handler-case
+      (progn
+        (make-ui-node :root
+                      :children (list (make-ui-node :text :id :dup)
+                                      (make-ui-node :text :id :dup)))
+        (error "expected duplicate selector error"))
+    (error ()
+      t)))
 
 (deftest widgets-sizing-primitives
   (let* ((text (ptui.widgets.core:make-text-widget "AB"))
@@ -453,6 +533,27 @@
       (ptui.widgets.core:dispatch-widget-event root route))
     (assert-true (equal captured '(:key :enter :id :input-1))
                  "event dispatch should invoke target input handler, got ~S" captured)))
+
+(deftest dashboard-ui-render-and-grapheme-backspace
+  (let* ((state (ptui.examples.metrics-dashboard::make-dashboard-ui-state
+                 :runtime (ptui.ui.runtime:make-runtime)))
+         (size (ptui.core.types:make-size 50 16))
+         (buf (ptui.examples.metrics-dashboard::%render-dashboard-ui state size))
+         (grapheme (string-from-codepoints #x0065 #x0301)))
+    (assert-true (typep buf 'ptui.core.types:cell-buffer)
+                 "ui dashboard render should return a cell buffer")
+    (setf state (ptui.examples.metrics-dashboard::%on-dashboard-ui-event
+                 state
+                 (ptui.core.events:make-key-event :text :text? grapheme)))
+    (assert-true (string= (ptui.examples.metrics-dashboard::dashboard-ui-state-input-text state)
+                          grapheme)
+                 "input text should contain inserted grapheme")
+    (setf state (ptui.examples.metrics-dashboard::%on-dashboard-ui-event
+                 state
+                 (ptui.core.events:make-key-event :backspace)))
+    (assert-true (string= (ptui.examples.metrics-dashboard::dashboard-ui-state-input-text state)
+                          "")
+                 "backspace should remove one grapheme cluster")))
 
 ;; Script entry
 (multiple-value-bind (passed failed) (run-all-tests)

@@ -94,14 +94,41 @@
   nil)
 
 (defun styled-segment->cells (segment)
-  (labels ((string->cells (text template)
-             (loop for ch across text collect
-               (cell-with-glyph template (string ch)))))
+  (labels ((continuation-cell (template)
+             (cell-with-glyph template ""))
+           (expand-cell-to-width (cell)
+             (let* ((glyph (ptui.core.types:cell-glyph cell))
+                    (width (ptui.text.width:string-width glyph)))
+               (if (> width 1)
+                   (append (list (clone-cell cell))
+                           (loop repeat (1- width)
+                                 collect (continuation-cell cell)))
+                   (list (clone-cell cell)))))
+           (string->cells (text template)
+             (let ((cells '()))
+               (flet ((append-cell (cell)
+                        (setf cells (nconc cells (list cell)))))
+                 (dolist (cluster (ptui.text.grapheme:split-graphemes text))
+                   (let ((width (ptui.text.width:grapheme-width cluster)))
+                     (cond
+                       ;; Zero-width clusters attach to the previous base cluster.
+                       ((<= width 0)
+                        (when cells
+                          (let ((last (car (last cells))))
+                            (setf (ptui.core.types:cell-glyph last)
+                                  (concatenate 'string
+                                               (ptui.core.types:cell-glyph last)
+                                               cluster)))))
+                       (t
+                        (append-cell (cell-with-glyph template cluster))
+                        (loop repeat (1- width) do
+                          (append-cell (continuation-cell template))))))))
+               cells)))
     (cond
       ((stringp segment)
        (string->cells segment (make-default-cell)))
       ((typep segment 'ptui.core.types:cell)
-       (list (clone-cell segment)))
+       (expand-cell-to-width segment))
       ((and (consp segment)
             (stringp (first segment))
             (typep (second segment) 'ptui.core.types:cell))

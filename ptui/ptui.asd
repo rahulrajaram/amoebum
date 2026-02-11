@@ -53,7 +53,7 @@
   :description "PTUI renderer (cell buffer + diff)"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui/core")
+  :depends-on ("ptui/core" "ptui/text")
   :serial t
   :components
   ((:file "src/render/buffer")

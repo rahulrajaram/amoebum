@@ -11,5 +11,5 @@ sbcl --noinform --non-interactive \
   --eval "(asdf:load-asd \"${ROOT_DIR}/ptui.asd\")" \
   --eval "(asdf:load-asd \"${ROOT_DIR}/ptui-examples.asd\")" \
   --eval "(asdf:load-system \"ptui\")" \
+  --eval "(asdf:load-system \"ptui-examples\")" \
   --load "${ROOT_DIR}/test/run.lisp"
-

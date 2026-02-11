@@ -84,16 +84,16 @@
       state
       (make-dashboard-ui-state :runtime (ptui.ui.runtime:make-runtime))))
 
-(defun %pop-last-char (text)
-  (if (zerop (length text))
-      text
-      (subseq text 0 (1- (length text)))))
+(defun %pop-last-grapheme (text)
+  (let ((clusters (ptui.text.grapheme:split-graphemes text)))
+    (if (null clusters)
+        ""
+        (with-output-to-string (out)
+          (dolist (cluster (butlast clusters))
+            (write-string cluster out))))))
 
 (defun %element-prop (element key &optional default)
-  (let ((props (ptui.ui.elements:ui-element-props element)))
-    (if (listp props)
-        (getf props key default)
-        default)))
+  (getf (ptui.ui.elements:ui-element-props element) key default))
 
 (defun %ui-tree-node (element)
   (let ((id (ptui.ui.elements:ui-element-id element))
@@ -148,7 +148,7 @@
           buf x y (list (list line (%ui-line-cell id focus-id))) :max-width w)))
       (:input
        (let* ((value (%element-prop element :value ""))
-              (line (%fit-line-width (format nil "Input: ~A" value) w)))
+              (line (%fit-line-width value w)))
          (ptui.render.buffer:buffer-draw-text
           buf x y (list (list line (%ui-line-cell id focus-id))) :max-width w)))
       (t nil))))
@@ -237,7 +237,7 @@
                                 text)))
             ((eql key :backspace)
              (setf (dashboard-ui-state-input-text ui-state)
-                   (%pop-last-char (dashboard-ui-state-input-text ui-state)))))))
+                   (%pop-last-grapheme (dashboard-ui-state-input-text ui-state)))))))
       (when (ptui.ui.runtime:runtime-root runtime)
         (ptui.widgets.core:dispatch-widget-event
          (ptui.ui.runtime:runtime-root runtime)

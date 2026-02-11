@@ -22,11 +22,23 @@
   (children '() :type list)
   (focusablep nil :type boolean))
 
+(defun %reconcile-selector (element)
+  (or (ui-element-key element)
+      (ui-element-id element)))
+
 (defun make-element (type &key id key (props '()) (children '()) (focusablep nil))
   "Create a UI element node with deterministic children ordering."
-  (dolist (child children)
-    (unless (typep child 'ui-element)
-      (error "Children must be UI-ELEMENT values. Got: ~S" child)))
+  (let ((selectors (make-hash-table :test #'equal)))
+    (dolist (child children)
+      (unless (typep child 'ui-element)
+        (error "Children must be UI-ELEMENT values. Got: ~S" child))
+      (let ((selector (%reconcile-selector child)))
+        (when selector
+          (when (gethash selector selectors)
+            (error "Duplicate child selector ~S under parent ~S. Add unique :key/:id values."
+                   selector
+                   (or id key type)))
+          (setf (gethash selector selectors) t)))))
   (%make-element
    :type type
    :id id

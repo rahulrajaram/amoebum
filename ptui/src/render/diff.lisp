@@ -25,14 +25,18 @@
        (eql (ptui.core.types:attrs-strikep a) (ptui.core.types:attrs-strikep b))))
 
 (defun cell-style-equal-p (a b)
-  (and (equal (ptui.core.types:cell-fg a) (ptui.core.types:cell-fg b))
-       (equal (ptui.core.types:cell-bg a) (ptui.core.types:cell-bg b))
+  (and (equalp (ptui.core.types:cell-fg a) (ptui.core.types:cell-fg b))
+       (equalp (ptui.core.types:cell-bg a) (ptui.core.types:cell-bg b))
        (attrs-equal-p (ptui.core.types:cell-attrs a)
                       (ptui.core.types:cell-attrs b))))
 
 (defun cell-equal-p (a b)
   (and (string= (ptui.core.types:cell-glyph a) (ptui.core.types:cell-glyph b))
        (cell-style-equal-p a b)))
+
+(defun blank-glyph-p (glyph)
+  (or (string= glyph " ")
+      (string= glyph "")))
 
 (defun same-buffer-shape-p (a b)
   (and a b
@@ -58,6 +62,7 @@
 
 (defun should-use-full-redraw-p (prev next full-redraw)
   (or full-redraw
+      (null prev)
       (not (same-buffer-shape-p prev next))
       (let* ((total (* (ptui.core.types:cell-buffer-cols next)
                        (ptui.core.types:cell-buffer-rows next)))
@@ -79,7 +84,7 @@
                (and (< start cols)
                     (loop for c from start below cols
                           for cell = (buffer-cell-at next row c)
-                          always (and (string= (ptui.core.types:cell-glyph cell) " ")
+                          always (and (blank-glyph-p (ptui.core.types:cell-glyph cell))
                                       (cell-style-equal-p cell next-cell)))
                     (loop for c from start below cols
                           thereis (update-needed-p c))))
@@ -92,9 +97,9 @@
                              (cond
                                ((or (not (update-needed-p col))
                                     (not (cell-style-equal-p cell next-cell)))
-                                (return))
+                               (return))
                                ;; If we've reached a run of spaces, prefer clear-eol for the tail.
-                               ((and (string= (ptui.core.types:cell-glyph cell) " ")
+                               ((and (blank-glyph-p (ptui.core.types:cell-glyph cell))
                                      (trailing-clearable-p col cell))
                                 (setf clear-col col)
                                 (return))
