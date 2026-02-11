@@ -37,14 +37,21 @@ if [[ "${PTUI_ENABLE_NCURSES:-}" == "1" ]]; then
   FEATURE_EVALS+=(--eval '(pushnew :ptui-ncurses *features*)')
 fi
 
-"${BUILDAPP}" \
-  --eval '(require :asdf)' \
-  --eval "(load \"${ROOT_DIR}/.tools/quicklisp/setup.lisp\")" \
-  "${FEATURE_EVALS[@]}" \
-  --eval "(asdf:load-asd \"${ASD_PATH}\")" \
-  --eval "(asdf:load-asd \"${ASD_EXAMPLES_PATH}\")" \
-  --load-system ptui-examples \
-  --entry ptui.examples.metrics-dashboard:main \
-  --output "${DIST_DIR}/metrics-dashboard"
+build_example() {
+  local entry="$1"
+  local output="$2"
 
-chmod +x "${DIST_DIR}/metrics-dashboard"
+  "${BUILDAPP}" \
+    --eval '(require :asdf)' \
+    --eval "(load \"${ROOT_DIR}/.tools/quicklisp/setup.lisp\")" \
+    "${FEATURE_EVALS[@]}" \
+    --eval "(asdf:load-asd \"${ASD_PATH}\")" \
+    --eval "(asdf:load-asd \"${ASD_EXAMPLES_PATH}\")" \
+    --load-system ptui-examples \
+    --entry "${entry}" \
+    --output "${output}"
+  chmod +x "${output}"
+}
+
+build_example ptui.examples.metrics-dashboard:main "${DIST_DIR}/metrics-dashboard"
+build_example ptui.examples.atop-dashboard:main "${DIST_DIR}/atop-dashboard"

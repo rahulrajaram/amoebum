@@ -91,7 +91,8 @@ TMP_PTY_TIMED="$(mktemp)"
 TMP_PTY_SIGINT="$(mktemp)"
 TMP_AUTO_RESOLVE="$(mktemp)"
 TMP_PTY_AUTO_NCURSES="$(mktemp)"
-trap 'rm -f "${TMP_STDOUT}" "${TMP_STDERR}" "${TMP_CAPTURE}" "${TMP_SBCL_ERR}" "${TMP_PTY_TIMED}" "${TMP_PTY_SIGINT}" "${TMP_AUTO_RESOLVE}" "${TMP_PTY_AUTO_NCURSES}"' EXIT
+TMP_PERF_LOG="$(mktemp)"
+trap 'rm -f "${TMP_STDOUT}" "${TMP_STDERR}" "${TMP_CAPTURE}" "${TMP_SBCL_ERR}" "${TMP_PTY_TIMED}" "${TMP_PTY_SIGINT}" "${TMP_AUTO_RESOLVE}" "${TMP_PTY_AUTO_NCURSES}" "${TMP_PERF_LOG}"' EXIT
 
 if ! (
   cd "${ROOT_DIR}"
@@ -113,6 +114,18 @@ fi
 if ! rg --text -n $'\x1b\\[2J' "${TMP_CAPTURE}" >/dev/null; then
   fail "activity-1 clear-screen smoke missing ESC[2J"
 fi
+
+# I6 performance smoke: timed debug run must emit frame-level and frame-count stats.
+if ! (
+  cd "${ROOT_DIR}"
+  PTUI_LOG_LEVEL=debug PTUI_EXIT_AFTER_MS=1300 ./dist/metrics-dashboard >/dev/null 2>"${TMP_PERF_LOG}"
+); then
+  fail "i6 perf smoke run failed"
+fi
+rg -n 'FRAME_MS=' "${TMP_PERF_LOG}" >/dev/null \
+  || fail "i6 perf smoke missing FRAME_MS stats"
+rg -n 'FRAME_COUNT=' "${TMP_PERF_LOG}" >/dev/null \
+  || fail "i6 perf smoke missing FRAME_COUNT stats"
 
 # Activity 2 closure: env-controlled max idle sleep is wired.
 rg -n 'PTUI_MAX_IDLE_SLEEP_MS' "${ROOT_DIR}/src/engine/loop.lisp" >/dev/null \

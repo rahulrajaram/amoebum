@@ -3,6 +3,8 @@ set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
   echo "usage: $0 <prompt_file>" >&2
+  echo "example: $0 PROMPT.md" >&2
+  echo "note: reads prompt from file and executes codex with --json in current working dir" >&2
   exit 2
 fi
 

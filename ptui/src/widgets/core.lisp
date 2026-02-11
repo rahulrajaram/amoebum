@@ -111,6 +111,10 @@
 (defun widget-measure (element)
   "Compute deterministic intrinsic size for a widget element."
   (check-type element ptui.ui.elements:ui-element)
+  (let ((custom-measure (%prop element :measure nil)))
+    (when custom-measure
+      (check-type custom-measure function)
+      (return-from widget-measure (funcall custom-measure element))))
   (let ((type (ptui.ui.elements:ui-element-type element)))
     (case type
       (:text

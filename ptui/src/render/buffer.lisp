@@ -172,7 +172,7 @@
                      do (write-cell-if-visible buf col row cell clip)))))
   nil)
 
-(defun buffer-draw-border (buf rect &key style)
+(defun buffer-draw-border (buf rect &key style (border-style :rounded))
   (let* ((template (or style (make-default-cell)))
          (x0 (ptui.core.types:rect-x rect))
          (y0 (ptui.core.types:rect-y rect))
@@ -182,10 +182,18 @@
          (y1 (+ y0 (1- h)))
          (hline "─")
          (vline "│")
-         (tl "╭")
-         (tr "╮")
-         (bl "╰")
-         (br "╯"))
+         (tl (case border-style
+               (:square "┌")
+               (otherwise "╭")))
+         (tr (case border-style
+               (:square "┐")
+               (otherwise "╮")))
+         (bl (case border-style
+               (:square "└")
+               (otherwise "╰")))
+         (br (case border-style
+               (:square "┘")
+               (otherwise "╯"))))
     (when (and (> w 0) (> h 0))
       (let ((clip (clip-for-buffer buf)))
         (loop for x from x0 to x1 do

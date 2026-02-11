@@ -24,6 +24,12 @@
   (unless cond
     (apply #'error fmt args)))
 
+(defun assert-near (actual expected epsilon fmt &rest args)
+  (unless (<= (abs (- actual expected)) epsilon)
+    (apply #'error
+           (concatenate 'string fmt " (actual=~S expected=~S epsilon=~S)")
+           (append args (list actual expected epsilon)))))
+
 (defun assert-layout-bound (layout node-id x y w h)
   (let ((bounds (ptui.layout:layout-bound layout node-id)))
     (assert-true bounds "missing layout bounds for ~S" node-id)
@@ -84,6 +90,87 @@
               (setf last-used (1+ x)))))
         (setf max-used (max max-used last-used))))
     max-used))
+
+(defun make-atop-snapshot-fixture (&key
+                                     (timestamp-ms 0)
+                                     (cpu-user 0)
+                                     (cpu-system 0)
+                                     (cpu-idle 100)
+                                     (cpu-iowait 0)
+                                     (mem-total-kb 1024)
+                                     (mem-avail-kb 512)
+                                     (swap-total-kb 0)
+                                     (swap-free-kb 0)
+                                     (mount-count 3)
+                                     (rw-mount-count 2)
+                                     (root-device "/dev/sda1")
+                                     (root-fstype "ext4")
+                                     (read-ios 0)
+                                     (write-ios 0)
+                                     (read-sectors 0)
+                                     (write-sectors 0)
+                                     (inflight 0)
+                                     (io-ms 0)
+                                     (rotational 1)
+                                     (ssd 0)
+                                     (iface-count 1)
+                                     (rx-bytes 0)
+                                     (tx-bytes 0)
+                                     (rx-packets 0)
+                                     (tx-packets 0)
+                                     (fastest-link-mbps 1000)
+                                     (tcp-in-segs 0)
+                                     (tcp-out-segs 1)
+                                     (tcp-retrans-segs 0)
+                                     (tcp-active-opens 0)
+                                     (tcp-passive-opens 0)
+                                     (tcp-curr-estab 0)
+                                     (ip-in-receives 0)
+                                     (ip-in-delivers 0)
+                                     (ip-out-requests 0))
+  (ptui.examples.atop-dashboard::make-host-snapshot
+   :timestamp-ms timestamp-ms
+   :cpu (ptui.examples.atop-dashboard::make-cpu-counters
+         :user cpu-user
+         :system cpu-system
+         :idle cpu-idle
+         :iowait cpu-iowait)
+   :memory (ptui.examples.atop-dashboard::make-memory-counters
+            :total-kb mem-total-kb
+            :available-kb mem-avail-kb
+            :swap-total-kb swap-total-kb
+            :swap-free-kb swap-free-kb)
+   :filesystem (ptui.examples.atop-dashboard::make-filesystem-counters
+                :mount-count mount-count
+                :rw-mount-count rw-mount-count
+                :root-device root-device
+                :root-fstype root-fstype)
+   :disk (ptui.examples.atop-dashboard::make-disk-counters
+          :read-ios read-ios
+          :write-ios write-ios
+          :read-sectors read-sectors
+          :write-sectors write-sectors
+          :inflight inflight
+          :io-ms io-ms
+          :rotational-devices rotational
+          :ssd-devices ssd)
+   :network (ptui.examples.atop-dashboard::make-network-counters
+             :iface-count iface-count
+             :rx-bytes rx-bytes
+             :tx-bytes tx-bytes
+             :rx-packets rx-packets
+             :tx-packets tx-packets
+             :fastest-link-mbps fastest-link-mbps)
+   :tcpip (ptui.examples.atop-dashboard::make-tcpip-counters
+           :tcp-in-segs tcp-in-segs
+           :tcp-out-segs tcp-out-segs
+           :tcp-retrans-segs tcp-retrans-segs
+           :tcp-active-opens tcp-active-opens
+           :tcp-passive-opens tcp-passive-opens
+           :tcp-curr-estab tcp-curr-estab
+           :ip-in-receives ip-in-receives
+           :ip-in-delivers ip-in-delivers
+           :ip-out-requests ip-out-requests)))
 
 (defun run-all-tests ()
   (let ((passed 0)
@@ -146,6 +233,18 @@
       (assert-true (member :clear-screen (draw-op-kinds ops))
                    "prev=nil should force safe full redraw path"))))
 
+(deftest diff-same-buffer-short-circuits
+  (let ((buf (ptui.render.buffer:make-buffer 4 1)))
+    (ptui.render.buffer:buffer-draw-text buf 0 0 "AB")
+    (multiple-value-bind (ops count)
+        (ptui.render.diff:diff-buffers buf buf :full-redraw nil)
+      (assert-true (null ops)
+                   "same buffer object should produce no draw ops, got: ~S"
+                   (draw-op-kinds ops))
+      (assert-true (= count 0)
+                   "same buffer object should report 0 ops, got: ~D"
+                   count))))
+
 (deftest render-wide-grapheme-occupies-multiple-cells
   (let* ((buf (ptui.render.buffer:make-buffer 5 1))
          (text (concatenate 'string "A" (string-from-codepoints #x754C) "B")))
@@ -185,6 +284,18 @@
       (assert-true (= n2 1) "expected 1 event, got ~D / ~S" n2 events2)
       (assert-true (eql (ptui.core.events:key-event-key (first events2)) :up)
                    "expected :up, got ~S" (ptui.core.events:key-event-key (first events2))))))
+
+(deftest input-parser-linefeed-maps-to-ctrl-j
+  (let ((p (ptui.term.input:make-input-parser)))
+    (ptui.term.input:input-feed p (make-array 1 :element-type '(unsigned-byte 8)
+                                              :initial-contents (list 10)))
+    (multiple-value-bind (events count) (ptui.term.input:input-drain-events p)
+      (assert-true (= count 1) "expected one ctrl-j event, got ~D / ~S" count events)
+      (let ((ev (first events)))
+        (assert-true (eql (ptui.core.events:key-event-key ev) :ctrl-j)
+                     "expected :ctrl-j key, got ~S" (ptui.core.events:key-event-key ev))
+        (assert-true (ptui.core.events:key-event-ctrlp ev)
+                     "expected ctrl modifier on :ctrl-j event")))))
 
 (deftest color-policy-sgr-modes
   (let* ((caps-true (ptui.term.caps:probe-terminal-caps
@@ -558,6 +669,57 @@
     (assert-true (equal captured '(:key :enter :id :input-1))
                  "event dispatch should invoke target input handler, got ~S" captured)))
 
+(deftest widgets-components-api-boundary
+  (multiple-value-bind (widgets-sym widgets-status)
+      (find-symbol "MAKE-PROMPT-BOX-WIDGET" :ptui.widgets.core)
+    (assert-true (null widgets-sym)
+                 "prompt-box constructor must not exist in ptui.widgets.core, got ~S/~S"
+                 widgets-sym widgets-status))
+  (multiple-value-bind (components-sym components-status)
+      (find-symbol "MAKE-PROMPT-BOX-WIDGET" :ptui.components.prompt-box)
+    (assert-true (and components-sym (eql components-status :external))
+                 "prompt-box constructor should be exported by ptui.components.prompt-box, got ~S/~S"
+                 components-sym components-status)
+    (assert-true (fboundp components-sym)
+                 "prompt-box constructor symbol should be fboundp: ~S"
+                 components-sym)))
+
+(deftest widgets-components-system-boundary
+  (labels ((%dep-key (dep) (string-downcase (string dep))))
+    (let* ((widgets (asdf:find-system "ptui/widgets"))
+           (components (asdf:find-system "ptui/components"))
+           (widgets-deps (mapcar #'%dep-key (asdf:system-depends-on widgets)))
+           (components-deps (mapcar #'%dep-key (asdf:system-depends-on components))))
+      (assert-true (not (member "ptui/components" widgets-deps :test #'string=))
+                   "ptui/widgets must not depend on ptui/components, deps=~S"
+                   widgets-deps)
+      (assert-true (member "ptui/widgets" components-deps :test #'string=)
+                   "ptui/components must depend on ptui/widgets, deps=~S"
+                   components-deps))))
+
+(deftest widgets-prompt-box-measure-contract
+  (let* ((value (concatenate 'string
+                             "a" (string #\Newline)
+                             "b" (string #\Newline)
+                             "c" (string #\Newline)
+                             "d"))
+         (prompt (ptui.components.prompt-box:make-prompt-box-widget
+                  value
+                  :id :prompt
+                  :min-width 4
+                  :max-width 6
+                  :min-rows 1
+                  :max-rows 2))
+         (size (ptui.widgets.core:widget-measure prompt)))
+    ;; Content width clamps to [min-width, max-width], plus 2 border cells.
+    (assert-true (= (ptui.layout:layout-size-width size) 6)
+                 "prompt-box width should be clamped to max-width+border, got ~D"
+                 (ptui.layout:layout-size-width size))
+    ;; Content rows clamp to max-rows, plus 2 border rows.
+    (assert-true (= (ptui.layout:layout-size-height size) 4)
+                 "prompt-box height should be max-rows+border, got ~D"
+                 (ptui.layout:layout-size-height size))))
+
 (deftest dashboard-ui-render-and-grapheme-backspace
   (let* ((state (ptui.examples.metrics-dashboard::make-dashboard-ui-state
                  :runtime (ptui.ui.runtime:make-runtime)))
@@ -634,6 +796,308 @@
                    "ui dashboard should update input after backspace")
       (assert-true (not (search "Input:" (buffer->flat-text legacy-buf)))
                    "legacy dashboard should remain static and not expose ui input row"))))
+
+(deftest dashboard-ui-ctrl-j-inserts-newline
+  (let* ((state (ptui.examples.metrics-dashboard::make-dashboard-ui-state
+                 :runtime (ptui.ui.runtime:make-runtime)))
+         (size (ptui.core.types:make-size 80 20)))
+    ;; Prime runtime tree/focus before dispatching key events.
+    (ptui.examples.metrics-dashboard::%render-dashboard-ui state size)
+    (setf state (ptui.examples.metrics-dashboard::%on-dashboard-ui-event
+                 state
+                 (ptui.core.events:make-key-event :text :text? "abc")))
+    (setf state (ptui.examples.metrics-dashboard::%on-dashboard-ui-event
+                 state
+                 (ptui.core.events:make-key-event :ctrl-j :ctrlp t)))
+    (setf state (ptui.examples.metrics-dashboard::%on-dashboard-ui-event
+                 state
+                 (ptui.core.events:make-key-event :text :text? "def")))
+    (assert-true (string= (ptui.examples.metrics-dashboard::dashboard-ui-state-input-text state)
+                          (concatenate 'string "abc" (string #\Newline) "def"))
+                 "ctrl-j should insert newline in prompt input text")
+    (let ((flat (buffer->flat-text (ptui.examples.metrics-dashboard::%render-dashboard-ui state size))))
+      (assert-true (search "abc" flat)
+                   "first prompt line should be rendered")
+      (assert-true (search "def" flat)
+                   "second prompt line should be rendered"))))
+
+(deftest dashboard-ui-long-input-stays-inside-input-box
+  (let* ((marker "LONGINPUTMARKER")
+         (payload (with-output-to-string (out)
+                    (loop repeat 16 do (write-string marker out))))
+         (state (ptui.examples.metrics-dashboard::make-dashboard-ui-state
+                 :runtime (ptui.ui.runtime:make-runtime)
+                 :input-text payload
+                 :last-event "dispatched: :TEXT"))
+         (size (ptui.core.types:make-size 166 20))
+         (buf (ptui.examples.metrics-dashboard::%render-dashboard-ui state size))
+         (flat (buffer->flat-text buf))
+         (line (loop with stream = (make-string-input-stream flat)
+                     for row = (read-line stream nil nil)
+                     while row
+                     when (search marker row) do (return row))))
+    (assert-true line
+                 "expected a rendered row containing long input marker, got none")
+    (assert-true (search (concatenate 'string "│" marker) line)
+                 "input text should render inside the input row, got: ~S"
+                 line)
+    (assert-true (not (search (concatenate 'string "╰─" marker) line))
+                 "input text must not overwrite bottom border, got: ~S"
+                 line)
+    (assert-true (<= (buffer-max-content-width buf)
+                     (ptui.core.types:size-cols size))
+                 "long input render should stay within terminal width")))
+
+(deftest dashboard-ui-render-cache-short-circuit
+  (let* ((state (ptui.examples.metrics-dashboard::make-dashboard-ui-state
+                 :runtime (ptui.ui.runtime:make-runtime)))
+         (size (ptui.core.types:make-size 60 18))
+         (buf-1 (ptui.examples.metrics-dashboard::%render-dashboard-ui state size))
+         (runtime (ptui.examples.metrics-dashboard::dashboard-ui-state-runtime state))
+         (revision-after-first (ptui.ui.runtime:runtime-revision runtime))
+         (buf-2 (ptui.examples.metrics-dashboard::%render-dashboard-ui state size)))
+    (assert-true (eq buf-1 buf-2)
+                 "unchanged UI frame should reuse cached buffer instance")
+    (assert-true (= (ptui.ui.runtime:runtime-revision runtime) revision-after-first)
+                 "unchanged UI frame should skip runtime update/reconcile")
+    (setf state (ptui.examples.metrics-dashboard::%on-dashboard-ui-event
+                 state
+                 (ptui.core.events:make-key-event :text :text? "x")))
+    (let ((buf-3 (ptui.examples.metrics-dashboard::%render-dashboard-ui state size)))
+      (assert-true (not (eq buf-2 buf-3))
+                   "input change should invalidate cached buffer")
+      (assert-true (> (ptui.ui.runtime:runtime-revision runtime) revision-after-first)
+                   "input change should trigger runtime update"))))
+
+(deftest atop-collect-host-snapshot-parses-proc-and-sys
+  (flet ((fake-read-lines (path)
+           (cond
+             ((string= path "/proc/stat")
+              '("cpu  100 20 40 840 10 5 6 7"
+                "cpu0 50 10 20 420 5 2 3 4"))
+             ((string= path "/proc/meminfo")
+              '("MemTotal:       16384 kB"
+                "MemAvailable:    4096 kB"
+                "SwapTotal:       2048 kB"
+                "SwapFree:        1024 kB"))
+             ((string= path "/proc/self/mounts")
+              '("/dev/nvme0n1p2 / ext4 rw,relatime 0 0"
+                "tmpfs /run tmpfs rw,nosuid,nodev 0 0"
+                "proc /proc proc ro,nosuid,nodev,noexec,relatime 0 0"))
+             ((string= path "/proc/diskstats")
+              '("8 0 sda 100 0 200 0 300 0 400 0 5 600 0 0 0"
+                "7 0 loop0 1 0 1 0 1 0 1 0 0 1 0 0 0"))
+             ((string= path "/proc/net/dev")
+              '("Inter-|   Receive                                                |  Transmit"
+                " face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed"
+                "  lo: 100 1 0 0 0 0 0 0 100 1 0 0 0 0 0 0"
+                "eth0: 2048 22 0 0 0 0 0 0 4096 40 0 0 0 0 0 0"))
+             ((string= path "/proc/net/snmp")
+              '("Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs"
+                "Tcp: 1 200 120000 -1 7 9 0 0 11 300 500 12"
+                "Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates"
+                "Ip: 1 64 901 0 0 0 0 0 777 888 0 0 0 0 0 0 0 0 0"))
+             ((string= path "/sys/class/net/eth0/speed")
+              '("1000"))
+             ((string= path "/sys/class/net/wlan0/speed")
+              '("300"))
+             ((string= path "/sys/block/sda/queue/rotational")
+              '("1"))
+             ((string= path "/sys/block/nvme0n1/queue/rotational")
+              '("0"))
+             (t '())))
+         (fake-directory (pattern)
+           (let ((text (namestring pattern)))
+             (cond
+               ((string= text "/sys/class/net/*/speed")
+                (list #P"/sys/class/net/eth0/speed"
+                      #P"/sys/class/net/wlan0/speed"))
+               ((string= text "/sys/block/*/queue/rotational")
+                (list #P"/sys/block/sda/queue/rotational"
+                      #P"/sys/block/nvme0n1/queue/rotational"))
+               (t '())))))
+    (let* ((snapshot (ptui.examples.atop-dashboard:collect-host-snapshot
+                      :read-lines-fn #'fake-read-lines
+                      :directory-fn #'fake-directory
+                      :now-ms-fn (lambda () 2468)))
+           (cpu (ptui.examples.atop-dashboard::host-snapshot-cpu snapshot))
+           (mem (ptui.examples.atop-dashboard::host-snapshot-memory snapshot))
+           (fs (ptui.examples.atop-dashboard::host-snapshot-filesystem snapshot))
+           (disk (ptui.examples.atop-dashboard::host-snapshot-disk snapshot))
+           (net (ptui.examples.atop-dashboard::host-snapshot-network snapshot))
+           (tcp (ptui.examples.atop-dashboard::host-snapshot-tcpip snapshot)))
+      (assert-true (= (ptui.examples.atop-dashboard::host-snapshot-timestamp-ms snapshot) 2468)
+                   "snapshot timestamp should come from now-ms-fn")
+      (assert-true (= (ptui.examples.atop-dashboard::cpu-counters-user cpu) 100)
+                   "cpu user parse mismatch")
+      (assert-true (= (ptui.examples.atop-dashboard::cpu-counters-system cpu) 40)
+                   "cpu system parse mismatch")
+      (assert-true (= (ptui.examples.atop-dashboard::memory-counters-total-kb mem) 16384)
+                   "mem total parse mismatch")
+      (assert-true (= (ptui.examples.atop-dashboard::memory-counters-available-kb mem) 4096)
+                   "mem available parse mismatch")
+      (assert-true (= (ptui.examples.atop-dashboard::filesystem-counters-mount-count fs) 3)
+                   "mount count parse mismatch")
+      (assert-true (= (ptui.examples.atop-dashboard::filesystem-counters-rw-mount-count fs) 2)
+                   "rw mount count parse mismatch")
+      (assert-true (string= (ptui.examples.atop-dashboard::filesystem-counters-root-device fs)
+                            "/dev/nvme0n1p2")
+                   "root device parse mismatch")
+      (assert-true (string= (ptui.examples.atop-dashboard::filesystem-counters-root-fstype fs)
+                            "ext4")
+                   "root fs parse mismatch")
+      (assert-true (= (ptui.examples.atop-dashboard::disk-counters-read-ios disk) 100)
+                   "disk read io parse mismatch")
+      (assert-true (= (ptui.examples.atop-dashboard::disk-counters-write-ios disk) 300)
+                   "disk write io parse mismatch")
+      (assert-true (= (ptui.examples.atop-dashboard::disk-counters-rotational-devices disk) 1)
+                   "rotational device summary mismatch")
+      (assert-true (= (ptui.examples.atop-dashboard::disk-counters-ssd-devices disk) 1)
+                   "ssd device summary mismatch")
+      (assert-true (= (ptui.examples.atop-dashboard::network-counters-iface-count net) 1)
+                   "network interface count mismatch")
+      (assert-true (= (ptui.examples.atop-dashboard::network-counters-rx-bytes net) 2048)
+                   "network rx bytes parse mismatch")
+      (assert-true (= (ptui.examples.atop-dashboard::network-counters-fastest-link-mbps net) 1000)
+                   "network max link speed mismatch")
+      (assert-true (= (ptui.examples.atop-dashboard::tcpip-counters-tcp-retrans-segs tcp) 12)
+                   "tcp retrans parse mismatch")
+      (assert-true (= (ptui.examples.atop-dashboard::tcpip-counters-ip-out-requests tcp) 888)
+                   "ip out requests parse mismatch"))))
+
+(deftest atop-build-model-computes-deltas-and-rates
+  (let* ((previous (make-atop-snapshot-fixture
+                    :timestamp-ms 1000
+                    :cpu-user 10 :cpu-system 20 :cpu-idle 70 :cpu-iowait 0
+                    :mem-total-kb 1000 :mem-avail-kb 300
+                    :swap-total-kb 500 :swap-free-kb 200
+                    :read-ios 100 :write-ios 50
+                    :read-sectors 200 :write-sectors 100
+                    :inflight 2 :io-ms 1000
+                    :rotational 1 :ssd 1
+                    :iface-count 2
+                    :rx-bytes 10000 :tx-bytes 5000
+                    :rx-packets 100 :tx-packets 50
+                    :fastest-link-mbps 1000
+                    :tcp-in-segs 100 :tcp-out-segs 100 :tcp-retrans-segs 5))
+         (current (make-atop-snapshot-fixture
+                   :timestamp-ms 3000
+                   :cpu-user 50 :cpu-system 40 :cpu-idle 110 :cpu-iowait 0
+                   :mem-total-kb 1000 :mem-avail-kb 200
+                   :swap-total-kb 500 :swap-free-kb 100
+                   :read-ios 160 :write-ios 90
+                   :read-sectors 600 :write-sectors 300
+                   :inflight 4 :io-ms 1600
+                   :rotational 1 :ssd 1
+                   :iface-count 2
+                   :rx-bytes 20240 :tx-bytes 9100
+                   :rx-packets 140 :tx-packets 80
+                   :fastest-link-mbps 1000
+                   :tcp-in-segs 140 :tcp-out-segs 200 :tcp-retrans-segs 10))
+         (model (ptui.examples.atop-dashboard:build-atop-model previous current))
+         (cpu (ptui.examples.atop-dashboard::atop-model-cpu model))
+         (memory (ptui.examples.atop-dashboard::atop-model-memory model))
+         (disk (ptui.examples.atop-dashboard::atop-model-disk model))
+         (network (ptui.examples.atop-dashboard::atop-model-network model))
+         (tcp (ptui.examples.atop-dashboard::atop-model-tcpip model)))
+    (assert-near (ptui.examples.atop-dashboard::cpu-model-usage-pct cpu) 60.0 0.001
+                 "cpu usage percent mismatch")
+    (assert-near (ptui.examples.atop-dashboard::cpu-model-user-pct cpu) 40.0 0.001
+                 "cpu user percent mismatch")
+    (assert-near (ptui.examples.atop-dashboard::cpu-model-system-pct cpu) 20.0 0.001
+                 "cpu system percent mismatch")
+    (assert-true (= (ptui.examples.atop-dashboard::memory-model-used-kb memory) 800)
+                 "memory used mismatch")
+    (assert-near (ptui.examples.atop-dashboard::memory-model-used-pct memory) 80.0 0.001
+                 "memory used percent mismatch")
+    (assert-true (= (ptui.examples.atop-dashboard::memory-model-swap-used-kb memory) 400)
+                 "swap used mismatch")
+    (assert-near (ptui.examples.atop-dashboard::disk-model-read-iops disk) 30.0 0.001
+                 "disk read iops mismatch")
+    (assert-near (ptui.examples.atop-dashboard::disk-model-write-iops disk) 20.0 0.001
+                 "disk write iops mismatch")
+    (assert-near (ptui.examples.atop-dashboard::disk-model-read-kib-s disk) 100.0 0.001
+                 "disk read throughput mismatch")
+    (assert-near (ptui.examples.atop-dashboard::disk-model-write-kib-s disk) 50.0 0.001
+                 "disk write throughput mismatch")
+    (assert-near (ptui.examples.atop-dashboard::disk-model-busy-pct disk) 30.0 0.001
+                 "disk busy percent mismatch")
+    (assert-near (ptui.examples.atop-dashboard::network-model-rx-kib-s network) 5.0 0.001
+                 "network rx rate mismatch")
+    (assert-near (ptui.examples.atop-dashboard::network-model-tx-kib-s network) 2.0019531 0.01
+                 "network tx rate mismatch")
+    (assert-near (ptui.examples.atop-dashboard::network-model-rx-pps network) 20.0 0.001
+                 "network rx pps mismatch")
+    (assert-near (ptui.examples.atop-dashboard::network-model-tx-pps network) 15.0 0.001
+                 "network tx pps mismatch")
+    (assert-near (ptui.examples.atop-dashboard::tcpip-model-tcp-retrans-pct tcp) 5.0 0.001
+                 "tcp retrans percent mismatch")))
+
+(deftest atop-render-displays-dense-panels-and-help-overlay
+  (let* ((model (ptui.examples.atop-dashboard:build-atop-model
+                 nil
+                 (make-atop-snapshot-fixture
+                  :timestamp-ms 4000
+                  :cpu-user 10 :cpu-system 10 :cpu-idle 80 :cpu-iowait 0
+                  :mem-total-kb 8192 :mem-avail-kb 4096
+                  :swap-total-kb 2048 :swap-free-kb 1536
+                  :mount-count 6 :rw-mount-count 4
+                  :iface-count 2
+                  :read-ios 100 :write-ios 80
+                  :read-sectors 320 :write-sectors 240
+                  :tcp-in-segs 123 :tcp-out-segs 456 :tcp-retrans-segs 7)))
+         (state (ptui.examples.atop-dashboard:make-atop-dashboard-state
+                 :model model
+                 :snapshot (make-atop-snapshot-fixture :timestamp-ms 4000)
+                 :refresh-ms 1000
+                 :last-refresh-ms 5000
+                 :show-help-p t
+                 :collect-fn (lambda () (error "collect should not run during render test"))
+                 :now-ms-fn (lambda () 5500)))
+         (size (ptui.core.types:make-size 110 28))
+         (buf (ptui.examples.atop-dashboard::%render-atop-dashboard state size))
+         (flat (buffer->flat-text buf)))
+    (assert-true (search "PTUI Atop Dashboard v1" flat)
+                 "render should include atop header")
+    (assert-true (search "CPU" flat) "render missing CPU panel")
+    (assert-true (search "Memory" flat) "render missing Memory panel")
+    (assert-true (search "Filesystem" flat) "render missing Filesystem panel")
+    (assert-true (search "Disk I/O" flat) "render missing Disk I/O panel")
+    (assert-true (search "Network" flat) "render missing Network panel")
+    (assert-true (search "TCP/IP" flat) "render missing TCP/IP panel")
+    (assert-true (search "q quit | p pause/resume | ? help" flat)
+                 "render missing control hint line")
+    (assert-true (not (search "%%" flat))
+                 "atop render should show percent values with a single %")
+    (assert-true (search "Controls" flat)
+                 "help overlay should draw controls title")
+    (assert-true (search "pause/resume refresh" flat)
+                 "help overlay should include pause/resume control")))
+
+(deftest atop-event-contract-toggle-pause-and-help
+  (let* ((state (ptui.examples.atop-dashboard:make-atop-dashboard-state
+                 :last-refresh-ms 999))
+         (pause-event (ptui.core.events:make-key-event :text :text? "p"))
+         (help-event (ptui.core.events:make-key-event :text :text? "?"))
+         (hide-help-event (ptui.core.events:make-key-event :text :text? "h")))
+    (setf state (ptui.examples.atop-dashboard::%on-atop-event state pause-event))
+    (assert-true (ptui.examples.atop-dashboard::atop-dashboard-state-pausedp state)
+                 "p should pause refresh")
+    (assert-true (string= (ptui.examples.atop-dashboard::atop-dashboard-state-status-line state)
+                          "paused by user")
+                 "pause status line mismatch")
+    (setf (ptui.examples.atop-dashboard::atop-dashboard-state-last-refresh-ms state) 1234)
+    (setf state (ptui.examples.atop-dashboard::%on-atop-event state pause-event))
+    (assert-true (not (ptui.examples.atop-dashboard::atop-dashboard-state-pausedp state))
+                 "second p should resume refresh")
+    (assert-true (= (ptui.examples.atop-dashboard::atop-dashboard-state-last-refresh-ms state) 0)
+                 "resume should force immediate next refresh")
+    (setf state (ptui.examples.atop-dashboard::%on-atop-event state help-event))
+    (assert-true (ptui.examples.atop-dashboard::atop-dashboard-state-show-help-p state)
+                 "? should enable help overlay")
+    (setf state (ptui.examples.atop-dashboard::%on-atop-event state hide-help-event))
+    (assert-true (not (ptui.examples.atop-dashboard::atop-dashboard-state-show-help-p state))
+                 "h should disable help overlay")))
 
 ;; Script entry
 (multiple-value-bind (passed failed) (run-all-tests)

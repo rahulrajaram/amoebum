@@ -110,6 +110,15 @@
   :components
   ((:file "src/widgets/core")))
 
+(asdf:defsystem "ptui/components"
+  :description "PTUI higher-level composable widgets"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ("ptui/widgets")
+  :serial t
+  :components
+  ((:file "src/components/prompt-box")))
+
 (asdf:defsystem "ptui/backend"
   :description "PTUI backend boundary and implementations"
   :author "Ralph"
@@ -168,6 +177,15 @@
    #+ptui-ncurses (:file "src/backend/ncurses")
    (:file "src/engine/loop")))
 
+(asdf:defsystem "ptui/components-standalone"
+  :description "PTUI component library on top of ptui/standalone"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ("ptui/standalone")
+  :serial t
+  :components
+  ((:file "src/components/prompt-box")))
+
 (asdf:defsystem "ptui"
   :description "PTUI umbrella system"
   :author "Ralph"
@@ -180,16 +198,18 @@
   :description "PTUI examples"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui")
+  :depends-on ("ptui" "ptui/components")
   :serial t
   :components
-  ((:file "examples/metrics-dashboard")))
+  ((:file "examples/metrics-dashboard")
+   (:file "examples/atop-dashboard")))
 
 (asdf:defsystem "ptui/examples-standalone"
   :description "PTUI examples (standalone dependency)"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui/standalone")
+  :depends-on ("ptui/components-standalone")
   :serial t
   :components
-  ((:file "examples/metrics-dashboard")))
+  ((:file "examples/metrics-dashboard")
+   (:file "examples/atop-dashboard")))

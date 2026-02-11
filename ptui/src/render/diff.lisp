@@ -129,6 +129,8 @@
     ops))
 
 (defun diff-buffers (prev next &key (full-redraw nil))
+  (when (and (eq prev next) (not full-redraw))
+    (return-from diff-buffers (values '() 0)))
   (let* ((force-full (should-use-full-redraw-p prev next full-redraw))
          (rows (ptui.core.types:cell-buffer-rows next))
          (ops '()))

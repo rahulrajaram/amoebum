@@ -25,6 +25,17 @@
 (defun %fit-line-width (text width)
   (ptui.text.layout:truncate-to-width text (max 0 width)))
 
+(defun %clamp-layout-size (size avail-width avail-height)
+  (let ((w (ptui.layout:layout-size-width size))
+        (h (ptui.layout:layout-size-height size)))
+    (ptui.layout:make-layout-size
+     (if avail-width
+         (min w (max 0 avail-width))
+         w)
+     (if avail-height
+         (min h (max 0 avail-height))
+         h))))
+
 (defun %gradient-text (width)
   (make-string (max 0 width) :initial-element #\*))
 
@@ -73,11 +84,18 @@
                 (&key runtime
                       (input-text "")
                       (last-event "none")
+                      (prompt-scroll-offset nil)
                       (frame-count 0))))
   runtime
   (input-text "" :type string)
   (last-event "none" :type string)
-  (frame-count 0 :type fixnum))
+  (prompt-scroll-offset nil)
+  (frame-count 0 :type fixnum)
+  (cached-tree-key nil)
+  (cached-tree nil)
+  (cached-layout nil)
+  (cached-render-key nil)
+  (cached-buffer nil))
 
 (defun %ensure-ui-state (state)
   (if (and state (typep state 'dashboard-ui-state))
@@ -113,8 +131,10 @@
               (%element-prop element :gap 0)
               0)
      :measure (lambda (avail-width avail-height)
-                (declare (ignore avail-width avail-height))
-                (ptui.widgets.core:widget-measure element))
+                (%clamp-layout-size
+                 (ptui.widgets.core:widget-measure element)
+                 avail-width
+                 avail-height))
      :children children)))
 
 (defun %ui-line-cell (id focus-id)
@@ -127,6 +147,22 @@
      (%template-cell :fg (ptui.core.color:make-color-rgb 180 180 180)))
     (t
      (%template-cell :fg (ptui.core.color:make-color-rgb 200 200 200)))))
+
+(defun %prompt-wrapped-lines (value width)
+  (if (<= width 0)
+      (list "")
+      (ptui.text.layout:wrap-by-width value (max 1 width))))
+
+(defun %prompt-visible-lines (lines visible-rows scroll-offset)
+  (let* ((row-count (max 0 visible-rows))
+         (total (length lines))
+         (max-offset (max 0 (- total row-count)))
+         (desired (if (null scroll-offset)
+                      max-offset
+                      scroll-offset))
+         (offset (min max-offset (max 0 desired)))
+         (end (min total (+ offset row-count))))
+    (values (subseq lines offset end) offset max-offset)))
 
 (defun %render-ui-element (buf element layout focus-id &key (dx 0) (dy 0))
   (let* ((id (%element-id element))
@@ -153,6 +189,29 @@
                     (line (%fit-line-width value w)))
                (ptui.render.buffer:buffer-draw-text
                 buf x y (list (list line (%ui-line-cell id focus-id))) :max-width w)))
+            (:prompt-box
+             (let* ((value (%element-prop element :value ""))
+                    (border-style (%element-prop element :border-style :rounded))
+                    (scroll-offset (%element-prop element :scroll-offset nil))
+                    (inner-x (+ x 1))
+                    (inner-y (+ y 1))
+                    (inner-w (max 0 (- w 2)))
+                    (inner-h (max 0 (- h 2)))
+                    (line-cell (%ui-line-cell id focus-id))
+                    (lines (%prompt-wrapped-lines value inner-w)))
+               (ptui.render.buffer:buffer-draw-border
+                buf rect :border-style border-style)
+               (multiple-value-bind (visible-lines effective-offset max-offset)
+                   (%prompt-visible-lines lines inner-h scroll-offset)
+                 (declare (ignore effective-offset max-offset))
+                 (loop for line in visible-lines
+                       for row from 0 do
+                         (ptui.render.buffer:buffer-draw-text
+                          buf
+                          inner-x
+                          (+ inner-y row)
+                          (list (list (%fit-line-width line inner-w) line-cell))
+                          :max-width inner-w)))))
             (:spacer
              nil)
             (:box
@@ -176,9 +235,10 @@
                                        (ptui.layout:layout-bounds-x child-bounds)))
                            (delta-y (- (ptui.core.types:rect-y inner-rect)
                                        (ptui.layout:layout-bounds-y child-bounds))))
-                       (%render-ui-element buf child layout focus-id
-                                           :dx (+ dx delta-x)
-                                           :dy (+ dy delta-y))))))))
+                       (ptui.render.buffer:with-clip (buf inner-rect)
+                         (%render-ui-element buf child layout focus-id
+                                             :dx delta-x
+                                             :dy delta-y))))))))
             (:scroll
              (let* ((offset (%element-prop element :offset 0))
                     (child (first (ptui.ui.elements:ui-element-children element))))
@@ -201,23 +261,23 @@
                 (format nil "Terminal width: ~D" cols)
                 :id :ui-info))
          (hint (ptui.widgets.core:make-text-widget
-                "Tab focuses input. Type to edit. q/Ctrl-C quits."
+                "Tab focuses input. Ctrl-J newline. Up/Down scroll. q/Ctrl-C quits."
                 :id :ui-hint))
-         (input (ptui.widgets.core:make-input-widget
-                 (dashboard-ui-state-input-text state)
-                 :id :ui-input
-                 :min-width 18
-                 :on-event (lambda (event node)
-                             (declare (ignore node))
-                             (setf (dashboard-ui-state-last-event state)
-                                   (format nil "dispatched: ~S"
-                                           (and (typep event 'ptui.core.events:key-event)
-                                                (ptui.core.events:key-event-key event)))))))
-         (input-box (ptui.widgets.core:make-box-widget
-                     input
-                     :id :ui-input-box
-                     :padding 0
-                     :borderp t))
+         (input-box (ptui.components.prompt-box:make-prompt-box-widget
+                     (dashboard-ui-state-input-text state)
+                     :id :ui-input
+                     :min-width 18
+                     :max-width inner-width
+                     :min-rows 1
+                     :max-rows 4
+                     :scroll-offset (dashboard-ui-state-prompt-scroll-offset state)
+                     :border-style :rounded
+                     :on-event (lambda (event node)
+                                 (declare (ignore node))
+                                 (setf (dashboard-ui-state-last-event state)
+                                       (format nil "dispatched: ~S"
+                                               (and (typep event 'ptui.core.events:key-event)
+                                                    (ptui.core.events:key-event-key event)))))))
          (spacer (ptui.widgets.core:make-spacer-widget 0 0 :id :ui-spacer))
          (bar (ptui.widgets.core:make-text-widget gradient :id :ui-bar))
          (status (ptui.widgets.core:make-text-widget
@@ -240,28 +300,51 @@
      :padding 0
      :borderp t)))
 
+(defun %dashboard-tree-key (state cols rows)
+  (list cols
+        rows
+        (dashboard-ui-state-input-text state)
+        (dashboard-ui-state-prompt-scroll-offset state)
+        (dashboard-ui-state-last-event state)))
+
 (defun %render-dashboard-ui (state size)
   (let* ((ui-state (%ensure-ui-state state))
          (runtime (dashboard-ui-state-runtime ui-state))
          (cols (ptui.core.types:size-cols size))
          (rows (ptui.core.types:size-rows size))
-         (buf (ptui.render.buffer:make-buffer cols rows))
          (panel (%safe-inner-rect cols rows))
-         (tree (%build-ui-tree ui-state cols rows))
-         (layout-node (%ui-tree-node tree))
-         (layout (ptui.layout:compute-layout
-                  layout-node
-                  :x 3
-                  :y 2
-                  :width (max 0 (- cols 6))
-                  :height (max 0 (- rows 4))))
+         (tree-key (%dashboard-tree-key ui-state cols rows))
+         (tree (dashboard-ui-state-cached-tree ui-state))
+         (layout (dashboard-ui-state-cached-layout ui-state))
          (focus-id nil))
     (incf (dashboard-ui-state-frame-count ui-state))
-    (ptui.ui.runtime:update-runtime runtime tree)
+    (unless (and tree layout
+                 (equal tree-key (dashboard-ui-state-cached-tree-key ui-state)))
+      (setf tree (%build-ui-tree ui-state cols rows))
+      (setf layout (ptui.layout:compute-layout
+                    (%ui-tree-node tree)
+                    :x 3
+                    :y 2
+                    :width (max 0 (- cols 6))
+                    :height (max 0 (- rows 4))))
+      (ptui.ui.runtime:update-runtime runtime tree)
+      (setf (dashboard-ui-state-cached-tree-key ui-state) tree-key
+            (dashboard-ui-state-cached-tree ui-state) tree
+            (dashboard-ui-state-cached-layout ui-state) layout
+            (dashboard-ui-state-cached-render-key ui-state) nil
+            (dashboard-ui-state-cached-buffer ui-state) nil))
     (setf focus-id (ptui.ui.runtime:runtime-focus-id runtime))
-    (ptui.render.buffer:buffer-draw-border buf panel)
-    (%render-ui-element buf tree layout focus-id)
-    buf))
+    (let* ((render-key (list tree-key focus-id))
+           (cached-render-key (dashboard-ui-state-cached-render-key ui-state))
+           (cached-buffer (dashboard-ui-state-cached-buffer ui-state)))
+      (if (and cached-buffer (equal render-key cached-render-key))
+          cached-buffer
+          (let ((buf (ptui.render.buffer:make-buffer cols rows)))
+            (ptui.render.buffer:buffer-draw-border buf panel)
+            (%render-ui-element buf tree layout focus-id)
+            (setf (dashboard-ui-state-cached-render-key ui-state) render-key
+                  (dashboard-ui-state-cached-buffer ui-state) buf)
+            buf)))))
 
 (defun %on-dashboard-ui-event (state event)
   (let ((ui-state (%ensure-ui-state state)))
@@ -281,10 +364,27 @@
              (setf (dashboard-ui-state-input-text ui-state)
                    (concatenate 'string
                                 (dashboard-ui-state-input-text ui-state)
-                                text)))
+                                text))
+             (setf (dashboard-ui-state-prompt-scroll-offset ui-state) nil))
+            ((eql key :ctrl-j)
+             (setf (dashboard-ui-state-input-text ui-state)
+                   (concatenate 'string
+                                (dashboard-ui-state-input-text ui-state)
+                                (string #\Newline)))
+             (setf (dashboard-ui-state-prompt-scroll-offset ui-state) nil))
             ((eql key :backspace)
              (setf (dashboard-ui-state-input-text ui-state)
-                   (%pop-last-grapheme (dashboard-ui-state-input-text ui-state)))))))
+                   (%pop-last-grapheme
+                    (dashboard-ui-state-input-text ui-state)))
+             (setf (dashboard-ui-state-prompt-scroll-offset ui-state) nil))
+            ((eql key :up)
+             (setf (dashboard-ui-state-prompt-scroll-offset ui-state)
+                   (1+ (or (dashboard-ui-state-prompt-scroll-offset ui-state) 0))))
+            ((eql key :down)
+             (setf (dashboard-ui-state-prompt-scroll-offset ui-state)
+                   (max 0
+                        (1- (or (dashboard-ui-state-prompt-scroll-offset ui-state)
+                                0))))))))
       (when (ptui.ui.runtime:runtime-root runtime)
         (ptui.widgets.core:dispatch-widget-event
          (ptui.ui.runtime:runtime-root runtime)

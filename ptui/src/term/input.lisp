@@ -144,8 +144,11 @@
       (cond
         ((= b0 27)
          (%parse-escape-sequence parser))
-        ((or (= b0 13) (= b0 10))
+        ((= b0 13)
          (%emit-key-event parser :enter)
+         1)
+        ((= b0 10)
+         (%emit-key-event parser :ctrl-j :ctrlp t)
          1)
         ((= b0 9)
          (%emit-key-event parser :tab)
