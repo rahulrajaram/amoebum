@@ -35,4 +35,5 @@ sbcl --non-interactive \
   --load "${QL_SETUP}" \
   --eval "(ql-dist:install-dist \"${DIST_URL}\" :prompt nil :replace t)" \
   --eval "(ql:quickload '(:cffi :bordeaux-threads))" \
+  --eval "(when (string= (or (sb-ext:posix-getenv \"PTUI_ENABLE_NCURSES\") \"\") \"1\") (ql:quickload '(:cl-charms)))" \
   --eval "(quit)"

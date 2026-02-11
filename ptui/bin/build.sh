@@ -32,10 +32,15 @@ if ! command -v buildapp >/dev/null 2>&1; then
 else
   BUILDAPP="$(command -v buildapp)"
 fi
+FEATURE_EVALS=()
+if [[ "${PTUI_ENABLE_NCURSES:-}" == "1" ]]; then
+  FEATURE_EVALS+=(--eval '(pushnew :ptui-ncurses *features*)')
+fi
 
 "${BUILDAPP}" \
   --eval '(require :asdf)' \
   --eval "(load \"${ROOT_DIR}/.tools/quicklisp/setup.lisp\")" \
+  "${FEATURE_EVALS[@]}" \
   --eval "(asdf:load-asd \"${ASD_PATH}\")" \
   --eval "(asdf:load-asd \"${ASD_EXAMPLES_PATH}\")" \
   --load-system ptui-examples \

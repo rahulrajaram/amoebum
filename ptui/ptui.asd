@@ -63,7 +63,8 @@
   :description "PTUI backend boundary and implementations"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui/core" "ptui/term" "ptui/render" "ptui/util")
+  :depends-on ("ptui/core" "ptui/term" "ptui/render" "ptui/util"
+               #+ptui-ncurses "cl-charms")
   :serial t
   :components
   ((:file "src/backend/protocol")
@@ -83,7 +84,8 @@
   :description "PTUI standalone system (monolithic; no internal ptui/* dependencies)"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("cffi" "bordeaux-threads")
+  :depends-on ("cffi" "bordeaux-threads"
+               #+ptui-ncurses "cl-charms")
   :serial t
   :components
   ((:file "src/term/caps")

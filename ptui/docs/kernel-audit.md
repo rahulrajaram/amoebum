@@ -274,13 +274,34 @@ PTUI_EXIT_AFTER_MS=500 ./ptui/dist/metrics-dashboard
 
 **Spec:** optional compat backend; degraded color; translate draw-ops to ncurses calls; example runs with `:backend :ncurses` when `:ptui-ncurses` enabled.
 
-**Implementation:** `ptui/src/backend/ncurses.lisp` exists, but is currently a compatibility shim that delegates to ANSI.
+**Implementation:**
+
+* Real backend implemented via `cl-charms` low-level bindings (`charms/ll`) behind feature `:ptui-ncurses`
+* Draw-op mapping: `:move`, `:style` (attrset + color-pair), `:write` (addstr), `:clear-eol` (clrtoeol), `:clear-screen` (clear), cursor show/hide (curs-set)
+* Key events mapped from `getch` (nonblocking): q, Ctrl-C, arrows, Enter, Esc, Backspace, Tab; resize via `KEY_RESIZE`
 
 **Evidence:**
 
-* Not enabled by default; no hard gate today.
+```bash
+PTUI_ENABLE_NCURSES=1 ./ptui/bin/ensure-quicklisp.sh
+PTUI_ENABLE_NCURSES=1 ./ptui/bin/check-systems.sh
+PTUI_ENABLE_NCURSES=1 ./ptui/bin/build.sh
 
-**Status:** FAIL (optional) relative to the spec’s “translate to ncurses calls” requirement.
+# PTY smoke (curses requires a terminal); exit + terminal restore asserted.
+script -q -c 'cd ./ptui && PTUI_EXIT_AFTER_MS=250 sbcl --noinform --non-interactive \
+  --eval "(load \"./.tools/quicklisp/setup.lisp\")" \
+  --eval "(require :asdf)" \
+  --eval "(pushnew :ptui-ncurses *features*)" \
+  --eval "(asdf:load-asd \"./ptui.asd\")" \
+  --eval "(asdf:load-asd \"./ptui-examples.asd\")" \
+  --eval "(asdf:load-system \"ptui/examples\")" \
+  --eval "(ptui.engine.loop:run (function ptui.examples.metrics-dashboard::%render-dashboard) :backend :ncurses :fps 20)" \
+  --eval "(quit)"; rc=$?; stty -a >/dev/null 2>&1; stty_ok=$?; \
+  if [ $stty_ok -eq 0 ]; then stty_yes=yes; else stty_yes=no; fi; \
+  printf "NCURSES_SMOKE_RC=%s STTY_OK=%s\n" "$rc" "$stty_yes"' /tmp/ptui-ncurses-smoke.log
+```
+
+**Status:** PASS (optional).
 
 ---
 

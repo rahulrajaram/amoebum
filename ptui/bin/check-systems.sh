@@ -36,3 +36,16 @@ for sys in "${systems[@]}"; do
     --eval "(quit)" >/dev/null
   echo "OK: ${sys}"
 done
+
+if [[ "${PTUI_ENABLE_NCURSES:-}" == "1" ]]; then
+  echo "==> loading ptui with :ptui-ncurses feature"
+  sbcl --noinform --non-interactive \
+    --eval "(load \"${ROOT_DIR}/.tools/quicklisp/setup.lisp\")" \
+    --eval "(require :asdf)" \
+    --eval '(pushnew :ptui-ncurses *features*)' \
+    --eval "(asdf:load-asd (merge-pathnames #P\"ptui.asd\" (truename #P\"${ROOT_DIR}/\")))" \
+    --eval "(asdf:load-asd (merge-pathnames #P\"ptui-examples.asd\" (truename #P\"${ROOT_DIR}/\")))" \
+    --eval "(asdf:load-system \"ptui\")" \
+    --eval "(quit)" >/dev/null
+  echo "OK: ptui (ptui-ncurses)"
+fi
