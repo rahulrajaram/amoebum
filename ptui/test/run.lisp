@@ -61,6 +61,30 @@
   (svref (ptui.core.types:cell-buffer-cells buf)
          (+ x (* y (ptui.core.types:cell-buffer-cols buf)))))
 
+(defun buffer->flat-text (buf)
+  (let ((cols (ptui.core.types:cell-buffer-cols buf))
+        (rows (ptui.core.types:cell-buffer-rows buf)))
+    (with-output-to-string (out)
+      (loop for y from 0 below rows do
+        (loop for x from 0 below cols do
+          (let ((glyph (ptui.core.types:cell-glyph (buffer-cell-at buf x y))))
+            (write-string (if (string= glyph "") " " glyph) out)))
+        (when (< y (1- rows))
+          (write-char #\Newline out))))))
+
+(defun buffer-max-content-width (buf)
+  (let ((cols (ptui.core.types:cell-buffer-cols buf))
+        (rows (ptui.core.types:cell-buffer-rows buf))
+        (max-used 0))
+    (loop for y from 0 below rows do
+      (let ((last-used 0))
+        (loop for x from 0 below cols do
+          (let ((glyph (ptui.core.types:cell-glyph (buffer-cell-at buf x y))))
+            (unless (or (string= glyph "") (string= glyph " "))
+              (setf last-used (1+ x)))))
+        (setf max-used (max max-used last-used))))
+    max-used))
+
 (defun run-all-tests ()
   (let ((passed 0)
         (failed 0))
@@ -539,9 +563,16 @@
                  :runtime (ptui.ui.runtime:make-runtime)))
          (size (ptui.core.types:make-size 50 16))
          (buf (ptui.examples.metrics-dashboard::%render-dashboard-ui state size))
+         (text (buffer->flat-text buf))
          (grapheme (string-from-codepoints #x0065 #x0301)))
     (assert-true (typep buf 'ptui.core.types:cell-buffer)
                  "ui dashboard render should return a cell buffer")
+    (assert-true (search "PTUI Metrics Dashboard [UI]" text)
+                 "ui dashboard should render UI title")
+    (assert-true (search "Event:" text)
+                 "ui dashboard should render status text")
+    (assert-true (>= (count #\╭ text) 2)
+                 "ui dashboard should render nested box borders")
     (setf state (ptui.examples.metrics-dashboard::%on-dashboard-ui-event
                  state
                  (ptui.core.events:make-key-event :text :text? grapheme)))
@@ -554,6 +585,55 @@
     (assert-true (string= (ptui.examples.metrics-dashboard::dashboard-ui-state-input-text state)
                           "")
                  "backspace should remove one grapheme cluster")))
+
+(deftest dashboard-legacy-ui-parity-objective-signals
+  (let* ((size (ptui.core.types:make-size 80 24))
+         (legacy-buf (ptui.examples.metrics-dashboard::%render-dashboard-legacy nil size))
+         (ui-state (ptui.examples.metrics-dashboard::make-dashboard-ui-state
+                    :runtime (ptui.ui.runtime:make-runtime)))
+         (ui-buf (ptui.examples.metrics-dashboard::%render-dashboard-ui ui-state size))
+         (legacy-text (buffer->flat-text legacy-buf))
+         (ui-text (buffer->flat-text ui-buf)))
+    (assert-true (search "PTUI Metrics Dashboard" legacy-text)
+                 "legacy dashboard should render title")
+    (assert-true (search "PTUI Metrics Dashboard" ui-text)
+                 "ui dashboard should render title")
+    (assert-true (search "Ctrl-C" legacy-text)
+                 "legacy dashboard should render quit hint")
+    (assert-true (search "Ctrl-C" ui-text)
+                 "ui dashboard should render quit hint")
+    (assert-true (> (count #\* legacy-text) 10)
+                 "legacy dashboard should render gradient row")
+    (assert-true (> (count #\* ui-text) 10)
+                 "ui dashboard should render gradient row")
+    (assert-true (<= (buffer-max-content-width legacy-buf)
+                     (ptui.core.types:size-cols size))
+                 "legacy rendered content should stay within terminal width")
+    (assert-true (<= (buffer-max-content-width ui-buf)
+                     (ptui.core.types:size-cols size))
+                 "ui rendered content should stay within terminal width")))
+
+(deftest dashboard-ui-input-editing-behavior
+  (let* ((state (ptui.examples.metrics-dashboard::make-dashboard-ui-state
+                 :runtime (ptui.ui.runtime:make-runtime)))
+         (size (ptui.core.types:make-size 50 16)))
+    ;; Prime runtime tree/focus before dispatching key events.
+    (ptui.examples.metrics-dashboard::%render-dashboard-ui state size)
+    (setf state (ptui.examples.metrics-dashboard::%on-dashboard-ui-event
+                 state
+                 (ptui.core.events:make-key-event :text :text? "abc")))
+    (let ((buf-after-input (ptui.examples.metrics-dashboard::%render-dashboard-ui state size)))
+      (assert-true (search "abc" (buffer->flat-text buf-after-input))
+                   "ui dashboard should display typed input text"))
+    (setf state (ptui.examples.metrics-dashboard::%on-dashboard-ui-event
+                 state
+                 (ptui.core.events:make-key-event :backspace)))
+    (let ((buf-after-backspace (ptui.examples.metrics-dashboard::%render-dashboard-ui state size))
+          (legacy-buf (ptui.examples.metrics-dashboard::%render-dashboard-legacy nil size)))
+      (assert-true (search "ab" (buffer->flat-text buf-after-backspace))
+                   "ui dashboard should update input after backspace")
+      (assert-true (not (search "Input:" (buffer->flat-text legacy-buf)))
+                   "legacy dashboard should remain static and not expose ui input row"))))
 
 ;; Script entry
 (multiple-value-bind (passed failed) (run-all-tests)

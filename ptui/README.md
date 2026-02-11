@@ -66,11 +66,11 @@ PTUI_EXIT_AFTER_MS=5000 ./ptui/dist/metrics-dashboard
 Dashboard mode switch:
 
 ```bash
-# legacy dashboard path (default)
+# ui/widgets dashboard path (default)
 PTUI_EXIT_AFTER_MS=2000 ./ptui/dist/metrics-dashboard
 
-# ui/widgets dashboard path
-PTUI_DASHBOARD_MODE=ui PTUI_EXIT_AFTER_MS=2000 ./ptui/dist/metrics-dashboard
+# legacy dashboard path (compat mode)
+PTUI_DASHBOARD_MODE=legacy PTUI_EXIT_AFTER_MS=2000 ./ptui/dist/metrics-dashboard
 ```
 
 ## Compliance Gate

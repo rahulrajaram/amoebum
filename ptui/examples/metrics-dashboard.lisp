@@ -95,8 +95,12 @@
 (defun %element-prop (element key &optional default)
   (getf (ptui.ui.elements:ui-element-props element) key default))
 
+(defun %element-id (element)
+  (or (ptui.ui.elements:ui-element-id element)
+      (ptui.ui.elements:ui-element-key element)))
+
 (defun %ui-tree-node (element)
-  (let ((id (ptui.ui.elements:ui-element-id element))
+  (let ((id (%element-id element))
         (type (ptui.ui.elements:ui-element-type element))
         (children (mapcar #'%ui-tree-node
                           (ptui.ui.elements:ui-element-children element))))
@@ -113,16 +117,6 @@
                 (ptui.widgets.core:widget-measure element))
      :children children)))
 
-(defun %index-elements (root)
-  (let ((table (make-hash-table :test #'equal)))
-    (labels ((walk (node)
-               (when node
-                 (setf (gethash (ptui.ui.elements:ui-element-id node) table) node)
-                 (dolist (child (ptui.ui.elements:ui-element-children node))
-                   (walk child)))))
-      (walk root))
-    table))
-
 (defun %ui-line-cell (id focus-id)
   (cond
     ((eql id :ui-title)
@@ -134,28 +128,71 @@
     (t
      (%template-cell :fg (ptui.core.color:make-color-rgb 200 200 200)))))
 
-(defun %render-ui-element (buf element bounds focus-id)
-  (let* ((id (ptui.ui.elements:ui-element-id element))
-         (kind (ptui.ui.elements:ui-element-type element))
-         (x (ptui.layout:layout-bounds-x bounds))
-         (y (ptui.layout:layout-bounds-y bounds))
-         (w (ptui.layout:layout-bounds-width bounds)))
-    (case kind
-      (:text
-       (let* ((text (%element-prop element :text ""))
-              (line (%fit-line-width text w)))
-         (ptui.render.buffer:buffer-draw-text
-          buf x y (list (list line (%ui-line-cell id focus-id))) :max-width w)))
-      (:input
-       (let* ((value (%element-prop element :value ""))
-              (line (%fit-line-width value w)))
-         (ptui.render.buffer:buffer-draw-text
-          buf x y (list (list line (%ui-line-cell id focus-id))) :max-width w)))
-      (t nil))))
+(defun %render-ui-element (buf element layout focus-id &key (dx 0) (dy 0))
+  (let* ((id (%element-id element))
+         (bounds (and id (ptui.layout:layout-bound layout id))))
+    (when bounds
+      (let* ((kind (ptui.ui.elements:ui-element-type element))
+             (x (+ dx (ptui.layout:layout-bounds-x bounds)))
+             (y (+ dy (ptui.layout:layout-bounds-y bounds)))
+             (w (ptui.layout:layout-bounds-width bounds))
+             (h (ptui.layout:layout-bounds-height bounds))
+             (rect (ptui.core.types:make-rect x y w h)))
+        (labels ((render-children (&key (child-dx dx) (child-dy dy) (clip-rect rect))
+                   (ptui.render.buffer:with-clip (buf clip-rect)
+                     (dolist (child (ptui.ui.elements:ui-element-children element))
+                       (%render-ui-element buf child layout focus-id :dx child-dx :dy child-dy)))))
+          (case kind
+            (:text
+             (let* ((text (%element-prop element :text ""))
+                    (line (%fit-line-width text w)))
+               (ptui.render.buffer:buffer-draw-text
+                buf x y (list (list line (%ui-line-cell id focus-id))) :max-width w)))
+            (:input
+             (let* ((value (%element-prop element :value ""))
+                    (line (%fit-line-width value w)))
+               (ptui.render.buffer:buffer-draw-text
+                buf x y (list (list line (%ui-line-cell id focus-id))) :max-width w)))
+            (:spacer
+             nil)
+            (:box
+             (let* ((padding (%element-prop element :padding 0))
+                    (borderp (%element-prop element :borderp nil))
+                    (border (if borderp 1 0))
+                    (inset (+ border padding))
+                    (inner-rect (ptui.core.types:make-rect
+                                 (+ x inset)
+                                 (+ y inset)
+                                 (max 0 (- w (* 2 inset)))
+                                 (max 0 (- h (* 2 inset)))))
+                    (child (first (ptui.ui.elements:ui-element-children element))))
+               (when borderp
+                 (ptui.render.buffer:buffer-draw-border buf rect))
+               (when child
+                 (let* ((child-id (%element-id child))
+                        (child-bounds (and child-id (ptui.layout:layout-bound layout child-id))))
+                   (when child-bounds
+                     (let ((delta-x (- (ptui.core.types:rect-x inner-rect)
+                                       (ptui.layout:layout-bounds-x child-bounds)))
+                           (delta-y (- (ptui.core.types:rect-y inner-rect)
+                                       (ptui.layout:layout-bounds-y child-bounds))))
+                       (%render-ui-element buf child layout focus-id
+                                           :dx (+ dx delta-x)
+                                           :dy (+ dy delta-y))))))))
+            (:scroll
+             (let* ((offset (%element-prop element :offset 0))
+                    (child (first (ptui.ui.elements:ui-element-children element))))
+               (when child
+                 (ptui.render.buffer:with-clip (buf rect)
+                   (%render-ui-element buf child layout focus-id
+                                       :dx dx
+                                       :dy (- dy offset))))))
+            (otherwise
+             (render-children))))))))
 
 (defun %build-ui-tree (state cols rows)
   (declare (ignore rows))
-  (let* ((inner-width (max 0 (- cols 6)))
+  (let* ((inner-width (max 0 (- cols 10)))
          (gradient (%gradient-text inner-width))
          (title (ptui.widgets.core:make-text-widget
                  "PTUI Metrics Dashboard [UI]"
@@ -176,15 +213,32 @@
                                    (format nil "dispatched: ~S"
                                            (and (typep event 'ptui.core.events:key-event)
                                                 (ptui.core.events:key-event-key event)))))))
+         (input-box (ptui.widgets.core:make-box-widget
+                     input
+                     :id :ui-input-box
+                     :padding 0
+                     :borderp t))
+         (spacer (ptui.widgets.core:make-spacer-widget 0 0 :id :ui-spacer))
          (bar (ptui.widgets.core:make-text-widget gradient :id :ui-bar))
          (status (ptui.widgets.core:make-text-widget
                   (format nil "Event: ~A" (dashboard-ui-state-last-event state))
-                  :id :ui-status)))
-    (ptui.widgets.core:make-stack-widget
-     (list title info hint input bar status)
+                  :id :ui-status))
+         (status-scroll (ptui.widgets.core:make-scroll-widget
+                         status
+                         :id :ui-status-scroll
+                         :viewport-width inner-width
+                         :viewport-height 1
+                         :offset 0))
+         (content (ptui.widgets.core:make-stack-widget
+                   (list title info hint input-box spacer bar status-scroll)
+                   :id :ui-content
+                   :direction :column
+                   :gap 0)))
+    (ptui.widgets.core:make-box-widget
+     content
      :id :ui-root
-     :direction :column
-     :gap 1)))
+     :padding 0
+     :borderp t)))
 
 (defun %render-dashboard-ui (state size)
   (let* ((ui-state (%ensure-ui-state state))
@@ -201,19 +255,12 @@
                   :y 2
                   :width (max 0 (- cols 6))
                   :height (max 0 (- rows 4))))
-         (focus-id nil)
-         (indexed (%index-elements tree)))
+         (focus-id nil))
     (incf (dashboard-ui-state-frame-count ui-state))
     (ptui.ui.runtime:update-runtime runtime tree)
     (setf focus-id (ptui.ui.runtime:runtime-focus-id runtime))
     (ptui.render.buffer:buffer-draw-border buf panel)
-    (dolist (row (ptui.layout:layout->alist layout))
-      (destructuring-bind (id _x _y _w _h) row
-        (declare (ignore _x _y _w _h))
-        (let ((element (gethash id indexed))
-              (bounds (ptui.layout:layout-bound layout id)))
-          (when (and element bounds)
-            (%render-ui-element buf element bounds focus-id)))))
+    (%render-ui-element buf tree layout focus-id)
     buf))
 
 (defun %on-dashboard-ui-event (state event)
@@ -259,6 +306,6 @@
 
 (defun main (&rest argv)
   (let ((mode (string-downcase (or (uiop:getenv "PTUI_DASHBOARD_MODE") ""))))
-    (if (string= mode "ui")
-        (apply #'main-ui argv)
-        (apply #'main-legacy argv))))
+    (if (string= mode "legacy")
+        (apply #'main-legacy argv)
+        (apply #'main-ui argv))))
