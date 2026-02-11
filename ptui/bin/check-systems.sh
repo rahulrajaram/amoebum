@@ -29,7 +29,6 @@ for sys in "${systems[@]}"; do
   echo "==> loading ${sys}"
   sbcl --noinform --non-interactive \
     --eval "(load \"${ROOT_DIR}/.tools/quicklisp/setup.lisp\")" \
-    --eval "(when (find-package :ql) (ql:quickload '(:cffi :bordeaux-threads) :silent t))" \
     --eval "(require :asdf)" \
     --eval "(asdf:load-asd (merge-pathnames #P\"ptui.asd\" (truename #P\"${ROOT_DIR}/\")))" \
     --eval "(asdf:load-asd (merge-pathnames #P\"ptui-examples.asd\" (truename #P\"${ROOT_DIR}/\")))" \
