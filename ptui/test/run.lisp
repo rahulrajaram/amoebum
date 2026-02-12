@@ -48,6 +48,15 @@
 (defun string-from-codepoints (&rest codepoints)
   (coerce (mapcar #'code-char codepoints) 'string))
 
+(defun native-differential-corpus ()
+  (list
+   "abc"
+   (string-from-codepoints #x0065 #x0301)
+   (string-from-codepoints #x1F1FA #x1F1F8)
+   (string-from-codepoints #x1F468 #x200D #x1F469 #x200D #x1F467 #x200D #x1F466)
+   (string-from-codepoints #x0041 #x754C #x0042)
+   (string-from-codepoints #x0023 #xFE0F #x20E3)))
+
 (defun ui-op-kinds (ops)
   (mapcar #'ptui.ui.runtime:patch-op-kind ops))
 
@@ -360,12 +369,71 @@
   (assert-true (eql (ptui.text.engine:resolve-text-engine :native) :fallback)
                "native requests should resolve to fallback while unavailable"))
 
+(deftest text-native-activation-contract
+  (let ((env-off (lambda (key)
+                   (declare (ignore key))
+                   nil))
+        (env-on (lambda (key)
+                  (if (string= key ptui.text.adapter.native:+native-enable-env-var+)
+                      "1"
+                      nil)))
+        (env-on-with-parity (lambda (key)
+                              (cond
+                                ((string= key ptui.text.adapter.native:+native-enable-env-var+) "1")
+                                ((string= key ptui.text.adapter.native:+native-require-parity-env-var+)
+                                 "true")
+                                (t nil)))))
+    (assert-true (not (ptui.text.adapter.native:native-feature-enabled-p :env env-off))
+                 "native feature flag should be off by default")
+    (assert-true (ptui.text.adapter.native:native-feature-enabled-p :env env-on)
+                 "native feature flag should parse truthy values")
+    (assert-true (not (ptui.text.adapter.native:native-runtime-contract-satisfied-p))
+                 "runtime contract should fail until native hooks are wired")
+    (let ((ptui.text.adapter.native:*native-grapheme-support-p* t)
+          (ptui.text.adapter.native:*native-width-support-p* t))
+      (assert-true (ptui.text.adapter.native:native-runtime-contract-satisfied-p)
+                   "runtime contract should pass when both hooks are wired")
+      (assert-true (not (ptui.text.adapter.native:native-engine-available-p :env env-off))
+                   "native engine should remain disabled when feature flag is off")
+      (assert-true (ptui.text.adapter.native:native-engine-available-p :env env-on)
+                   "native engine should activate with flag + hooks")
+      (assert-true (ptui.text.adapter.native:native-engine-available-p :env env-on-with-parity)
+                   "native engine should pass optional parity gate for current adapter")
+      (assert-true (ptui.text.adapter.native:native-parity-check-p
+                    :corpus (native-differential-corpus))
+                   "native parity check should pass on fixed corpus"))))
+
 (deftest text-native-engine-currently-aliases-fallback
   (let ((text (string-from-codepoints #x0065 #x0301 #x1F468 #x200D #x1F469)))
     (assert-true
      (equal (ptui.text.grapheme:split-graphemes text :engine :native)
             (ptui.text.grapheme:split-graphemes text :engine :fallback))
      "native engine should currently alias fallback behavior")))
+
+(deftest text-native-differential-fixed-corpus
+  (let ((ptui.text.adapter.native:*native-grapheme-support-p* t)
+        (ptui.text.adapter.native:*native-width-support-p* t)
+        (ptui.text.adapter.native::*native-enable-override* t)
+        (ptui.text.adapter.native::*native-require-parity-override* nil))
+    (assert-true (eql (ptui.text.engine:resolve-text-engine :native) :native)
+                 "native requests should resolve to :native when activation contract passes")
+    (dolist (text (native-differential-corpus))
+      (assert-true (equal (ptui.text.grapheme:split-graphemes text :engine :fallback)
+                          (ptui.text.grapheme:split-graphemes text :engine :native))
+                   "native split mismatch on corpus text ~S" text)
+      (assert-true (= (ptui.text.width:string-width text :engine :fallback)
+                      (ptui.text.width:string-width text :engine :native))
+                   "native width mismatch on corpus text ~S" text)
+      (dolist (max-width '(1 2 3 4))
+        (assert-true (equal (ptui.text.layout:wrap-by-width text max-width :engine :fallback)
+                            (ptui.text.layout:wrap-by-width text max-width :engine :native))
+                     "native wrap mismatch on corpus text ~S (max-width=~D)"
+                     text max-width)
+        (assert-true
+         (string= (ptui.text.layout:truncate-to-width text max-width :engine :fallback)
+                  (ptui.text.layout:truncate-to-width text max-width :engine :native))
+         "native truncate mismatch on corpus text ~S (max-width=~D)"
+         text max-width)))))
 
 (deftest text-symbol-width-not-overclassified-as-emoji
   (let ((scissors (string-from-codepoints #x2702))

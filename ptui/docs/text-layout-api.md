@@ -28,8 +28,16 @@ Core entry points:
 Engine model:
 
 - `:fallback` is deterministic and always available.
-- `:native` is an explicit adapter slot and currently unavailable by default.
+- `:native` is an explicit adapter slot and unavailable by default.
 - `:auto` resolves to `:native` when available, else `:fallback`.
+
+Native activation contract (`ptui.text.adapter.native`):
+
+- `PTUI_TEXT_NATIVE_ENABLE` must be truthy (`1`, `true`, `yes`, `on`).
+- Both native capability hooks must be wired (`*native-grapheme-support-p*` and
+  `*native-width-support-p*`).
+- Optional safety gate: if `PTUI_TEXT_NATIVE_REQUIRE_PARITY` is truthy, a fixed
+  fallback/native parity corpus must pass before activation.
 
 ## `ptui/layout`
 
