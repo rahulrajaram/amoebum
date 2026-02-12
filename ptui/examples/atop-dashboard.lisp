@@ -78,6 +78,20 @@
   (ip-in-delivers 0 :type integer)
   (ip-out-requests 0 :type integer))
 
+(defstruct (process-counters (:constructor make-process-counters
+                                (&key (pid 0)
+                                      (user "n/a")
+                                      (state "?")
+                                      (cpu-total-ticks 0)
+                                      (rss-kb 0)
+                                      (command "n/a"))))
+  (pid 0 :type integer)
+  (user "n/a" :type string)
+  (state "?" :type string)
+  (cpu-total-ticks 0 :type integer)
+  (rss-kb 0 :type integer)
+  (command "n/a" :type string))
+
 (defstruct (host-snapshot (:constructor make-host-snapshot
                              (&key (timestamp-ms 0)
                                    (cpu (make-cpu-counters))
@@ -85,14 +99,16 @@
                                    (filesystem (make-filesystem-counters))
                                    (disk (make-disk-counters))
                                    (network (make-network-counters))
-                                   (tcpip (make-tcpip-counters)))))
+                                   (tcpip (make-tcpip-counters))
+                                   (processes '()))))
   (timestamp-ms 0 :type integer)
   (cpu (make-cpu-counters) :type cpu-counters)
   (memory (make-memory-counters) :type memory-counters)
   (filesystem (make-filesystem-counters) :type filesystem-counters)
   (disk (make-disk-counters) :type disk-counters)
   (network (make-network-counters) :type network-counters)
-  (tcpip (make-tcpip-counters) :type tcpip-counters))
+  (tcpip (make-tcpip-counters) :type tcpip-counters)
+  (processes '() :type list))
 
 (defstruct (cpu-model (:constructor make-cpu-model
                            (&key (usage-pct 0.0) (user-pct 0.0)
@@ -170,6 +186,22 @@
   (ip-in-delivers 0 :type integer)
   (ip-out-requests 0 :type integer))
 
+(defstruct (process-model (:constructor make-process-model
+                             (&key (pid 0)
+                                   (user "n/a")
+                                   (state "?")
+                                   (cpu-pct 0.0)
+                                   (mem-pct 0.0)
+                                   (rss-kb 0)
+                                   (command "n/a"))))
+  (pid 0 :type integer)
+  (user "n/a" :type string)
+  (state "?" :type string)
+  (cpu-pct 0.0 :type real)
+  (mem-pct 0.0 :type real)
+  (rss-kb 0 :type integer)
+  (command "n/a" :type string))
+
 (defstruct (atop-model (:constructor make-atop-model
                             (&key (collected-at-ms 0)
                                   (cpu (make-cpu-model))
@@ -177,14 +209,16 @@
                                   (filesystem (make-filesystem-model))
                                   (disk (make-disk-model))
                                   (network (make-network-model))
-                                  (tcpip (make-tcpip-model)))))
+                                  (tcpip (make-tcpip-model))
+                                  (processes '()))))
   (collected-at-ms 0 :type integer)
   (cpu (make-cpu-model) :type cpu-model)
   (memory (make-memory-model) :type memory-model)
   (filesystem (make-filesystem-model) :type filesystem-model)
   (disk (make-disk-model) :type disk-model)
   (network (make-network-model) :type network-model)
-  (tcpip (make-tcpip-model) :type tcpip-model))
+  (tcpip (make-tcpip-model) :type tcpip-model)
+  (processes '() :type list))
 
 (defstruct (atop-dashboard-state (:constructor make-atop-dashboard-state
                                    (&key
@@ -192,9 +226,12 @@
                                      (model (make-atop-model))
                                      (pausedp nil)
                                      (show-help-p nil)
+                                     (show-process-detail-p nil)
                                      (refresh-ms 1000)
                                      (last-refresh-ms 0)
                                      (status-line "collecting...")
+                                     (process-sort-key :cpu)
+                                     (process-selected-index 0)
                                      (collect-fn #'collect-host-snapshot)
                                      (model-fn #'build-atop-model)
                                      (now-ms-fn #'ptui.util.time:monotonic-ms))))
@@ -202,9 +239,12 @@
   (model (make-atop-model) :type atop-model)
   (pausedp nil :type boolean)
   (show-help-p nil :type boolean)
+  (show-process-detail-p nil :type boolean)
   (refresh-ms 1000 :type integer)
   (last-refresh-ms 0 :type integer)
   (status-line "collecting..." :type string)
+  (process-sort-key :cpu :type keyword)
+  (process-selected-index 0 :type fixnum)
   (collect-fn #'collect-host-snapshot :type function)
   (model-fn #'build-atop-model :type function)
   (now-ms-fn #'ptui.util.time:monotonic-ms :type function))
@@ -252,6 +292,15 @@
     (when (and net-pos
                (< (1+ net-pos) (length parts)))
       (nth (1+ net-pos) parts))))
+
+(defun %path-process-pid (path)
+  (let* ((parts (remove-if (lambda (token) (string= token ""))
+                           (uiop:split-string (namestring path)
+                                              :separator '(#\/))))
+         (proc-pos (position "proc" parts :test #'string=)))
+    (when (and proc-pos
+               (< (1+ proc-pos) (length parts)))
+      (%safe-parse-integer (nth (1+ proc-pos) parts)))))
 
 (defun %net-link-speeds (read-lines-fn directory-fn)
   (let ((pairs '()))
@@ -426,6 +475,140 @@
      :ip-in-delivers (or (gethash "InDelivers" ip) 0)
      :ip-out-requests (or (gethash "OutRequests" ip) 0))))
 
+(defun %read-passwd-user-table (read-lines-fn)
+  (let ((table (make-hash-table :test #'eql)))
+    (dolist (line (funcall read-lines-fn "/etc/passwd"))
+      (let ((tokens (uiop:split-string line :separator '(#\:))))
+        (when (>= (length tokens) 3)
+          (let ((uid (%safe-parse-integer (nth 2 tokens))))
+            (when uid
+              (setf (gethash uid table) (nth 0 tokens)))))))
+    table))
+
+(defun %parse-proc-status-lines (lines user-table)
+  (let ((uid nil)
+        (rss-kb 0))
+    (dolist (line lines)
+      (cond
+        ((%prefixp "Uid:" line)
+         (setf uid (%safe-parse-integer (second (%split-words line)))))
+        ((%prefixp "VmRSS:" line)
+         (setf rss-kb (or (%safe-parse-integer (second (%split-words line))) 0)))))
+    (values (or (and uid (gethash uid user-table))
+                (and uid (format nil "~D" uid))
+                "n/a")
+            rss-kb)))
+
+(defun %normalize-command (value fallback)
+  (let* ((raw (or value ""))
+         (spaced (substitute #\Space #\Null raw))
+         (trimmed (string-trim '(#\Space #\Tab #\Newline #\Return #\Null)
+                               spaced)))
+    (if (> (length trimmed) 0)
+        trimmed
+        (or fallback "n/a"))))
+
+(defun %parse-proc-stat-line (line)
+  (let ((open-pos (position #\( line))
+        (close-pos (position #\) line :from-end t)))
+    (when (and open-pos close-pos (> close-pos open-pos))
+      (let* ((pid (%safe-parse-integer (subseq line 0 open-pos)))
+             (comm (subseq line (1+ open-pos) close-pos))
+             (tail (if (< (+ close-pos 2) (length line))
+                       (subseq line (+ close-pos 2))
+                       ""))
+             (tokens (%split-words tail))
+             (state (or (first tokens) "?"))
+             (utime (or (%safe-parse-integer (nth 11 tokens)) 0))
+             (stime (or (%safe-parse-integer (nth 12 tokens)) 0)))
+        (when pid
+          (values pid comm state (+ utime stime)))))))
+
+(defun %collect-process-counters (read-lines-fn directory-fn)
+  (let ((user-table (%read-passwd-user-table read-lines-fn))
+        (processes '()))
+    (dolist (path (funcall directory-fn #P"/proc/[0-9]*/stat"))
+      (let* ((pid (%path-process-pid path))
+             (stat-line (first (funcall read-lines-fn (namestring path)))))
+        (when (and pid stat-line)
+          (multiple-value-bind (parsed-pid comm state cpu-total-ticks)
+              (%parse-proc-stat-line stat-line)
+            (when parsed-pid
+              (let* ((status-lines (funcall read-lines-fn (format nil "/proc/~D/status" pid)))
+                     (cmdline-line (first (funcall read-lines-fn (format nil "/proc/~D/cmdline" pid)))))
+                (multiple-value-bind (user rss-kb)
+                    (%parse-proc-status-lines status-lines user-table)
+                  (push (make-process-counters
+                         :pid parsed-pid
+                         :user user
+                         :state state
+                         :cpu-total-ticks cpu-total-ticks
+                         :rss-kb rss-kb
+                         :command (%normalize-command cmdline-line comm))
+                        processes))))))))
+    (stable-sort (copy-list processes) #'< :key #'process-counters-pid)))
+
+(defun %process-map-by-pid (processes)
+  (let ((table (make-hash-table :test #'eql)))
+    (dolist (proc processes)
+      (setf (gethash (process-counters-pid proc) table) proc))
+    table))
+
+(defun %process-sort-before-p (lhs rhs sort-key)
+  (labels ((num< (left right)
+             (< left right))
+           (num> (left right)
+             (> left right)))
+    (case sort-key
+      (:pid
+       (num< (process-model-pid lhs)
+             (process-model-pid rhs)))
+      (:mem
+       (cond
+         ((num> (process-model-mem-pct lhs)
+                (process-model-mem-pct rhs))
+          t)
+         ((num< (process-model-mem-pct lhs)
+                (process-model-mem-pct rhs))
+          nil)
+         ((num> (process-model-cpu-pct lhs)
+                (process-model-cpu-pct rhs))
+          t)
+         ((num< (process-model-cpu-pct lhs)
+                (process-model-cpu-pct rhs))
+          nil)
+         (t
+          (num< (process-model-pid lhs)
+                (process-model-pid rhs)))))
+      (otherwise
+       (cond
+         ((num> (process-model-cpu-pct lhs)
+                (process-model-cpu-pct rhs))
+          t)
+         ((num< (process-model-cpu-pct lhs)
+                (process-model-cpu-pct rhs))
+          nil)
+         ((num> (process-model-mem-pct lhs)
+                (process-model-mem-pct rhs))
+          t)
+         ((num< (process-model-mem-pct lhs)
+                (process-model-mem-pct rhs))
+          nil)
+         (t
+          (num< (process-model-pid lhs)
+                (process-model-pid rhs))))))))
+
+(defun %sort-process-models (processes sort-key)
+  (stable-sort (copy-list (or processes '()))
+               (lambda (lhs rhs)
+                 (%process-sort-before-p lhs rhs sort-key))))
+
+(defun %process-sort-label (sort-key)
+  (case sort-key
+    (:pid "pid")
+    (:mem "mem")
+    (otherwise "cpu")))
+
 (defun collect-host-snapshot (&key
                                 (read-lines-fn #'%read-lines)
                                 (directory-fn #'%safe-directory)
@@ -437,7 +620,8 @@
          (disk (%parse-diskstats-lines (funcall read-lines-fn "/proc/diskstats")))
          (network (%parse-net-dev-lines (funcall read-lines-fn "/proc/net/dev")
                                         net-speeds))
-         (tcpip (%parse-snmp-lines (funcall read-lines-fn "/proc/net/snmp"))))
+         (tcpip (%parse-snmp-lines (funcall read-lines-fn "/proc/net/snmp")))
+         (processes (%collect-process-counters read-lines-fn directory-fn)))
     (multiple-value-bind (rotational ssd)
         (%sys-block-rotation-summary read-lines-fn directory-fn)
       (setf (disk-counters-rotational-devices disk) rotational
@@ -449,7 +633,8 @@
      :filesystem filesystem
      :disk disk
      :network network
-     :tcpip tcpip)))
+     :tcpip tcpip
+     :processes processes)))
 
 (defun %cpu-total (cpu)
   (+ (cpu-counters-user cpu)
@@ -529,7 +714,32 @@
          (tx-packets (%safe-delta (network-counters-tx-packets network-now)
                                   (if network-prev (network-counters-tx-packets network-prev) 0)))
          (tcp (host-snapshot-tcpip current))
-         (tcp-out (max 1 (tcpip-counters-tcp-out-segs tcp))))
+         (tcp-out (max 1 (tcpip-counters-tcp-out-segs tcp)))
+         (process-prev-table (%process-map-by-pid
+                              (if previous
+                                  (host-snapshot-processes previous)
+                                  '())))
+         (processes
+           (loop for proc in (host-snapshot-processes current)
+                 for pid = (process-counters-pid proc)
+                 for previous-proc = (gethash pid process-prev-table)
+                 for previous-cpu = (if previous-proc
+                                        (process-counters-cpu-total-ticks previous-proc)
+                                        (process-counters-cpu-total-ticks proc))
+                 for cpu-delta = (%safe-delta (process-counters-cpu-total-ticks proc)
+                                              previous-cpu)
+                 for cpu-pct = (max 0.0 (* 100.0 (/ cpu-delta (* elapsed 100.0))))
+                 for mem-pct = (%clamp-pct (* 100.0
+                                              (/ (process-counters-rss-kb proc)
+                                                 (max 1 (memory-counters-total-kb memory)))))
+                 collect (make-process-model
+                          :pid pid
+                          :user (process-counters-user proc)
+                          :state (process-counters-state proc)
+                          :cpu-pct cpu-pct
+                          :mem-pct mem-pct
+                          :rss-kb (process-counters-rss-kb proc)
+                          :command (process-counters-command proc)))))
     (make-atop-model
      :collected-at-ms (host-snapshot-timestamp-ms current)
      :cpu (make-cpu-model
@@ -577,7 +787,8 @@
              :tcp-curr-estab (tcpip-counters-tcp-curr-estab tcp)
              :ip-in-receives (tcpip-counters-ip-in-receives tcp)
              :ip-in-delivers (tcpip-counters-ip-in-delivers tcp)
-             :ip-out-requests (tcpip-counters-ip-out-requests tcp)))))
+             :ip-out-requests (tcpip-counters-ip-out-requests tcp))
+     :processes (%sort-process-models processes :cpu))))
 
 (defun %safe-kib->string (kib)
   (cond
@@ -694,9 +905,156 @@
                   (tcpip-model-ip-in-delivers tcpip)
                   (tcpip-model-ip-out-requests tcpip)))))
 
+(defun %process-count (state)
+  (length (atop-model-processes (atop-dashboard-state-model state))))
+
+(defun %normalize-process-selection (state)
+  (let* ((count (%process-count state))
+         (selected (if (> count 0)
+                       (max 0 (min (atop-dashboard-state-process-selected-index state)
+                                   (1- count)))
+                       0)))
+    (setf (atop-dashboard-state-process-selected-index state) selected)
+    (when (zerop count)
+      (setf (atop-dashboard-state-show-process-detail-p state) nil))
+    state))
+
+(defun %resort-processes (state)
+  (let* ((model (atop-dashboard-state-model state))
+         (sort-key (atop-dashboard-state-process-sort-key state)))
+    (setf (atop-model-processes model)
+          (%sort-process-models (atop-model-processes model) sort-key))
+    (%normalize-process-selection state)))
+
+(defun %move-process-selection (state delta)
+  (incf (atop-dashboard-state-process-selected-index state) delta)
+  (%normalize-process-selection state))
+
+(defun %set-process-sort-key (state sort-key)
+  (setf (atop-dashboard-state-process-sort-key state) sort-key)
+  (setf (atop-dashboard-state-status-line state)
+        (format nil "process sort: ~A" (%process-sort-label sort-key)))
+  (%resort-processes state))
+
+(defun %selected-process (state)
+  (let* ((processes (atop-model-processes (atop-dashboard-state-model state)))
+         (count (length processes)))
+    (when (> count 0)
+      (nth (max 0 (min (atop-dashboard-state-process-selected-index state)
+                       (1- count)))
+           processes))))
+
+(defun %toggle-process-detail (state)
+  (let ((selected (%selected-process state)))
+    (setf (atop-dashboard-state-show-process-detail-p state)
+          (and selected
+               (not (atop-dashboard-state-show-process-detail-p state)))))
+  state)
+
+(defun %draw-process-table (buf rect state)
+  (let* ((x (ptui.core.types:rect-x rect))
+         (y (ptui.core.types:rect-y rect))
+         (w (ptui.core.types:rect-w rect))
+         (h (ptui.core.types:rect-h rect))
+         (title-cell (%template-cell :fg (ptui.core.color:make-color-rgb 255 210 130) :boldp t))
+         (header-cell (%template-cell :fg (ptui.core.color:make-color-rgb 160 220 255) :boldp t))
+         (line-cell (%template-cell :fg (ptui.core.color:make-color-rgb 220 220 220)))
+         (selected-cell (%template-cell :fg (ptui.core.color:make-color-rgb 255 255 170) :boldp t))
+         (processes (atop-model-processes (atop-dashboard-state-model state)))
+         (count (length processes))
+         (selected (max 0 (min (atop-dashboard-state-process-selected-index state)
+                               (max 0 (1- count)))))
+         (visible-rows (max 0 (- h 3)))
+         (start (if (and (> visible-rows 0) (> count visible-rows))
+                    (max 0 (min (- selected (floor visible-rows 2))
+                                (- count visible-rows)))
+                    0)))
+    (when (and (>= w 8) (>= h 4))
+      (ptui.render.buffer:buffer-draw-border buf rect :border-style :square)
+      (ptui.render.buffer:buffer-draw-text
+       buf
+       (+ x 2)
+       y
+       (list (list (%fit-width
+                    (format nil "Processes (~D) sort: ~A"
+                            count
+                            (%process-sort-label
+                             (atop-dashboard-state-process-sort-key state)))
+                    (max 0 (- w 4)))
+                   title-cell)))
+      (ptui.render.buffer:buffer-draw-text
+       buf
+       (1+ x)
+       (1+ y)
+       (list (list (%fit-width "SEL PID    USER       ST  CPU%   MEM%   COMMAND"
+                               (max 0 (- w 2)))
+                   header-cell)))
+      (if (zerop count)
+          (ptui.render.buffer:buffer-draw-text
+           buf
+           (1+ x)
+           (+ y 2)
+           (list (list (%fit-width "no process snapshot data" (max 0 (- w 2)))
+                       line-cell)))
+          (loop for idx from start below (min count (+ start visible-rows))
+                for row from 0
+                for proc = (nth idx processes)
+                for row-selected = (= idx selected) do
+                  (ptui.render.buffer:buffer-draw-text
+                   buf
+                   (1+ x)
+                   (+ y 2 row)
+                   (list
+                    (list
+                     (%fit-width
+                      (format nil "~A ~6D ~10A ~2A ~6,1f ~6,1f ~A"
+                              (if row-selected ">" " ")
+                              (process-model-pid proc)
+                              (process-model-user proc)
+                              (process-model-state proc)
+                              (process-model-cpu-pct proc)
+                              (process-model-mem-pct proc)
+                              (process-model-command proc))
+                      (max 0 (- w 2)))
+                     (if row-selected selected-cell line-cell)))))))))
+
+(defun %draw-process-detail-overlay (buf cols rows state)
+  (let ((selected (%selected-process state)))
+    (when selected
+      (let* ((w (min 72 (max 30 (- cols 8))))
+             (h (min 8 (max 6 (- rows 8))))
+             (x (max 1 (floor (- cols w) 2)))
+             (y (max 1 (floor (- rows h) 2)))
+             (rect (ptui.core.types:make-rect x y w h))
+             (title-cell (%template-cell :fg (ptui.core.color:make-color-rgb 255 220 120) :boldp t))
+             (line-cell (%template-cell :fg (ptui.core.color:make-color-rgb 235 235 235)))
+             (lines (list
+                     "Focused Process"
+                     (format nil "PID ~D   USER ~A   STATE ~A"
+                             (process-model-pid selected)
+                             (process-model-user selected)
+                             (process-model-state selected))
+                     (format nil "CPU ~,1f%   MEM ~,1f%   RSS ~A"
+                             (process-model-cpu-pct selected)
+                             (process-model-mem-pct selected)
+                             (%safe-kib->string (process-model-rss-kb selected)))
+                     (format nil "CMD ~A" (process-model-command selected))
+                     "Enter toggles detail, Up/Down or j/k moves selection."))
+             )
+        (ptui.render.buffer:buffer-draw-border buf rect :border-style :square)
+        (loop for line in lines
+              for idx from 0
+              while (< idx (max 0 (- h 2))) do
+                (ptui.render.buffer:buffer-draw-text
+                 buf
+                 (+ x 2)
+                 (+ y 1 idx)
+                 (list (list (%fit-width line (max 0 (- w 4)))
+                             (if (zerop idx) title-cell line-cell)))))))))
+
 (defun %draw-help-overlay (buf cols rows)
   (let* ((w (min 62 (max 24 (- cols 6))))
-         (h (min 10 (max 6 (- rows 6))))
+         (h (min 13 (max 8 (- rows 6))))
          (x (max 1 (floor (- cols w) 2)))
          (y (max 1 (floor (- rows h) 2)))
          (rect (ptui.core.types:make-rect x y w h))
@@ -706,6 +1064,10 @@
                   "q / Ctrl-C  quit"
                   "p           pause/resume refresh"
                   "? or h      toggle this help"
+                  "up/down     move process selection"
+                  "j/k         move process selection"
+                  "c/m/n       sort process table (cpu/mem/pid)"
+                  "Enter       toggle focused process detail"
                   "Panels: CPU, Memory, Filesystem, Disk I/O, Network, TCP/IP")))
     (ptui.render.buffer:buffer-draw-border buf rect :border-style :square)
     (loop for line in lines
@@ -740,6 +1102,7 @@
         (error (err)
           (setf (atop-dashboard-state-status-line state)
                 (format nil "refresh error: ~A" err)))))
+    (%resort-processes state)
     state))
 
 (defun %render-atop-dashboard (state size)
@@ -748,12 +1111,18 @@
          (rows (ptui.core.types:size-rows size))
          (model (atop-dashboard-state-model (%refresh-state-if-needed dashboard-state)))
          (buf (ptui.render.buffer:make-buffer cols rows))
-         (panel-top 2)
-         (panel-bottom (max panel-top (- rows 2)))
-         (panel-height (max 0 (- panel-bottom panel-top)))
+         (content-top 2)
+         (content-bottom (max content-top (- rows 3)))
+         (content-height (max 0 (- content-bottom content-top)))
+         (process-height (cond
+                           ((>= content-height 16) 8)
+                           ((>= content-height 12) 6)
+                           ((>= content-height 8) 5)
+                           (t 0)))
+         (host-height (max 0 (- content-height process-height)))
          (panel-width (max 0 (- cols 2)))
          (col-widths (%partition-dimension panel-width 2))
-         (row-heights (%partition-dimension panel-height 3))
+         (row-heights (%partition-dimension host-height 3))
          (header-cell (%template-cell :fg (ptui.core.color:make-color-rgb 120 220 255) :boldp t))
          (status-cell (%template-cell :fg (ptui.core.color:make-color-rgb 180 180 180)))
          (hint-cell (%template-cell :fg (ptui.core.color:make-color-rgb 170 170 170))))
@@ -764,24 +1133,30 @@
      buf
      2
      1
-     (list
-      (list (%fit-width "PTUI Atop Dashboard v1 (Linux /proc + /sys)"
-                        (max 0 (- cols 4)))
-            header-cell)))
-    (loop for row from 0 below 3 do
-      (loop for col from 0 below 2 do
-        (let* ((x (+ 1 (if (zerop col) 0 (first col-widths))))
-               (y (+ panel-top (reduce #'+ row-heights :end row :initial-value 0)))
-               (w (nth col col-widths))
-               (h (nth row row-heights))
-               (rect (ptui.core.types:make-rect x y w h)))
-          (case (+ (* row 2) col)
-            (0 (%draw-panel buf rect "CPU" (%cpu-lines model)))
-            (1 (%draw-panel buf rect "Memory" (%memory-lines model)))
-            (2 (%draw-panel buf rect "Filesystem" (%filesystem-lines model)))
-            (3 (%draw-panel buf rect "Disk I/O" (%disk-lines model)))
-            (4 (%draw-panel buf rect "Network" (%network-lines model)))
-            (5 (%draw-panel buf rect "TCP/IP" (%tcpip-lines model)))))))
+      (list
+       (list (%fit-width "PTUI Atop Dashboard v1 (Linux /proc + /sys)"
+                         (max 0 (- cols 4)))
+             header-cell)))
+    (when (> host-height 0)
+      (loop for row from 0 below 3 do
+        (loop for col from 0 below 2 do
+          (let* ((x (+ 1 (if (zerop col) 0 (first col-widths))))
+                 (y (+ content-top (reduce #'+ row-heights :end row :initial-value 0)))
+                 (w (nth col col-widths))
+                 (h (nth row row-heights))
+                 (rect (ptui.core.types:make-rect x y w h)))
+            (case (+ (* row 2) col)
+              (0 (%draw-panel buf rect "CPU" (%cpu-lines model)))
+              (1 (%draw-panel buf rect "Memory" (%memory-lines model)))
+              (2 (%draw-panel buf rect "Filesystem" (%filesystem-lines model)))
+              (3 (%draw-panel buf rect "Disk I/O" (%disk-lines model)))
+              (4 (%draw-panel buf rect "Network" (%network-lines model)))
+              (5 (%draw-panel buf rect "TCP/IP" (%tcpip-lines model))))))))
+    (when (> process-height 0)
+      (%draw-process-table
+       buf
+       (ptui.core.types:make-rect 1 (+ content-top host-height) panel-width process-height)
+       dashboard-state))
     (when (> rows 1)
       (ptui.render.buffer:buffer-draw-text
        buf
@@ -799,13 +1174,15 @@
        (max 0 (- rows 1))
        (list (list (%fit-width
                     (format nil
-                            "q quit | p pause/resume | ? help | refresh ~D ms | mode: ~A"
+                            "q quit | p pause/resume | ? help | c/m/n sort | Enter details | refresh ~D ms | mode: ~A"
                             (atop-dashboard-state-refresh-ms dashboard-state)
                             (if (atop-dashboard-state-pausedp dashboard-state)
                                 "paused"
                                 "running"))
                     (max 0 (- cols 4)))
                    hint-cell))))
+    (when (atop-dashboard-state-show-process-detail-p dashboard-state)
+      (%draw-process-detail-overlay buf cols rows dashboard-state))
     (when (atop-dashboard-state-show-help-p dashboard-state)
       (%draw-help-overlay buf cols rows))
     buf))
@@ -830,7 +1207,8 @@
   (let ((dashboard-state (%ensure-state state)))
     (when (typep event 'ptui.core.events:key-event)
       (let ((key (ptui.core.events:key-event-key event))
-            (text (or (ptui.core.events:key-event-text? event) "")))
+            (text (or (ptui.core.events:key-event-text? event) ""))
+            (text-down (string-downcase (or (ptui.core.events:key-event-text? event) ""))))
         (when (and (eql key :text)
                    (or (string= text "p")
                        (string= text "P")
@@ -840,7 +1218,23 @@
                    (or (string= text "?")
                        (string= text "h")
                        (string= text "H")))
-          (%toggle-help dashboard-state))))
+          (%toggle-help dashboard-state))
+        (when (eql key :up)
+          (%move-process-selection dashboard-state -1))
+        (when (eql key :down)
+          (%move-process-selection dashboard-state 1))
+        (when (and (eql key :text) (string= text-down "k"))
+          (%move-process-selection dashboard-state -1))
+        (when (and (eql key :text) (string= text-down "j"))
+          (%move-process-selection dashboard-state 1))
+        (when (and (eql key :text) (string= text-down "c"))
+          (%set-process-sort-key dashboard-state :cpu))
+        (when (and (eql key :text) (string= text-down "m"))
+          (%set-process-sort-key dashboard-state :mem))
+        (when (and (eql key :text) (string= text-down "n"))
+          (%set-process-sort-key dashboard-state :pid))
+        (when (eql key :enter)
+          (%toggle-process-detail dashboard-state))))
     dashboard-state))
 
 (defun main (&rest argv)

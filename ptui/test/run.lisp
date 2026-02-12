@@ -136,7 +136,8 @@
                                      (tcp-curr-estab 0)
                                      (ip-in-receives 0)
                                      (ip-in-delivers 0)
-                                     (ip-out-requests 0))
+                                     (ip-out-requests 0)
+                                     (processes '()))
   (ptui.examples.atop-dashboard::make-host-snapshot
    :timestamp-ms timestamp-ms
    :cpu (ptui.examples.atop-dashboard::make-cpu-counters
@@ -179,7 +180,22 @@
            :tcp-curr-estab tcp-curr-estab
            :ip-in-receives ip-in-receives
            :ip-in-delivers ip-in-delivers
-           :ip-out-requests ip-out-requests)))
+           :ip-out-requests ip-out-requests)
+   :processes processes))
+
+(defun make-process-counters-fixture (pid &key
+                                       (user "root")
+                                       (state "R")
+                                       (cpu-total-ticks 0)
+                                       (rss-kb 0)
+                                       (command "cmd"))
+  (ptui.examples.atop-dashboard::make-process-counters
+   :pid pid
+   :user user
+   :state state
+   :cpu-total-ticks cpu-total-ticks
+   :rss-kb rss-kb
+   :command command))
 
 (defun run-all-tests ()
   (let ((passed 0)
@@ -965,6 +981,27 @@
                 "Tcp: 1 200 120000 -1 7 9 0 0 11 300 500 12"
                 "Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates"
                 "Ip: 1 64 901 0 0 0 0 0 777 888 0 0 0 0 0 0 0 0 0"))
+             ((string= path "/etc/passwd")
+              '("root:x:0:0:root:/root:/bin/bash"
+                "alice:x:1000:1000:alice:/home/alice:/bin/bash"))
+             ((string= path "/proc/111/stat")
+              '("111 (python3) S 1 1 1 0 -1 0 0 0 0 0 120 30 0 0 20 0 1 0 100 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"))
+             ((string= path "/proc/111/status")
+              '("Name: python3"
+                "State: S (sleeping)"
+                "Uid: 1000 1000 1000 1000"
+                "VmRSS: 20480 kB"))
+             ((string= path "/proc/111/cmdline")
+              (list (format nil "python3~Cworker.py" #\Null)))
+             ((string= path "/proc/222/stat")
+              '("222 (sshd) R 1 1 1 0 -1 0 0 0 0 0 240 40 0 0 20 0 1 0 200 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"))
+             ((string= path "/proc/222/status")
+              '("Name: sshd"
+                "State: R (running)"
+                "Uid: 0 0 0 0"
+                "VmRSS: 1024 kB"))
+             ((string= path "/proc/222/cmdline")
+              '("sshd: root@pts/0"))
              ((string= path "/sys/class/net/eth0/speed")
               '("1000"))
              ((string= path "/sys/class/net/wlan0/speed")
@@ -983,6 +1020,9 @@
                ((string= text "/sys/block/*/queue/rotational")
                 (list #P"/sys/block/sda/queue/rotational"
                       #P"/sys/block/nvme0n1/queue/rotational"))
+               ((string= text "/proc/[0-9]*/stat")
+                (list #P"/proc/111/stat"
+                      #P"/proc/222/stat"))
                (t '())))))
     (let* ((snapshot (ptui.examples.atop-dashboard:collect-host-snapshot
                       :read-lines-fn #'fake-read-lines
@@ -993,7 +1033,10 @@
            (fs (ptui.examples.atop-dashboard::host-snapshot-filesystem snapshot))
            (disk (ptui.examples.atop-dashboard::host-snapshot-disk snapshot))
            (net (ptui.examples.atop-dashboard::host-snapshot-network snapshot))
-           (tcp (ptui.examples.atop-dashboard::host-snapshot-tcpip snapshot)))
+           (tcp (ptui.examples.atop-dashboard::host-snapshot-tcpip snapshot))
+           (processes (ptui.examples.atop-dashboard::host-snapshot-processes snapshot))
+           (proc-a (first processes))
+           (proc-b (second processes)))
       (assert-true (= (ptui.examples.atop-dashboard::host-snapshot-timestamp-ms snapshot) 2468)
                    "snapshot timestamp should come from now-ms-fn")
       (assert-true (= (ptui.examples.atop-dashboard::cpu-counters-user cpu) 100)
@@ -1031,7 +1074,18 @@
       (assert-true (= (ptui.examples.atop-dashboard::tcpip-counters-tcp-retrans-segs tcp) 12)
                    "tcp retrans parse mismatch")
       (assert-true (= (ptui.examples.atop-dashboard::tcpip-counters-ip-out-requests tcp) 888)
-                   "ip out requests parse mismatch"))))
+                   "ip out requests parse mismatch")
+      (assert-true (= (length processes) 2)
+                   "process snapshot count mismatch")
+      (assert-true (= (ptui.examples.atop-dashboard::process-counters-pid proc-a) 111)
+                   "process rows should be deterministic by pid")
+      (assert-true (string= (ptui.examples.atop-dashboard::process-counters-user proc-a) "alice")
+                   "process user lookup mismatch")
+      (assert-true (string= (ptui.examples.atop-dashboard::process-counters-command proc-a)
+                            "python3 worker.py")
+                   "process command normalization mismatch")
+      (assert-true (string= (ptui.examples.atop-dashboard::process-counters-state proc-b) "R")
+                   "process state parse mismatch"))))
 
 (deftest atop-build-model-computes-deltas-and-rates
   (let* ((previous (make-atop-snapshot-fixture
@@ -1047,7 +1101,14 @@
                     :rx-bytes 10000 :tx-bytes 5000
                     :rx-packets 100 :tx-packets 50
                     :fastest-link-mbps 1000
-                    :tcp-in-segs 100 :tcp-out-segs 100 :tcp-retrans-segs 5))
+                    :tcp-in-segs 100 :tcp-out-segs 100 :tcp-retrans-segs 5
+                    :processes (list
+                                (make-process-counters-fixture 10 :user "root" :state "R"
+                                                               :cpu-total-ticks 100 :rss-kb 100
+                                                               :command "sshd")
+                                (make-process-counters-fixture 20 :user "alice" :state "S"
+                                                               :cpu-total-ticks 200 :rss-kb 200
+                                                               :command "python app.py"))))
          (current (make-atop-snapshot-fixture
                    :timestamp-ms 3000
                    :cpu-user 50 :cpu-system 40 :cpu-idle 110 :cpu-iowait 0
@@ -1061,13 +1122,24 @@
                    :rx-bytes 20240 :tx-bytes 9100
                    :rx-packets 140 :tx-packets 80
                    :fastest-link-mbps 1000
-                   :tcp-in-segs 140 :tcp-out-segs 200 :tcp-retrans-segs 10))
+                   :tcp-in-segs 140 :tcp-out-segs 200 :tcp-retrans-segs 10
+                   :processes (list
+                               (make-process-counters-fixture 10 :user "root" :state "R"
+                                                              :cpu-total-ticks 180 :rss-kb 120
+                                                              :command "sshd")
+                               (make-process-counters-fixture 20 :user "alice" :state "S"
+                                                              :cpu-total-ticks 220 :rss-kb 240
+                                                              :command "python app.py")
+                               (make-process-counters-fixture 30 :user "bob" :state "D"
+                                                              :cpu-total-ticks 50 :rss-kb 300
+                                                              :command "postgres"))))
          (model (ptui.examples.atop-dashboard:build-atop-model previous current))
          (cpu (ptui.examples.atop-dashboard::atop-model-cpu model))
          (memory (ptui.examples.atop-dashboard::atop-model-memory model))
          (disk (ptui.examples.atop-dashboard::atop-model-disk model))
          (network (ptui.examples.atop-dashboard::atop-model-network model))
-         (tcp (ptui.examples.atop-dashboard::atop-model-tcpip model)))
+         (tcp (ptui.examples.atop-dashboard::atop-model-tcpip model))
+         (processes (ptui.examples.atop-dashboard::atop-model-processes model)))
     (assert-near (ptui.examples.atop-dashboard::cpu-model-usage-pct cpu) 60.0 0.001
                  "cpu usage percent mismatch")
     (assert-near (ptui.examples.atop-dashboard::cpu-model-user-pct cpu) 40.0 0.001
@@ -1099,7 +1171,17 @@
     (assert-near (ptui.examples.atop-dashboard::network-model-tx-pps network) 15.0 0.001
                  "network tx pps mismatch")
     (assert-near (ptui.examples.atop-dashboard::tcpip-model-tcp-retrans-pct tcp) 5.0 0.001
-                 "tcp retrans percent mismatch")))
+                 "tcp retrans percent mismatch")
+    (assert-true (= (length processes) 3)
+                 "process model count mismatch")
+    (assert-true (= (ptui.examples.atop-dashboard::process-model-pid (first processes)) 10)
+                 "default process sort should be cpu desc then pid")
+    (assert-near (ptui.examples.atop-dashboard::process-model-cpu-pct (first processes)) 40.0 0.001
+                 "process cpu percent mismatch")
+    (assert-near (ptui.examples.atop-dashboard::process-model-mem-pct (first processes)) 12.0 0.001
+                 "process mem percent mismatch")
+    (assert-true (= (ptui.examples.atop-dashboard::process-model-pid (third processes)) 30)
+                 "new process with no prior sample should sort last by cpu")))
 
 (deftest atop-render-displays-dense-panels-and-help-overlay
   (let* ((model (ptui.examples.atop-dashboard:build-atop-model
@@ -1113,7 +1195,14 @@
                   :iface-count 2
                   :read-ios 100 :write-ios 80
                   :read-sectors 320 :write-sectors 240
-                  :tcp-in-segs 123 :tcp-out-segs 456 :tcp-retrans-segs 7)))
+                  :tcp-in-segs 123 :tcp-out-segs 456 :tcp-retrans-segs 7
+                  :processes (list
+                              (make-process-counters-fixture 400 :user "root" :state "S"
+                                                             :cpu-total-ticks 500 :rss-kb 128
+                                                             :command "dockerd")
+                              (make-process-counters-fixture 1010 :user "alice" :state "R"
+                                                             :cpu-total-ticks 1500 :rss-kb 512
+                                                             :command "python worker.py")))))
          (state (ptui.examples.atop-dashboard:make-atop-dashboard-state
                  :model model
                  :snapshot (make-atop-snapshot-fixture :timestamp-ms 4000)
@@ -1133,6 +1222,10 @@
     (assert-true (search "Disk I/O" flat) "render missing Disk I/O panel")
     (assert-true (search "Network" flat) "render missing Network panel")
     (assert-true (search "TCP/IP" flat) "render missing TCP/IP panel")
+    (assert-true (search "Processes (2)" flat)
+                 "render missing process table")
+    (assert-true (search "PID    USER" flat)
+                 "render missing process table header")
     (assert-true (search "q quit | p pause/resume | ? help" flat)
                  "render missing control hint line")
     (assert-true (not (search "%%" flat))
@@ -1166,6 +1259,94 @@
     (setf state (ptui.examples.atop-dashboard::%on-atop-event state hide-help-event))
     (assert-true (not (ptui.examples.atop-dashboard::atop-dashboard-state-show-help-p state))
                  "h should disable help overlay")))
+
+(deftest atop-render-process-detail-overlay
+  (let* ((state (ptui.examples.atop-dashboard:make-atop-dashboard-state
+                 :model (ptui.examples.atop-dashboard::make-atop-model
+                         :processes (list
+                                     (ptui.examples.atop-dashboard::make-process-model
+                                      :pid 7 :user "root" :state "S"
+                                      :cpu-pct 1.0 :mem-pct 0.2 :rss-kb 128
+                                      :command "systemd")
+                                     (ptui.examples.atop-dashboard::make-process-model
+                                      :pid 42 :user "alice" :state "R"
+                                      :cpu-pct 88.0 :mem-pct 12.0 :rss-kb 8192
+                                      :command "python pipeline.py")))
+                 :process-selected-index 0
+                 :show-process-detail-p t
+                 :collect-fn (lambda () (error "collect should not run during detail render test"))
+                 :now-ms-fn (lambda () 1000)))
+         (buf (ptui.examples.atop-dashboard::%render-atop-dashboard
+               state
+               (ptui.core.types:make-size 100 28)))
+         (flat (buffer->flat-text buf)))
+    (assert-true (search "Focused Process" flat)
+                 "detail overlay title missing")
+    (assert-true (search "PID 42" flat)
+                 "detail overlay should show selected pid")
+    (assert-true (search "python pipeline.py" flat)
+                 "detail overlay should show selected command")))
+
+(deftest atop-event-contract-process-table-interactions
+  (let* ((state (ptui.examples.atop-dashboard:make-atop-dashboard-state
+                 :model (ptui.examples.atop-dashboard::make-atop-model
+                         :processes (list
+                                     (ptui.examples.atop-dashboard::make-process-model
+                                      :pid 100 :user "alice" :state "S"
+                                      :cpu-pct 40.0 :mem-pct 2.0 :rss-kb 200
+                                      :command "python a.py")
+                                     (ptui.examples.atop-dashboard::make-process-model
+                                      :pid 200 :user "root" :state "R"
+                                      :cpu-pct 20.0 :mem-pct 20.0 :rss-kb 800
+                                      :command "db")
+                                     (ptui.examples.atop-dashboard::make-process-model
+                                      :pid 50 :user "root" :state "S"
+                                      :cpu-pct 1.0 :mem-pct 30.0 :rss-kb 900
+                                      :command "cache")))))
+         (down-event (ptui.core.events:make-key-event :down))
+         (j-event (ptui.core.events:make-key-event :text :text? "j"))
+         (up-event (ptui.core.events:make-key-event :up))
+         (k-event (ptui.core.events:make-key-event :text :text? "k"))
+         (sort-mem-event (ptui.core.events:make-key-event :text :text? "m"))
+         (sort-pid-event (ptui.core.events:make-key-event :text :text? "n"))
+         (detail-event (ptui.core.events:make-key-event :enter))
+         (pause-event (ptui.core.events:make-key-event :text :text? "p"))
+         (help-event (ptui.core.events:make-key-event :text :text? "?")))
+    (setf state (ptui.examples.atop-dashboard::%on-atop-event state down-event))
+    (setf state (ptui.examples.atop-dashboard::%on-atop-event state j-event))
+    (assert-true (= (ptui.examples.atop-dashboard::atop-dashboard-state-process-selected-index state) 2)
+                 "down + j should move selection by two")
+    (setf state (ptui.examples.atop-dashboard::%on-atop-event state up-event))
+    (setf state (ptui.examples.atop-dashboard::%on-atop-event state k-event))
+    (assert-true (= (ptui.examples.atop-dashboard::atop-dashboard-state-process-selected-index state) 0)
+                 "up + k should move selection back to zero")
+    (setf state (ptui.examples.atop-dashboard::%on-atop-event state sort-mem-event))
+    (assert-true (eql (ptui.examples.atop-dashboard::atop-dashboard-state-process-sort-key state) :mem)
+                 "m should switch process sort key to :mem")
+    (assert-true (= (ptui.examples.atop-dashboard::process-model-pid
+                     (first (ptui.examples.atop-dashboard::atop-model-processes
+                             (ptui.examples.atop-dashboard::atop-dashboard-state-model state))))
+                    50)
+                 "mem sort should move highest memory process first")
+    (setf state (ptui.examples.atop-dashboard::%on-atop-event state sort-pid-event))
+    (assert-true (eql (ptui.examples.atop-dashboard::atop-dashboard-state-process-sort-key state) :pid)
+                 "n should switch process sort key to :pid")
+    (assert-true (= (ptui.examples.atop-dashboard::process-model-pid
+                     (first (ptui.examples.atop-dashboard::atop-model-processes
+                             (ptui.examples.atop-dashboard::atop-dashboard-state-model state))))
+                    50)
+                 "pid sort should be deterministic ascending")
+    (setf state (ptui.examples.atop-dashboard::%on-atop-event state detail-event))
+    (assert-true (ptui.examples.atop-dashboard::atop-dashboard-state-show-process-detail-p state)
+                 "enter should enable process detail overlay")
+    (setf state (ptui.examples.atop-dashboard::%on-atop-event state pause-event))
+    (setf state (ptui.examples.atop-dashboard::%on-atop-event state help-event))
+    (assert-true (ptui.examples.atop-dashboard::atop-dashboard-state-pausedp state)
+                 "pause key should still work when process interactions are active")
+    (assert-true (ptui.examples.atop-dashboard::atop-dashboard-state-show-help-p state)
+                 "help key should coexist with process interactions")
+    (assert-true (ptui.examples.atop-dashboard::atop-dashboard-state-show-process-detail-p state)
+                 "detail overlay should stay enabled after pause/help toggles")))
 
 ;; Script entry
 (multiple-value-bind (passed failed) (run-all-tests)
