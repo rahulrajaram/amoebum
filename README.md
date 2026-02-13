@@ -15,6 +15,12 @@ Run from repo root:
 1. `yarli run --stream`
 2. If stream rendering is unavailable, Yarli falls back to headless mode and should continue emitting structured stderr progress.
 
+Authority model:
+
+1. `yarli.toml` is the execution authority for Yarli runtime behavior.
+2. `PROMPT.md` is intent-only (objective/context), not an operator runbook.
+3. `IMPLEMENTATION_PLAN.md` is tranche scope/state authority.
+
 Run and task triage:
 
 1. `yarli run status <run-id>`
@@ -27,4 +33,3 @@ Audit inspection:
 
 1. `yarli audit tail --lines 100`
 2. Expect policy decisions plus command execution entries (command key, exit code, stderr excerpt, duration) when command auditing is enabled.
-
