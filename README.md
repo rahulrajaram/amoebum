@@ -12,8 +12,9 @@ See `ptui/README.md` for system/module layout and how to load/run.
 
 Run from repo root:
 
-1. `yarli run --stream`
-2. If stream rendering is unavailable, Yarli falls back to headless mode and should continue emitting structured stderr progress.
+1. `./bin/yarli-sanitize-continuation.sh`
+2. `yarli run --stream`
+3. If stream rendering is unavailable, Yarli falls back to headless mode and should continue emitting structured stderr progress.
 
 Authority model:
 
