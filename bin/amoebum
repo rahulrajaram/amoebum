@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  bin/amoebum
+
+Behavior:
+  1) sanitize continuation state
+  2) run `yarli run --stream`
+
+No subcommands or arguments are supported.
+EOF
+}
+
+fail() {
+  echo "AMOEBUM_ERROR: $*" >&2
+  exit 1
+}
+
+require_cmd() {
+  local cmd="$1"
+  command -v "${cmd}" >/dev/null 2>&1 || fail "missing required command: ${cmd}"
+}
+
+require_file() {
+  local path="$1"
+  [[ -f "${path}" ]] || fail "missing required file: ${path}"
+}
+
+main() {
+  if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    usage
+    exit 0
+  fi
+
+  if [[ $# -ne 0 ]]; then
+    fail "no arguments supported (use: bin/amoebum)"
+  fi
+
+  require_cmd yarli
+  require_file "${REPO_ROOT}/bin/yarli-sanitize-continuation.sh"
+
+  (
+    cd "${REPO_ROOT}"
+    "${REPO_ROOT}/bin/yarli-sanitize-continuation.sh"
+  )
+
+  (
+    cd "${REPO_ROOT}"
+    exec yarli run --stream
+  )
+}
+
+main "$@"

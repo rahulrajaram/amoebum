@@ -8,6 +8,18 @@ Licensing: see `LICENSE`.
 
 See `ptui/README.md` for system/module layout and how to load/run.
 
+## Amoebum CLI
+
+Use the single entrypoint from repo root:
+
+1. `./bin/amoebum`
+
+Behavior:
+
+1. Runs `./bin/yarli-sanitize-continuation.sh`
+2. Runs `yarli run --stream`
+3. Rejects any subcommands/arguments
+
 ## Yarli Usage
 
 Run from repo root:
