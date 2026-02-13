@@ -1,5 +1,5 @@
-(asdf:defsystem "moonshot-common-lisp"
-  :description "Thin Common Lisp client for Moonshot/Kimi OpenAI-compatible chat completions API."
+(asdf:defsystem "pseudopod"
+  :description "Common Lisp client for Moonshot/Kimi API — amoebum's reach into the Moonshot ecosystem."
   :author "amoebum"
   :license "MIT"
   :version "0.1.0"

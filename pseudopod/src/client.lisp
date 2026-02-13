@@ -1,4 +1,4 @@
-(in-package :moonshot-common-lisp)
+(in-package :pseudopod)
 
 (defparameter *default-base-url* "https://api.moonshot.ai/v1")
 (defparameter *default-model* "kimi-k2.5")

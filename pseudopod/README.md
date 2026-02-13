@@ -1,6 +1,8 @@
-# moonshot-common-lisp
+# pseudopod
 
-Thin Common Lisp client for Moonshot's OpenAI-compatible API, with defaults for Kimi K2.5.
+Common Lisp client for Moonshot's OpenAI-compatible API — amoebum's reach into the Moonshot ecosystem.
+
+Defaults to Kimi K2.5.
 
 ## Defaults
 
@@ -15,38 +17,42 @@ Thin Common Lisp client for Moonshot's OpenAI-compatible API, with defaults for 
 ```lisp
 (load "/path/to/amoebum/ptui/.tools/quicklisp/setup.lisp") ; or your own Quicklisp setup
 (require :asdf)
-(asdf:load-asd #P"/path/to/amoebum/moonshot-common-lisp/moonshot-common-lisp.asd")
-(asdf:load-system "moonshot-common-lisp")
+(asdf:load-asd #P"/path/to/amoebum/pseudopod/pseudopod.asd")
+(asdf:load-system "pseudopod")
 ```
 
 ## Usage
 
 ```lisp
-(defparameter *client* (moonshot-common-lisp:make-client))
+(defparameter *client* (pseudopod:make-client))
 
 ;; Streaming output (prints reasoning + content chunks).
-(moonshot-common-lisp:print-streamed-completion
+(pseudopod:print-streamed-completion
  *client*
  "Write a short haiku about Common Lisp and moonlight.")
 
 ;; Parsed non-streaming JSON response (hash table).
-(moonshot-common-lisp:chat-completion
+(pseudopod:chat-completion
  *client*
  "Say hello in one sentence.")
 ```
+
+## Backward Compatibility
+
+The package `:pseudopod` has `:moonshot-common-lisp` as a nickname. Existing code using the old package name will continue to work.
 
 ## Connectivity Smoke Test
 
 Run:
 
 ```bash
-sbcl --script ./moonshot-common-lisp/smoke-test.lisp
+sbcl --script ./pseudopod/smoke-test.lisp
 ```
 
 Expected success output:
 
 ```text
-MOONSHOT_SMOKE_OK
+PSEUDOPOD_SMOKE_OK
 assistant=MOONSHOT_OK
 ```
 

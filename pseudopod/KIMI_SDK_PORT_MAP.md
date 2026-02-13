@@ -17,7 +17,7 @@ Monorepo: `https://github.com/MoonshotAI/kimi-cli`
 
 ## Current Lisp Status
 
-Implemented in this repo (`moonshot-common-lisp`):
+Implemented in this repo (`pseudopod`, formerly `moonshot-common-lisp`):
 
 - HTTP/JSON non-stream call (`chat-completion`)
 - SSE stream call (`stream-chat-completion`)

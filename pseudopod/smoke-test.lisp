@@ -9,8 +9,8 @@
                             (error "Missing symbol LOAD-SYSTEM in ASDF package")))
        (load-asd-fn (symbol-function load-asd-sym))
        (load-system-fn (symbol-function load-system-sym)))
-  (funcall load-asd-fn #P"/home/rahul/Documents/amoebum/moonshot-common-lisp/moonshot-common-lisp.asd")
-  (funcall load-system-fn "moonshot-common-lisp"))
+  (funcall load-asd-fn #P"/home/rahul/Documents/amoebum/pseudopod/pseudopod.asd")
+  (funcall load-system-fn "pseudopod"))
 
 (defun first-item (sequence)
   (cond
@@ -22,8 +22,8 @@
     (t nil)))
 
 (handler-case
-    (let* ((client (moonshot-common-lisp:make-client))
-           (response (moonshot-common-lisp:chat-completion
+    (let* ((client (pseudopod:make-client))
+           (response (pseudopod:chat-completion
                       client
                       "Reply with EXACTLY: MOONSHOT_OK"
                       :system-prompt "You are a connectivity test assistant."))
@@ -33,8 +33,8 @@
            (content (and (hash-table-p message) (gethash "content" message))))
       (unless (stringp content)
         (error "Missing assistant content in response: ~S" response))
-      (format t "MOONSHOT_SMOKE_OK~%")
+      (format t "PSEUDOPOD_SMOKE_OK~%")
       (format t "assistant=~A~%" content))
   (error (e)
-    (format *error-output* "MOONSHOT_SMOKE_ERROR: ~A~%" e)
+    (format *error-output* "PSEUDOPOD_SMOKE_ERROR: ~A~%" e)
     (sb-ext:exit :code 1)))

@@ -1,5 +1,6 @@
-(defpackage :moonshot-common-lisp
+(defpackage :pseudopod
   (:use :cl)
+  (:nicknames :moonshot-common-lisp)
   (:export
    #:*default-base-url*
    #:*default-model*
