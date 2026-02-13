@@ -51,3 +51,17 @@ Tagging convention:
 
 1. Base tags: `yarli`, `postrun-observability`, `haake-postrun-memory-sync`.
 2. Outcome/state tags: `outcome-<success|failed>`, `run-state-<normalized-run-state>`.
+
+Deterioration pattern tracking:
+
+1. Run `./bin/yarli-deterioration-report.sh --window-runs <n>` to analyze recent run/task/audit signals and append a report entry to `.agent/deterioration-report.md`.
+2. Report format is `YARLI_DETERIORATION_REPORT_V1` with window summary, thresholded classification, `Trend Comparison` deltas (`previous_*`, `delta_*`), top signals, and a per-run trend table.
+3. Use `--dry-run` to inspect generated output without writing.
+4. Use `--synthetic-profile <observe|retry|remediate|escalate> --assert-action <class>` for deterministic classification probes.
+
+Alert/action classes:
+
+1. `observe`: continue normal execution and monitor trends.
+2. `retry`: retry transient failures before broader changes.
+3. `remediate`: run targeted remediation (for example `./bin/yarli-remediate-run.sh <run-id>`) before advancing.
+4. `escalate`: pause auto-advance and require operator review.
