@@ -7,4 +7,11 @@
   :serial t
   :components
   ((:file "src/package")
-   (:file "src/client")))
+   (:file "src/errors")
+   (:file "src/model/message")
+   (:file "src/model/model-info")
+   (:file "src/model/file-object")
+   (:file "src/tooling/registry")
+   (:file "src/client")
+   (:file "src/agent/generate")
+   (:file "src/agent/conversation")))

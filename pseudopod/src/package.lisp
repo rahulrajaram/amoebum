@@ -1,6 +1,7 @@
 (defpackage :pseudopod
   (:use :cl)
   (:nicknames :moonshot-common-lisp)
+  (:shadow #:step #:delete-file)
   (:export
    #:*default-base-url*
    #:*default-model*
@@ -15,7 +16,126 @@
    #:client-top-p
    #:client-timeout-seconds
    #:read-api-key
+   #:pseudopod-error
+   #:pseudopod-error-message
+   #:pseudopod-error-cause
+   #:pseudopod-auth-error
+   #:pseudopod-timeout-error
+   #:pseudopod-api-error
+   #:pseudopod-api-error-status-code
+   #:pseudopod-api-error-body
+   #:pseudopod-parse-error
+   #:pseudopod-parse-error-payload
+   #:extract-content
+   #:extract-role
+   #:extract-usage
+   #:content-part
+   #:content-part-p
+   #:content-part-type
+   #:content-part-text
+   #:content-part-think
+   #:content-part-encrypted
+   #:content-part-payload
+   #:make-text-part
+   #:make-think-part
+   #:content-part-to-hash
+   #:hash-to-content-part
+   #:tool-call
+   #:tool-call-p
+   #:tool-call-id
+   #:tool-call-name
+   #:tool-call-arguments
+   #:tool-call-extras
+   #:make-tool-call
+   #:tool-call-to-hash
+   #:hash-to-tool-call
+   #:message
+   #:message-p
+   #:make-message
+   #:message-role
+   #:message-name
+   #:message-content
+   #:message-tool-calls
+   #:message-tool-call-id
+   #:message-partial
+   #:message-to-hash
+   #:hash-to-message
+   #:model-info
+   #:model-info-p
+   #:model-info-id
+   #:model-info-object
+   #:model-info-created-at
+   #:model-info-owned-by
+   #:model-info-permission
+   #:model-info-extras
+   #:hash-to-model-info
+   #:file-object
+   #:file-object-p
+   #:file-object-id
+   #:file-object-object
+   #:file-object-filename
+   #:file-object-bytes
+   #:file-object-created-at
+   #:file-object-purpose
+   #:file-object-status
+   #:file-object-status-details
+   #:file-object-extras
+   #:hash-to-file-object
+   #:tool-definition
+   #:tool-definition-p
+   #:make-tool-definition
+   #:tool-definition-name
+   #:tool-definition-description
+   #:tool-definition-parameters
+   #:tool-definition-fn
+   #:tool-definition-to-hash
+   #:toolset
+   #:toolset-p
+   #:make-toolset
+   #:register-tool
+   #:register-tool-function
+   #:find-tool
+   #:toolset-tools
+   #:invoke-tool-call
+   #:generate-result
+   #:generate-result-p
+   #:generate-result-id
+   #:generate-result-message
+   #:generate-result-usage
+   #:generate-result-response
+   #:step-result
+   #:step-result-p
+   #:step-result-steps
+   #:step-result-history
+   #:step-result-final-message
+   #:step-result-last-message
+   #:step-result-max-steps-reached
+   #:step-result-tool-results
+   #:generate
+   #:step
+   #:conversation
+   #:conversation-p
+   #:make-conversation
+   #:conversation-client
+   #:conversation-system-prompt
+   #:conversation-history
+   #:conversation-toolset
+   #:conversation-add-user
+   #:conversation-add-assistant
+   #:conversation-add-tool-result
+   #:conversation-complete
+   #:conversation-step
+   #:conversation-clear
    #:chat-completion
+   #:chat-completion*
+   #:list-models
+   #:estimate-tokens
+   #:upload-file
+   #:get-file
+   #:list-files
+   #:delete-file
+   #:file-content
    #:stream-chat-completion
+   #:stream-chat-completion*
    #:print-streamed-completion
    #:main))
