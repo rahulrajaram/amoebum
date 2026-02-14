@@ -103,46 +103,58 @@
         (resolved-toolset (or toolset (make-toolset)))
         (tool-results nil)
         (steps 0)
-        (last-message nil))
+        (last-message nil)
+        (new-messages nil))
     (unless (and (integerp max-steps) (>= max-steps 1))
       (error "MAX-STEPS must be an integer >= 1, got ~S" max-steps))
-    (loop while (< steps max-steps) do
-      (incf steps)
-      (let* ((result (generate client
-                               :messages history
-                               :tools tools
-                               :toolset resolved-toolset))
-             (assistant-message (generate-result-message result))
-             (tool-calls (message-tool-calls assistant-message)))
-        (setf last-message assistant-message)
-        (setf history (append history (list assistant-message)))
-        (unless tool-calls
-          (return-from step
-            (%make-step-result
-             :steps steps
-             :history history
-             :final-message assistant-message
-             :last-message assistant-message
-             :max-steps-reached nil
-             :tool-results (nreverse tool-results))))
-        (dolist (tool-call tool-calls)
-          (when on-tool-call
-            (funcall on-tool-call tool-call))
-          (let* ((output (invoke-tool-call resolved-toolset tool-call))
-                 (result-record (%make-tool-result-record tool-call output))
-                 (tool-message (make-message
-                                :role "tool"
-                                :name (tool-call-name tool-call)
-                                :tool-call-id (tool-call-id tool-call)
-                                :content output)))
-            (push result-record tool-results)
-            (setf history (append history (list tool-message)))
-            (when on-tool-result
-              (funcall on-tool-result result-record))))))
-    (%make-step-result
-     :steps steps
-     :history history
-     :final-message nil
-     :last-message last-message
-     :max-steps-reached t
-     :tool-results (nreverse tool-results))))
+    (labels ((%current-history ()
+               (if new-messages
+                   (append history (nreverse (copy-list new-messages)))
+                   history))
+             (%push-message (msg)
+               (push msg new-messages))
+             (%finalize-history ()
+               (when new-messages
+                 (setf history (append history (nreverse new-messages)))
+                 (setf new-messages nil))
+               history))
+      (loop while (< steps max-steps) do
+        (incf steps)
+        (let* ((result (generate client
+                                 :messages (%current-history)
+                                 :tools tools
+                                 :toolset resolved-toolset))
+               (assistant-message (generate-result-message result))
+               (tool-calls (message-tool-calls assistant-message)))
+          (setf last-message assistant-message)
+          (%push-message assistant-message)
+          (unless tool-calls
+            (return-from step
+              (%make-step-result
+               :steps steps
+               :history (%finalize-history)
+               :final-message assistant-message
+               :last-message assistant-message
+               :max-steps-reached nil
+               :tool-results (nreverse tool-results))))
+          (dolist (tool-call tool-calls)
+            (when on-tool-call
+              (funcall on-tool-call tool-call))
+            (let* ((output (invoke-tool-call resolved-toolset tool-call))
+                   (result-record (%make-tool-result-record tool-call output))
+                   (tool-message (make-message
+                                  :role "tool"
+                                  :name (tool-call-name tool-call)
+                                  :tool-call-id (tool-call-id tool-call)
+                                  :content output)))
+              (push result-record tool-results)
+              (%push-message tool-message)
+              (when on-tool-result
+                (funcall on-tool-result result-record))))))
+      (%make-step-result
+       :steps steps
+       :history (%finalize-history)
+       :final-message nil
+       :last-message last-message
+       :max-steps-reached t
+       :tool-results (nreverse tool-results)))))

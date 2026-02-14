@@ -15,6 +15,8 @@
    #:client-max-tokens
    #:client-top-p
    #:client-timeout-seconds
+   #:client-max-response-bytes
+   #:*default-max-response-bytes*
    #:read-api-key
    #:pseudopod-error
    #:pseudopod-error-message

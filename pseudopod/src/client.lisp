@@ -5,6 +5,8 @@
 (defparameter *default-api-key-file*
   (merge-pathnames #P".moonshotai" (user-homedir-pathname)))
 
+(defparameter *default-max-response-bytes* (* 64 1024 1024))
+
 (defstruct (client (:constructor %make-client))
   (api-key "" :type string)
   (base-url *default-base-url* :type string)
@@ -12,7 +14,22 @@
   (temperature 1.0d0 :type real)
   (max-tokens 32768 :type integer)
   (top-p 0.95d0 :type real)
-  (timeout-seconds 180 :type integer))
+  (timeout-seconds 180 :type integer)
+  (max-response-bytes *default-max-response-bytes* :type integer))
+
+(defun %mask-api-key (key)
+  "Mask an API key for safe display in error messages. Shows first 3 and last 4 chars."
+  (if (and (stringp key) (> (length key) 8))
+      (format nil "~A...~A"
+              (subseq key 0 3)
+              (subseq key (- (length key) 4)))
+      "***"))
+
+(defmethod print-object ((obj client) stream)
+  (print-unreadable-object (obj stream :type t)
+    (format stream "~A api-key=~A"
+            (client-model obj)
+            (%mask-api-key (client-api-key obj)))))
 
 (defun %normalize-api-key (value)
   (let ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return)
@@ -43,7 +60,8 @@
                       (temperature 1.0d0)
                       (max-tokens 32768)
                       (top-p 0.95d0)
-                      (timeout-seconds 180))
+                      (timeout-seconds 180)
+                      (max-response-bytes *default-max-response-bytes*))
   "Create a Moonshot client configuration."
   (let ((normalized-api-key (%normalize-api-key api-key)))
     (when (and api-key (null normalized-api-key))
@@ -56,7 +74,8 @@
    :temperature temperature
    :max-tokens max-tokens
    :top-p top-p
-   :timeout-seconds timeout-seconds)))
+   :timeout-seconds timeout-seconds
+   :max-response-bytes max-response-bytes)))
 
 (defun %make-raw-message (role content)
   (let ((obj (make-hash-table :test #'equal)))
@@ -135,20 +154,20 @@
     ((stringp body) body)
     ((streamp body)
      (prog1
-         (ignore-errors (uiop:slurp-stream-string body))
-       (ignore-errors (close body))))
+         (handler-case (uiop:slurp-stream-string body)
+           (error () nil))
+       (handler-case (close body)
+         (error () nil))))
     ((null body) nil)
-    (t (ignore-errors (princ-to-string body)))))
+    (t (handler-case (princ-to-string body)
+         (error () nil)))))
 
 (defun %timeout-condition-p (condition)
-  (let* ((class-name (class-name (class-of condition)))
-         (class-name-string (string-upcase (if (symbolp class-name)
-                                               (symbol-name class-name)
-                                               (princ-to-string class-name))))
-         (message-string (string-upcase (princ-to-string condition))))
-    (or (search "TIMEOUT" class-name-string)
-        (search "TIMEOUT" message-string)
-        (search "TIMED OUT" message-string))))
+  (or (typep condition 'usocket:timeout-error)
+      (typep condition 'usocket:deadline-timeout-error)
+      (typep condition 'dexador.error:http-request-request-timeout)
+      (typep condition 'dexador.error:http-request-gateway-timeout)
+      #+sbcl (typep condition 'sb-sys:io-timeout)))
 
 (defun %signal-http-status-error (status body &key cause streamp)
   (let* ((body-text (or (%coerce-response-body body) "<no-body>"))
@@ -555,7 +574,8 @@ Returns two values: token-count integer and parsed response hash-table."
           collect (hash-to-tool-call raw-tool-call)))
 
 (defun %consume-sse-line (line on-reasoning on-content on-role
-                               tool-call-partials content-stream)
+                               tool-call-partials content-stream
+                               parse-error-count)
   (let ((payload nil))
     (cond
       ((uiop:string-prefix-p "data: " line)
@@ -584,9 +604,10 @@ Returns two values: token-count integer and parsed response hash-table."
                 (funcall on-content content)))
             (dolist (tool-call (%sequence->list tool-calls))
               (%merge-stream-tool-call-delta tool-call-partials tool-call)))
-        (error ()
-          ;; Ignore malformed or non-JSON SSE lines while streaming.
-          nil)))))
+        (error (condition)
+          (declare (ignore condition))
+          (when parse-error-count
+            (incf (car parse-error-count))))))))
 
 (defun %stream-chat-completion-collect (client user-prompt
                                         &key
@@ -597,7 +618,10 @@ Returns two values: token-count integer and parsed response hash-table."
                                           on-content)
   (let ((role "assistant")
         (content-stream (make-string-output-stream))
-        (tool-call-partials (make-hash-table :test #'eql)))
+        (tool-call-partials (make-hash-table :test #'eql))
+        (parse-error-count (list 0))
+        (max-bytes (client-max-response-bytes client))
+        (bytes-read 0))
     (multiple-value-bind (body-stream status)
         (%request-post client
                        (%build-payload client system-prompt user-prompt t
@@ -606,28 +630,40 @@ Returns two values: token-count integer and parsed response hash-table."
                        :streamp t)
       (unless (<= 200 status 299)
         (let ((error-body (%coerce-response-body body-stream)))
-          (ignore-errors (close body-stream))
+          (handler-case (close body-stream)
+            (error () nil))
           (%signal-http-status-error status error-body :streamp t)))
       (unwind-protect
           (handler-case
               (loop for line = (read-line body-stream nil nil)
                     while line do
+                      (incf bytes-read (length line))
+                      (when (and (plusp max-bytes) (> bytes-read max-bytes))
+                        (error 'pseudopod-api-error
+                               :message (format nil
+                                                "Streaming response exceeded ~:D byte limit."
+                                                max-bytes)
+                               :status-code nil
+                               :body nil))
                       (%consume-sse-line line
                                          on-reasoning
                                          on-content
                                          (lambda (next-role) (setf role next-role))
                                          tool-call-partials
-                                         content-stream))
+                                         content-stream
+                                         parse-error-count))
             (error (condition)
               (if (%timeout-condition-p condition)
                   (error 'pseudopod-timeout-error
                          :message "Moonshot streaming request timed out."
                          :cause condition)
                   (error condition))))
-        (ignore-errors (close body-stream))))
+        (handler-case (close body-stream)
+          (error () nil))))
     (values role
             (get-output-stream-string content-stream)
-            (%finalize-stream-tool-call-partials tool-call-partials))))
+            (%finalize-stream-tool-call-partials tool-call-partials)
+            (car parse-error-count))))
 
 (defun %emit-stream-tool-calls (tool-calls on-tool-call)
   (when on-tool-call

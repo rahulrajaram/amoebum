@@ -27,13 +27,13 @@ Implemented in this repo (`pseudopod`, formerly `moonshot-common-lisp`):
 - P0: Error condition hierarchy (`pseudopod-error`, `pseudopod-auth-error`, `pseudopod-timeout-error`, `pseudopod-api-error`, `pseudopod-parse-error`) and response extractors (`extract-content`, `extract-role`, `extract-usage`) — done (I14)
 - P1: Message model (`message`, `content-part`, `tool-call` structs with serializer/deserializer) — done (I15)
 - P2: Tool call + step loop (`tool-definition`, `toolset`, `generate`, `step`) — done (I16)
+- P2.5: Streaming tool-call delta accumulation (`stream-chat-completion*`, `on-tool-call` callback) — done (I17)
+- P3a: Models list and token estimation (`list-models`, `estimate-tokens`, `model-info` struct) — done (I18)
+- P3b: Files API (`upload-file`, `get-file`, `list-files`, `delete-file`, `file-content`, `file-object` struct) — done (I19)
+- P4: Conversation context helpers (`conversation` struct, `conversation-complete`, `conversation-step`) — done (I20)
 
 Not yet implemented from `kosong` semantics:
 
-- Streaming tool-call delta accumulation (P2.5, queued as I17)
-- Models list and token estimation API (P3a, queued as I18)
-- File upload helpers (`/files`, e.g. video) (P3b, queued as I19)
-- Conversation context helpers (multi-turn state management) (P4, queued as I20)
 - Snapshot/API compatibility test harness
 
 ## Module-by-Module Mapping
@@ -95,7 +95,5 @@ Not yet implemented from `kosong` semantics:
 
 ## Immediate Next Steps
 
-1. P2.5: Streaming tool-call delta accumulation in `stream-chat-completion` (I17).
-2. P3a: Models list and token estimation via `list-models` / `estimate-tokens` (I18).
-3. P3b: Files API — `upload-file`, `get-file`, `list-files`, `delete-file`, `file-content` (I19).
-4. P4: Conversation context helpers — stateful multi-turn management wrapping `chat-completion*` / `step` (I20).
+1. Snapshot/API compatibility test harness — fixture-driven parity tests mirroring `kosong` behavior.
+2. Facade layer (`src/facade.lisp`) — single public namespace re-exporting core API.

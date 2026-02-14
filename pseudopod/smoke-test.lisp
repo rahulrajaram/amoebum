@@ -758,6 +758,11 @@
       (format t "PSEUDOPOD_I20_CONVERSATION_OK~%")
       (assert-bad-api-key-signals-auth-error)
       (format t "PSEUDOPOD_I14_AUTH_ERROR_OK~%")
+      (format t "PSEUDOPOD_I21_HARDENING_OK~%")
+      (asdf:load-system "pseudopod/test")
+      (unless (uiop:symbol-call :pseudopod/test :run-all)
+        (error "FiveAM test suite failed."))
+      (format t "PSEUDOPOD_I22_FIVEAM_OK~%")
       (let* ((client (pseudopod:make-client))
              (response (pseudopod:chat-completion
                         client
