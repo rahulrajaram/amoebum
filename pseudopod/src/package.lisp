@@ -1,7 +1,7 @@
 (defpackage :pseudopod
   (:use :cl)
   (:nicknames :moonshot-common-lisp)
-  (:shadow #:step)
+  (:shadow #:step #:delete-file)
   (:export
    #:*default-base-url*
    #:*default-model*
@@ -60,6 +60,27 @@
    #:message-partial
    #:message-to-hash
    #:hash-to-message
+   #:model-info
+   #:model-info-p
+   #:model-info-id
+   #:model-info-object
+   #:model-info-created-at
+   #:model-info-owned-by
+   #:model-info-permission
+   #:model-info-extras
+   #:hash-to-model-info
+   #:file-object
+   #:file-object-p
+   #:file-object-id
+   #:file-object-object
+   #:file-object-filename
+   #:file-object-bytes
+   #:file-object-created-at
+   #:file-object-purpose
+   #:file-object-status
+   #:file-object-status-details
+   #:file-object-extras
+   #:hash-to-file-object
    #:tool-definition
    #:tool-definition-p
    #:make-tool-definition
@@ -92,8 +113,29 @@
    #:step-result-tool-results
    #:generate
    #:step
+   #:conversation
+   #:conversation-p
+   #:make-conversation
+   #:conversation-client
+   #:conversation-system-prompt
+   #:conversation-history
+   #:conversation-toolset
+   #:conversation-add-user
+   #:conversation-add-assistant
+   #:conversation-add-tool-result
+   #:conversation-complete
+   #:conversation-step
+   #:conversation-clear
    #:chat-completion
    #:chat-completion*
+   #:list-models
+   #:estimate-tokens
+   #:upload-file
+   #:get-file
+   #:list-files
+   #:delete-file
+   #:file-content
    #:stream-chat-completion
+   #:stream-chat-completion*
    #:print-streamed-completion
    #:main))
