@@ -1,5 +1,8 @@
 (in-package :pseudopod)
 
+#+sbcl (eval-when (:compile-toplevel :load-toplevel :execute)
+         (require :sb-introspect))
+
 (defstruct (tool-definition (:constructor %make-tool-definition))
   (name "" :type string)
   (description "" :type string)
@@ -136,7 +139,26 @@
     ((stringp result) result)
     (t (jonathan:to-json result))))
 
+(defun %tool-fn-accepts-two-args-p (fn)
+  "Check whether FN accepts at least two positional arguments.
+Uses SBCL introspection when available, falls back to assuming 2-arity."
+  #+sbcl
+  (handler-case
+      (let* ((lambda-list (sb-introspect:function-lambda-list fn))
+             (positional-count
+               (loop for item in lambda-list
+                     while (not (member item lambda-list-keywords))
+                     count t))
+             (has-rest-or-key
+               (intersection lambda-list '(&rest &key &allow-other-keys))))
+        (or (>= positional-count 2) (not (null has-rest-or-key))))
+    (error () t))
+  #-sbcl t)
+
 (defun invoke-tool-call (toolset tool-call)
+  "Invoke a tool from TOOLSET matching TOOL-CALL.
+Tool functions receive (arguments tool-call) if they accept 2+ args,
+or just (arguments) for single-argument tools."
   (unless (toolset-p toolset)
     (error "Expected toolset, got ~S" toolset))
   (let* ((call (if (tool-call-p tool-call)
@@ -149,8 +171,7 @@
                               (tool-call-name call))))
     (let* ((arguments (%parse-tool-arguments (tool-call-arguments call)))
            (fn (tool-definition-fn tool))
-           (result (handler-case
+           (result (if (%tool-fn-accepts-two-args-p fn)
                        (funcall fn arguments call)
-                     (program-error ()
-                       (funcall fn arguments)))))
+                       (funcall fn arguments))))
       (%normalize-tool-result result))))
