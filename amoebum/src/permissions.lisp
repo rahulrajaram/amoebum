@@ -7,6 +7,9 @@
     "(?i)\\brm\\s+[^\\n]*-fr\\b"
     "(?i)\\bchmod\\s+-R\\s+777\\b"
     "(?i)\\bdd\\s+if="
+    "(?i)\\bgit\\s+checkout\\s+(?:--\\s+)?\\.(?:\\s|$)"
+    "(?i)\\bgit\\s+clean\\s+[^\\n]*-[^\\s\\n]*f[^\\s\\n]*\\b"
+    "(?i)\\bgit\\s+push\\s+[^\\n]*--force(?:-with-lease)?[^\\n]*(?:\\s|/)(?:main|master)(?:\\s|$)"
     "(?i)\\bmkfs(?:\\.[A-Za-z0-9_+-]+)?\\b"
     "(?i)\\bgit\\s+push\\s+[^\\n]*--force(?:-with-lease)?\\b"
     "(?i)\\bgit\\s+reset\\s+--hard\\b"
@@ -242,6 +245,75 @@
   (or command
       (member (%tool-name tool) *shell-tool-names* :test #'string=)))
 
+(defun %mcp-tool-server-name (tool-name)
+  (when (and tool-name
+             (uiop:string-prefix-p "mcp/" tool-name))
+    (let* ((rest (subseq tool-name (length "mcp/")))
+           (separator (position #\/ rest)))
+      (and separator
+           (> separator 0)
+           (subseq rest 0 separator)))))
+
+(defun %normalize-mcp-permission-decision (value)
+  (let ((normalized
+          (cond
+            ((keywordp value) value)
+            ((stringp value)
+             (intern (string-upcase
+                      (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                     :keyword))
+            ((symbolp value)
+             (intern (string-upcase (symbol-name value)) :keyword))
+            (t nil))))
+    (when (member normalized '(:allow :deny :prompt) :test #'eq)
+      normalized)))
+
+(defun %mcp-permission-key-kind (key server-name)
+  (let ((normalized (%tool-name key)))
+    (cond
+      ((null normalized) nil)
+      ((member normalized '("*" "default") :test #'string=) :default)
+      ((uiop:string-prefix-p "mcp/" normalized)
+       (let* ((rest (subseq normalized (length "mcp/")))
+              (separator (position #\/ rest))
+              (entry-server (if separator
+                                (subseq rest 0 separator)
+                                rest)))
+         (if (string= entry-server server-name)
+             :server
+             nil)))
+      ((string= normalized server-name) :server)
+      (t nil))))
+
+(defun %mcp-permission-config-pairs (value)
+  (cond
+    ((hash-table-p value)
+     (loop for key being the hash-keys of value using (hash-value decision)
+           collect (cons key decision)))
+    ((and (listp value)
+          (every #'consp value))
+     value)
+    ((and (listp value)
+          (evenp (length value)))
+     (loop for (key decision) on value by #'cddr
+           collect (cons key decision)))
+    (t nil)))
+
+(defun %mcp-server-config-decision (server-name)
+  (let ((pairs (%mcp-permission-config-pairs
+                (ignore-errors (config-value :mcp-server-permissions
+                                             (current-config)))))
+        (default nil))
+    (dolist (entry pairs)
+      (let* ((kind (%mcp-permission-key-kind (car entry) server-name))
+             (decision (%normalize-mcp-permission-decision (cdr entry))))
+        (when decision
+          (case kind
+            (:server (return-from %mcp-server-config-decision decision))
+            (:default (unless default
+                        (setf default decision)))))))
+    default))
+
 (defun %mode-default-decision (mode tool path command)
   (case mode
     (:supervised :prompt)
@@ -267,7 +339,12 @@
 
 (defun check-permission (&key tool path command dangerous-p permission-mode
                            (rules *permission-rules*))
-  (let* ((mode (%effective-permission-mode permission-mode))
+  (let* ((tool-name (%tool-name tool))
+         (mode (%effective-permission-mode permission-mode))
+         (mcp-server-name (%mcp-tool-server-name tool-name))
+         (mcp-decision (and mcp-server-name
+                            (or (%mcp-server-config-decision mcp-server-name)
+                                :prompt)))
          (path-decision (and path
                              (evaluate-path-permission :tool tool
                                                        :path path
@@ -276,6 +353,7 @@
                      ((%plan-mode-blocked-p tool command) :deny)
                      ((eq path-decision :deny) :deny)
                      ((eq path-decision :allow) :allow)
+                     (mcp-decision mcp-decision)
                      (t (%mode-default-decision mode tool path command)))))
     (if (and (eq decision :allow)
              (not (eq mode :yolo))

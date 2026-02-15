@@ -1,7 +1,7 @@
 (in-package :amoebum)
 
 (defparameter +chat-stream-default-system-prompt+
-  "You are a helpful assistant.")
+  +system-prompt-base-layer+)
 
 (define-condition token-stream-cancelled (condition)
   ())

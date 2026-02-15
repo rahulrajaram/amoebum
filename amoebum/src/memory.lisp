@@ -35,6 +35,7 @@
 (defparameter *session-memory-entries* '())
 (defparameter *memory-editor-runner* nil)
 
+(defgeneric memory-backend-kind (backend))
 (defgeneric memory-store (backend key value &key scope source))
 (defgeneric memory-query (backend query &key scope limit))
 (defgeneric memory-list (backend &key scope))
@@ -116,9 +117,113 @@
 (defun reset-memory-backend (&optional backend)
   (setf *memory-backend* backend))
 
+(defmethod memory-backend-kind ((backend memory-backend))
+  (declare (ignore backend))
+  :unknown)
+
+(defmethod memory-backend-kind ((backend file-memory-backend))
+  (declare (ignore backend))
+  :file)
+
+(defun %call-if-fbound (symbol &rest args)
+  (when (fboundp symbol)
+    (apply (symbol-function symbol) args)))
+
+(defun %configured-memory-backend (cfg)
+  (let ((configured (or (and cfg (config-memory-backend cfg))
+                        (and cfg (config-value :memory-backend cfg))
+                        :auto)))
+    (if (keywordp configured)
+        configured
+        (intern (string-upcase (princ-to-string configured)) :keyword))))
+
+(defun %autodetect-haake-enabled-p (cfg)
+  (let ((value (and cfg (config-value :haake-autodetect cfg))))
+    (if (null value)
+        t
+        (not (null value)))))
+
+(defun %make-file-backend-from-config (cfg)
+  (make-file-memory-backend
+   :project-root (and cfg (config-project-root cfg))))
+
+(defun %make-haake-backend-from-config (cfg)
+  (%call-if-fbound 'make-haake-cli-memory-backend
+                   :command (or (and cfg (config-value :haake-command cfg))
+                                "haake")
+                   :project-id (and cfg (config-value :haake-project-id cfg))
+                   :agent (or (and cfg (config-value :haake-agent cfg))
+                              "amoebum")
+                   :project-root (and cfg (config-project-root cfg))))
+
+(defun %haake-cli-available-from-config-p (cfg)
+  (if (fboundp 'haake-cli-available-p)
+      (funcall (symbol-function 'haake-cli-available-p)
+               :command (or (and cfg (config-value :haake-command cfg))
+                            "haake"))
+      nil))
+
+(defun %haake-cli-status-ok-from-config-p (cfg)
+  (if (fboundp 'haake-cli-status-ok-p)
+      (funcall (symbol-function 'haake-cli-status-ok-p)
+               :command (or (and cfg (config-value :haake-command cfg))
+                            "haake")
+               :directory (and cfg (config-project-root cfg)))
+      nil))
+
+(defun %haake-cli-compatible-from-config-p (cfg)
+  (if (fboundp 'haake-cli-compatible-p)
+      (funcall (symbol-function 'haake-cli-compatible-p)
+               :command (or (and cfg (config-value :haake-command cfg))
+                            "haake")
+               :directory (and cfg (config-project-root cfg)))
+      nil))
+
+(defun %resolve-memory-backend (&optional (cfg (current-config)))
+  (let ((requested (%configured-memory-backend cfg)))
+    (labels ((select-file (reason)
+               (values (%make-file-backend-from-config cfg) reason requested))
+             (select-haake (reason unavailable-reason)
+               (cond
+                 ((not (%haake-cli-available-from-config-p cfg))
+                  (select-file unavailable-reason))
+                 ((not (%haake-cli-status-ok-from-config-p cfg))
+                  (select-file :haake-status-unavailable))
+                 ((not (%haake-cli-compatible-from-config-p cfg))
+                  (select-file :haake-cli-incompatible))
+                 (t
+                  (let ((backend (%make-haake-backend-from-config cfg)))
+                    (if backend
+                        (values backend reason requested)
+                        (select-file :haake-backend-instantiation-failed)))))))
+      (case requested
+        (:file
+         (select-file :configured-file))
+        (:haake-cli
+         (select-haake :configured-haake-cli :haake-cli-unavailable))
+        (:haake-mcp
+         (select-file :haake-mcp-not-implemented))
+        (:auto
+         (if (%autodetect-haake-enabled-p cfg)
+             (select-haake :auto-detected-haake-cli :haake-cli-not-found)
+             (select-file :haake-autodetect-disabled)))
+        (otherwise
+         (select-file :unknown-memory-backend-configured))))))
+
+(defun %publish-memory-backend-selected (backend reason requested-backend)
+  (publish (current-event-bus)
+           (make-memory-backend-selected-event
+            :backend (memory-backend-kind backend)
+            :reason reason
+            :requested-backend requested-backend)))
+
 (defun current-memory-backend ()
   (or *memory-backend*
-      (setf *memory-backend* (make-file-memory-backend))))
+      (multiple-value-bind (backend reason requested)
+          (%resolve-memory-backend)
+        (setf *memory-backend* backend)
+        (%publish-memory-backend-selected backend reason requested)
+        backend)))
 
 (defun file-memory-backend-p (value)
   (typep value 'file-memory-backend))
@@ -127,9 +232,7 @@
   (copy-list *session-memory-entries*))
 
 (defun %event-backend-name (backend)
-  (if (typep backend 'file-memory-backend)
-      :file
-      :unknown))
+  (memory-backend-kind backend))
 
 (defun %publish-memory-updated (backend operation key value)
   (publish (current-event-bus)
@@ -374,24 +477,395 @@
       (format out "Session entries: ~D~%" (length session)))))
 
 (defun memory-command-edit (&key (backend (current-memory-backend)) editor)
-  (check-type backend file-memory-backend)
-  (let* ((path (file-memory-backend-project-path backend))
-         (editor-cmd (or editor
-                         (uiop:getenv "AMOEBUM_EDITOR")
-                         (uiop:getenv "VISUAL")
-                         (uiop:getenv "EDITOR"))))
-    (%ensure-memory-file-header path)
-    (if (and (stringp editor-cmd) (plusp (length (%trim-text editor-cmd))))
-        (progn
-          (funcall (or *memory-editor-runner* #'default-memory-editor-runner)
-                   editor-cmd
-                   (namestring path))
-          (format nil "Opened ~A using ~A." (namestring path) editor-cmd))
-        (format nil "No editor configured; edit ~A manually." (namestring path)))))
+  (if (typep backend 'file-memory-backend)
+      (let* ((path (file-memory-backend-project-path backend))
+             (editor-cmd (or editor
+                             (uiop:getenv "AMOEBUM_EDITOR")
+                             (uiop:getenv "VISUAL")
+                             (uiop:getenv "EDITOR"))))
+        (%ensure-memory-file-header path)
+        (if (and (stringp editor-cmd) (plusp (length (%trim-text editor-cmd))))
+            (progn
+              (funcall (or *memory-editor-runner* #'default-memory-editor-runner)
+                       editor-cmd
+                       (namestring path))
+              (format nil "Opened ~A using ~A." (namestring path) editor-cmd))
+            (format nil "No editor configured; edit ~A manually." (namestring path))))
+      (format nil "Backend ~A does not support /memory edit; use /memory show."
+              (memory-backend-kind backend))))
 
 (defun memory-command-clear (&key (backend (current-memory-backend)))
   (let ((cleared (memory-forget backend :scope :session)))
     (format nil "Cleared ~D session memor~:@P." cleared)))
+
+(defun %utc-timestamp-string (&optional (timestamp (get-universal-time)))
+  (multiple-value-bind (second minute hour day month year)
+      (decode-universal-time timestamp 0)
+    (format nil "~4,'0D-~2,'0D-~2,'0DT~2,'0D:~2,'0D:~2,'0DZ"
+            year month day hour minute second)))
+
+(defun %fnv1a-64-hash (text)
+  (let ((hash #xcbf29ce484222325)
+        (prime #x100000001B3)
+        (modulus #x10000000000000000))
+    (loop for char across (or text "") do
+      (setf hash (logxor hash (char-code char)))
+      (setf hash (mod (* hash prime) modulus)))
+    hash))
+
+(defun %entry-scope-signature (scope)
+  (cond
+    ((keywordp scope)
+     (string-downcase (symbol-name scope)))
+    ((and (consp scope) (eq (first scope) :topic))
+     (format nil "topic/~A" (%trim-text (or (second scope) ""))))
+    (t
+     (%trim-text (princ-to-string scope)))))
+
+(defun %memory-entry-source-hash (source-path entry)
+  (let ((payload (format nil "~A|~A|~A|~A"
+                         source-path
+                         (%entry-scope-signature (memory-entry-scope entry))
+                         (or (memory-entry-key entry) "")
+                         (or (memory-entry-value entry) ""))))
+    (format nil "~16,'0X" (%fnv1a-64-hash payload))))
+
+(defun %topic-memory-directory (project-root)
+  (merge-pathnames #P".amoebum/memory/" (uiop:ensure-directory-pathname project-root)))
+
+(defun %topic-memory-files (project-root)
+  (let* ((directory-path (%topic-memory-directory project-root))
+         (pattern (merge-pathnames #P"*.md" directory-path)))
+    (sort (remove-if
+           (lambda (path)
+             (let ((name (string-downcase (or (pathname-name path) ""))))
+               (or (string= name "memory")
+                   (%string-prefix-p-ci "haake-export" name))))
+           (copy-list (directory pattern)))
+          #'string<
+          :key #'namestring)))
+
+(defun %normalize-topic-name-from-path (path)
+  (%normalize-memory-key (or (pathname-name path) "topic")))
+
+(defun %memory-project-root (&optional backend)
+  (uiop:ensure-directory-pathname
+   (or (and (file-memory-backend-p backend)
+            (file-memory-backend-project-root backend))
+       (and (current-config) (config-project-root (current-config)))
+       *default-pathname-defaults*)))
+
+(defun %make-source-backend (backend)
+  (if (file-memory-backend-p backend)
+      backend
+      (%make-file-backend-from-config (current-config))))
+
+(defun %memory-import-state-path (&optional backend)
+  (merge-pathnames #P".amoebum/memory/haake-import-state-v1.sexp"
+                   (%memory-project-root backend)))
+
+(defun %memory-import-failure-log-path (&optional backend)
+  (merge-pathnames #P".amoebum/memory/haake-import-failures.log"
+                   (%memory-project-root backend)))
+
+(defun %default-memory-import-state ()
+  (list :version 1 :updated-at nil :imports '()))
+
+(defun %load-memory-import-state (&optional backend)
+  (let ((path (%memory-import-state-path backend)))
+    (if (probe-file path)
+        (handler-case
+            (with-open-file (stream path :direction :input)
+              (let ((state (read stream nil nil)))
+                (if (and (listp state)
+                         (integerp (getf state :version))
+                         (listp (getf state :imports)))
+                    state
+                    (%default-memory-import-state))))
+          (error ()
+            (%default-memory-import-state)))
+        (%default-memory-import-state))))
+
+(defun %write-memory-import-state (state &optional backend)
+  (let ((path (%memory-import-state-path backend)))
+    (ensure-directories-exist path)
+    (with-open-file (stream path
+                            :direction :output
+                            :if-exists :supersede
+                            :if-does-not-exist :create)
+      (with-standard-io-syntax
+        (write state :stream stream :pretty t)))
+    path))
+
+(defun %append-memory-import-failure (backend source-path source-hash condition)
+  (let ((path (%memory-import-failure-log-path backend)))
+    (ensure-directories-exist path)
+    (with-open-file (stream path
+                            :direction :output
+                            :if-exists :append
+                            :if-does-not-exist :create)
+      (format stream "~A | ~A | ~A | ~A~%"
+              (%utc-timestamp-string)
+              source-path
+              source-hash
+              condition))
+    path))
+
+(defun %import-state-known-hashes (state)
+  (let ((table (make-hash-table :test #'equal)))
+    (dolist (entry (or (getf state :imports) '()))
+      (let ((hash (and (listp entry) (getf entry :source-hash))))
+        (when (and (stringp hash) (plusp (length hash)))
+          (setf (gethash hash table) t))))
+    table))
+
+(defun %collect-memory-import-sources (backend)
+  (let* ((source-backend (%make-source-backend backend))
+         (project-root (%memory-project-root source-backend))
+         (global-path (file-memory-backend-global-path source-backend))
+         (project-path (file-memory-backend-project-path source-backend))
+         (sources '()))
+    (when (and global-path (probe-file global-path))
+      (push (list :path global-path
+                  :scope :global
+                  :source-path (namestring global-path))
+            sources))
+    (when (and project-path (probe-file project-path))
+      (push (list :path project-path
+                  :scope :project
+                  :source-path (namestring project-path))
+            sources))
+    (dolist (topic-file (%topic-memory-files project-root))
+      (push (list :path topic-file
+                  :scope (list :topic (%normalize-topic-name-from-path topic-file))
+                  :source-path (namestring topic-file))
+            sources))
+    (nreverse sources)))
+
+(defun %collect-memory-import-candidates (backend)
+  (loop for source in (%collect-memory-import-sources backend)
+        append (loop for entry in (%read-memory-file (getf source :path)
+                                                     (getf source :scope)
+                                                     :file)
+                     collect (list :entry entry
+                                   :scope (getf source :scope)
+                                   :source-path (getf source :source-path)))))
+
+(defun %parse-imported-id (stdout source-hash key)
+  (or (loop for line in (uiop:split-string (or stdout "") :separator '(#\Newline))
+            for trimmed = (%trim-text line)
+            when (and (plusp (length trimmed))
+                      (%string-prefix-p-ci "id" trimmed))
+              do (let* ((separator (or (position #\: trimmed)
+                                       (position #\Tab trimmed)
+                                       (position #\Space trimmed)))
+                        (raw (if separator
+                                 (%trim-text (subseq trimmed (1+ separator)))
+                                 "")))
+                   (when (plusp (length raw))
+                     (return raw))))
+      (and (plusp (length (%trim-text key)))
+           (%trim-text key))
+      source-hash))
+
+(defun %haake-backend-for-transfer (backend)
+  (cond
+    ((and (fboundp 'haake-cli-memory-backend-p)
+          (funcall (symbol-function 'haake-cli-memory-backend-p) backend))
+     (values backend nil))
+    (t
+     (let ((cfg (current-config)))
+       (cond
+         ((not (%haake-cli-available-from-config-p cfg))
+          (values nil :haake-cli-unavailable))
+         ((not (%haake-cli-status-ok-from-config-p cfg))
+          (values nil :haake-status-unavailable))
+         ((not (%haake-cli-compatible-from-config-p cfg))
+          (values nil :haake-cli-incompatible))
+         (t
+          (let ((candidate (%make-haake-backend-from-config cfg)))
+            (if candidate
+                (values candidate nil)
+                (values nil :haake-backend-instantiation-failed)))))))))
+
+(defun %haake-metadata-arguments (source-path source-hash import-batch-id imported-at)
+  (list "--metadata" (format nil "source_path=~A" source-path)
+        "--metadata" (format nil "source_hash=~A" source-hash)
+        "--metadata" (format nil "import_batch_id=~A" import-batch-id)
+        "--metadata" (format nil "imported_at=~A" imported-at)))
+
+(defun memory-import-to-haake (&key (backend (current-memory-backend)))
+  (multiple-value-bind (haake-backend missing-reason)
+      (%haake-backend-for-transfer backend)
+    (unless haake-backend
+      (return-from memory-import-to-haake
+        (list :status :error
+              :reason missing-reason
+              :message "Haake backend is not available for import.")))
+    (let* ((state (%load-memory-import-state backend))
+           (known-hashes (%import-state-known-hashes state))
+           (import-batch-id (format nil "batch-~D" (get-universal-time)))
+           (imported-at (%utc-timestamp-string))
+           (new-import-records '())
+           (imported-count 0)
+           (skipped-count 0)
+           (failed-count 0)
+           (failure-log-path nil))
+      (dolist (candidate (%collect-memory-import-candidates backend))
+        (let* ((entry (getf candidate :entry))
+               (scope (getf candidate :scope))
+               (source-path (getf candidate :source-path))
+               (source-hash (%memory-entry-source-hash source-path entry)))
+          (if (gethash source-hash known-hashes)
+              (incf skipped-count)
+              (handler-case
+                  (let* ((result (%haake-cli-run
+                                  haake-backend
+                                  (append (list "memory"
+                                                "insert"
+                                                (%haake-scope-path haake-backend scope)
+                                                (memory-entry-value entry)
+                                                "-t"
+                                                "semantic"
+                                                "--key"
+                                                (memory-entry-key entry)
+                                                "--agent"
+                                                (haake-cli-memory-backend-agent haake-backend))
+                                          (%haake-metadata-arguments source-path
+                                                                     source-hash
+                                                                     import-batch-id
+                                                                     imported-at))))
+                         (imported-id (%parse-imported-id (getf result :stdout)
+                                                          source-hash
+                                                          (memory-entry-key entry))))
+                    (push (list :source-path source-path
+                                :source-hash source-hash
+                                :scope scope
+                                :key (memory-entry-key entry)
+                                :value (memory-entry-value entry)
+                                :imported-id imported-id
+                                :import-batch-id import-batch-id
+                                :imported-at imported-at)
+                          new-import-records)
+                    (setf (gethash source-hash known-hashes) t)
+                    (incf imported-count))
+                (error (condition)
+                  (incf failed-count)
+                  (setf failure-log-path
+                        (%append-memory-import-failure backend
+                                                       source-path
+                                                       source-hash
+                                                       condition)))))))
+      (when (or (plusp imported-count) (plusp failed-count))
+        (%write-memory-import-state
+         (list :version 1
+               :updated-at (%utc-timestamp-string)
+               :imports (append (or (getf state :imports) '())
+                                (nreverse new-import-records)))
+         backend))
+      (list :status (if (plusp failed-count) :partial :ok)
+            :import-batch-id import-batch-id
+            :imported imported-count
+            :skipped skipped-count
+            :failed failed-count
+            :state-path (namestring (%memory-import-state-path backend))
+            :failure-log-path (and failure-log-path (namestring failure-log-path))))))
+
+(defun %state-topic-scope-name (scope)
+  (when (and (consp scope) (eq (first scope) :topic))
+    (%trim-text (princ-to-string (second scope)))))
+
+(defun %import-state-topic-names (state)
+  (sort (remove-duplicates
+         (loop for entry in (or (getf state :imports) '())
+               for scope = (and (listp entry) (getf entry :scope))
+               for topic = (%state-topic-scope-name scope)
+               when (and topic (plusp (length topic)))
+                 collect topic)
+         :test #'string-equal)
+        #'string< :key #'string-downcase))
+
+(defun %write-export-section (stream title entries)
+  (format stream "## ~A~%" title)
+  (if entries
+      (dolist (entry (%sort-memory-entries entries))
+        (write-line (%memory-entry-line entry) stream))
+      (write-line "(none)" stream))
+  (write-line "" stream))
+
+(defun memory-export-from-haake (&key (backend (current-memory-backend)))
+  (multiple-value-bind (haake-backend missing-reason)
+      (%haake-backend-for-transfer backend)
+    (unless haake-backend
+      (return-from memory-export-from-haake
+        (list :status :error
+              :reason missing-reason
+              :message "Haake backend is not available for export.")))
+    (let* ((state (%load-memory-import-state backend))
+           (topic-names (%import-state-topic-names state))
+           (global-entries (memory-list haake-backend :scope :global))
+           (project-entries (memory-list haake-backend :scope :project))
+           (topic-entry-count 0)
+           (output-path (merge-pathnames #P".amoebum/memory/haake-export-MEMORY.md"
+                                         (%memory-project-root backend))))
+      (ensure-directories-exist output-path)
+      (with-open-file (stream output-path
+                              :direction :output
+                              :if-exists :supersede
+                              :if-does-not-exist :create)
+        (write-line "# Amoebum Memory" stream)
+        (format stream "# Exported from Haake at ~A~%~%" (%utc-timestamp-string))
+        (%write-export-section stream "Global" global-entries)
+        (%write-export-section stream "Project" project-entries)
+        (dolist (topic topic-names)
+          (let ((entries (memory-list haake-backend :scope (list :topic topic))))
+            (incf topic-entry-count (length entries))
+            (%write-export-section stream
+                                   (format nil "Topic: ~A" topic)
+                                   entries))))
+      (list :status :ok
+            :output-path (namestring output-path)
+            :global-count (length global-entries)
+            :project-count (length project-entries)
+            :topic-count topic-entry-count
+            :topic-scope-count (length topic-names)))))
+
+(defun %memory-command-option-value (tokens option)
+  (let ((option-equals (format nil "~A=" option)))
+    (loop for token in tokens
+          for rest on tokens
+          do (cond
+               ((string-equal token option)
+                (return (and (second rest) (%trim-text (second rest)))))
+               ((%string-prefix-p-ci option-equals token)
+                (return (%trim-text (subseq token (length option-equals)))))))))
+
+(defun %format-memory-import-result (result)
+  (if (eq (getf result :status) :error)
+      (format nil "~A (~A)."
+              (or (getf result :message) "Import failed")
+              (or (getf result :reason) :unknown))
+      (format nil
+              "Import batch ~A finished: imported ~D, skipped ~D, failed ~D. State: ~A~@[. Failures: ~A~]"
+              (getf result :import-batch-id)
+              (or (getf result :imported) 0)
+              (or (getf result :skipped) 0)
+              (or (getf result :failed) 0)
+              (or (getf result :state-path) "n/a")
+              (getf result :failure-log-path))))
+
+(defun %format-memory-export-result (result)
+  (if (eq (getf result :status) :error)
+      (format nil "~A (~A)."
+              (or (getf result :message) "Export failed")
+              (or (getf result :reason) :unknown))
+      (format nil
+              "Exported Haake memory snapshot to ~A (global ~D, project ~D, topic entries ~D across ~D topics)."
+              (or (getf result :output-path) "n/a")
+              (or (getf result :global-count) 0)
+              (or (getf result :project-count) 0)
+              (or (getf result :topic-count) 0)
+              (or (getf result :topic-scope-count) 0))))
 
 (defun %command-tokens (text)
   (let* ((trimmed (%trim-text text))
@@ -450,13 +924,24 @@
                                (memory-entry-value entry))))))
         (:FORGET
          (if (zerop (length tail))
-             (values t "Usage: /memory forget <statement-or-key>")
+            (values t "Usage: /memory forget <statement-or-key>")
              (if (memory-delete backend tail :scope :project)
                  (values t (format nil "Forgot ~A." (%normalize-memory-key tail)))
                  (values t (format nil "No memory entry matched ~A." (%normalize-memory-key tail))))))
+        (:IMPORT
+         (let ((target (%memory-command-option-value (rest tokens) "--to")))
+           (if (and target (string-equal (%trim-text target) "haake"))
+               (values t (%format-memory-import-result (memory-import-to-haake :backend backend)))
+               (values t "Usage: /memory import --to haake"))))
+        (:EXPORT
+         (let ((source (%memory-command-option-value (rest tokens) "--from")))
+           (if (and source (string-equal (%trim-text source) "haake"))
+               (values t (%format-memory-export-result (memory-export-from-haake :backend backend)))
+               (values t "Usage: /memory export --from haake"))))
         (otherwise
          (values t
-                 (format nil "Unknown /memory subcommand ~A. Use show|edit|clear." subcommand)))))))
+                 (format nil "Unknown /memory subcommand ~A. Use show|edit|clear|remember|forget|import|export."
+                         subcommand)))))))
 
 (defun %extract-after-prefix (text prefix)
   (if (%string-prefix-p-ci prefix text)

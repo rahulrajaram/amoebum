@@ -40,6 +40,11 @@
          (find-tool-fn (funcall fn-in "FIND-TOOL" pseudopod-pkg))
          (tool-definition-fn-fn (funcall fn-in "TOOL-DEFINITION-FN" pseudopod-pkg))
          (toolset-sym (funcall symbol-in "*TOOLSET*" amoebum-pkg))
+         (pdf-text-extractor-sym (funcall symbol-in "*PDF-TEXT-EXTRACTOR*" amoebum-pkg))
+         (tool-argument-error-sym (funcall symbol-in "TOOL-ARGUMENT-ERROR" amoebum-pkg))
+         (file-read-snapshots-sym (funcall symbol-in "*FILE-READ-SNAPSHOTS*" amoebum-pkg))
+         (syntax-validator-runner-sym
+           (funcall symbol-in "*EDIT-FILE-SYNTAX-VALIDATOR-RUNNER*" amoebum-pkg))
          (setconfig-fn (funcall fn-in "SETCONFIG" amoebum-pkg))
          (clear-permission-rules-fn (funcall fn-in "CLEAR-PERMISSION-RULES" amoebum-pkg))
          (add-permission-rule-fn (funcall fn-in "ADD-PERMISSION-RULE" amoebum-pkg)))
@@ -61,6 +66,10 @@
                           (apply #'make-args key-values)))))
       (funcall setconfig-fn :permission-mode :full-auto)
       (funcall clear-permission-rules-fn)
+      (funcall setconfig-fn :edit-file-syntax-validators nil)
+      (let ((read-snapshots (symbol-value file-read-snapshots-sym)))
+        (when (hash-table-p read-snapshots)
+          (clrhash read-snapshots)))
 
       (let* ((tmp-root
                (funcall ensure-directory-pathname-fn
@@ -69,8 +78,16 @@
                                                                         (get-universal-time))))
                          (funcall temporary-directory-fn))))
              (read-source (merge-pathnames #P"fixtures/read-source.txt" tmp-root))
+             (pdf-source (merge-pathnames #P"fixtures/sample.pdf" tmp-root))
+             (image-source (merge-pathnames #P"fixtures/sample.png" tmp-root))
+             (notebook-source (merge-pathnames #P"fixtures/sample.ipynb" tmp-root))
+             (csv-source (merge-pathnames #P"fixtures/sample.csv" tmp-root))
+             (tsv-source (merge-pathnames #P"fixtures/sample.tsv" tmp-root))
              (write-target (merge-pathnames #P"out/write-target.txt" tmp-root))
+             (unread-edit-target (merge-pathnames #P"out/unread-edit-target.txt" tmp-root))
              (edit-target (merge-pathnames #P"out/edit-target.txt" tmp-root))
+             (conflict-target (merge-pathnames #P"out/conflict-target.txt" tmp-root))
+             (syntax-target (merge-pathnames #P"out/syntax-target.txt" tmp-root))
              (deny-target (merge-pathnames #P"blocked/deny.txt" tmp-root)))
         (ensure-directories-exist read-source)
         (with-open-file (stream read-source
@@ -82,6 +99,42 @@
           (write-line "beta" stream)
           (write-line "gamma" stream)
           (write-line "delta" stream))
+        (with-open-file (stream pdf-source
+                                :direction :output
+                                :if-exists :supersede
+                                :if-does-not-exist :create
+                                :external-format :utf-8)
+          (write-line "%PDF-1.4" stream))
+        (with-open-file (stream image-source
+                                :direction :output
+                                :if-exists :supersede
+                                :if-does-not-exist :create
+                                :element-type '(unsigned-byte 8))
+          (write-sequence #(0 1 2 3 4) stream))
+        (with-open-file (stream notebook-source
+                                :direction :output
+                                :if-exists :supersede
+                                :if-does-not-exist :create
+                                :external-format :utf-8)
+          (write-string
+           "{\"cells\":[{\"cell_type\":\"markdown\",\"source\":[\"# Title\\n\",\"Notebook intro\\n\"]},{\"cell_type\":\"code\",\"source\":[\"print('hello')\\n\"],\"outputs\":[{\"output_type\":\"stream\",\"name\":\"stdout\",\"text\":[\"hello from notebook\\n\"]}]}],\"metadata\":{\"language_info\":{\"name\":\"python\"}},\"nbformat\":4,\"nbformat_minor\":5}"
+           stream))
+        (with-open-file (stream csv-source
+                                :direction :output
+                                :if-exists :supersede
+                                :if-does-not-exist :create
+                                :external-format :utf-8)
+          (write-line "name,score" stream)
+          (write-line "alice,10" stream)
+          (write-line "bob,200" stream))
+        (with-open-file (stream tsv-source
+                                :direction :output
+                                :if-exists :supersede
+                                :if-does-not-exist :create
+                                :external-format :utf-8)
+          (format stream "lang~Cfiles~%" #\Tab)
+          (format stream "lisp~C42~%" #\Tab)
+          (format stream "python~C108~%" #\Tab))
 
         (let ((read-result (invoke-tool "read-file"
                                         "path" (namestring read-source)
@@ -104,17 +157,156 @@
                      "Expected write-file to persist provided content.")
 
         (invoke-tool "write-file"
+                     "path" (namestring unread-edit-target)
+                     "content" (format nil "one~%two~%"))
+        (let ((saw-read-before-edit-gate nil))
+          (handler-case
+              (invoke-tool "edit-file"
+                           "path" (namestring unread-edit-target)
+                           "old-string" "two"
+                           "new-string" "TWO")
+            (condition (condition)
+              (when (typep condition tool-argument-error-sym)
+                (setf saw-read-before-edit-gate t)
+                (assert-true
+                 (contains-substring-p
+                  "read-file is required before edit-file"
+                  (princ-to-string condition))
+                 "Expected unread edit-file path to include read-before-edit guidance."))))
+          (assert-true saw-read-before-edit-gate
+                       "Expected edit-file on unread path to signal tool-argument-error."))
+
+        (invoke-tool "write-file"
                      "path" (namestring edit-target)
                      "content" (format nil "one~%two~%two~%"))
-        (invoke-tool "edit-file"
-                     "path" (namestring edit-target)
-                     "old-string" "two"
-                     "new-string" "TWO")
+        (invoke-tool "read-file"
+                     "path" (namestring edit-target))
+        (let ((edit-result (invoke-tool "edit-file"
+                                        "path" (namestring edit-target)
+                                        "old-string" "two"
+                                        "new-string" "TWO")))
+          (assert-true (eq (getf edit-result :conflict-detected) nil)
+                       "Expected no conflict warning when file is unchanged since read."))
         (let ((edited (funcall read-file-string-fn edit-target :external-format :utf-8)))
           (assert-true (contains-substring-p "TWO" edited)
                        "Expected edit-file to apply replacement.")
           (assert-true (not (contains-substring-p "two" edited))
                        "Expected edit-file to replace all exact matches."))
+
+        (invoke-tool "write-file"
+                     "path" (namestring conflict-target)
+                     "content" (format nil "one~%two~%"))
+        (invoke-tool "read-file"
+                     "path" (namestring conflict-target))
+        (with-open-file (stream conflict-target
+                                :direction :output
+                                :if-exists :supersede
+                                :if-does-not-exist :create
+                                :external-format :utf-8)
+          (write-line "one" stream)
+          (write-line "two" stream)
+          (write-line "three" stream))
+        (let ((conflict-result (invoke-tool "edit-file"
+                                            "path" (namestring conflict-target)
+                                            "old-string" "two"
+                                            "new-string" "TWO")))
+          (assert-true (eq (getf conflict-result :conflict-detected) t)
+                       "Expected conflict detection when file changed between read and edit.")
+          (assert-true
+           (let ((warnings (getf conflict-result :warnings)))
+             (and (listp warnings)
+                  (some (lambda (warning)
+                          (and (stringp warning)
+                               (contains-substring-p
+                                "changed on disk since the last read"
+                                warning)))
+                        warnings)))
+           "Expected edit-file conflict result to include a warning message."))
+
+        (let ((original-validator-runner (symbol-value syntax-validator-runner-sym))
+              (captured-command nil))
+          (unwind-protect
+              (progn
+                (setf (symbol-value syntax-validator-runner-sym)
+                      (lambda (command)
+                        (setf captured-command command)
+                        (values "syntax ok" "" 0)))
+                (funcall setconfig-fn
+                         :edit-file-syntax-validators
+                         '(("txt" . ("validator" "--check" "{path}"))))
+                (invoke-tool "write-file"
+                             "path" (namestring syntax-target)
+                             "content" (format nil "alpha~%beta~%"))
+                (invoke-tool "read-file"
+                             "path" (namestring syntax-target))
+                (let* ((syntax-result (invoke-tool "edit-file"
+                                                   "path" (namestring syntax-target)
+                                                   "old-string" "beta"
+                                                   "new-string" "BETA"))
+                       (validation (getf syntax-result :syntax-validation)))
+                  (assert-true (equal captured-command
+                                      (list "validator"
+                                            "--check"
+                                            (namestring syntax-target)))
+                               "Expected syntax validator runner to receive configured command.")
+                  (assert-true validation
+                               "Expected edit-file to return syntax-validation payload when configured.")
+                  (assert-true (eq (getf validation :ok) t)
+                               "Expected syntax validation payload to report success.")))
+            (setf (symbol-value syntax-validator-runner-sym) original-validator-runner)
+            (funcall setconfig-fn :edit-file-syntax-validators nil)))
+
+        (let ((original-pdf-extractor (symbol-value pdf-text-extractor-sym))
+              (captured-pages nil))
+          (unwind-protect
+              (progn
+                (setf (symbol-value pdf-text-extractor-sym)
+                      (lambda (path pages)
+                        (declare (ignore path))
+                        (setf captured-pages pages)
+                        "pdf page 1 text"))
+                (let ((pdf-result (invoke-tool "read-file"
+                                               "path" (namestring pdf-source)
+                                               "pages" "1-2")))
+                  (assert-true (string= captured-pages "1-2")
+                               "Expected read-file pages argument to reach PDF extractor.")
+                  (assert-true (contains-substring-p "pdf page 1 text" pdf-result)
+                               "Expected read-file PDF path to return extractor output.")))
+            (setf (symbol-value pdf-text-extractor-sym) original-pdf-extractor)))
+
+        (let ((image-result (invoke-tool "read-file"
+                                         "path" (namestring image-source))))
+          (assert-true (eq (getf image-result :kind) :image)
+                       "Expected image read result kind to be :image, got ~S."
+                       image-result)
+          (assert-true (string= (getf image-result :mime-type) "image/png")
+                       "Expected PNG image mime type annotation.")
+          (assert-true (string= (getf image-result :encoding) "base64")
+                       "Expected image read result encoding to be base64.")
+          (assert-true (string= (getf image-result :data) "AAECAwQ=")
+                       "Expected deterministic base64 payload for sample PNG bytes."))
+
+        (let ((notebook-result (invoke-tool "read-file"
+                                            "path" (namestring notebook-source))))
+          (assert-true (contains-substring-p "## Cell 1 (markdown)" notebook-result)
+                       "Expected notebook render to include markdown cell heading.")
+          (assert-true (contains-substring-p "```python" notebook-result)
+                       "Expected notebook code cells to render fenced code blocks.")
+          (assert-true (contains-substring-p "hello from notebook" notebook-result)
+                       "Expected notebook render to include cell outputs."))
+
+        (let ((csv-result (invoke-tool "read-file"
+                                       "path" (namestring csv-source)
+                                       "limit" 3))
+              (tsv-result (invoke-tool "read-file"
+                                       "path" (namestring tsv-source)
+                                       "limit" 3)))
+          (assert-true (contains-substring-p "name  | score" csv-result)
+                       "Expected CSV preview header with aligned columns.")
+          (assert-true (contains-substring-p "-+-" csv-result)
+                       "Expected CSV preview separator row.")
+          (assert-true (contains-substring-p "lang   | files" tsv-result)
+                       "Expected TSV preview to use aligned table rendering."))
 
         (funcall clear-permission-rules-fn)
         (funcall add-permission-rule-fn
@@ -132,4 +324,5 @@
           (assert-true saw-deny
                        "Expected path deny rule to block write-file execution.")))))
 
+  (format t "AMOEBUM_EDIT_SAFETY_SMOKE_OK~%")
   (format t "AMOEBUM_FILE_TOOLS_SMOKE_OK~%"))

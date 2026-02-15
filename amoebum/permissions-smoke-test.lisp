@@ -31,7 +31,10 @@
              (symbol-function (funcall symbol-in name amoebum-pkg))))
          (make-rule (funcall fn "MAKE-PERMISSION-RULE"))
          (check-permission (funcall fn "CHECK-PERMISSION"))
-         (dangerous-command-p (funcall fn "DANGEROUS-COMMAND-P")))
+         (dangerous-command-p (funcall fn "DANGEROUS-COMMAND-P"))
+         (setconfig-fn (funcall fn "SETCONFIG"))
+         (config-value-fn (funcall fn "CONFIG-VALUE"))
+         (current-config-fn (funcall fn "CURRENT-CONFIG")))
     (labels ((assert-true (condition format-string &rest format-args)
                (unless condition
                  (error (apply #'format nil format-string format-args)))))
@@ -143,7 +146,57 @@
          (funcall dangerous-command-p "git push --force origin main")
          "Expected dangerous command matcher to catch git push --force.")
         (assert-true
+         (funcall dangerous-command-p "git reset --hard HEAD~1")
+         "Expected dangerous command matcher to catch git reset --hard.")
+        (assert-true
+         (funcall dangerous-command-p "git checkout -- .")
+         "Expected dangerous command matcher to catch git checkout . destructive reset.")
+        (assert-true
+         (funcall dangerous-command-p "git clean -fd")
+         "Expected dangerous command matcher to catch git clean -f variants.")
+        (assert-true
+         (eq (funcall check-permission :tool :bash
+                      :command "git checkout -- ."
+                      :permission-mode :full-auto)
+             :prompt)
+         "Expected full-auto git checkout . to escalate to prompt.")
+        (assert-true
+         (eq (funcall check-permission :tool :bash
+                      :command "git clean -fd"
+                      :permission-mode :full-auto)
+             :prompt)
+         "Expected full-auto git clean -f to escalate to prompt.")
+        (assert-true
          (not (funcall dangerous-command-p "git status"))
-         "Expected dangerous command matcher to ignore benign commands."))))
+         "Expected dangerous command matcher to ignore benign commands.")
+
+        ;; MCP tool defaults and per-server overrides.
+        (let ((old-mcp-permissions
+                (funcall config-value-fn
+                         :mcp-server-permissions
+                         (funcall current-config-fn))))
+          (unwind-protect
+              (progn
+                (funcall setconfig-fn :mcp-server-permissions nil)
+                (assert-true
+                 (eq (funcall check-permission :tool "mcp/github/echo"
+                              :permission-mode :full-auto)
+                     :prompt)
+                 "Expected MCP tools to default to prompt decision in full-auto mode.")
+                (funcall setconfig-fn
+                         :mcp-server-permissions
+                         (list (cons "github" :allow)
+                               (cons "database" :deny)))
+                (assert-true
+                 (eq (funcall check-permission :tool "mcp/github/echo"
+                              :permission-mode :full-auto)
+                     :allow)
+                 "Expected per-server allow override for MCP tool namespace.")
+                (assert-true
+                 (eq (funcall check-permission :tool "mcp/database/query"
+                              :permission-mode :full-auto)
+                     :deny)
+                 "Expected per-server deny override for MCP tool namespace."))
+            (funcall setconfig-fn :mcp-server-permissions old-mcp-permissions))))))
 
   (format t "AMOEBUM_PERMISSIONS_SMOKE_OK~%"))

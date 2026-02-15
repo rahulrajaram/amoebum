@@ -69,7 +69,7 @@
 (defparameter *slash-command-registry* (make-hash-table :test #'equal))
 
 (defparameter *memory-command-subcommands*
-  '("show" "edit" "clear" "remember" "forget"))
+  '("show" "edit" "clear" "remember" "forget" "import" "export"))
 
 (defun %slash-trim (text)
   (if (stringp text)
@@ -482,12 +482,171 @@
 
 (defun %compact-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
-  (let ((keep-last (or (gethash :KEEP-LAST arguments) 12)))
+  (let ((keep-last-turns (or (gethash :KEEP-LAST arguments) 6)))
     (make-slash-command-result
      :echo-input-p t
-     :output (format nil "Compacted conversation (keeping last ~D messages)." keep-last)
+     :output nil
      :action :compact-chat
-     :payload keep-last)))
+     :payload keep-last-turns)))
+
+(defun %history-normalize-role (value)
+  (let ((normalized
+          (string-downcase
+           (cond
+             ((null value) "")
+             ((stringp value) value)
+             ((symbolp value) (symbol-name value))
+             (t (princ-to-string value))))))
+    (if (member normalized '("system" "user" "assistant" "tool") :test #'string=)
+        normalized
+        nil)))
+
+(defun %history-token-key-value (token)
+  (when (and (stringp token) (plusp (length token)))
+    (let ((separator (or (position #\= token)
+                         (position #\: token))))
+      (when (and separator
+                 (> separator 0)
+                 (< (1+ separator) (length token)))
+        (values (string-downcase (subseq token 0 separator))
+                (%slash-trim (subseq token (1+ separator))))))))
+
+(defun %history-parse-arguments (raw-arguments)
+  (let ((tokens (%tokenize-command-arguments (or raw-arguments "")))
+        (query-tokens '())
+        (role nil)
+        (since nil)
+        (limit 20)
+        (errors '())
+        (index 0))
+    (labels ((next-token ()
+               (prog1 (nth index tokens)
+                 (incf index)))
+             (peek-token ()
+               (nth index tokens))
+             (consume-option-value (name)
+               (let ((value (peek-token)))
+                 (if (or (null value) (%slash-blank-p value))
+                     (push (format nil "Missing value for --~A." name) errors)
+                     (progn
+                       (incf index)
+                       value)))))
+      (loop while (< index (length tokens)) do
+        (let ((token (next-token)))
+          (cond
+            ((or (string-equal token "--role")
+                 (string-equal token "-r"))
+             (let ((value (consume-option-value "role")))
+               (when value
+                 (let ((normalized (%history-normalize-role value)))
+                   (if normalized
+                       (setf role normalized)
+                       (push (format nil "Invalid role ~S." value) errors))))))
+            ((or (string-equal token "--since")
+                 (string-equal token "-s"))
+             (let ((value (consume-option-value "since")))
+               (when value
+                 (if (parse-history-timestamp value)
+                     (setf since value)
+                     (push (format nil "Invalid timestamp ~S for --since." value) errors)))))
+            ((or (string-equal token "--limit")
+                 (string-equal token "-n"))
+             (let ((value (consume-option-value "limit")))
+               (when value
+                 (handler-case
+                     (let ((parsed (parse-integer value)))
+                       (if (> parsed 0)
+                           (setf limit parsed)
+                           (push (format nil "Limit must be positive, got ~S." value)
+                                 errors)))
+                   (error ()
+                     (push (format nil "Invalid integer ~S for --limit." value)
+                           errors))))))
+            (t
+             (multiple-value-bind (key value)
+                 (%history-token-key-value token)
+               (cond
+                 ((and key (string= key "role"))
+                  (let ((normalized (%history-normalize-role value)))
+                    (if normalized
+                        (setf role normalized)
+                        (push (format nil "Invalid role ~S." value) errors))))
+                 ((and key (string= key "since"))
+                  (if (parse-history-timestamp value)
+                      (setf since value)
+                      (push (format nil "Invalid timestamp ~S for since filter." value)
+                            errors)))
+                 ((and key (string= key "limit"))
+                  (handler-case
+                      (let ((parsed (parse-integer value)))
+                        (if (> parsed 0)
+                            (setf limit parsed)
+                            (push (format nil "Limit must be positive, got ~S." value)
+                                  errors)))
+                    (error ()
+                      (push (format nil "Invalid integer ~S for limit filter." value)
+                            errors))))
+                 (t
+                  (push token query-tokens)))))))))
+    (values (list :query (if query-tokens
+                             (format nil "~{~A~^ ~}" (nreverse query-tokens))
+                             "")
+                  :role role
+                  :since since
+                  :limit limit)
+            (nreverse errors))))
+
+(defun %history-result-output (entries &key role query since limit)
+  (if (null entries)
+      "No conversation history matches the provided filters."
+      (with-output-to-string (out)
+        (format out "History results (~D):~%" (length entries))
+        (when (or (and role (plusp (length role)))
+                  (and (stringp query) (plusp (length (%slash-trim query))))
+                  since)
+          (format out "Filters:~@[ role=~A~]~@[ query=~S~]~@[ since=~A~]~@[ limit=~D~]~%"
+                  role
+                  (let ((trimmed (%slash-trim query)))
+                    (and (plusp (length trimmed)) trimmed))
+                  since
+                  limit))
+        (dolist (entry entries)
+          (format out "- ~A~%" (format-history-entry-line entry))))))
+
+(defun %history-handler (_invocation arguments context)
+  (declare (ignore _invocation))
+  (let* ((raw-arguments (or (gethash :ARGS arguments) ""))
+         (chat-state (slash-command-context-chat-state context))
+         (conversation (and (typep chat-state 'chat-ui-state)
+                            (chat-ui-state-conversation chat-state))))
+    (unless (typep conversation 'conversation-state)
+      (return-from %history-handler
+        (make-slash-command-result
+         :output "Conversation history is unavailable for this session."
+         :echo-input-p t)))
+    (multiple-value-bind (filters errors)
+        (%history-parse-arguments raw-arguments)
+      (if errors
+          (make-slash-command-result
+           :echo-input-p t
+           :output (format nil "~{~A~%~}Usage: /history [query...] [--role ROLE] [--since TIMESTAMP] [--limit N]"
+                           errors))
+          (let* ((query (getf filters :query))
+                 (role (getf filters :role))
+                 (since (getf filters :since))
+                 (limit (getf filters :limit))
+                 (entries (conversation-search-history conversation
+                                                      :query query
+                                                      :role role
+                                                      :since since
+                                                      :limit limit)))
+            (make-slash-command-result
+             :echo-input-p t
+             :output (%history-result-output entries
+                                             :role role
+                                             :query query
+                                             :since since
+                                             :limit limit)))))))
 
 (defun %agent-status-text (status)
   (if (symbolp status)
@@ -602,9 +761,39 @@
               when (%starts-with-ci-p prefix subcommand)
                 collect subcommand))
       (let ((head (and prefix-tokens (string-downcase (first prefix-tokens)))))
-        (if (member head '("show" "edit" "clear") :test #'string=)
-            '()
-            nil))))
+        (cond
+          ((member head '("show" "edit" "clear") :test #'string=)
+           '())
+          ((string= head "import")
+           (cond
+             ((= index 1)
+              (let ((prefix (%slash-trim fragment)))
+                (if (%starts-with-ci-p prefix "--to")
+                    '("--to")
+                    '())))
+             ((= index 2)
+              (let ((prefix (%slash-trim fragment)))
+                (if (%starts-with-ci-p prefix "haake")
+                    '("haake")
+                    '())))
+             (t
+              '())))
+          ((string= head "export")
+           (cond
+             ((= index 1)
+              (let ((prefix (%slash-trim fragment)))
+                (if (%starts-with-ci-p prefix "--from")
+                    '("--from")
+                    '())))
+             ((= index 2)
+              (let ((prefix (%slash-trim fragment)))
+                (if (%starts-with-ci-p prefix "haake")
+                    '("haake")
+                    '())))
+             (t
+              '())))
+          (t
+           nil)))))
 
 (defun %agent-id-completions (fragment)
   (let ((prefix (%slash-trim fragment)))
@@ -812,8 +1001,8 @@
   (register-slash-command
    (make-slash-command
     :name "memory"
-    :description "Memory controls: show/edit/clear/remember/forget."
-    :usage "/memory [show|edit|clear|remember <text>|forget <key>]"
+    :description "Memory controls: show/edit/clear/remember/forget/import/export."
+    :usage "/memory [show|edit|clear|remember <text>|forget <key>|import --to haake|export --from haake]"
     :parameters
     (list (make-slash-command-parameter
            :name "args"
@@ -857,16 +1046,29 @@
   (register-slash-command
    (make-slash-command
     :name "compact"
-    :description "Compact conversation history to the most recent messages."
-    :usage "/compact [keep-last]"
+    :description "Compress conversation context by summarizing older messages."
+    :usage "/compact [keep-last-turns]"
     :parameters
     (list (make-slash-command-parameter
            :name "keep-last"
            :type :integer
            :required-p nil
-           :default 12
-           :description "How many recent messages to keep."))
+           :default 6
+           :description "How many recent turns to keep verbatim."))
     :handler #'%compact-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "history"
+    :description "Search persisted conversation history by content, role, and timestamp."
+    :usage "/history [query...] [--role system|user|assistant|tool] [--since TIMESTAMP] [--limit N]"
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Optional query text and filters."))
+    :handler #'%history-handler))
   t)
 
 (register-builtin-slash-commands)

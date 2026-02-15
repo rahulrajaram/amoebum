@@ -10,6 +10,11 @@
 (defparameter +event-type-config-changed+ (%event-type-keyword "config:changed"))
 (defparameter +event-type-permission-prompted+ (%event-type-keyword "permission:prompted"))
 (defparameter +event-type-memory-updated+ (%event-type-keyword "memory:updated"))
+(defparameter +event-type-memory-backend-selected+
+  (%event-type-keyword "memory:backend-selected"))
+(defparameter +event-type-context-compressed+ (%event-type-keyword "context:compressed"))
+(defparameter +event-type-mcp-tool-discovered+ (%event-type-keyword "mcp:tool-discovered"))
+(defparameter +event-type-mcp-tool-invoked+ (%event-type-keyword "mcp:tool-invoked"))
 
 (defparameter +core-event-types+
   (list +event-type-tool-invoked+
@@ -17,7 +22,11 @@
         +event-type-tool-error+
         +event-type-config-changed+
         +event-type-permission-prompted+
-        +event-type-memory-updated+))
+        +event-type-memory-updated+
+        +event-type-memory-backend-selected+
+        +event-type-context-compressed+
+        +event-type-mcp-tool-discovered+
+        +event-type-mcp-tool-invoked+))
 
 (defparameter *event-bus* nil)
 
@@ -86,6 +95,46 @@
   operation
   key
   value)
+
+(defstruct (memory-backend-selected-payload
+            (:constructor make-memory-backend-selected-payload
+                (&key backend reason requested-backend)))
+  backend
+  reason
+  requested-backend)
+
+(defstruct (context-compressed-payload
+            (:constructor make-context-compressed-payload
+                (&key
+                   (before-tokens 0)
+                   (after-tokens 0)
+                   (saved-tokens 0)
+                   (summarized-messages 0)
+                   (kept-messages 0)
+                   (trigger :auto))))
+  (before-tokens 0 :type integer)
+  (after-tokens 0 :type integer)
+  (saved-tokens 0 :type integer)
+  (summarized-messages 0 :type integer)
+  (kept-messages 0 :type integer)
+  (trigger :auto :type keyword))
+
+(defstruct (mcp-tool-discovered-payload
+            (:constructor make-mcp-tool-discovered-payload
+                (&key server-name tool-name namespaced-name description)))
+  server-name
+  tool-name
+  namespaced-name
+  description)
+
+(defstruct (mcp-tool-invoked-payload
+            (:constructor make-mcp-tool-invoked-payload
+                (&key server-name tool-name namespaced-name args request-id)))
+  server-name
+  tool-name
+  namespaced-name
+  args
+  request-id)
 
 (defstruct (event-subscription
             (:constructor %make-event-subscription
@@ -344,3 +393,57 @@
                         :operation operation
                         :key key
                         :value value)))
+
+(defun make-memory-backend-selected-event (&key backend reason requested-backend)
+  (make-event :type +event-type-memory-backend-selected+
+              :source :amoebum
+              :severity :info
+              :payload (make-memory-backend-selected-payload
+                        :backend backend
+                        :reason reason
+                        :requested-backend requested-backend)))
+
+(defun make-context-compressed-event (&key before-tokens
+                                           after-tokens
+                                           saved-tokens
+                                           summarized-messages
+                                           kept-messages
+                                           (trigger :auto))
+  (make-event :type +event-type-context-compressed+
+              :source :amoebum
+              :severity :info
+              :payload (make-context-compressed-payload
+                        :before-tokens before-tokens
+                        :after-tokens after-tokens
+                        :saved-tokens saved-tokens
+                        :summarized-messages summarized-messages
+                        :kept-messages kept-messages
+                        :trigger trigger)))
+
+(defun make-mcp-tool-discovered-event (&key server-name
+                                            tool-name
+                                            namespaced-name
+                                            description)
+  (make-event :type +event-type-mcp-tool-discovered+
+              :source :amoebum
+              :severity :info
+              :payload (make-mcp-tool-discovered-payload
+                        :server-name server-name
+                        :tool-name tool-name
+                        :namespaced-name namespaced-name
+                        :description description)))
+
+(defun make-mcp-tool-invoked-event (&key server-name
+                                         tool-name
+                                         namespaced-name
+                                         args
+                                         request-id)
+  (make-event :type +event-type-mcp-tool-invoked+
+              :source :amoebum
+              :severity :debug
+              :payload (make-mcp-tool-invoked-payload
+                        :server-name server-name
+                        :tool-name tool-name
+                        :namespaced-name namespaced-name
+                        :args args
+                        :request-id request-id)))

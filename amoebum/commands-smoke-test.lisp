@@ -58,7 +58,7 @@
              (names (mapcar (lambda (command)
                               (symbol-downcase (funcall command-name-fn command)))
                             commands)))
-        (dolist (required '("help" "mode" "model" "memory" "clear" "compact"))
+        (dolist (required '("help" "mode" "model" "memory" "clear" "compact" "history"))
           (assert-true (member required names :test #'string=)
                        "Expected built-in slash command /~A to be registered. Names=~S"
                        required
