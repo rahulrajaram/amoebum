@@ -458,6 +458,8 @@
     (%ensure-tool-registered context tool-name arguments)
     (%validate-tool-arguments tool-name arguments)
     (%check-permission-or-signal tool-name arguments context)
+    (sandbox-check-tool-call tool-name arguments
+                             :permission-mode (context-permission-mode context))
     (%maybe-log-invocation context tool-name arguments)
     (multiple-value-bind (decision details)
         (%run-hook-dispatch context :pre-tool-use tool-name arguments)
@@ -483,6 +485,7 @@
          (arguments (%call-arguments call))
          (prepared-call (%clone-tool-call-with-arguments call arguments))
          (result (pseudopod:invoke-tool-call toolset prepared-call)))
+    (setf result (apply-sandbox-output-guard result))
     (setf *pipeline-current-result* result)
     result))
 

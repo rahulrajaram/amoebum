@@ -108,7 +108,8 @@
   :depends-on ("ptui/ui" "ptui/layout" "ptui/text")
   :serial t
   :components
-  ((:file "src/widgets/core")))
+  ((:file "src/widgets/core")
+   (:file "src/widgets/defwidget")))
 
 (asdf:defsystem "ptui/components"
   :description "PTUI higher-level composable widgets"
@@ -170,6 +171,7 @@
    (:file "src/ui/elements")
    (:file "src/ui/runtime")
    (:file "src/widgets/core")
+   (:file "src/widgets/defwidget")
    (:file "src/render/buffer")
    (:file "src/render/diff")
    (:file "src/backend/protocol")
@@ -213,3 +215,12 @@
   :components
   ((:file "examples/metrics-dashboard")
    (:file "examples/atop-dashboard")))
+
+(asdf:defsystem "ptui/tests"
+  :description "PTUI FiveAM suites"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ("ptui" "fiveam")
+  :serial t
+  :components
+  ((:file "test/defwidget-test")))

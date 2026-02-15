@@ -4,6 +4,7 @@
   '(:model "moonshot-v1-128k"
     :context-window-limit nil
     :permission-mode :supervised
+    :sandbox-policy :strict
     :memory-backend :auto
     :web-search-searxng-url nil
     :web-search-duckduckgo-url "https://duckduckgo.com/html/"
@@ -29,10 +30,14 @@
     :notification-sound-task-complete nil
     :notification-sound-error nil
     :notification-sound-approval-needed nil
+    :auto-checkpoint-idle-seconds 300
     :plan-mode nil))
 
 (defparameter *known-permission-modes*
   '(:supervised :auto-edit :full-auto :yolo :no-confirm))
+
+(defparameter *known-sandbox-policies*
+  '(:strict :off))
 
 (defparameter *known-memory-backends*
   '(:auto :file :haake-cli :haake-mcp))
@@ -46,12 +51,14 @@
 (defstruct (config
             (:constructor make-config
                 (&key model permission-mode memory-backend project-root
-                 (values (make-hash-table :test 'eq)))))
+                 (values (make-hash-table :test 'eq))
+                 (sources (make-hash-table :test 'eq)))))
   model
   permission-mode
   memory-backend
   project-root
-  values)
+  values
+  sources)
 
 (define-condition configuration-error (error)
   ((key :initarg :key
@@ -95,6 +102,20 @@
       project-root
       (getf *default-config-values* key)))
 
+(defun %default-config-keys ()
+  (append
+   (loop for (key _value) on *default-config-values* by #'cddr collect key)
+   '(:project-root)))
+
+(defun %trim-string (value)
+  (if (stringp value)
+      (string-trim '(#\Space #\Tab #\Newline #\Return) value)
+      ""))
+
+(defun %non-empty-string-p (value)
+  (and (stringp value)
+       (> (length (%trim-string value)) 0)))
+
 (defun %valid-config-value-p (key value)
   (case key
     (:model (stringp value))
@@ -102,6 +123,9 @@
                                (and (integerp value)
                                     (> value 0))))
     (:permission-mode (member value *known-permission-modes* :test #'eq))
+    (:sandbox-policy (member (%sandbox-policy-keyword value)
+                             *known-sandbox-policies*
+                             :test #'eq))
     (:memory-backend (member value *known-memory-backends* :test #'eq))
     (:web-search-searxng-url (or (null value)
                                  (and (stringp value)
@@ -162,6 +186,7 @@
                                    (%pathname-or-string-p value)))
     (:notification-sound-approval-needed (or (null value)
                                              (%pathname-or-string-p value)))
+    (:auto-checkpoint-idle-seconds (and (integerp value) (>= value 0)))
     (:plan-mode (or (eq value t) (eq value nil)))
     (:project-root (%pathname-or-string-p value))
     (t t)))
@@ -187,19 +212,26 @@
                                         resolved))))
 
 (defun %merge-value (cfg key value source project-root)
-  (declare (ignore source))
   (let ((validated
           (if (%valid-config-value-p key value)
               value
-              (%signal-invalid-value key value "failed validation" project-root))))
-    (setf (gethash key (config-values cfg)) validated)
+              (%signal-invalid-value key value "failed validation" project-root)))
+        (final-value nil))
+    (setf final-value
+          (if (eq key :project-root)
+              (%normalize-project-root validated)
+              (if (eq key :sandbox-policy)
+                  (%sandbox-policy-keyword validated)
+                  validated)))
+    (setf (gethash key (config-values cfg)) final-value
+          (gethash key (config-sources cfg)) source)
     (case key
-      (:model (setf (config-model cfg) validated))
-      (:permission-mode (setf (config-permission-mode cfg) validated))
-      (:memory-backend (setf (config-memory-backend cfg) validated))
+      (:model (setf (config-model cfg) final-value))
+      (:permission-mode (setf (config-permission-mode cfg) final-value))
+      (:memory-backend (setf (config-memory-backend cfg) final-value))
       (:project-root (setf (config-project-root cfg)
-                           (%normalize-project-root validated)))))
-  cfg)
+                           final-value)))
+  cfg))
 
 (defun %base-config (&key project-root)
   (let* ((root (%normalize-project-root project-root))
@@ -207,61 +239,9 @@
                            :permission-mode (getf *default-config-values* :permission-mode)
                            :memory-backend (getf *default-config-values* :memory-backend)
                            :project-root root)))
-    (setf (gethash :model (config-values cfg)) (config-model cfg)
-          (gethash :context-window-limit (config-values cfg))
-          (getf *default-config-values* :context-window-limit)
-          (gethash :permission-mode (config-values cfg)) (config-permission-mode cfg)
-          (gethash :memory-backend (config-values cfg)) (config-memory-backend cfg)
-          (gethash :web-search-searxng-url (config-values cfg))
-          (getf *default-config-values* :web-search-searxng-url)
-          (gethash :web-search-duckduckgo-url (config-values cfg))
-          (getf *default-config-values* :web-search-duckduckgo-url)
-          (gethash :web-search-allow-domains (config-values cfg))
-          (getf *default-config-values* :web-search-allow-domains)
-          (gethash :web-search-block-domains (config-values cfg))
-          (getf *default-config-values* :web-search-block-domains)
-          (gethash :web-search-user-agent (config-values cfg))
-          (getf *default-config-values* :web-search-user-agent)
-          (gethash :web-fetch-timeout-seconds (config-values cfg))
-          (getf *default-config-values* :web-fetch-timeout-seconds)
-          (gethash :web-fetch-cache-ttl-seconds (config-values cfg))
-          (getf *default-config-values* :web-fetch-cache-ttl-seconds)
-          (gethash :web-fetch-max-markdown-bytes (config-values cfg))
-          (getf *default-config-values* :web-fetch-max-markdown-bytes)
-          (gethash :web-fetch-user-agent (config-values cfg))
-          (getf *default-config-values* :web-fetch-user-agent)
-          (gethash :haake-command (config-values cfg))
-          (getf *default-config-values* :haake-command)
-          (gethash :haake-project-id (config-values cfg))
-          (getf *default-config-values* :haake-project-id)
-          (gethash :haake-agent (config-values cfg))
-          (getf *default-config-values* :haake-agent)
-          (gethash :haake-autodetect (config-values cfg))
-          (getf *default-config-values* :haake-autodetect)
-          (gethash :notifications-enabled (config-values cfg))
-          (getf *default-config-values* :notifications-enabled)
-          (gethash :notification-events (config-values cfg))
-          (getf *default-config-values* :notification-events)
-          (gethash :notification-sound-enabled (config-values cfg))
-          (getf *default-config-values* :notification-sound-enabled)
-          (gethash :notification-desktop-enabled (config-values cfg))
-          (getf *default-config-values* :notification-desktop-enabled)
-          (gethash :notification-log-enabled (config-values cfg))
-          (getf *default-config-values* :notification-log-enabled)
-          (gethash :notification-sound-player (config-values cfg))
-          (getf *default-config-values* :notification-sound-player)
-          (gethash :notification-desktop-command (config-values cfg))
-          (getf *default-config-values* :notification-desktop-command)
-          (gethash :notification-log-path (config-values cfg))
-          (getf *default-config-values* :notification-log-path)
-          (gethash :notification-sound-task-complete (config-values cfg))
-          (getf *default-config-values* :notification-sound-task-complete)
-          (gethash :notification-sound-error (config-values cfg))
-          (getf *default-config-values* :notification-sound-error)
-          (gethash :notification-sound-approval-needed (config-values cfg))
-          (getf *default-config-values* :notification-sound-approval-needed)
-          (gethash :plan-mode (config-values cfg)) (getf *default-config-values* :plan-mode)
-          (gethash :project-root (config-values cfg)) (config-project-root cfg))
+    (dolist (key (%default-config-keys))
+      (setf (gethash key (config-values cfg)) (%default-value key root)
+            (gethash key (config-sources cfg)) :built-in))
     cfg))
 
 (defun configure (&rest entries)
@@ -291,22 +271,179 @@
 (defun %project-config-path (project-root)
   (merge-pathnames #P".amoebum/config.lisp" (%normalize-project-root project-root)))
 
-(defun load-config (&key project-root global-config-path project-config-path)
+(defun %path-namestring (path)
+  (when path
+    (namestring (or (ignore-errors (truename path))
+                    path))))
+
+(defun %paths-equal-p (left right)
+  (and left
+       right
+       (string= (%path-namestring left)
+                (%path-namestring right))))
+
+(defun %parent-directory (directory-path)
+  (let* ((normalized (uiop:ensure-directory-pathname directory-path))
+         (components (pathname-directory normalized)))
+    (when (and (listp components)
+               (> (length components) 1))
+      (uiop:ensure-directory-pathname
+       (make-pathname :directory (butlast components)
+                      :name nil
+                      :type nil
+                      :defaults normalized)))))
+
+(defun %directory-config-path (&key directory-root)
+  (loop for current = (%normalize-project-root directory-root)
+          then (%parent-directory current)
+        while current
+        for candidate = (merge-pathnames #P".amoebum/config.lisp" current)
+        for discovered = (and (probe-file candidate)
+                              (probe-file candidate))
+        when discovered
+          do (return discovered)))
+
+(defun %permission-mode-keyword (value)
+  (let* ((trimmed (%trim-string value))
+         (normalized (substitute #\- #\_ (string-downcase trimmed))))
+    (when (> (length normalized) 0)
+      (intern (string-upcase normalized) :keyword))))
+
+(defun %sandbox-policy-keyword (value)
+  (cond
+    ((keywordp value)
+     value)
+    ((symbolp value)
+     (intern (string-upcase (symbol-name value)) :keyword))
+    ((stringp value)
+     (let* ((trimmed (%trim-string value))
+            (normalized (substitute #\- #\_ (string-downcase trimmed))))
+       (when (> (length normalized) 0)
+         (intern (string-upcase normalized) :keyword))))
+    (t
+     nil)))
+
+(defun %environment-config-values ()
+  (let ((values (make-hash-table :test 'eq))
+        (model (uiop:getenv "AMOEBUM_MODEL"))
+        (permission-mode (uiop:getenv "AMOEBUM_PERMISSION_MODE")))
+    (when (%non-empty-string-p model)
+      (setf (gethash :model values) (%trim-string model)))
+    (when (%non-empty-string-p permission-mode)
+      (setf (gethash :permission-mode values)
+            (%permission-mode-keyword permission-mode)))
+    values))
+
+(defun %starts-with-string-p (prefix string)
+  (and (stringp prefix)
+       (stringp string)
+       (<= (length prefix) (length string))
+       (string= prefix string :end2 (length prefix))))
+
+(defun %cli-argument-values (arguments)
+  (let ((values (make-hash-table :test 'eq))
+        (args (copy-list (or arguments '()))))
+    (labels ((consume-value (flag)
+               (unless args
+                 (error "Missing value for CLI option ~A." flag))
+               (let ((value (pop args)))
+                 (if (%non-empty-string-p value)
+                     (%trim-string value)
+                     (error "Missing value for CLI option ~A." flag)))))
+      (loop while args do
+        (let ((argument (pop args)))
+          (cond
+            ((string= argument "--model")
+             (setf (gethash :model values) (consume-value "--model")))
+            ((%starts-with-string-p "--model=" argument)
+             (setf (gethash :model values)
+                   (%trim-string (subseq argument (length "--model=")))))
+            ((string= argument "--permission-mode")
+             (setf (gethash :permission-mode values)
+                   (%permission-mode-keyword (consume-value "--permission-mode"))))
+            ((%starts-with-string-p "--permission-mode=" argument)
+             (setf (gethash :permission-mode values)
+                   (%permission-mode-keyword
+                    (%trim-string (subseq argument (length "--permission-mode=")))))))))
+      values)))
+
+(defun %coerce-layer-values (values)
+  (let ((hash (make-hash-table :test 'eq)))
+    (cond
+      ((null values) hash)
+      ((hash-table-p values)
+       (maphash (lambda (key value)
+                  (setf (gethash key hash) value))
+                values)
+       hash)
+      ((and (listp values) (evenp (length values)))
+       (loop for (key value) on values by #'cddr do
+             (setf (gethash key hash) value))
+       hash)
+      (t
+       (error "Layer values must be NIL, a hash table, or a property list.")))))
+
+(defun load-config (&key
+                      project-root
+                      global-config-path
+                      project-config-path
+                      directory-root
+                      directory-config-path
+                      environment-values
+                      cli-values
+                      cli-arguments)
   (let* ((root (%normalize-project-root project-root))
          (cfg (%base-config :project-root root))
          (global-values (%load-layer (or global-config-path (%global-config-path))))
-         (project-values (%load-layer (or project-config-path (%project-config-path root)))))
+         (project-path (or project-config-path (%project-config-path root)))
+         (project-values (%load-layer project-path))
+         (resolved-directory-path
+           (or directory-config-path
+               (%directory-config-path :directory-root (or directory-root *default-pathname-defaults*))))
+         (effective-directory-path
+           (if (%paths-equal-p project-path resolved-directory-path)
+               nil
+               resolved-directory-path))
+         (directory-values (%load-layer effective-directory-path))
+         (env-values
+           (if (null environment-values)
+               (%environment-config-values)
+               (%coerce-layer-values environment-values)))
+         (cli-layer-values
+           (cond
+             (cli-values (%coerce-layer-values cli-values))
+             (cli-arguments (%cli-argument-values cli-arguments))
+             (t (make-hash-table :test 'eq)))))
     (dolist (key (%hash-keys global-values))
       (%merge-value cfg key (gethash key global-values) :global root))
     (dolist (key (%hash-keys project-values))
       (%merge-value cfg key (gethash key project-values) :project root))
+    (dolist (key (%hash-keys directory-values))
+      (%merge-value cfg key (gethash key directory-values) :directory root))
+    (dolist (key (%hash-keys env-values))
+      (%merge-value cfg key (gethash key env-values) :env root))
+    (dolist (key (%hash-keys cli-layer-values))
+      (%merge-value cfg key (gethash key cli-layer-values) :cli root))
     cfg))
 
-(defun reload-config (&key project-root global-config-path project-config-path)
+(defun reload-config (&key
+                        project-root
+                        global-config-path
+                        project-config-path
+                        directory-root
+                        directory-config-path
+                        environment-values
+                        cli-values
+                        cli-arguments)
   (setf *current-config*
         (load-config :project-root project-root
                      :global-config-path global-config-path
-                     :project-config-path project-config-path)))
+                     :project-config-path project-config-path
+                     :directory-root directory-root
+                     :directory-config-path directory-config-path
+                     :environment-values environment-values
+                     :cli-values cli-values
+                     :cli-arguments cli-arguments)))
 
 (defun current-config ()
   (or *current-config*
@@ -314,6 +451,9 @@
 
 (defun config-value (key &optional (cfg (current-config)))
   (gethash key (config-values cfg)))
+
+(defun config-layer-source (key &optional (cfg (current-config)))
+  (gethash key (config-sources cfg)))
 
 (defun emit-config-changed (key old-value new-value)
   (let ((event (make-config-changed-event :key key

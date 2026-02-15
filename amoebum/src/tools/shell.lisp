@@ -103,13 +103,15 @@
       (multiple-value-bind (stdout stderr exit-code)
           #+sbcl
           (sb-ext:with-timeout timeout-seconds
-            (uiop:run-program (list "bash" "-lc" command)
+            (safe-run-program (list "bash" "-lc" command)
+                              :tool :bash-exec
                               :directory cwd
                               :ignore-error-status t
                               :output :string
                               :error-output :string))
           #-sbcl
-          (uiop:run-program (list "bash" "-lc" command)
+          (safe-run-program (list "bash" "-lc" command)
+                            :tool :bash-exec
                             :directory cwd
                             :ignore-error-status t
                             :output :string
@@ -218,7 +220,6 @@
     (%snapshot-shell-task task)))
 
 (defun %execute-shell-command (command cwd timeout-seconds max-output-chars background)
-  (%ensure-shell-permission command)
   (let ((directory (%resolve-shell-directory cwd)))
     (%persist-shell-directory directory)
     (if background

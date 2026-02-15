@@ -37,20 +37,35 @@
          (reset-keymap-stack-fn (funcall fn-in "RESET-KEYMAP-STACK" amoebum-pkg))
          (push-keymap-fn (funcall fn-in "PUSH-KEYMAP" amoebum-pkg))
          (pop-keymap-fn (funcall fn-in "POP-KEYMAP" amoebum-pkg))
+         (push-keymap-overlay-fn (funcall fn-in "PUSH-KEYMAP-OVERLAY" amoebum-pkg))
+         (pop-keymap-overlay-fn (funcall fn-in "POP-KEYMAP-OVERLAY" amoebum-pkg))
+         (clear-keymap-overlays-fn (funcall fn-in "CLEAR-KEYMAP-OVERLAYS" amoebum-pkg))
+         (current-keymap-overlay-fn (funcall fn-in "CURRENT-KEYMAP-OVERLAY" amoebum-pkg))
          (current-keymap-fn (funcall fn-in "CURRENT-KEYMAP" amoebum-pkg))
          (dispatch-active-keymaps-fn (funcall fn-in "DISPATCH-ACTIVE-KEYMAPS" amoebum-pkg))
+         (flush-key-dispatch-timeouts-fn (funcall fn-in "FLUSH-KEY-DISPATCH-TIMEOUTS" amoebum-pkg))
          (make-key-dispatch-on-event-fn (funcall fn-in "MAKE-KEY-DISPATCH-ON-EVENT" amoebum-pkg))
          (activate-default-keymaps-fn (funcall fn-in "ACTIVATE-DEFAULT-KEYMAPS" amoebum-pkg))
          (keymap-name-fn (funcall fn-in "KEYMAP-NAME" amoebum-pkg))
          (keymap-bindings-fn (funcall fn-in "KEYMAP-BINDINGS" amoebum-pkg))
+         (make-event-bus-fn (funcall fn-in "MAKE-EVENT-BUS" amoebum-pkg))
+         (current-event-bus-fn (funcall fn-in "CURRENT-EVENT-BUS" amoebum-pkg))
+         (event-history-fn (funcall fn-in "EVENT-HISTORY" amoebum-pkg))
+         (event-type-fn (funcall fn-in "EVENT-TYPE" amoebum-pkg))
          (make-key-event-fn (funcall fn-in "MAKE-KEY-EVENT" events-pkg))
          (make-paste-event-fn (funcall fn-in "MAKE-PASTE-EVENT" events-pkg))
+         (event-bus-var-sym (funcall symbol-in "*EVENT-BUS*" amoebum-pkg))
+         (sequence-timeout-sym (funcall symbol-in "*KEY-SEQUENCE-TIMEOUT-MS*" amoebum-pkg))
+         (escape-timeout-sym (funcall symbol-in "*KEY-DISAMBIGUATION-TIMEOUT-MS*" amoebum-pkg))
+         (terminal-profile-sym (funcall symbol-in "*TERMINAL-KEY-NORMALIZATION-PROFILE*" amoebum-pkg))
          (counter-sym (intern "*I34-CHORD-COUNT*" amoebum-pkg)))
     (labels ((assert-true (condition format-string &rest format-args)
                (unless condition
                  (error (apply #'format nil format-string format-args))))
              (make-text-event (text)
                (funcall make-key-event-fn :text :text? text))
+             (make-escape-event ()
+               (funcall make-key-event-fn :escape))
              (make-ctrl-c-event ()
                (funcall make-key-event-fn :ctrl-c :ctrlp t)))
       (setf (symbol-value counter-sym) 0)
@@ -77,6 +92,19 @@
        `(,defkeys-sym i34-diff-mode
           "I34 smoke diff keymap."
           ("d" (+ state 100))))
+
+      (eval
+       `(,defkeys-sym i66-esc-alt-mode
+          "I66 esc/alt disambiguation keymap."
+          ("ESC" (+ state 1000))
+          ("M-x" (+ state 2000))
+          ("up" (+ state 77))
+          ("C-x" (+ state 5))))
+
+      (eval
+       `(,defkeys-sym i66-overlay-mode
+          "I66 temporary overlay keymap."
+          ("z" (+ state 900))))
 
       (let ((chat-keymap (funcall find-keymap-fn 'i34-chat-mode)))
         (assert-true chat-keymap
@@ -140,6 +168,32 @@
       (assert-true (= (symbol-value counter-sym) 1)
                    "Expected chord handler counter to increment exactly once.")
 
+      (let ((previous-timeout (symbol-value sequence-timeout-sym)))
+        (unwind-protect
+             (progn
+               (setf (symbol-value sequence-timeout-sym) 30)
+               (funcall reset-keymap-stack-fn '(i34-chat-mode))
+               (multiple-value-bind (state handledp metadata)
+                   (funcall dispatch-active-keymaps-fn (make-text-event "g") 11)
+                 (assert-true handledp
+                              "Expected first g stroke to become pending.")
+                 (assert-true (= state 11)
+                              "Expected pending first stroke to preserve state.")
+                 (assert-true (eq (getf metadata :kind) :pending)
+                              "Expected pending metadata for first stroke."))
+               (sleep 0.06d0)
+               (multiple-value-bind (state handledp metadata)
+                   (funcall dispatch-active-keymaps-fn (make-text-event "g") 11)
+                 (assert-true handledp
+                              "Expected expired sequence to treat second g as fresh pending stroke.")
+                 (assert-true (= state 11)
+                              "Expected timed-out sequence to avoid chord dispatch.")
+                 (assert-true (eq (getf metadata :kind) :pending)
+                              "Expected second stroke after timeout to remain pending, got ~S." metadata))
+               (assert-true (= (symbol-value counter-sym) 1)
+                            "Expected chord counter to remain unchanged after sequence timeout."))
+          (setf (symbol-value sequence-timeout-sym) previous-timeout)))
+
       (multiple-value-bind (state handledp)
           (funcall dispatch-active-keymaps-fn (make-ctrl-c-event) 7)
         (assert-true handledp
@@ -153,6 +207,118 @@
                      "Expected :when guard to skip ctrl-c binding for negative state.")
         (assert-true (= state -2)
                      "Expected skipped binding to preserve state."))
+
+      (let ((previous-disambiguation-timeout (symbol-value escape-timeout-sym)))
+        (unwind-protect
+             (progn
+               (setf (symbol-value escape-timeout-sym) 50)
+               (funcall reset-keymap-stack-fn '(i66-esc-alt-mode))
+
+               (multiple-value-bind (state handledp metadata)
+                   (funcall dispatch-active-keymaps-fn (make-escape-event) 5)
+                 (assert-true handledp
+                              "Expected ESC to be held pending for disambiguation.")
+                 (assert-true (= state 5)
+                              "Expected pending ESC to not mutate state yet.")
+                 (assert-true (eq (getf metadata :kind) :pending-escape)
+                              "Expected pending escape metadata kind, got ~S." metadata))
+
+               (multiple-value-bind (state handledp metadata)
+                   (funcall dispatch-active-keymaps-fn (make-text-event "x") 5)
+                 (assert-true handledp
+                              "Expected ESC + x within timeout to dispatch M-x.")
+                 (assert-true (= state 2005)
+                              "Expected M-x handler to update state to 2005, got ~S." state)
+                 (assert-true (eq (getf metadata :kind) :binding)
+                              "Expected ESC+Alt disambiguation to dispatch binding, got ~S." metadata))
+
+               (multiple-value-bind (state handledp)
+                   (funcall dispatch-active-keymaps-fn (make-escape-event) 9)
+                 (assert-true handledp
+                              "Expected lone ESC to become pending.")
+                 (assert-true (= state 9)
+                              "Expected pending lone ESC to preserve state."))
+               (sleep 0.06d0)
+               (multiple-value-bind (state handledp metadata)
+                   (funcall flush-key-dispatch-timeouts-fn 9)
+                 (assert-true handledp
+                              "Expected timeout flush to dispatch lone ESC binding.")
+                 (assert-true (= state 1009)
+                              "Expected lone ESC binding after timeout, got ~S." state)
+                 (assert-true (eq (getf metadata :kind) :binding)
+                              "Expected lone ESC timeout flush to dispatch binding, got ~S." metadata)))
+          (setf (symbol-value escape-timeout-sym) previous-disambiguation-timeout)))
+
+      (let ((previous-profile (symbol-value terminal-profile-sym)))
+        (unwind-protect
+             (progn
+               (funcall reset-keymap-stack-fn '(i66-esc-alt-mode))
+               (setf (symbol-value terminal-profile-sym) :kitty)
+               (multiple-value-bind (state handledp metadata)
+                   (funcall dispatch-active-keymaps-fn (funcall make-key-event-fn "kitty-up") 4)
+                 (assert-true handledp
+                              "Expected kitty-up normalization to map into up binding.")
+                 (assert-true (= state 81)
+                              "Expected normalized kitty-up to update state to 81, got ~S." state)
+                 (assert-true (eq (getf metadata :kind) :binding)
+                              "Expected normalized keycode to dispatch binding, got ~S." metadata))
+
+               (setf (symbol-value terminal-profile-sym) :tmux)
+               (multiple-value-bind (state handledp metadata)
+                   (funcall dispatch-active-keymaps-fn
+                            (funcall make-key-event-fn "tmux:C-b C-x")
+                            10)
+                 (assert-true handledp
+                              "Expected tmux-prefixed key to strip prefix and dispatch C-x binding.")
+                 (assert-true (= state 15)
+                              "Expected tmux normalized C-x to update state to 15, got ~S." state)
+                 (assert-true (eq (getf metadata :kind) :binding)
+                              "Expected tmux normalized keycode to dispatch binding, got ~S." metadata)))
+          (setf (symbol-value terminal-profile-sym) previous-profile)))
+
+      (setf (symbol-value event-bus-var-sym) (funcall make-event-bus-fn))
+      (funcall reset-keymap-stack-fn '(i34-chat-mode))
+      (funcall clear-keymap-overlays-fn)
+      (funcall push-keymap-overlay-fn 'i66-overlay-mode)
+
+      (multiple-value-bind (state handledp metadata)
+          (funcall dispatch-active-keymaps-fn (make-text-event "z") 2)
+        (assert-true handledp
+                     "Expected overlay to preempt base keymaps.")
+        (assert-true (= state 902)
+                     "Expected overlay binding to update state to 902, got ~S." state)
+        (assert-true (eq (getf metadata :kind) :binding)
+                     "Expected overlay z binding dispatch metadata kind :binding."))
+
+      (multiple-value-bind (state handledp metadata)
+          (funcall dispatch-active-keymaps-fn (make-escape-event) 902)
+        (assert-true handledp
+                     "Expected ESC inside overlay to become pending for overlay cleanup.")
+        (assert-true (= state 902)
+                     "Expected pending ESC in overlay to preserve state.")
+        (assert-true (eq (getf metadata :kind) :pending-escape)
+                     "Expected pending escape metadata for overlay escape path, got ~S." metadata))
+
+      (sleep 0.06d0)
+      (multiple-value-bind (state handledp metadata)
+          (funcall flush-key-dispatch-timeouts-fn 902)
+        (assert-true handledp
+                     "Expected timeout flush to auto-pop overlay on ESC.")
+        (assert-true (= state 902)
+                     "Expected overlay escape pop to preserve state.")
+        (assert-true (eq (getf metadata :kind) :overlay-exit)
+                     "Expected overlay escape cleanup metadata kind :overlay-exit, got ~S." metadata))
+
+      (assert-true (null (funcall current-keymap-overlay-fn))
+                   "Expected overlay stack to be empty after ESC auto-cleanup.")
+
+      (let ((events (funcall event-history-fn (funcall current-event-bus-fn))))
+        (assert-true (find :KEYMAP-OVERLAY-ENTER events :key event-type-fn :test #'eq)
+                     "Expected keymap-overlay-enter event in event bus history.")
+        (assert-true (find :KEYMAP-OVERLAY-EXIT events :key event-type-fn :test #'eq)
+                     "Expected keymap-overlay-exit event in event bus history."))
+
+      (funcall pop-keymap-overlay-fn)
 
       (let* ((fallback-called nil)
              (dispatcher

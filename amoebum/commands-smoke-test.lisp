@@ -58,7 +58,7 @@
              (names (mapcar (lambda (command)
                               (symbol-downcase (funcall command-name-fn command)))
                             commands)))
-        (dolist (required '("help" "mode" "model" "memory" "clear" "compact" "history"))
+        (dolist (required '("help" "mode" "model" "config" "memory" "clear" "compact" "history" "sounds" "lint"))
           (assert-true (member required names :test #'string=)
                        "Expected built-in slash command /~A to be registered. Names=~S"
                        required
@@ -94,6 +94,24 @@
                      "Expected /model to update runtime model in config."))
 
       (multiple-value-bind (handledp result)
+          (funcall dispatch-fn "/config")
+        (assert-true handledp "Expected /config to be handled.")
+        (assert-true (contains-text-p (funcall result-output-fn result) "source:")
+                     "Expected /config output to include source attribution."))
+
+      (multiple-value-bind (handledp result)
+          (funcall dispatch-fn "/sounds")
+        (assert-true handledp "Expected /sounds to be handled.")
+        (assert-true (contains-text-p (funcall result-output-fn result) "Sound themes")
+                     "Expected /sounds output to list themes."))
+
+      (multiple-value-bind (handledp result)
+          (funcall dispatch-fn "/sounds set minimal")
+        (assert-true handledp "Expected /sounds set minimal to be handled.")
+        (assert-true (contains-text-p (funcall result-output-fn result) "minimal")
+                     "Expected /sounds set output to mention minimal theme."))
+
+      (multiple-value-bind (handledp result)
           (funcall dispatch-fn "/memory show")
         (assert-true handledp "Expected /memory show to be handled.")
         (assert-true (contains-text-p (funcall result-output-fn result) "Memory backend:")
@@ -103,11 +121,20 @@
       (multiple-value-bind (handledp result)
           (funcall dispatch-fn "/clear")
         (assert-true handledp "Expected /clear to be handled.")
+        (assert-true (eq (funcall result-action-fn result) :none)
+                     "Expected /clear without confirmation to produce no action, got ~S."
+                     (funcall result-action-fn result))
+        (assert-true (contains-text-p (funcall result-output-fn result) "/clear --yes")
+                     "Expected /clear output to include confirmation prompt."))
+
+      (multiple-value-bind (handledp result)
+          (funcall dispatch-fn "/clear --yes")
+        (assert-true handledp "Expected /clear --yes to be handled.")
         (assert-true (eq (funcall result-action-fn result) :clear-chat)
-                     "Expected /clear action :clear-chat, got ~S."
+                     "Expected /clear --yes action :clear-chat, got ~S."
                      (funcall result-action-fn result))
         (assert-true (not (funcall result-echo-fn result))
-                     "Expected /clear to suppress command echo."))
+                     "Expected /clear --yes to suppress command echo."))
 
       (multiple-value-bind (handledp result)
           (funcall dispatch-fn "/compact 7")

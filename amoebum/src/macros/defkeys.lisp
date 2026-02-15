@@ -52,9 +52,53 @@
   (bindings (make-hash-table :test #'equal))
   (chords '()))
 
+(defstruct (keymap-overlay
+            (:constructor %make-keymap-overlay
+                (&key keymap (auto-cleanup-on-escape-p t) entered-at)))
+  keymap
+  (auto-cleanup-on-escape-p t :type boolean)
+  (entered-at 0 :type integer))
+
 (defparameter *keymap-registry* (make-hash-table :test #'equal))
 (defparameter *keymap-stack* '())
+(defparameter *keymap-overlay-stack* '())
 (defparameter *key-sequence-buffer* '())
+(defparameter *key-sequence-timeout-ms* 500)
+(defparameter *key-sequence-last-input-ms* 0)
+(defparameter *key-disambiguation-timeout-ms* 50)
+(defparameter *pending-escape-event* nil)
+(defparameter *pending-escape-start-ms* 0)
+(defparameter *terminal-key-normalization-profile* :auto)
+(defparameter *terminal-key-normalization-table*
+  '((:xterm . (("xterm-up" . "up")
+               ("xterm-down" . "down")
+               ("xterm-left" . "left")
+               ("xterm-right" . "right")
+               ("xterm-home" . "home")
+               ("xterm-end" . "end")
+               ("xterm-pgup" . "pgup")
+               ("xterm-pgdn" . "pgdn")
+               ("xterm-del" . "DEL")))
+    (:kitty . (("kitty-up" . "up")
+               ("kitty-down" . "down")
+               ("kitty-left" . "left")
+               ("kitty-right" . "right")
+               ("kitty-home" . "home")
+               ("kitty-end" . "end")
+               ("kitty-pageup" . "pgup")
+               ("kitty-pagedown" . "pgdn")
+               ("kitty-delete" . "DEL")
+               ("kitty-tab" . "TAB")))
+    (:wezterm . (("wezterm-up" . "up")
+                 ("wezterm-down" . "down")
+                 ("wezterm-left" . "left")
+                 ("wezterm-right" . "right")
+                 ("wezterm-home" . "home")
+                 ("wezterm-end" . "end")
+                 ("wezterm-pageup" . "pgup")
+                 ("wezterm-pagedown" . "pgdn")
+                 ("wezterm-delete" . "DEL")
+                 ("wezterm-tab" . "TAB")))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %string-empty-p (value)
@@ -167,42 +211,121 @@
       (let ((key (%parse-key-token key-token key-spec)))
         (list :key key :ctrl ctrl :alt alt :shift shift))))
 
-  (defun %event-key->normalized-key (event-key event)
+  (defun %string-prefix-p (prefix value)
+    (and (<= (length prefix) (length value))
+         (string-equal prefix value :end2 (length prefix))))
+
+  (defun %now-milliseconds ()
+    (truncate (* 1000
+                 (/ (coerce (get-internal-real-time) 'double-float)
+                    (coerce internal-time-units-per-second 'double-float)))))
+
+  (defun %terminal-profile-from-environment ()
+    (let ((term-program (string-downcase (or (uiop:getenv "TERM_PROGRAM") "")))
+          (term (string-downcase (or (uiop:getenv "TERM") "")))
+          (tmux (uiop:getenv "TMUX")))
+      (cond
+        ((and (stringp tmux) (not (%string-empty-p tmux)))
+         :tmux)
+        ((search "wezterm" term-program)
+         :wezterm)
+        ((search "kitty" term-program)
+         :kitty)
+        ((or (search "xterm" term)
+             (search "xterm" term-program))
+         :xterm)
+        (t
+         :generic))))
+
+  (defun resolve-terminal-key-normalization-profile ()
+    (if (eq *terminal-key-normalization-profile* :auto)
+        (%terminal-profile-from-environment)
+        *terminal-key-normalization-profile*))
+
+  (defun %event-key-token (event-key)
     (cond
-      ((characterp event-key)
-       (%normalize-character-key event-key))
-      ((eq event-key :text)
-       (let ((text (ptui.core.events:key-event-text? event)))
-         (when (and (stringp text) (> (length text) 0))
-           (%normalize-character-key (char text 0)))))
-      ((eq event-key :ctrl-c) #\c)
-      ((eq event-key :ctrl-j) #\j)
-      ((or (eq event-key :enter) (eq event-key :return))
-       :enter)
-      ((eq event-key :escape)
-       :escape)
-      ((eq event-key :tab)
-       :tab)
-      ((eq event-key :backspace)
-       :backspace)
-      ((member event-key
-               '(:up :down :left :right :home :end :pgup :pgdn
-                 :f1 :f2 :f3 :f4 :f5 :f6 :f7 :f8 :f9 :f10 :f11 :f12)
-               :test #'eq)
-       event-key)
+      ((stringp event-key)
+       (string-downcase event-key))
+      ((symbolp event-key)
+       (string-downcase (symbol-name event-key)))
       (t
-       event-key)))
+       nil)))
+
+  (defun %strip-tmux-prefix-token (token)
+    (let* ((without-prefix (if (%string-prefix-p "tmux:" token)
+                               (subseq token 5)
+                               token))
+           (space-position (position #\Space without-prefix :from-end t)))
+      (if space-position
+          (subseq without-prefix (1+ space-position))
+          without-prefix)))
+
+  (defun %lookup-terminal-normalized-spec (token profile)
+    (let ((normalized-token (if (eq profile :tmux)
+                                (%strip-tmux-prefix-token token)
+                                token)))
+      (or (cdr (assoc normalized-token
+                      (cdr (assoc profile *terminal-key-normalization-table*))
+                      :test #'string=))
+          (loop for (name . rules) in *terminal-key-normalization-table*
+                thereis (and (not (eq name profile))
+                             (cdr (assoc normalized-token rules :test #'string=))))
+          (when (and (eq profile :tmux)
+                     (search "-" normalized-token))
+            normalized-token))))
+
+  (defun %event-key->base-signature (event-key event)
+    (let* ((profile (resolve-terminal-key-normalization-profile))
+           (ctrl (not (null (ptui.core.events:key-event-ctrlp event))))
+           (alt (not (null (ptui.core.events:key-event-altp event))))
+           (shift (not (null (ptui.core.events:key-event-shiftp event))))
+           (token (%event-key-token event-key))
+           (terminal-spec (and token (%lookup-terminal-normalized-spec token profile))))
+      (flet ((result (key &key (ctrlp ctrl) (altp alt) (shiftp shift))
+               (when key
+                 (list :key key :ctrl (not (null ctrlp))
+                       :alt (not (null altp))
+                       :shift (not (null shiftp))))))
+        (cond
+          (terminal-spec
+           (let ((parsed (%parse-key-spec terminal-spec)))
+             (result (getf parsed :key)
+                     :ctrlp (or ctrl (getf parsed :ctrl))
+                     :altp (or alt (getf parsed :alt))
+                     :shiftp (or shift (getf parsed :shift)))))
+          ((characterp event-key)
+           (result (%normalize-character-key event-key)))
+          ((eq event-key :text)
+           (let ((text (ptui.core.events:key-event-text? event)))
+             (when (and (stringp text) (> (length text) 0))
+               (result (%normalize-character-key (char text 0))))))
+          ((eq event-key :ctrl-c)
+           (result #\c :ctrlp t))
+          ((eq event-key :ctrl-j)
+           (result #\j :ctrlp t))
+          ((or (eq event-key :enter) (eq event-key :return))
+           (result :enter))
+          ((eq event-key :escape)
+           (result :escape))
+          ((eq event-key :tab)
+           (result :tab))
+          ((eq event-key :backspace)
+           (result :backspace))
+          ((member event-key
+                   '(:up :down :left :right :home :end :pgup :pgdn
+                     :f1 :f2 :f3 :f4 :f5 :f6 :f7 :f8 :f9 :f10 :f11 :f12)
+                   :test #'eq)
+           (result event-key))
+          ((and token (= (length token) 1))
+           (result (%normalize-character-key (char token 0))))
+          (t
+           (result event-key))))))
 
   (defun %key-event-signature (event)
     (unless (typep event 'ptui.core.events:key-event)
       (return-from %key-event-signature nil))
-    (let ((key (%event-key->normalized-key (ptui.core.events:key-event-key event)
-                                           event)))
-      (when key
-        (list :key key
-              :ctrl (not (null (ptui.core.events:key-event-ctrlp event)))
-              :alt (not (null (ptui.core.events:key-event-altp event)))
-              :shift (not (null (ptui.core.events:key-event-shiftp event)))))))
+    (%event-key->base-signature (ptui.core.events:key-event-key event)
+                                event))
 
   (defun %normalize-keymap-name (designator)
     (cond
@@ -274,7 +397,11 @@
   (let ((count (hash-table-count *keymap-registry*)))
     (clrhash *keymap-registry*)
     (setf *keymap-stack* '()
-          *key-sequence-buffer* '())
+          *keymap-overlay-stack* '()
+          *key-sequence-buffer* '()
+          *key-sequence-last-input-ms* 0
+          *pending-escape-event* nil
+          *pending-escape-start-ms* 0)
     count))
 
 (defun register-key-binding (keymap key-spec handler
@@ -348,32 +475,134 @@
 (defun current-keymap ()
   (first *keymap-stack*))
 
+(defun current-keymap-overlay ()
+  (first *keymap-overlay-stack*))
+
+(defun %reset-key-sequence-buffer ()
+  (setf *key-sequence-buffer* '()
+        *key-sequence-last-input-ms* 0)
+  *key-sequence-buffer*)
+
+(defun %clear-pending-escape ()
+  (setf *pending-escape-event* nil
+        *pending-escape-start-ms* 0)
+  nil)
+
+(defun %set-pending-escape (event &optional (now (%now-milliseconds)))
+  (setf *pending-escape-event* event
+        *pending-escape-start-ms* now)
+  event)
+
+(defun %pending-escape-active-p ()
+  (typep *pending-escape-event* 'ptui.core.events:key-event))
+
+(defun %pending-escape-expired-p (&optional (now (%now-milliseconds)))
+  (and (%pending-escape-active-p)
+       (>= (- now *pending-escape-start-ms*)
+           (max 0 *key-disambiguation-timeout-ms*))))
+
+(defun %sequence-buffer-expired-p (&optional (now (%now-milliseconds)))
+  (and (not (null *key-sequence-buffer*))
+       (> *key-sequence-timeout-ms* 0)
+       (> (- now *key-sequence-last-input-ms*)
+          *key-sequence-timeout-ms*)))
+
+(defun %expire-key-sequence-buffer (&optional (now (%now-milliseconds)))
+  (when (%sequence-buffer-expired-p now)
+    (%reset-key-sequence-buffer))
+  *key-sequence-buffer*)
+
+(defun %plain-escape-signature-p (signature)
+  (and signature
+       (eq (getf signature :key) :escape)
+       (not (getf signature :ctrl))
+       (not (getf signature :alt))
+       (not (getf signature :shift))))
+
+(defun %emit-keymap-overlay-event (event-type overlay reason)
+  (when overlay
+    (publish (current-event-bus)
+             event-type
+             :source :amoebum
+             :severity :info
+             :payload (list :keymap (keymap-name (keymap-overlay-keymap overlay))
+                            :reason reason
+                            :depth (length *keymap-overlay-stack*)
+                            :auto-cleanup-on-escape-p
+                            (keymap-overlay-auto-cleanup-on-escape-p overlay)))))
+
 (defun push-keymap (designator)
   (let ((map (%keymap-from-designator designator :errorp t)))
     (setf *keymap-stack* (cons map (remove map *keymap-stack* :test #'eq))
-          *key-sequence-buffer* '())
+          *pending-escape-event* nil
+          *pending-escape-start-ms* 0)
+    (%reset-key-sequence-buffer)
     map))
 
 (defun pop-keymap ()
   (prog1 (first *keymap-stack*)
     (setf *keymap-stack* (rest *keymap-stack*)
-          *key-sequence-buffer* '())))
+          *pending-escape-event* nil
+          *pending-escape-start-ms* 0)
+    (%reset-key-sequence-buffer)))
+
+(defun push-keymap-overlay (designator &key (auto-cleanup-on-escape-p t))
+  (let* ((map (%keymap-from-designator designator :errorp t))
+         (remaining (remove map
+                            *keymap-overlay-stack*
+                            :key #'keymap-overlay-keymap
+                            :test #'eq))
+         (overlay (%make-keymap-overlay :keymap map
+                                        :auto-cleanup-on-escape-p
+                                        (not (null auto-cleanup-on-escape-p))
+                                        :entered-at (%now-milliseconds))))
+    (setf *keymap-overlay-stack* (cons overlay remaining))
+    (%reset-key-sequence-buffer)
+    (%clear-pending-escape)
+    (%emit-keymap-overlay-event +event-type-keymap-overlay-enter+
+                                overlay
+                                :push)
+    overlay))
+
+(defun pop-keymap-overlay (&key (reason :pop))
+  (let ((overlay (first *keymap-overlay-stack*)))
+    (when overlay
+      (setf *keymap-overlay-stack* (rest *keymap-overlay-stack*))
+      (%reset-key-sequence-buffer)
+      (%clear-pending-escape)
+      (%emit-keymap-overlay-event +event-type-keymap-overlay-exit+
+                                  overlay
+                                  reason))
+    overlay))
+
+(defun clear-keymap-overlays (&key (reason :clear))
+  (let ((count 0))
+    (loop while *keymap-overlay-stack* do
+      (pop-keymap-overlay :reason reason)
+      (incf count))
+    count))
 
 (defun reset-keymap-stack (&optional designators)
+  (when *keymap-overlay-stack*
+    (clear-keymap-overlays :reason :reset))
   (setf *keymap-stack* '()
-        *key-sequence-buffer* '())
+        *pending-escape-event* nil
+        *pending-escape-start-ms* 0)
+  (%reset-key-sequence-buffer)
   (dolist (designator designators)
     (push-keymap designator))
   *keymap-stack*)
 
 (defun %active-keymaps (&optional keymap-stack)
-  (let ((stack (or keymap-stack *keymap-stack*)))
-    (if (null stack)
-        (let ((chat (find-keymap 'chat-mode)))
-          (if chat
-              (list chat)
-              '()))
-        stack)))
+  (if (not (null *keymap-overlay-stack*))
+      (mapcar #'keymap-overlay-keymap *keymap-overlay-stack*)
+      (let ((stack (or keymap-stack *keymap-stack*)))
+        (if (null stack)
+            (let ((chat (find-keymap 'chat-mode)))
+              (if chat
+                  (list chat)
+                  '()))
+            stack))))
 
 (defun %max-chord-length (&optional keymaps)
   (let ((max-length 1))
@@ -390,8 +619,10 @@
   *key-sequence-buffer*)
 
 (defun %append-key-signature (signature)
+  (%expire-key-sequence-buffer)
   (setf *key-sequence-buffer*
-        (append *key-sequence-buffer* (list signature)))
+        (append *key-sequence-buffer* (list signature))
+        *key-sequence-last-input-ms* (%now-milliseconds))
   *key-sequence-buffer*)
 
 (defun %dispatch-chords (keymap key-event state)
@@ -403,7 +634,7 @@
                                (not (null (funcall guard state key-event))))))
         (when guard-passed
           (when (%sequence-suffix-equal-p *key-sequence-buffer* sequence)
-            (setf *key-sequence-buffer* '())
+            (%reset-key-sequence-buffer)
             (return-from %dispatch-chords
               (values (%invoke-key-handler (key-chord-handler chord)
                                            state
@@ -433,13 +664,13 @@
         (if (null binding)
             (progn
               (when append-sequence
-                (setf *key-sequence-buffer* '()))
+                (%reset-key-sequence-buffer))
               (values state nil :none))
             (let ((guard (key-binding-guard binding)))
               (if (or (null guard)
                       (not (null (funcall guard state key-event))))
                   (progn
-                    (setf *key-sequence-buffer* '())
+                    (%reset-key-sequence-buffer)
                     (values (%invoke-key-handler (key-binding-handler binding)
                                                  state
                                                  key-event)
@@ -447,14 +678,21 @@
                             :binding))
                   (progn
                     (when append-sequence
-                      (setf *key-sequence-buffer* '()))
+                      (%reset-key-sequence-buffer))
                     (values state nil :guard-skipped)))))))))
 
-(defun dispatch-active-keymaps (key-event state &key keymap-stack)
+(defun %make-alt-modified-key-event (event)
+  (ptui.core.events:make-key-event (ptui.core.events:key-event-key event)
+                                   :ctrlp (ptui.core.events:key-event-ctrlp event)
+                                   :altp t
+                                   :shiftp (ptui.core.events:key-event-shiftp event)
+                                   :text? (ptui.core.events:key-event-text? event)))
+
+(defun %dispatch-key-event-to-active-maps (key-event state &key keymap-stack)
   (let* ((keymaps (%active-keymaps keymap-stack))
          (signature (%key-event-signature key-event)))
     (unless signature
-      (return-from dispatch-active-keymaps (values state nil nil)))
+      (return-from %dispatch-key-event-to-active-maps (values state nil nil)))
     (%append-key-signature signature)
     (%trim-key-sequence-buffer (%max-chord-length keymaps))
     (let ((current-state state))
@@ -463,12 +701,71 @@
             (dispatch-key-event keymap key-event current-state :append-sequence nil)
           (setf current-state next-state)
           (when handledp
-            (return-from dispatch-active-keymaps
+            (return-from %dispatch-key-event-to-active-maps
               (values current-state t
                       (list :keymap (keymap-name keymap)
                             :kind kind))))))
-      (setf *key-sequence-buffer* '())
-      (values state nil nil))))
+      (let ((overlay (current-keymap-overlay)))
+        (if (and overlay
+                 (%plain-escape-signature-p signature)
+                 (keymap-overlay-auto-cleanup-on-escape-p overlay))
+            (progn
+              (pop-keymap-overlay :reason :escape)
+              (values state t
+                      (list :keymap (keymap-name (keymap-overlay-keymap overlay))
+                            :kind :overlay-exit)))
+            (progn
+              (%reset-key-sequence-buffer)
+              (values state nil nil)))))))
+
+(defun flush-key-dispatch-timeouts (state &key keymap-stack (force nil))
+  (%expire-key-sequence-buffer)
+  (if (and (%pending-escape-active-p)
+           (or force (%pending-escape-expired-p)))
+      (let ((pending *pending-escape-event*))
+        (%clear-pending-escape)
+        (%dispatch-key-event-to-active-maps pending state :keymap-stack keymap-stack))
+      (values state nil nil)))
+
+(defun dispatch-active-keymaps (key-event state &key keymap-stack)
+  (unless (typep key-event 'ptui.core.events:key-event)
+    (return-from dispatch-active-keymaps (values state nil nil)))
+  (%expire-key-sequence-buffer)
+  (multiple-value-bind (post-timeout-state timeout-handledp timeout-metadata)
+      (flush-key-dispatch-timeouts state :keymap-stack keymap-stack)
+    (let* ((signature (%key-event-signature key-event))
+           (current-state post-timeout-state))
+      (unless signature
+        (return-from dispatch-active-keymaps
+          (values current-state timeout-handledp timeout-metadata)))
+      (when (%pending-escape-active-p)
+        (if (and (not (%pending-escape-expired-p))
+                 (not (%plain-escape-signature-p signature)))
+            (progn
+              (setf key-event (%make-alt-modified-key-event key-event)
+                    signature (%key-event-signature key-event))
+              (%clear-pending-escape))
+            (progn
+              (multiple-value-bind (post-escape-state escape-handledp escape-metadata)
+                  (%dispatch-key-event-to-active-maps
+                   *pending-escape-event*
+                   current-state
+                   :keymap-stack keymap-stack)
+                (setf current-state post-escape-state
+                      timeout-handledp escape-handledp
+                      timeout-metadata escape-metadata))
+              (%clear-pending-escape))))
+      (if (%plain-escape-signature-p signature)
+          (progn
+            (%set-pending-escape key-event)
+            (values current-state t
+                    (or timeout-metadata
+                        (list :kind :pending-escape))))
+          (multiple-value-bind (next-state handledp metadata)
+              (%dispatch-key-event-to-active-maps key-event current-state :keymap-stack keymap-stack)
+            (if handledp
+                (values next-state t metadata)
+                (values next-state timeout-handledp timeout-metadata)))))))
 
 (defun make-key-dispatch-on-event (&key
                                      (fallback (lambda (state event)
@@ -480,13 +777,16 @@
   (unless (functionp keymap-stack-fn)
     (error "KEYMAP-STACK-FN must be a function, got ~S." keymap-stack-fn))
   (lambda (state event)
-    (if (typep event 'ptui.core.events:key-event)
-        (multiple-value-bind (next-state handledp)
-            (dispatch-active-keymaps event state :keymap-stack (funcall keymap-stack-fn))
-          (if handledp
-              next-state
-              (funcall fallback state event)))
-        (funcall fallback state event))))
+    (let ((stack (funcall keymap-stack-fn)))
+      (multiple-value-bind (state-after-timeouts)
+          (flush-key-dispatch-timeouts state :keymap-stack stack)
+        (if (typep event 'ptui.core.events:key-event)
+            (multiple-value-bind (next-state handledp)
+                (dispatch-active-keymaps event state-after-timeouts :keymap-stack stack)
+              (if handledp
+                  next-state
+                  (funcall fallback next-state event)))
+            (funcall fallback state-after-timeouts event))))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %parse-binding-options (options key-spec)
