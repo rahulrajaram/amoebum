@@ -7,7 +7,7 @@
 (defparameter +event-type-ui-stream-progress+
   (%status-event-type-keyword "ui:stream-progress"))
 
-(defparameter +default-context-window-tokens+ 128000)
+(defparameter +default-context-window-tokens+ +default-context-window-limit+)
 
 (defstruct (status-bar-stream-payload
             (:constructor make-status-bar-stream-payload
@@ -28,6 +28,7 @@
                    (plan-mode-active-p nil)
                    branch-name
                    model-name
+                   context-limit-override
                    (context-used-tokens 0)
                    (context-max-tokens +default-context-window-tokens+)
                    (stream-status :idle)
@@ -38,6 +39,7 @@
   (plan-mode-active-p nil :type boolean)
   (branch-name "-" :type string)
   (model-name "unknown" :type string)
+  context-limit-override
   (context-used-tokens 0 :type integer)
   (context-max-tokens +default-context-window-tokens+ :type integer)
   (stream-status :idle)
@@ -71,30 +73,10 @@
       (coerce value 'double-float)
       fallback))
 
-(defun %digit-run-end (text start)
-  (let ((end start)
-        (length (length text)))
-    (loop while (and (< end length)
-                     (digit-char-p (char text end)))
-          do (incf end))
-    end))
-
-(defun %infer-context-window-tokens (model-name)
-  (let* ((text (string-downcase (%safe-string model-name "")))
-         (length (length text)))
-    (or
-     (loop for start from 0 below length do
-       (when (digit-char-p (char text start))
-         (let ((end (%digit-run-end text start)))
-           (when (< end length)
-             (let ((unit (char text end)))
-               (when (member unit '(#\k #\m) :test #'char=)
-                 (handler-case
-                     (let ((number (parse-integer text :start start :end end))
-                           (factor (if (char= unit #\k) 1000 1000000)))
-                       (return (* number factor)))
-                   (error () nil))))))))
-     +default-context-window-tokens+)))
+(defun %infer-context-window-tokens (model-name context-limit-override)
+  (resolve-context-window-limit
+   :model model-name
+   :config-limit context-limit-override))
 
 (defun %string-blank-p (value)
   (or (null value)
@@ -135,11 +117,23 @@
       (:plan-mode
        (setf (status-bar-state-plan-mode-active-p state)
              (not (null (config-changed-payload-new-value payload)))))
+      (:context-window-limit
+       (let ((override (config-changed-payload-new-value payload)))
+         (setf (status-bar-state-context-limit-override state)
+               (if (and (integerp override) (> override 0))
+                   override
+                   nil)
+               (status-bar-state-context-max-tokens state)
+               (%infer-context-window-tokens
+                (status-bar-state-model-name state)
+                (status-bar-state-context-limit-override state)))))
       (:model
        (let ((model (%safe-string (config-changed-payload-new-value payload) "unknown")))
          (setf (status-bar-state-model-name state) model
                (status-bar-state-context-max-tokens state)
-               (%infer-context-window-tokens model)))))
+               (%infer-context-window-tokens
+                model
+                (status-bar-state-context-limit-override state))))))
     t))
 
 (defun %coerce-stream-payload (payload)
@@ -213,6 +207,7 @@
                                 permission-mode
                                 model-name
                                 branch-name
+                                context-window-limit
                                 project-root)
   (let* ((resolved-model
            (%safe-string (or model-name
@@ -229,6 +224,14 @@
            (or project-root
                (and (config-p config) (config-project-root config))
                *default-pathname-defaults*))
+         (resolved-context-limit
+           (let ((candidate
+                   (or context-window-limit
+                       (and (config-p config)
+                            (config-value :context-window-limit config)))))
+             (if (and (integerp candidate) (> candidate 0))
+                 candidate
+                 nil)))
          (state
            (%make-status-bar-state
             :permission-mode resolved-mode
@@ -237,7 +240,10 @@
                                            (%resolve-branch-name resolved-root))
                                        "-")
             :model-name resolved-model
-            :context-max-tokens (%infer-context-window-tokens resolved-model)
+            :context-limit-override resolved-context-limit
+            :context-max-tokens (%infer-context-window-tokens
+                                 resolved-model
+                                 resolved-context-limit)
             :event-bus (%status-state-event-bus nil event-bus))))
     (status-bar-subscribe state)
     state))
@@ -283,21 +289,56 @@
       (otherwise
        "stream idle"))))
 
+(defun %context-budget-segment-text (state)
+  (let* ((used (%coerce-nonnegative-integer (status-bar-state-context-used-tokens state) 0))
+         (limit (%coerce-nonnegative-integer (status-bar-state-context-max-tokens state)
+                                             +default-context-window-tokens+))
+         (percent (context-usage-percent used limit)))
+    (format nil "Tokens: ~D/~D (~D%)" used limit percent)))
+
+(defun %context-budget-role (state)
+  (case (context-usage-level
+         (%coerce-nonnegative-integer (status-bar-state-context-used-tokens state) 0)
+         (%coerce-nonnegative-integer (status-bar-state-context-max-tokens state)
+                                      +default-context-window-tokens+))
+    (:green :context-green)
+    (:yellow :context-yellow)
+    (otherwise :context-red)))
+
+(defun %status-segment-specs (state)
+  (list
+   (list :text (format nil "branch ~A" (%safe-string (status-bar-state-branch-name state) "-"))
+         :role :meta)
+   (list :text (format nil "mode ~A" (%mode-string (status-bar-state-permission-mode state)))
+         :role :meta)
+   (list :text (%context-budget-segment-text state)
+         :role (%context-budget-role state))
+   (list :text (%stream-segment state)
+         :role :meta)
+   (list :text (format nil "model ~A" (%safe-string (status-bar-state-model-name state) "unknown"))
+         :role :meta)))
+
 (defun status-bar-segments (state)
   (check-type state status-bar-state)
-  (let ((segments
-          (list
-           (format nil "mode ~A" (%mode-string (status-bar-state-permission-mode state)))
-           (format nil "branch ~A" (%safe-string (status-bar-state-branch-name state) "-"))
-           (format nil "ctx ~D/~D"
-                   (%coerce-nonnegative-integer (status-bar-state-context-used-tokens state) 0)
-                   (%coerce-nonnegative-integer (status-bar-state-context-max-tokens state)
-                                                +default-context-window-tokens+))
-           (format nil "model ~A" (%safe-string (status-bar-state-model-name state) "unknown"))
-           (%stream-segment state))))
+  (let ((segments (mapcar (lambda (entry) (getf entry :text))
+                          (%status-segment-specs state))))
     (if (status-bar-state-plan-mode-active-p state)
         (cons "PLAN MODE -- read-only" segments)
         segments)))
+
+(defun status-bar-styled-segments (state)
+  (check-type state status-bar-state)
+  (let ((segments '())
+        (segment-specs (%status-segment-specs state)))
+    (when (status-bar-state-plan-mode-active-p state)
+      (push (cons "PLAN MODE -- read-only" :system) segments)
+      (push (cons " | " :meta) segments))
+    (loop for spec in segment-specs
+          for index from 0 do
+            (when (> index 0)
+              (push (cons " | " :meta) segments))
+            (push (cons (getf spec :text) (or (getf spec :role) :meta)) segments))
+    (nreverse segments)))
 
 (defun status-bar-line (state &key width)
   (check-type state status-bar-state)
@@ -322,11 +363,17 @@
         (status-bar-state-model-name state)
         (status-bar-state-context-used-tokens state)
         (status-bar-state-context-max-tokens state)
+        (context-usage-level (status-bar-state-context-used-tokens state)
+                             (status-bar-state-context-max-tokens state))
         (status-bar-state-stream-status state)
         (truncate (* 100 (status-bar-state-stream-tokens-per-second state)))))
 
 (defun make-status-bar-widget (state &key id key width)
-  (ptui.widgets.core:make-text-widget
-   (status-bar-line state :width width)
+  (ptui.ui.elements:make-element
+   :text
    :id id
-   :key key))
+   :key key
+   :props (list :text (status-bar-line state :width width)
+                :role :meta
+                :styled-segments (status-bar-styled-segments state))
+   :children '()))

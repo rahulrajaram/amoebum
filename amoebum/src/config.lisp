@@ -2,8 +2,33 @@
 
 (defparameter *default-config-values*
   '(:model "moonshot-v1-128k"
+    :context-window-limit nil
     :permission-mode :supervised
     :memory-backend :auto
+    :web-search-searxng-url nil
+    :web-search-duckduckgo-url "https://duckduckgo.com/html/"
+    :web-search-allow-domains nil
+    :web-search-block-domains nil
+    :web-search-user-agent "amoebum-web-search/0.1"
+    :web-fetch-timeout-seconds 20
+    :web-fetch-cache-ttl-seconds 900
+    :web-fetch-max-markdown-bytes 10240
+    :web-fetch-user-agent "amoebum-web-fetch/0.1"
+    :haake-command "haake"
+    :haake-project-id nil
+    :haake-agent "amoebum"
+    :haake-autodetect t
+    :notifications-enabled t
+    :notification-events '(:task-complete :error :approval-needed)
+    :notification-sound-enabled t
+    :notification-desktop-enabled t
+    :notification-log-enabled t
+    :notification-sound-player nil
+    :notification-desktop-command nil
+    :notification-log-path nil
+    :notification-sound-task-complete nil
+    :notification-sound-error nil
+    :notification-sound-approval-needed nil
     :plan-mode nil))
 
 (defparameter *known-permission-modes*
@@ -45,6 +70,26 @@
   (or (pathnamep value)
       (stringp value)))
 
+(defun %string-sequence-p (value)
+  (or (null value)
+      (stringp value)
+      (and (listp value)
+           (every #'stringp value))
+      (and (vectorp value)
+           (every #'stringp (coerce value 'list)))))
+
+(defun %keyword-like-sequence-p (value)
+  (labels ((keyword-like-p (entry)
+             (or (keywordp entry)
+                 (stringp entry)
+                 (symbolp entry))))
+    (or (null value)
+        (keyword-like-p value)
+        (and (listp value)
+             (every #'keyword-like-p value))
+        (and (vectorp value)
+             (every #'keyword-like-p (coerce value 'list))))))
+
 (defun %default-value (key project-root)
   (if (eq key :project-root)
       project-root
@@ -53,8 +98,70 @@
 (defun %valid-config-value-p (key value)
   (case key
     (:model (stringp value))
+    (:context-window-limit (or (null value)
+                               (and (integerp value)
+                                    (> value 0))))
     (:permission-mode (member value *known-permission-modes* :test #'eq))
     (:memory-backend (member value *known-memory-backends* :test #'eq))
+    (:web-search-searxng-url (or (null value)
+                                 (and (stringp value)
+                                      (> (length (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                               value))
+                                         0))))
+    (:web-search-duckduckgo-url (or (null value)
+                                    (and (stringp value)
+                                         (> (length (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                                  value))
+                                            0))))
+    (:web-search-allow-domains (%string-sequence-p value))
+    (:web-search-block-domains (%string-sequence-p value))
+    (:web-search-user-agent (or (null value)
+                                (and (stringp value)
+                                     (> (length (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                              value))
+                                        0))))
+    (:web-fetch-timeout-seconds (and (integerp value) (> value 0)))
+    (:web-fetch-cache-ttl-seconds (and (integerp value) (> value 0)))
+    (:web-fetch-max-markdown-bytes (and (integerp value) (> value 0)))
+    (:web-fetch-user-agent (or (null value)
+                               (and (stringp value)
+                                    (> (length (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                             value))
+                                       0))))
+    (:haake-command (and (stringp value)
+                         (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                            0)))
+    (:haake-project-id (or (null value)
+                           (and (stringp value)
+                                (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                                   0))))
+    (:haake-agent (and (stringp value)
+                       (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                          0)))
+    (:haake-autodetect (or (eq value t) (eq value nil)))
+    (:notifications-enabled (or (eq value t) (eq value nil)))
+    (:notification-events (%keyword-like-sequence-p value))
+    (:notification-sound-enabled (or (eq value t) (eq value nil)))
+    (:notification-desktop-enabled (or (eq value t) (eq value nil)))
+    (:notification-log-enabled (or (eq value t) (eq value nil)))
+    (:notification-sound-player (or (null value)
+                                    (and (stringp value)
+                                         (> (length (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                                  value))
+                                            0))))
+    (:notification-desktop-command (or (null value)
+                                       (and (stringp value)
+                                            (> (length (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                                     value))
+                                               0))))
+    (:notification-log-path (or (null value)
+                                (%pathname-or-string-p value)))
+    (:notification-sound-task-complete (or (null value)
+                                           (%pathname-or-string-p value)))
+    (:notification-sound-error (or (null value)
+                                   (%pathname-or-string-p value)))
+    (:notification-sound-approval-needed (or (null value)
+                                             (%pathname-or-string-p value)))
     (:plan-mode (or (eq value t) (eq value nil)))
     (:project-root (%pathname-or-string-p value))
     (t t)))
@@ -101,8 +208,58 @@
                            :memory-backend (getf *default-config-values* :memory-backend)
                            :project-root root)))
     (setf (gethash :model (config-values cfg)) (config-model cfg)
+          (gethash :context-window-limit (config-values cfg))
+          (getf *default-config-values* :context-window-limit)
           (gethash :permission-mode (config-values cfg)) (config-permission-mode cfg)
           (gethash :memory-backend (config-values cfg)) (config-memory-backend cfg)
+          (gethash :web-search-searxng-url (config-values cfg))
+          (getf *default-config-values* :web-search-searxng-url)
+          (gethash :web-search-duckduckgo-url (config-values cfg))
+          (getf *default-config-values* :web-search-duckduckgo-url)
+          (gethash :web-search-allow-domains (config-values cfg))
+          (getf *default-config-values* :web-search-allow-domains)
+          (gethash :web-search-block-domains (config-values cfg))
+          (getf *default-config-values* :web-search-block-domains)
+          (gethash :web-search-user-agent (config-values cfg))
+          (getf *default-config-values* :web-search-user-agent)
+          (gethash :web-fetch-timeout-seconds (config-values cfg))
+          (getf *default-config-values* :web-fetch-timeout-seconds)
+          (gethash :web-fetch-cache-ttl-seconds (config-values cfg))
+          (getf *default-config-values* :web-fetch-cache-ttl-seconds)
+          (gethash :web-fetch-max-markdown-bytes (config-values cfg))
+          (getf *default-config-values* :web-fetch-max-markdown-bytes)
+          (gethash :web-fetch-user-agent (config-values cfg))
+          (getf *default-config-values* :web-fetch-user-agent)
+          (gethash :haake-command (config-values cfg))
+          (getf *default-config-values* :haake-command)
+          (gethash :haake-project-id (config-values cfg))
+          (getf *default-config-values* :haake-project-id)
+          (gethash :haake-agent (config-values cfg))
+          (getf *default-config-values* :haake-agent)
+          (gethash :haake-autodetect (config-values cfg))
+          (getf *default-config-values* :haake-autodetect)
+          (gethash :notifications-enabled (config-values cfg))
+          (getf *default-config-values* :notifications-enabled)
+          (gethash :notification-events (config-values cfg))
+          (getf *default-config-values* :notification-events)
+          (gethash :notification-sound-enabled (config-values cfg))
+          (getf *default-config-values* :notification-sound-enabled)
+          (gethash :notification-desktop-enabled (config-values cfg))
+          (getf *default-config-values* :notification-desktop-enabled)
+          (gethash :notification-log-enabled (config-values cfg))
+          (getf *default-config-values* :notification-log-enabled)
+          (gethash :notification-sound-player (config-values cfg))
+          (getf *default-config-values* :notification-sound-player)
+          (gethash :notification-desktop-command (config-values cfg))
+          (getf *default-config-values* :notification-desktop-command)
+          (gethash :notification-log-path (config-values cfg))
+          (getf *default-config-values* :notification-log-path)
+          (gethash :notification-sound-task-complete (config-values cfg))
+          (getf *default-config-values* :notification-sound-task-complete)
+          (gethash :notification-sound-error (config-values cfg))
+          (getf *default-config-values* :notification-sound-error)
+          (gethash :notification-sound-approval-needed (config-values cfg))
+          (getf *default-config-values* :notification-sound-approval-needed)
           (gethash :plan-mode (config-values cfg)) (getf *default-config-values* :plan-mode)
           (gethash :project-root (config-values cfg)) (config-project-root cfg))
     cfg))

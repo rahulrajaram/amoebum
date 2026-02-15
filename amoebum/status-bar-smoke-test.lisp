@@ -55,13 +55,16 @@
         (assert-true (= (length segments) 5)
                      "Expected five status bar segments, got ~D."
                      (length segments))
+        (assert-true (string= (first segments) "branch feature/i37")
+                     "Expected branch segment to render first (left segment), got ~S."
+                     segments)
         (assert-true (line-contains-p line "mode supervised")
                      "Expected permission segment in status bar, got ~S."
                      line)
         (assert-true (line-contains-p line "branch feature/i37")
                      "Expected branch segment in status bar, got ~S."
                      line)
-        (assert-true (line-contains-p line "ctx 0/128000")
+        (assert-true (line-contains-p line "Tokens: 0/128000 (0%)")
                      "Expected context usage segment in status bar, got ~S."
                      line)
         (assert-true (line-contains-p line "model moonshot-v1-128k")
@@ -103,7 +106,7 @@
           (assert-true (line-contains-p updated-line "model demo-model-32k")
                        "Expected model name to update from config event, got ~S."
                        updated-line)
-          (assert-true (line-contains-p updated-line "ctx 0/32000")
+          (assert-true (line-contains-p updated-line "Tokens: 0/32000 (0%)")
                        "Expected context max window to follow model capacity, got ~S."
                        updated-line))
 
@@ -111,7 +114,7 @@
                  '(:status :running :activep t :tokens 512 :tokens-per-second 27.25d0)
                  :event-bus bus)
         (let ((running-line (funcall status-bar-line-fn state)))
-          (assert-true (line-contains-p running-line "ctx 512/32000")
+          (assert-true (line-contains-p running-line "Tokens: 512/32000 (1%)")
                        "Expected context usage to track token consumption, got ~S."
                        running-line)
           (assert-true (line-contains-p running-line "stream 27.25 tok/s")
@@ -123,7 +126,7 @@
                  :event-bus bus)
         (let ((completed-line (funcall status-bar-line-fn state))
               (used-tokens (funcall context-used-fn state)))
-          (assert-true (line-contains-p completed-line "ctx 640/32000")
+          (assert-true (line-contains-p completed-line "Tokens: 640/32000 (2%)")
                        "Expected context usage to retain final token count, got ~S."
                        completed-line)
           (assert-true (line-contains-p completed-line "stream done")

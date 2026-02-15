@@ -29,6 +29,10 @@
            #:+event-type-config-changed+
            #:+event-type-permission-prompted+
            #:+event-type-memory-updated+
+           #:+event-type-memory-backend-selected+
+           #:+event-type-context-compressed+
+           #:+event-type-mcp-tool-discovered+
+           #:+event-type-mcp-tool-invoked+
            #:+core-event-types+
            #:tool-invoked-payload
            #:tool-invoked-payload-p
@@ -51,12 +55,84 @@
            #:memory-updated-payload
            #:memory-updated-payload-p
            #:make-memory-updated-payload
+           #:memory-backend-selected-payload
+           #:memory-backend-selected-payload-p
+           #:make-memory-backend-selected-payload
+           #:memory-backend-selected-payload-backend
+           #:memory-backend-selected-payload-reason
+           #:memory-backend-selected-payload-requested-backend
+           #:context-compressed-payload
+           #:context-compressed-payload-p
+           #:make-context-compressed-payload
+           #:mcp-tool-discovered-payload
+           #:mcp-tool-discovered-payload-p
+           #:make-mcp-tool-discovered-payload
+           #:mcp-tool-invoked-payload
+           #:mcp-tool-invoked-payload-p
+           #:make-mcp-tool-invoked-payload
+           #:context-compressed-payload-before-tokens
+           #:context-compressed-payload-after-tokens
+           #:context-compressed-payload-saved-tokens
+           #:context-compressed-payload-summarized-messages
+           #:context-compressed-payload-kept-messages
+           #:context-compressed-payload-trigger
            #:make-tool-invoked-event
            #:make-tool-completed-event
            #:make-tool-error-event
            #:make-config-changed-event
            #:make-permission-prompted-event
            #:make-memory-updated-event
+           #:make-memory-backend-selected-event
+           #:make-context-compressed-event
+           #:make-mcp-tool-discovered-event
+           #:make-mcp-tool-invoked-event
+           #:notification
+           #:notification-p
+           #:make-notification
+           #:notification-title
+           #:notification-body
+           #:notification-severity
+           #:notification-category
+           #:notification-source-event
+           #:notification-timestamp
+           #:notification-urgency
+           #:notification-timeout-ms
+           #:notification-backend
+           #:backend-name
+           #:backend-enabled-p
+           #:backend-config
+           #:sound-backend
+           #:sound-backend-player-command
+           #:sound-backend-sound-map
+           #:desktop-backend
+           #:desktop-backend-command
+           #:desktop-backend-app-name
+           #:log-backend
+           #:log-backend-path
+           #:log-backend-include-event-payload-p
+           #:notify-send
+           #:notify-available-p
+           #:notify-teardown
+           #:notification-manager
+           #:notification-manager-p
+           #:notification-manager-event-bus
+           #:notification-manager-backends
+           #:notification-manager-enabled-events
+           #:notification-manager-subscription-ids
+           #:*notification-command-runner*
+           #:*notification-command-prober*
+           #:*notification-async-dispatch-p*
+           #:*notification-manager-registry*
+           #:notification-command-available-p
+           #:notification-run-command
+           #:make-sound-backend
+           #:make-desktop-backend
+           #:make-log-backend
+           #:dispatch-notification
+           #:make-notification-manager
+           #:ensure-notification-manager
+           #:stop-notification-manager
+           #:stop-all-notification-managers
            #:*toolset*
            #:*tool-metadata*
            #:tool-metadata
@@ -90,6 +166,59 @@
            #:setconfig
            #:emit-config-changed
            #:*current-config*
+           #:+default-context-window-limit+
+           #:+model-context-window-limits+
+           #:+context-budget-green-threshold-percent+
+           #:+context-budget-yellow-threshold-percent+
+           #:+context-budget-compress-threshold-percent+
+           #:*context-window-limit*
+           #:context-window-limit-for-model
+           #:resolve-context-window-limit
+           #:context-usage-percent
+           #:context-usage-level
+           #:context-compression-required-p
+           #:count-tokens
+           #:+conversation-states+
+           #:+conversation-state-transitions+
+           #:invalid-conversation-transition
+           #:invalid-conversation-transition-from
+           #:invalid-conversation-transition-to
+           #:invalid-conversation-transition-allowed
+           #:conversation-history-entry
+           #:conversation-history-entry-p
+           #:make-conversation-history-entry
+           #:conversation-history-entry-timestamp
+           #:conversation-history-entry-role
+           #:conversation-history-entry-content
+           #:conversation-history-entry-name
+           #:conversation-history-entry-partial
+           #:conversation-history-entry-tool-call-id
+           #:conversation-state
+           #:conversation-state-p
+           #:make-conversation-state
+           #:conversation-state-session-id
+           #:conversation-state-state
+           #:conversation-state-entries
+           #:conversation-state-created-at
+           #:conversation-state-updated-at
+           #:conversation-state-project-root
+           #:conversation-state-session-path
+           #:conversation-message->entry
+           #:conversation-entry->message
+           #:conversation-session-directory
+           #:conversation-session-path
+           #:conversation-transition-allowed-p
+           #:conversation-transition!
+           #:conversation-save
+           #:conversation-state-add-message
+           #:conversation-state-messages
+           #:conversation-load
+           #:conversation-load-latest
+           #:conversation-load-session
+           #:parse-history-timestamp
+           #:conversation-search-history
+           #:format-history-timestamp
+           #:format-history-entry-line
            #:plan-step
            #:plan-step-p
            #:make-plan-step
@@ -155,6 +284,19 @@
            #:file-memory-backend-global-path
            #:file-memory-backend-project-path
            #:file-memory-backend-project-root
+           #:haake-cli-memory-backend
+           #:haake-cli-memory-backend-p
+           #:make-haake-cli-memory-backend
+           #:haake-cli-memory-backend-command
+           #:haake-cli-memory-backend-project-id
+           #:haake-cli-memory-backend-agent
+           #:haake-cli-available-p
+           #:haake-cli-status-ok-p
+           #:haake-cli-compatible-p
+           #:*haake-cli-command-runner*
+           #:*haake-cli-availability-runner*
+           #:*haake-cli-status-runner*
+           #:*haake-cli-capability-runner*
            #:memory-entry
            #:memory-entry-p
            #:make-memory-entry
@@ -322,6 +464,131 @@
            #:hook-execution-error-hook-id
            #:hook-execution-error-hook-point
            #:hook-execution-error-cause
+           #:mcp-timeout
+           #:mcp-timeout-request-id
+           #:mcp-timeout-timeout-seconds
+           #:*mcp-jsonrpc-default-timeout-seconds*
+           #:mcp-jsonrpc-client
+           #:mcp-jsonrpc-client-p
+           #:make-mcp-jsonrpc-client
+           #:mcp-jsonrpc-client-input-stream
+           #:mcp-jsonrpc-client-output-stream
+           #:mcp-jsonrpc-client-default-timeout-seconds
+           #:mcp-jsonrpc-client-reader-running-p
+           #:mcp-jsonrpc-client-reader-error
+           #:make-jsonrpc-request-message
+           #:make-jsonrpc-notification-message
+           #:make-jsonrpc-response-message
+           #:jsonrpc-serialize-message
+           #:jsonrpc-deserialize-message
+           #:jsonrpc-frame-message
+           #:jsonrpc-write-message
+           #:jsonrpc-read-message
+           #:mcp-jsonrpc-send-message
+           #:mcp-jsonrpc-send-notification
+           #:mcp-jsonrpc-send-request
+           #:mcp-jsonrpc-start-reader
+           #:mcp-jsonrpc-stop-reader
+           #:mcp-jsonrpc-poll
+           #:mcp-jsonrpc-handle-incoming-message
+           #:mcp-jsonrpc-drain-notifications
+           #:*mcp-server-initialize-timeout-seconds*
+           #:*mcp-server-ping-timeout-seconds*
+           #:*mcp-server-health-check-interval-seconds*
+           #:*mcp-server-restart-backoff-base-seconds*
+           #:*mcp-server-restart-backoff-max-seconds*
+           #:*mcp-server-shutdown-grace-seconds*
+           #:mcp-server
+           #:mcp-server-p
+           #:make-mcp-server
+           #:mcp-server-name
+           #:mcp-server-command
+           #:mcp-server-args
+           #:mcp-server-cwd
+           #:mcp-server-initialize-timeout-seconds
+           #:mcp-server-ping-timeout-seconds
+           #:mcp-server-health-check-interval-seconds
+           #:mcp-server-restart-backoff-base-seconds
+           #:mcp-server-restart-backoff-max-seconds
+           #:mcp-server-shutdown-grace-seconds
+           #:mcp-server-auto-restart-p
+           #:mcp-server-running-p
+           #:mcp-server-process
+           #:mcp-server-jsonrpc-client
+           #:mcp-server-monitor-thread
+           #:mcp-server-restart-count
+           #:mcp-server-last-error
+           #:mcp-server-start
+           #:mcp-server-stop
+           #:mcp-server-health-check
+           #:mcp-server-restart
+           #:*mcp-tool-server-registry*
+           #:*mcp-tool-binding-registry*
+           #:mcp-tool-binding
+           #:mcp-tool-binding-p
+           #:mcp-tool-binding-server-name
+           #:mcp-tool-binding-tool-name
+           #:mcp-tool-binding-namespaced-name
+           #:mcp-tool-binding-description
+           #:mcp-tool-binding-input-schema
+           #:mcp-tool-binding-server
+           #:clear-mcp-tool-registries
+           #:register-mcp-tool-server
+           #:unregister-mcp-tool-server
+           #:find-mcp-tool-server
+           #:discover-mcp-server-tools
+           #:invoke-mcp-tool
+           #:*lsp-server-initialize-timeout-seconds*
+           #:*lsp-request-timeout-seconds*
+           #:*lsp-server-restart-backoff-base-seconds*
+           #:*lsp-server-restart-backoff-max-seconds*
+           #:*lsp-server-shutdown-grace-seconds*
+           #:*lsp-default-server-specs*
+           #:*lsp-process-spawner*
+           #:lsp-server-spec
+           #:lsp-server-spec-p
+           #:make-lsp-server-spec
+           #:lsp-server-spec-name
+           #:lsp-server-spec-language-id
+           #:lsp-server-spec-command
+           #:lsp-server-spec-args
+           #:lsp-server-spec-file-extensions
+           #:lsp-document-state
+           #:lsp-document-state-p
+           #:make-lsp-document-state
+           #:lsp-document-state-path
+           #:lsp-document-state-uri
+           #:lsp-document-state-language-id
+           #:lsp-document-state-text
+           #:lsp-document-state-version
+           #:lsp-server-connection
+           #:lsp-server-connection-p
+           #:lsp-server-connection-spec
+           #:lsp-server-connection-process
+           #:lsp-server-connection-jsonrpc-client
+           #:lsp-server-connection-open-documents
+           #:lsp-server-connection-restart-count
+           #:lsp-server-connection-last-error
+           #:lsp-client
+           #:lsp-client-p
+           #:make-lsp-client
+           #:lsp-client-project-root
+           #:lsp-client-server-specs
+           #:lsp-client-initialize-timeout-seconds
+           #:lsp-client-request-timeout-seconds
+           #:lsp-client-restart-backoff-base-seconds
+           #:lsp-client-restart-backoff-max-seconds
+           #:lsp-client-shutdown-grace-seconds
+           #:lsp-client-auto-restart-p
+           #:lsp-language-id-for-path
+           #:lsp-server-spec-for-path
+           #:lsp-client-connection
+           #:lsp-client-ensure-server
+           #:lsp-open-document
+           #:lsp-send-notification
+           #:lsp-send-request
+           #:lsp-drain-notifications
+           #:lsp-client-stop
            #:context-overflow-error
            #:context-overflow-used-tokens
            #:context-overflow-max-tokens
@@ -363,6 +630,10 @@
            #:evaluate-path-permission
            #:dangerous-command-p
            #:check-permission
+           #:+system-prompt-base-layer+
+           #:resolve-system-prompt-layers
+           #:system-prompt-dynamic-context
+           #:assemble-system-prompt
            #:+chat-stream-default-system-prompt+
            #:token-stream-cancelled
            #:token-stream-state
@@ -417,6 +688,7 @@
            #:status-bar-unsubscribe
            #:publish-status-bar-stream-summary
            #:status-bar-segments
+           #:status-bar-styled-segments
            #:status-bar-line
            #:status-bar-render-key
            #:make-status-bar-widget
@@ -435,7 +707,11 @@
            #:chat-ui-state-stream-system-prompt
            #:chat-ui-state-stream-tools
            #:chat-ui-state-status-bar-state
+           #:chat-ui-state-conversation
+           #:chat-ui-state-context-used-tokens
+           #:chat-ui-state-context-window-limit
            #:ensure-chat-ui-state
+           #:chat-ui-restore-latest-session
            #:make-chat-message
            #:chat-ui-append-message
            #:chat-ui-add-message

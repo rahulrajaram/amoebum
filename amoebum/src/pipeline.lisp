@@ -43,15 +43,20 @@
                                hook-registry
                                metrics
                                result-cache
-                               logger)
-  (make-instance 'amoebum-context
-                 :toolset toolset
-                 :permission-mode permission-mode
-                 :event-bus event-bus
-                 :hook-registry hook-registry
-                 :metrics (or metrics (make-hash-table :test #'equal))
-                 :result-cache (or result-cache (make-hash-table :test #'equal))
-                 :logger logger))
+                               logger
+                               (initialize-notifications-p t))
+  (let ((context
+          (make-instance 'amoebum-context
+                         :toolset toolset
+                         :permission-mode permission-mode
+                         :event-bus event-bus
+                         :hook-registry hook-registry
+                         :metrics (or metrics (make-hash-table :test #'equal))
+                         :result-cache (or result-cache (make-hash-table :test #'equal))
+                         :logger logger)))
+    (when initialize-notifications-p
+      (ensure-notification-manager :event-bus (or event-bus (current-event-bus))))
+    context))
 
 (defun %pipeline-normalize-tool-name (tool-name)
   (string-downcase

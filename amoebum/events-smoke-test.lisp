@@ -34,6 +34,12 @@
          (unsubscribe-fn (funcall fn "UNSUBSCRIBE"))
          (publish-fn (funcall fn "PUBLISH"))
          (make-tool-invoked-event-fn (funcall fn "MAKE-TOOL-INVOKED-EVENT"))
+         (make-mcp-tool-discovered-event-fn
+          (funcall fn "MAKE-MCP-TOOL-DISCOVERED-EVENT"))
+         (make-mcp-tool-invoked-event-fn
+          (funcall fn "MAKE-MCP-TOOL-INVOKED-EVENT"))
+         (make-memory-backend-selected-event-fn
+          (funcall fn "MAKE-MEMORY-BACKEND-SELECTED-EVENT"))
          (make-config-changed-event-fn (funcall fn "MAKE-CONFIG-CHANGED-EVENT"))
          (event-history-fn (funcall fn "EVENT-HISTORY"))
          (event-payload-fn (funcall fn "EVENT-PAYLOAD"))
@@ -46,6 +52,12 @@
          (config-changed-payload-p-fn (funcall fn "CONFIG-CHANGED-PAYLOAD-P"))
          (event-bus-sym (funcall symbol-in "*EVENT-BUS*" amoebum-pkg))
          (event-type-tool-invoked (symbol-value (funcall symbol-in "+EVENT-TYPE-TOOL-INVOKED+" amoebum-pkg)))
+         (event-type-mcp-tool-discovered
+          (symbol-value (funcall symbol-in "+EVENT-TYPE-MCP-TOOL-DISCOVERED+" amoebum-pkg)))
+         (event-type-mcp-tool-invoked
+          (symbol-value (funcall symbol-in "+EVENT-TYPE-MCP-TOOL-INVOKED+" amoebum-pkg)))
+         (event-type-memory-backend-selected
+          (symbol-value (funcall symbol-in "+EVENT-TYPE-MEMORY-BACKEND-SELECTED+" amoebum-pkg)))
          (event-type-config-changed (symbol-value (funcall symbol-in "+EVENT-TYPE-CONFIG-CHANGED+" amoebum-pkg)))
          (core-event-types (symbol-value (funcall symbol-in "+CORE-EVENT-TYPES+" amoebum-pkg))))
     (labels ((assert-true (condition format-string &rest format-args)
@@ -55,6 +67,12 @@
                    "Expected +CORE-EVENT-TYPES+ to include tool:invoked.")
       (assert-true (member event-type-config-changed core-event-types :test #'eq)
                    "Expected +CORE-EVENT-TYPES+ to include config:changed.")
+      (assert-true (member event-type-mcp-tool-discovered core-event-types :test #'eq)
+                   "Expected +CORE-EVENT-TYPES+ to include mcp:tool-discovered.")
+      (assert-true (member event-type-mcp-tool-invoked core-event-types :test #'eq)
+                   "Expected +CORE-EVENT-TYPES+ to include mcp:tool-invoked.")
+      (assert-true (member event-type-memory-backend-selected core-event-types :test #'eq)
+                   "Expected +CORE-EVENT-TYPES+ to include memory:backend-selected.")
 
       (let ((bus (funcall make-event-bus-fn :capacity 16))
             (dispatch-order '())
@@ -112,13 +130,35 @@
           (assert-true (equal dispatch-order '(:primary :wildcard))
                        "Expected unsubscribed handler to stop receiving events.")
 
+          (funcall publish-fn
+                   bus
+                   (funcall make-mcp-tool-discovered-event-fn
+                            :server-name "github"
+                            :tool-name "create-issue"
+                            :namespaced-name "mcp/github/create-issue"
+                            :description "Create an issue."))
+          (funcall publish-fn
+                   bus
+                   (funcall make-mcp-tool-invoked-event-fn
+                            :server-name "github"
+                            :tool-name "create-issue"
+                            :namespaced-name "mcp/github/create-issue"
+                            :args '(:title "Issue")
+                            :request-id "mcp-evt-1"))
+          (funcall publish-fn
+                   bus
+                   (funcall make-memory-backend-selected-event-fn
+                            :backend :haake-cli
+                            :reason :auto-detected-haake-cli
+                            :requested-backend :auto))
+
           (let* ((history (funcall event-history-fn bus))
                  (latest (car (last history))))
-            (assert-true (= (length history) 2)
-                         "Expected event history to include both published events.")
-            (assert-true (eq (funcall event-type-fn latest) event-type-tool-invoked)
-                         "Expected history event type to match published type.")
-            (assert-true (= (funcall event-seq-fn latest) 2)
+            (assert-true (= (length history) 5)
+                         "Expected event history to include typed + MCP + memory backend events.")
+            (assert-true (eq (funcall event-type-fn latest) event-type-memory-backend-selected)
+                         "Expected latest history event type to be memory:backend-selected.")
+            (assert-true (= (funcall event-seq-fn latest) 5)
                          "Expected sequence number to increment monotonically.")))
 
         (setf (symbol-value event-bus-sym) bus)
