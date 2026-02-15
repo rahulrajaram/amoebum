@@ -514,9 +514,12 @@ Returns two values: token-count integer and parsed response hash-table."
 (defun %ensure-stream-tool-call-partial (partials index)
   (or (gethash index partials)
       (let ((entry (make-hash-table :test #'equal))
-            (function-body (make-hash-table :test #'equal)))
+            (function-body (make-hash-table :test #'equal))
+            (extras (make-hash-table :test #'equal)))
         (setf (gethash "type" entry) "function")
         (setf (gethash "function" entry) function-body)
+        (setf (gethash "stream_index" extras) index)
+        (setf (gethash "extras" entry) extras)
         (setf (gethash index partials) entry)
         entry)))
 
@@ -557,7 +560,82 @@ Returns two values: token-count integer and parsed response hash-table."
               (when (%non-empty-string-p delta-arguments)
                 (setf (gethash "arguments" function-body)
                       (%merge-stream-string (gethash "arguments" function-body)
-                                            delta-arguments))))))))))
+                                            delta-arguments)))))
+          (values entry index))))))
+
+(defun %stream-tool-call-name (entry)
+  (let ((function-body (and (hash-table-p entry)
+                            (gethash "function" entry))))
+    (and (hash-table-p function-body)
+         (%non-empty-string-p (gethash "name" function-body))
+         (gethash "name" function-body))))
+
+(defun %stream-tool-call-arguments (entry)
+  (let ((function-body (and (hash-table-p entry)
+                            (gethash "function" entry))))
+    (and (hash-table-p function-body)
+         (%non-empty-string-p (gethash "arguments" function-body))
+         (gethash "arguments" function-body))))
+
+(defun %stream-tool-call-arguments-complete-p (arguments)
+  (let ((trimmed (and (stringp arguments)
+                      (string-trim '(#\Space #\Tab #\Newline #\Return) arguments))))
+    (when (%non-empty-string-p trimmed)
+      (handler-case
+          (hash-table-p (jonathan:parse trimmed :as :hash-table))
+        (error ()
+          nil)))))
+
+(defun %make-stream-text-delta-chunk (text)
+  (list :type :text-delta
+        :text (or text "")))
+
+(defun %make-stream-tool-call-delta-chunk (index entry)
+  (let* ((name (%stream-tool-call-name entry))
+         (arguments (%stream-tool-call-arguments entry))
+         (tool-call (hash-to-tool-call entry)))
+    (list :type :tool-call-delta
+          :index index
+          :name name
+          :arguments arguments
+          :arguments-complete-p (%stream-tool-call-arguments-complete-p arguments)
+          :tool-call tool-call)))
+
+(defun %ensure-stream-tool-call-state (tool-call-states index)
+  (or (gethash index tool-call-states)
+      (setf (gethash index tool-call-states)
+            (list :started-emitted-p nil
+                  :arguments-complete-emitted-p nil))))
+
+(defun %emit-stream-chunk (on-chunk chunk)
+  (when on-chunk
+    (funcall on-chunk chunk)))
+
+(defun %emit-stream-tool-call-delta (index
+                                     entry
+                                     tool-call-states
+                                     on-chunk
+                                     on-tool-call-delta
+                                     on-tool-call-started
+                                     on-tool-call-argument-complete)
+  (let* ((chunk (%make-stream-tool-call-delta-chunk index entry))
+         (tool-call (getf chunk :tool-call))
+         (name (getf chunk :name))
+         (arguments-complete-p (not (null (getf chunk :arguments-complete-p))))
+         (state (%ensure-stream-tool-call-state tool-call-states index)))
+    (%emit-stream-chunk on-chunk chunk)
+    (when on-tool-call-delta
+      (funcall on-tool-call-delta chunk))
+    (when (and (%non-empty-string-p name)
+               (not (getf state :started-emitted-p)))
+      (setf (getf state :started-emitted-p) t)
+      (when on-tool-call-started
+        (funcall on-tool-call-started tool-call)))
+    (when (and arguments-complete-p
+               (not (getf state :arguments-complete-emitted-p)))
+      (setf (getf state :arguments-complete-emitted-p) t)
+      (when on-tool-call-argument-complete
+        (funcall on-tool-call-argument-complete tool-call)))))
 
 (defun %sorted-stream-tool-call-indexes (partials)
   (let (indexes)
@@ -573,9 +651,18 @@ Returns two values: token-count integer and parsed response hash-table."
         when (hash-table-p raw-tool-call)
           collect (hash-to-tool-call raw-tool-call)))
 
-(defun %consume-sse-line (line on-reasoning on-content on-role
-                               tool-call-partials content-stream
-                               parse-error-count)
+(defun %consume-sse-line (line
+                          on-reasoning
+                          on-content
+                          on-role
+                          on-chunk
+                          on-tool-call-delta
+                          on-tool-call-started
+                          on-tool-call-argument-complete
+                          tool-call-partials
+                          tool-call-states
+                          content-stream
+                          parse-error-count)
   (let ((payload nil))
     (cond
       ((uiop:string-prefix-p "data: " line)
@@ -601,9 +688,20 @@ Returns two values: token-count integer and parsed response hash-table."
             (when (%non-empty-string-p content)
               (write-string content content-stream)
               (when on-content
-                (funcall on-content content)))
+                (funcall on-content content))
+              (%emit-stream-chunk on-chunk (%make-stream-text-delta-chunk content)))
             (dolist (tool-call (%sequence->list tool-calls))
-              (%merge-stream-tool-call-delta tool-call-partials tool-call)))
+              (multiple-value-bind (entry index)
+                  (%merge-stream-tool-call-delta tool-call-partials tool-call)
+                (when (and (hash-table-p entry)
+                           (integerp index))
+                  (%emit-stream-tool-call-delta index
+                                                entry
+                                                tool-call-states
+                                                on-chunk
+                                                on-tool-call-delta
+                                                on-tool-call-started
+                                                on-tool-call-argument-complete)))))
         (error (condition)
           (declare (ignore condition))
           (when parse-error-count
@@ -615,10 +713,15 @@ Returns two values: token-count integer and parsed response hash-table."
                                           messages
                                           tools
                                           on-reasoning
-                                          on-content)
+                                          on-content
+                                          on-chunk
+                                          on-tool-call-delta
+                                          on-tool-call-started
+                                          on-tool-call-argument-complete)
   (let ((role "assistant")
         (content-stream (make-string-output-stream))
         (tool-call-partials (make-hash-table :test #'eql))
+        (tool-call-states (make-hash-table :test #'eql))
         (parse-error-count (list 0))
         (max-bytes (client-max-response-bytes client))
         (bytes-read 0))
@@ -649,7 +752,12 @@ Returns two values: token-count integer and parsed response hash-table."
                                          on-reasoning
                                          on-content
                                          (lambda (next-role) (setf role next-role))
+                                         on-chunk
+                                         on-tool-call-delta
+                                         on-tool-call-started
+                                         on-tool-call-argument-complete
                                          tool-call-partials
+                                         tool-call-states
                                          content-stream
                                          parse-error-count))
             (error (condition)
@@ -677,9 +785,17 @@ Returns two values: token-count integer and parsed response hash-table."
                                  tools
                                  on-reasoning
                                  on-content
-                                 on-tool-call)
+                                 on-tool-call
+                                 on-chunk
+                                 on-tool-call-delta
+                                 on-tool-call-started
+                                 on-tool-call-argument-complete)
   "Run a streaming Moonshot completion.
 ON-REASONING and ON-CONTENT receive streaming text chunks.
+ON-CHUNK receives chunk plists with :TYPE = :TEXT-DELTA or :TOOL-CALL-DELTA.
+ON-TOOL-CALL-DELTA receives incremental tool-call chunk plists.
+ON-TOOL-CALL-STARTED fires when a streamed tool call has a resolved name.
+ON-TOOL-CALL-ARGUMENT-COMPLETE fires when a streamed tool argument JSON object parses.
 ON-TOOL-CALL receives reconstructed tool-call structs when present."
   (multiple-value-bind (role content tool-calls)
       (%stream-chat-completion-collect client
@@ -688,7 +804,12 @@ ON-TOOL-CALL receives reconstructed tool-call structs when present."
                                        :messages messages
                                        :tools tools
                                        :on-reasoning on-reasoning
-                                       :on-content on-content)
+                                       :on-content on-content
+                                       :on-chunk on-chunk
+                                       :on-tool-call-delta on-tool-call-delta
+                                       :on-tool-call-started on-tool-call-started
+                                       :on-tool-call-argument-complete
+                                       on-tool-call-argument-complete)
     (declare (ignore role))
     (%emit-stream-tool-calls tool-calls on-tool-call)
     (values content tool-calls)))
@@ -700,7 +821,11 @@ ON-TOOL-CALL receives reconstructed tool-call structs when present."
                                   tools
                                   on-reasoning
                                   on-content
-                                  on-tool-call)
+                                  on-tool-call
+                                  on-chunk
+                                  on-tool-call-delta
+                                  on-tool-call-started
+                                  on-tool-call-argument-complete)
   "Run a streaming Moonshot completion and return a typed message struct."
   (multiple-value-bind (role content tool-calls)
       (%stream-chat-completion-collect client
@@ -709,7 +834,12 @@ ON-TOOL-CALL receives reconstructed tool-call structs when present."
                                        :messages messages
                                        :tools tools
                                        :on-reasoning on-reasoning
-                                       :on-content on-content)
+                                       :on-content on-content
+                                       :on-chunk on-chunk
+                                       :on-tool-call-delta on-tool-call-delta
+                                       :on-tool-call-started on-tool-call-started
+                                       :on-tool-call-argument-complete
+                                       on-tool-call-argument-complete)
     (%emit-stream-tool-calls tool-calls on-tool-call)
     (make-message :role (if (%non-empty-string-p role) role "assistant")
                   :content (or content "")

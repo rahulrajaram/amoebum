@@ -5,14 +5,16 @@
 (in-package :amoebum/test)
 
 (def-suite amoebum-suite
-  :description "Amoebum core smoke suite (I23-I62).")
+  :description "Amoebum core smoke suite (I23-I82).")
 
 (in-suite amoebum-suite)
 
 (defparameter +core-smoke-scripts+
   '(("agents-smoke-test.lisp" "AMOEBUM_AGENTS_SMOKE_OK")
     ("chat-ui-smoke-test.lisp" "AMOEBUM_CHAT_UI_SMOKE_OK")
+    ("checkpoint-smoke-test.lisp" "AMOEBUM_CHECKPOINT_SMOKE_OK")
     ("commands-smoke-test.lisp" "AMOEBUM_COMMANDS_SMOKE_OK")
+    ("compile-validation-smoke-test.lisp" "AMOEBUM_COMPILE_VALIDATION_SMOKE_OK")
     ("conditions-smoke-test.lisp" "AMOEBUM_CONDITIONS_SMOKE_OK")
     ("config-smoke-test.lisp" "AMOEBUM_CONFIG_SMOKE_OK")
     ("conversation-smoke-test.lisp" "AMOEBUM_CONVERSATION_SMOKE_OK")
@@ -20,12 +22,18 @@
     ("context-smoke-test.lisp" "AMOEBUM_CONTEXT_SMOKE_OK")
     ("defhook-smoke-test.lisp" "AMOEBUM_DEFHOOK_SMOKE_OK")
     ("defkeys-smoke-test.lisp" "AMOEBUM_DEFKEYS_SMOKE_OK")
+    ("defskill-smoke-test.lisp" "AMOEBUM_DEFSKILL_SMOKE_OK")
     ("deftool-smoke-test.lisp" "AMOEBUM_DEFTOOL_SMOKE_OK")
+    ("event-filters-smoke-test.lisp" "AMOEBUM_EVENT_FILTERS_SMOKE_OK")
     ("events-smoke-test.lisp" "AMOEBUM_EVENTS_SMOKE_OK")
+    ("extensions-smoke-test.lisp" "AMOEBUM_EXTENSIONS_SMOKE_OK")
     ("file-tools-smoke-test.lisp" "AMOEBUM_FILE_TOOLS_SMOKE_OK")
+    ("fork-smoke-test.lisp" "AMOEBUM_FORK_SMOKE_OK")
+    ("fuzzy-picker-smoke-test.lisp" "AMOEBUM_FUZZY_PICKER_SMOKE_OK")
     ("git-smoke-test.lisp" "AMOEBUM_GIT_SMOKE_OK")
     ("haake-smoke-test.lisp" "AMOEBUM_HAAKE_SMOKE_OK")
     ("haake-migration-smoke-test.lisp" "AMOEBUM_HAAKE_MIGRATION_SMOKE_OK")
+    ("history-smoke-test.lisp" "AMOEBUM_HISTORY_SMOKE_OK")
     ("lsp-smoke-test.lisp" "AMOEBUM_LSP_SMOKE_OK")
     ("mcp-smoke-test.lisp" "AMOEBUM_MCP_SMOKE_OK")
     ("memory-smoke-test.lisp" "AMOEBUM_MEMORY_SMOKE_OK")
@@ -33,11 +41,16 @@
     ("permissions-smoke-test.lisp" "AMOEBUM_PERMISSIONS_SMOKE_OK")
     ("pipeline-smoke-test.lisp" "AMOEBUM_PIPELINE_SMOKE_OK")
     ("plan-mode-smoke-test.lisp" "AMOEBUM_PLAN_MODE_SMOKE_OK")
+    ("reader-macros-smoke-test.lisp" "AMOEBUM_READER_MACROS_SMOKE_OK")
+    ("sandbox-smoke-test.lisp" "AMOEBUM_SANDBOX_SMOKE_OK")
     ("search-tools-smoke-test.lisp" "AMOEBUM_SEARCH_TOOLS_SMOKE_OK")
     ("shell-tool-smoke-test.lisp" "AMOEBUM_SHELL_TOOL_SMOKE_OK")
+    ("sounds-smoke-test.lisp" "AMOEBUM_SOUNDS_SMOKE_OK")
     ("status-bar-smoke-test.lisp" "AMOEBUM_STATUS_BAR_SMOKE_OK")
     ("streaming-smoke-test.lisp" "AMOEBUM_STREAMING_SMOKE_OK")
     ("system-prompt-smoke-test.lisp" "AMOEBUM_SYSPROMPT_SMOKE_OK")
+    ("tool-reload-smoke-test.lisp" "AMOEBUM_TOOL_RELOAD_SMOKE_OK")
+    ("tree-browser-smoke-test.lisp" "AMOEBUM_TREE_BROWSER_SMOKE_OK")
     ("web-fetch-smoke-test.lisp" "AMOEBUM_WEB_FETCH_SMOKE_OK")
     ("web-search-smoke-test.lisp" "AMOEBUM_WEB_SEARCH_SMOKE_OK")))
 
@@ -58,14 +71,46 @@
     "system-prompt-smoke-test.lisp"
     "notifications-smoke-test.lisp"))
 
+(defparameter +phase4-required-smoke-scripts+
+  '("compile-validation-smoke-test.lisp"
+    "defhook-smoke-test.lisp"
+    "defkeys-smoke-test.lisp"
+    "defskill-smoke-test.lisp"
+    "extensions-smoke-test.lisp"
+    "config-smoke-test.lisp"
+    "streaming-smoke-test.lisp"
+    "fork-smoke-test.lisp"
+    "history-smoke-test.lisp"
+    "tool-reload-smoke-test.lisp"
+    "reader-macros-smoke-test.lisp"
+    "sandbox-smoke-test.lisp"
+    "event-filters-smoke-test.lisp"
+    "sounds-smoke-test.lisp"
+    "checkpoint-smoke-test.lisp"
+    "fuzzy-picker-smoke-test.lisp"
+    "tree-browser-smoke-test.lisp"))
+
 (defparameter *i42-integration-tool-counter* 0)
+(defparameter *i82-widget-render-count* 0)
+(defparameter *i82-widget-state* (make-hash-table :test #'eq))
+(defparameter *i82-skill-tool-counter* 0)
+(defparameter *i82-skill-event-bus* nil)
+
+(ptui.widgets.defwidget:defwidget i82-widget-probe (state)
+  (:memoize :equal)
+  (incf *i82-widget-render-count*)
+  (text (gethash :label state "")))
 
 (defun %amoebum-system-root ()
   (uiop:ensure-directory-pathname (asdf:system-source-directory "amoebum")))
 
 (defun %run-smoke-script (filename)
   (let* ((script-path (merge-pathnames filename (%amoebum-system-root)))
-         (command (list "sbcl" "--script" (namestring script-path))))
+         (command (list "env"
+                        "AMOEBUM_PERMISSION_MODE=full-auto"
+                        "sbcl"
+                        "--script"
+                        (namestring script-path))))
     (multiple-value-bind (stdout stderr exit-code)
         (uiop:run-program command
                           :ignore-error-status t
@@ -73,15 +118,54 @@
                           :error-output :string)
       (values stdout stderr exit-code (namestring script-path)))))
 
-(test i23-i62-subsystem-smokes-pass
+(defun %make-temp-directory (prefix)
+  (uiop:ensure-directory-pathname
+   (merge-pathnames
+    (make-pathname
+     :directory `(:relative
+                  ,(format nil "~A-~D-~D"
+                           prefix
+                           (get-universal-time)
+                           (random 1000000))))
+    (uiop:ensure-directory-pathname (uiop:temporary-directory)))))
+
+(defun %write-text-file (path content)
+  (ensure-directories-exist path)
+  (with-open-file (stream path
+                          :direction :output
+                          :if-exists :supersede
+                          :if-does-not-exist :create
+                          :external-format :utf-8)
+    (write-string content stream)))
+
+(defun %delete-directory-tree-safe (path)
+  (when (and path (probe-file path))
+    (ignore-errors
+      (uiop:delete-directory-tree path
+                                  :validate t
+                                  :if-does-not-exist :ignore))))
+
+(defun %hash-table-keys (table)
+  (loop for key being the hash-keys of table
+        collect key))
+
+(defun %ui-element-text (element)
+  (getf (ptui.ui.elements:ui-element-props element) :text))
+
+(test i23-i82-subsystem-smokes-pass
   (let ((filenames (mapcar #'first +core-smoke-scripts+)))
     (is (>= (+ (* 3 (length +core-smoke-scripts+))
-               (length +phase3-required-smoke-scripts+))
-            100)
-        "Phase-3 smoke coverage should contribute at least 100 baseline checks.")
+               (length +phase3-required-smoke-scripts+)
+               (length +phase4-required-smoke-scripts+))
+            150)
+        "Phase-4 smoke coverage should contribute at least 150 baseline checks.")
     (dolist (required +phase3-required-smoke-scripts+)
       (is-true (member required filenames :test #'string=)
                "Expected Phase 3 smoke script ~A in suite coverage list."
+               required))
+    (dolist (required +phase4-required-smoke-scripts+)
+      (is-true (member required filenames :test #'string=)
+               "Expected Phase 4 smoke script ~A in suite coverage list."
                required)))
   (dolist (entry +core-smoke-scripts+)
     (destructuring-bind (filename sentinel) entry
@@ -103,52 +187,58 @@
 
 (test integration-context-compression-updates-status-bar
   (let* ((bus (amoebum:make-event-bus :capacity 128))
-         (compressed-events '()))
-    (let ((amoebum::*event-bus* bus)
-          (amoebum::*context-window-limit* 220))
-      (amoebum:subscribe bus
-                         amoebum:+event-type-context-compressed+
-                         (lambda (event)
-                           (push event compressed-events)))
-      (let ((chat-state
-              (amoebum:ensure-chat-ui-state
-               (amoebum:make-chat-ui-state
-                :stream-runner nil
-                :status-bar-state
-                (amoebum:make-status-bar-state :event-bus bus
-                                               :model-name "moonshot-v1-8k"
-                                               :branch-name "feature/i62")))))
-        (loop for idx from 1 to 28 do
-          (amoebum:chat-ui-add-message
-           chat-state
-           (if (oddp idx) "user" "assistant")
-           (format nil
-                   "I62 context flow message ~D with enough repeated detail to trigger token accounting and compression behavior."
-                   idx)))
-        (let* ((status-state (amoebum:chat-ui-state-status-bar-state chat-state))
-               (payload (and compressed-events
-                             (amoebum:event-payload (first compressed-events))))
-               (first-message (first (amoebum:chat-ui-state-messages chat-state))))
-          (is-true compressed-events
-                   "Expected at least one context:compressed event from conversation growth.")
-          (is (typep payload 'amoebum:context-compressed-payload))
-          (is (> (amoebum:context-compressed-payload-before-tokens payload)
-                 (amoebum:context-compressed-payload-after-tokens payload))
-              "Expected compression to reduce token count.")
-          (is (> (amoebum:context-compressed-payload-saved-tokens payload) 0)
-              "Expected positive token savings in context compression payload.")
-          (is (eq (amoebum:context-compressed-payload-trigger payload) :auto)
-              "Expected auto compression trigger from conversation growth.")
-          (is (= (amoebum:chat-ui-state-context-used-tokens chat-state)
-                 (amoebum:status-bar-state-context-used-tokens status-state))
-              "Expected status bar context usage to match chat state usage.")
-          (is (search "Tokens:"
-                      (amoebum:status-bar-line status-state)
-                      :test #'char-equal)
-              "Expected status bar line to include context token budget segment.")
-          (is-true (and (pseudopod:message-p first-message)
-                        (string= (pseudopod:message-role first-message) "system"))
-                   "Expected compressed history summary message at the front of conversation."))))))
+         (compressed-events '())
+         (config (amoebum:current-config))
+         (old-mode (amoebum:config-permission-mode config)))
+    (unwind-protect
+        (progn
+          (amoebum:setconfig :permission-mode :full-auto)
+          (let ((amoebum::*event-bus* bus)
+                (amoebum::*context-window-limit* 220))
+            (amoebum:subscribe bus
+                               amoebum:+event-type-context-compressed+
+                               (lambda (event)
+                                 (push event compressed-events)))
+            (let ((chat-state
+                    (amoebum:ensure-chat-ui-state
+                     (amoebum:make-chat-ui-state
+                      :stream-runner nil
+                      :status-bar-state
+                      (amoebum:make-status-bar-state :event-bus bus
+                                                     :model-name "moonshot-v1-8k"
+                                                     :branch-name "feature/i62")))))
+              (loop for idx from 1 to 28 do
+                (amoebum:chat-ui-add-message
+                 chat-state
+                 (if (oddp idx) "user" "assistant")
+                 (format nil
+                         "I62 context flow message ~D with enough repeated detail to trigger token accounting and compression behavior."
+                         idx)))
+              (let* ((status-state (amoebum:chat-ui-state-status-bar-state chat-state))
+                     (payload (and compressed-events
+                                   (amoebum:event-payload (first compressed-events))))
+                     (first-message (first (amoebum:chat-ui-state-messages chat-state))))
+                (is-true compressed-events
+                         "Expected at least one context:compressed event from conversation growth.")
+                (is (typep payload 'amoebum:context-compressed-payload))
+                (is (> (amoebum:context-compressed-payload-before-tokens payload)
+                       (amoebum:context-compressed-payload-after-tokens payload))
+                    "Expected compression to reduce token count.")
+                (is (> (amoebum:context-compressed-payload-saved-tokens payload) 0)
+                    "Expected positive token savings in context compression payload.")
+                (is (eq (amoebum:context-compressed-payload-trigger payload) :auto)
+                    "Expected auto compression trigger from conversation growth.")
+                (is (= (amoebum:chat-ui-state-context-used-tokens chat-state)
+                       (amoebum:status-bar-state-context-used-tokens status-state))
+                    "Expected status bar context usage to match chat state usage.")
+                (is (search "Tokens:"
+                            (amoebum:status-bar-line status-state)
+                            :test #'char-equal)
+                    "Expected status bar line to include context token budget segment.")
+                (is-true (and (pseudopod:message-p first-message)
+                              (string= (pseudopod:message-role first-message) "system"))
+                         "Expected compressed history summary message at the front of conversation.")))))
+      (amoebum:setconfig :permission-mode old-mode))))
 
 (test integration-git-tool-permission-and-event-flow
   (let* ((bus (amoebum:make-event-bus :capacity 128))
@@ -369,6 +459,250 @@
             amoebum:*hook-registry* original-hooks
             amoebum:*event-bus* original-event-bus
             amoebum:*permission-rules* original-rules))))
+
+(test integration-defwidget-render-dirty-rerender-cycle
+  (setf *i82-widget-render-count* 0
+        (gethash :label *i82-widget-state*) "before")
+  (ptui.widgets.defwidget:invalidate-widget 'i82-widget-probe)
+  (let ((first (i82-widget-probe *i82-widget-state*))
+        (cached (i82-widget-probe *i82-widget-state*)))
+    (is (= *i82-widget-render-count* 1))
+    (is (eq first cached))
+    (is (string= (%ui-element-text first) "before")))
+  (setf (gethash :label *i82-widget-state*) "after")
+  (let ((still-cached (i82-widget-probe *i82-widget-state*)))
+    (is (= *i82-widget-render-count* 1))
+    (is (string= (%ui-element-text still-cached) "before")))
+  (ptui.widgets.defwidget:mark-widget-dirty 'i82-widget-probe)
+  (is-true (ptui.widgets.defwidget:widget-dirty-p 'i82-widget-probe))
+  (let ((rerendered (i82-widget-probe *i82-widget-state*)))
+    (is (= *i82-widget-render-count* 2))
+    (is (string= (%ui-element-text rerendered) "after"))
+    (is (not (ptui.widgets.defwidget:widget-dirty-p 'i82-widget-probe)))))
+
+(test integration-defskill-slash-dispatch-tool-event-flow
+  (let ((original-toolset amoebum:*toolset*)
+        (original-metadata amoebum:*tool-metadata*)
+        (original-history amoebum:*tool-history*)
+        (original-event-bus amoebum:*event-bus*)
+        (original-rules amoebum:*permission-rules*))
+    (unwind-protect
+        (progn
+          (setf amoebum:*toolset* (pseudopod:make-toolset)
+                amoebum:*tool-metadata* (make-hash-table :test #'equal)
+                amoebum:*tool-history* (make-hash-table :test #'equal)
+                amoebum:*event-bus* (amoebum:make-event-bus :capacity 64)
+                amoebum:*permission-rules* nil
+                *i82-skill-tool-counter* 0
+                *i82-skill-event-bus* amoebum:*event-bus*)
+          (let ((invoked-events 0)
+                (completed-events 0))
+            (amoebum:subscribe amoebum:*event-bus*
+                               amoebum:+event-type-tool-invoked+
+                               (lambda (_event)
+                                 (declare (ignore _event))
+                                 (incf invoked-events)))
+            (amoebum:subscribe amoebum:*event-bus*
+                               amoebum:+event-type-tool-completed+
+                               (lambda (_event)
+                                 (declare (ignore _event))
+                                 (incf completed-events)))
+            (eval
+             '(amoebum:deftool i82-skill-bridge-tool
+                  ((value integer :required t :description "Integer payload."))
+                "I82 skill integration tool."
+                (:permission :auto)
+                (incf amoebum/test::*i82-skill-tool-counter*)
+                (format nil "skill-tool=~D" value)))
+            (eval
+             '(amoebum:defskill i82-skill-bridge ((value :integer :required t))
+                "I82 integration skill."
+                (:category :smoke)
+                (amoebum:execute-tool
+                 (pseudopod:make-tool-call
+                  :id "i82-skill-flow"
+                  :name "i82-skill-bridge-tool"
+                  :arguments (format nil "{\"value\":~D}" value))
+                 (amoebum:make-amoebum-context
+                  :toolset amoebum:*toolset*
+                  :permission-mode :full-auto
+                  :event-bus amoebum/test::*i82-skill-event-bus*
+                  :initialize-notifications-p nil))))
+            (multiple-value-bind (handledp result)
+                (amoebum:dispatch-slash-command "/i82-skill-bridge 7")
+              (let ((output (and result
+                                 (amoebum:slash-command-result-output result))))
+                (is-true handledp "Expected defskill slash command to dispatch.")
+                (is-true (stringp output))
+                (is (string= output "skill-tool=7"))
+                (is (= *i82-skill-tool-counter* 1))
+                (is (= invoked-events 1))
+                (is (= completed-events 1))))))
+      (setf amoebum:*toolset* original-toolset
+            amoebum:*tool-metadata* original-metadata
+            amoebum:*tool-history* original-history
+            amoebum:*event-bus* original-event-bus
+            amoebum:*permission-rules* original-rules
+            *i82-skill-event-bus* nil))))
+
+(test integration-extension-load-registration-permission-flow
+  (let* ((original-toolset amoebum:*toolset*)
+         (original-metadata amoebum:*tool-metadata*)
+         (original-history amoebum:*tool-history*)
+         (original-event-bus amoebum:*event-bus*)
+         (original-rules amoebum:*permission-rules*)
+         (original-global-override amoebum:*extensions-global-directory-override*)
+         (original-project-override amoebum:*extensions-project-directory-override*)
+         (original-report amoebum:*extension-load-report*)
+         (original-loaded amoebum:*loaded-extensions*)
+         (original-discovered amoebum::*extension-last-discovered*)
+         (disabled-keys (%hash-table-keys amoebum:*disabled-extensions*))
+         (tmp-root (%make-temp-directory "amoebum-i82-extension"))
+         (global-dir (merge-pathnames #P"global-ext/" tmp-root))
+         (project-dir (merge-pathnames #P"project-ext/" tmp-root))
+         (extension-file (merge-pathnames #P"10-i82-extension-tool.lisp" project-dir)))
+    (unwind-protect
+        (progn
+          (setf amoebum:*toolset* (pseudopod:make-toolset)
+                amoebum:*tool-metadata* (make-hash-table :test #'equal)
+                amoebum:*tool-history* (make-hash-table :test #'equal)
+                amoebum:*event-bus* (amoebum:make-event-bus :capacity 64)
+                amoebum:*permission-rules* nil
+                amoebum:*extensions-global-directory-override* global-dir
+                amoebum:*extensions-project-directory-override* project-dir
+                amoebum:*extension-load-report* '()
+                amoebum:*loaded-extensions* '()
+                amoebum::*extension-last-discovered* '())
+          (clrhash amoebum:*disabled-extensions*)
+          (%write-text-file extension-file
+                            "(in-package :amoebum)
+(deftool i82-extension-tool ((text string :required t :description \"text\"))
+  \"I82 extension integration tool.\"
+  (:permission :auto)
+  (format nil \"ext-tool:~A\" text))
+")
+          (let ((loaded-events 0)
+                (prompted-events 0))
+            (amoebum:subscribe amoebum:*event-bus*
+                               amoebum:+event-type-extension-loaded+
+                               (lambda (_event)
+                                 (declare (ignore _event))
+                                 (incf loaded-events)))
+            (amoebum:subscribe amoebum:*event-bus*
+                               amoebum:+event-type-permission-prompted+
+                               (lambda (_event)
+                                 (declare (ignore _event))
+                                 (incf prompted-events)))
+            (amoebum:load-user-extensions :project-root tmp-root)
+            (is (= loaded-events 1))
+            (is-true (pseudopod:find-tool amoebum:*toolset* "i82-extension-tool"))
+            (let* ((allow-context
+                     (amoebum:make-amoebum-context
+                      :toolset amoebum:*toolset*
+                      :permission-mode :full-auto
+                      :event-bus amoebum:*event-bus*
+                      :initialize-notifications-p nil))
+                   (allow-call
+                     (pseudopod:make-tool-call
+                      :id "i82-extension-allow"
+                      :name "i82-extension-tool"
+                      :arguments "{\"text\":\"ok\"}"))
+                   (allow-result (amoebum:execute-tool allow-call allow-context)))
+              (is (string= allow-result "ext-tool:ok")))
+            (let* ((deny-context
+                     (amoebum:make-amoebum-context
+                      :toolset amoebum:*toolset*
+                      :permission-mode :supervised
+                      :event-bus amoebum:*event-bus*
+                      :initialize-notifications-p nil))
+                   (deny-call
+                     (pseudopod:make-tool-call
+                      :id "i82-extension-deny"
+                      :name "i82-extension-tool"
+                      :arguments "{\"text\":\"no\"}")))
+              (signals amoebum:tool-permission-denied
+                (amoebum:execute-tool deny-call deny-context))
+              (is (= prompted-events 1)))))
+      (setf amoebum:*toolset* original-toolset
+            amoebum:*tool-metadata* original-metadata
+            amoebum:*tool-history* original-history
+            amoebum:*event-bus* original-event-bus
+            amoebum:*permission-rules* original-rules
+            amoebum:*extensions-global-directory-override* original-global-override
+            amoebum:*extensions-project-directory-override* original-project-override
+            amoebum:*extension-load-report* original-report
+            amoebum:*loaded-extensions* original-loaded
+            amoebum::*extension-last-discovered* original-discovered)
+      (clrhash amoebum:*disabled-extensions*)
+      (dolist (key disabled-keys)
+        (setf (gethash key amoebum:*disabled-extensions*) t))
+      (%delete-directory-tree-safe tmp-root))))
+
+(test integration-checkpoint-restore-conversation-continuity
+  (let* ((config (amoebum:current-config))
+         (old-project-root (amoebum:config-project-root config))
+         (old-event-bus amoebum:*event-bus*)
+         (old-checkpoint-override amoebum:*checkpoint-directory-override*)
+         (tmp-root (%make-temp-directory "amoebum-i82-checkpoint"))
+         (project-root (merge-pathnames #P"project/" tmp-root))
+         (checkpoint-dir (merge-pathnames #P"checkpoints/" tmp-root))
+         (bus (amoebum:make-event-bus :capacity 64))
+         (checkpointed-events 0)
+         (restored-events 0))
+    (unwind-protect
+        (progn
+          (setf amoebum:*event-bus* bus
+                amoebum:*checkpoint-directory-override* checkpoint-dir)
+          (amoebum:setconfig :project-root project-root)
+          (amoebum:subscribe bus
+                             amoebum:+event-type-session-checkpointed+
+                             (lambda (_event)
+                               (declare (ignore _event))
+                               (incf checkpointed-events)))
+          (amoebum:subscribe bus
+                             amoebum:+event-type-session-restored+
+                             (lambda (_event)
+                               (declare (ignore _event))
+                               (incf restored-events)))
+          (let* ((conversation (amoebum:make-conversation-state
+                                :project-root project-root))
+                 (user-message (pseudopod:make-message
+                                :role "user"
+                                :content "checkpoint user"))
+                 (assistant-message (pseudopod:make-message
+                                     :role "assistant"
+                                     :content "checkpoint assistant")))
+            (amoebum:conversation-state-add-message conversation user-message :save-p nil)
+            (amoebum:conversation-state-add-message conversation assistant-message :save-p nil)
+            (let* ((checkpoint (amoebum:checkpoint-session
+                                :conversation conversation
+                                :project-root project-root
+                                :event-bus bus))
+                   (restored (amoebum:restore-session
+                              :checkpoint-id (amoebum:session-checkpoint-id checkpoint)
+                              :project-root project-root
+                              :event-bus bus))
+                   (restored-conversation (getf restored :conversation))
+                   (entries (amoebum:conversation-state-entries restored-conversation)))
+              (is (= (length entries) 2))
+              (is (string= (amoebum:conversation-history-entry-content (first entries))
+                           "checkpoint user"))
+              (is (string= (amoebum:conversation-history-entry-content (second entries))
+                           "checkpoint assistant"))
+              (amoebum:conversation-state-add-message
+               restored-conversation
+               (pseudopod:make-message :role "user" :content "post-restore")
+               :save-p nil)
+              (let ((continued (amoebum:conversation-state-entries restored-conversation)))
+                (is (= (length continued) 3))
+                (is (string= (amoebum:conversation-history-entry-content (third continued))
+                             "post-restore")))))
+          (is (= checkpointed-events 1))
+          (is (= restored-events 1)))
+      (setf amoebum:*event-bus* old-event-bus
+            amoebum:*checkpoint-directory-override* old-checkpoint-override)
+      (amoebum:setconfig :project-root old-project-root)
+      (%delete-directory-tree-safe tmp-root))))
 
 (defun run-all ()
   "Run all amoebum tests and return T when successful."

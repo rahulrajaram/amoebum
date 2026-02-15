@@ -6,6 +6,15 @@
 (defparameter +context-compression-max-summary-points+ 4)
 (defparameter +context-compression-snippet-chars+ 96)
 
+(defun %make-chat-stream-tool-call-table ()
+  (make-hash-table :test #'equal))
+
+(defun %make-chat-stream-executed-table ()
+  (make-hash-table :test #'equal))
+
+(defun %make-chat-history-selection-table ()
+  (make-hash-table :test #'equal))
+
 (defstruct (chat-ui-state
             (:constructor make-chat-ui-state
                 (&key (runtime (ptui.ui.runtime:make-runtime))
@@ -19,10 +28,19 @@
                       (stream-client nil)
                       (stream-system-prompt +chat-stream-default-system-prompt+)
                       (stream-tools nil)
+                      (stream-scroll-follow-p t)
                       (status-bar-state (make-status-bar-state))
                       (conversation nil)
                       (context-used-tokens 0)
                       (context-window-limit +default-context-window-limit+)
+                      (fuzzy-picker-state (make-fuzzy-picker-state))
+                      (history-search-active-p nil)
+                      (history-search-original-input "")
+                      (history-search-signature nil)
+                      (history-selection-map (%make-chat-history-selection-table))
+                      (tree-browser-state nil)
+                      (stream-tool-calls (%make-chat-stream-tool-call-table))
+                      (stream-executed-tool-call-keys (%make-chat-stream-executed-table))
                       (stream-status-publish-key nil)
                       (frame-count 0))))
   runtime
@@ -36,10 +54,19 @@
   (stream-client nil)
   (stream-system-prompt +chat-stream-default-system-prompt+ :type string)
   (stream-tools nil)
+  (stream-scroll-follow-p t :type boolean)
   (status-bar-state (make-status-bar-state) :type status-bar-state)
   (conversation nil)
   (context-used-tokens 0 :type integer)
   (context-window-limit +default-context-window-limit+ :type integer)
+  (fuzzy-picker-state (make-fuzzy-picker-state))
+  (history-search-active-p nil :type boolean)
+  (history-search-original-input "" :type string)
+  (history-search-signature nil)
+  (history-selection-map (%make-chat-history-selection-table))
+  (tree-browser-state nil)
+  (stream-tool-calls (%make-chat-stream-tool-call-table))
+  (stream-executed-tool-call-keys (%make-chat-stream-executed-table))
   (stream-status-publish-key nil)
   (frame-count 0 :type fixnum)
   (cached-tree-key nil)
@@ -57,6 +84,135 @@
              (config-project-root cfg))
         (ignore-errors (uiop:getcwd))
         *default-pathname-defaults*)))
+
+(defun %ensure-chat-fuzzy-picker-state (chat-state)
+  (let ((picker (chat-ui-state-fuzzy-picker-state chat-state)))
+    (unless (typep picker 'fuzzy-picker-state)
+      (setf picker (make-fuzzy-picker-state)
+            (chat-ui-state-fuzzy-picker-state chat-state) picker))
+    picker))
+
+(defun %history-picker-candidate-line (entry index)
+  (let* ((role (string-upcase (or (conversation-history-entry-role entry) "assistant")))
+         (stamp (format-history-timestamp
+                 (conversation-history-entry-timestamp entry)))
+         (tool-name (conversation-history-entry-name entry))
+         (content (%conversation-trim (conversation-history-entry-content entry)))
+         (body (if (%conversation-blank-p content)
+                   "(empty)"
+                   (%truncate-inline-text content 120))))
+    (format nil "~4,'0D [~A] ~A~@[ tool=~A~]: ~A"
+            index
+            role
+            stamp
+            tool-name
+            body)))
+
+(defun %chat-refresh-history-picker-index! (chat-state)
+  (let* ((picker (%ensure-chat-fuzzy-picker-state chat-state))
+         (table (chat-ui-state-history-selection-map chat-state))
+         (entries (conversation-state-entries (%ensure-chat-conversation-state chat-state)))
+         (signature (mapcar (lambda (entry)
+                              (list (conversation-history-entry-timestamp entry)
+                                    (conversation-history-entry-role entry)
+                                    (conversation-history-entry-name entry)
+                                    (conversation-history-entry-content entry)))
+                            entries))
+         (total (length entries))
+         (candidates '()))
+    (unless (hash-table-p table)
+      (setf table (%make-chat-history-selection-table)
+            (chat-ui-state-history-selection-map chat-state) table))
+    (when (equal signature (chat-ui-state-history-search-signature chat-state))
+      (return-from %chat-refresh-history-picker-index! picker))
+    (clrhash table)
+    (loop for index downfrom (1- total) to 0 do
+      (let* ((entry (nth index entries))
+             (line (%history-picker-candidate-line entry index))
+             (replacement (or (conversation-history-entry-content entry) "")))
+        (setf (gethash line table) replacement)
+        (push line candidates)))
+    (setf (fuzzy-picker-state-project-root picker) ":history"
+          (fuzzy-picker-state-files picker) (coerce (nreverse candidates) 'vector)
+          (fuzzy-picker-state-ignore-rules picker) '()
+          (fuzzy-picker-state-index-ready-p picker) t
+          (fuzzy-picker-state-scan-cursor picker) 0
+          (fuzzy-picker-state-scan-complete-p picker) nil
+          (fuzzy-picker-state-top-results picker) '()
+          (fuzzy-picker-state-selected-index picker) 0
+          (fuzzy-picker-state-context-label picker) "history"
+          (fuzzy-picker-state-empty-message picker) "  [none] no matching messages")
+    (setf (chat-ui-state-history-search-signature chat-state) signature)
+    picker))
+
+(defun %chat-activate-history-search! (chat-state)
+  (let ((picker (%ensure-chat-fuzzy-picker-state chat-state))
+        (current-input (chat-ui-state-input-text chat-state)))
+    (setf (chat-ui-state-history-search-active-p chat-state) t
+          (chat-ui-state-history-search-original-input chat-state) current-input
+          (chat-ui-state-history-search-signature chat-state) nil
+          (chat-ui-state-input-text chat-state) ""
+          (chat-ui-state-prompt-scroll-offset chat-state) nil)
+    (%chat-refresh-history-picker-index! chat-state)
+    (setf (fuzzy-picker-state-active-p picker) t)
+    (fuzzy-picker-set-query! picker "" 0 0)
+    (fuzzy-picker-step! picker :batch-size most-positive-fixnum)
+    t))
+
+(defun %chat-deactivate-history-search! (chat-state &key (restore-input-p nil))
+  (let ((picker (%ensure-chat-fuzzy-picker-state chat-state)))
+    (when restore-input-p
+      (setf (chat-ui-state-input-text chat-state)
+            (chat-ui-state-history-search-original-input chat-state)
+            (chat-ui-state-prompt-scroll-offset chat-state) nil))
+    (setf (chat-ui-state-history-search-active-p chat-state) nil
+          (chat-ui-state-history-search-original-input chat-state) ""
+          (chat-ui-state-history-search-signature chat-state) nil)
+    (setf (fuzzy-picker-state-context-label picker) "@ file"
+          (fuzzy-picker-state-empty-message picker) "  [none] no matching files")
+    (fuzzy-picker-deactivate! picker)
+    t))
+
+(defun %chat-sync-fuzzy-picker! (chat-state &key (step-p t))
+  (let ((picker (%ensure-chat-fuzzy-picker-state chat-state)))
+    (if (chat-ui-state-history-search-active-p chat-state)
+        (let ((query (chat-ui-state-input-text chat-state)))
+          (%chat-refresh-history-picker-index! chat-state)
+          (setf (fuzzy-picker-state-active-p picker) t)
+          (fuzzy-picker-set-query! picker query 0 (length query))
+          (when step-p
+            (fuzzy-picker-step! picker :batch-size most-positive-fixnum)))
+        (progn
+          (setf (fuzzy-picker-state-context-label picker) "@ file"
+                (fuzzy-picker-state-empty-message picker) "  [none] no matching files")
+          (fuzzy-picker-sync-input! picker
+                                    (chat-ui-state-input-text chat-state)
+                                    :root (%chat-project-root))
+          (when step-p
+            (fuzzy-picker-step! picker))))
+    picker))
+
+(defun %ensure-chat-tree-browser-state (chat-state)
+  (let* ((resolved-root (%resolve-search-root (%chat-project-root)))
+         (resolved-root-key (%path-text resolved-root))
+         (tree-state (chat-ui-state-tree-browser-state chat-state))
+         (current-root-key
+           (and (typep tree-state 'tree-browser-state)
+                (tree-browser-state-root-path tree-state)
+                (%path-text (tree-browser-state-root-path tree-state)))))
+    (unless (and (typep tree-state 'tree-browser-state)
+                 (equal current-root-key resolved-root-key))
+      (setf tree-state
+            (handler-case
+                (make-git-file-tree-browser-state
+                 :root resolved-root
+                 :show-root-p t
+                 :active-p nil
+                 :visible-row-count 3)
+              (error ()
+                (make-empty-tree-browser-state :label "files"))))
+      (setf (chat-ui-state-tree-browser-state chat-state) tree-state))
+    tree-state))
 
 (defun %ensure-chat-conversation-state (chat-state)
   (let ((conversation (chat-ui-state-conversation chat-state)))
@@ -265,10 +421,28 @@
                  (plusp (length (chat-ui-state-stream-system-prompt chat-state))))
       (setf (chat-ui-state-stream-system-prompt chat-state)
             +chat-stream-default-system-prompt+))
+    (unless (typep (chat-ui-state-stream-scroll-follow-p chat-state) 'boolean)
+      (setf (chat-ui-state-stream-scroll-follow-p chat-state) t))
+    (unless (typep (chat-ui-state-history-search-active-p chat-state) 'boolean)
+      (setf (chat-ui-state-history-search-active-p chat-state) nil))
+    (unless (stringp (chat-ui-state-history-search-original-input chat-state))
+      (setf (chat-ui-state-history-search-original-input chat-state) ""))
+    (unless (hash-table-p (chat-ui-state-history-selection-map chat-state))
+      (setf (chat-ui-state-history-selection-map chat-state)
+            (%make-chat-history-selection-table)))
+    (unless (hash-table-p (chat-ui-state-stream-tool-calls chat-state))
+      (setf (chat-ui-state-stream-tool-calls chat-state)
+            (%make-chat-stream-tool-call-table)))
+    (unless (hash-table-p (chat-ui-state-stream-executed-tool-call-keys chat-state))
+      (setf (chat-ui-state-stream-executed-tool-call-keys chat-state)
+            (%make-chat-stream-executed-table)))
     (setf (chat-ui-state-status-bar-state chat-state)
           (ensure-status-bar-state
            (chat-ui-state-status-bar-state chat-state)
            :event-bus (current-event-bus)))
+    (%ensure-chat-fuzzy-picker-state chat-state)
+    (%ensure-chat-tree-browser-state chat-state)
+    (%chat-sync-fuzzy-picker! chat-state :step-p nil)
     (%ensure-chat-conversation-state chat-state)
     (%sync-chat-context-usage! chat-state)
     chat-state))
@@ -332,6 +506,7 @@
               text
               (princ-to-string text))
           (chat-ui-state-prompt-scroll-offset chat-state) nil)
+    (%chat-sync-fuzzy-picker! chat-state :step-p nil)
     (chat-ui-state-input-text chat-state)))
 
 (defun %blank-string-p (text)
@@ -350,15 +525,23 @@
               (conversation-transition! conversation :user-input)
               (chat-ui-add-message chat-state "user" input))
           (setf (chat-ui-state-input-text chat-state) ""
-                (chat-ui-state-prompt-scroll-offset chat-state) nil)))))
+                (chat-ui-state-prompt-scroll-offset chat-state) nil)
+          (fuzzy-picker-deactivate! (%ensure-chat-fuzzy-picker-state chat-state))))))
 
 (defun chat-ui-scroll-history (state delta-lines)
   (let* ((chat-state (ensure-chat-ui-state state))
+         (stream-active-p (token-stream-active-p (chat-ui-state-stream-state chat-state)))
          (max-scrollback (max 0 (chat-ui-state-max-message-scrollback-lines chat-state)))
          (next-scrollback (+ (chat-ui-state-message-scrollback-lines chat-state)
                              (or delta-lines 0))))
     (setf (chat-ui-state-message-scrollback-lines chat-state)
           (max 0 (min max-scrollback next-scrollback)))
+    (when stream-active-p
+      (cond
+        ((> (chat-ui-state-message-scrollback-lines chat-state) 0)
+         (setf (chat-ui-state-stream-scroll-follow-p chat-state) nil))
+        (t
+         (setf (chat-ui-state-stream-scroll-follow-p chat-state) t))))
     (chat-ui-state-message-scrollback-lines chat-state)))
 
 (defun chat-role-prefix (role)
@@ -398,6 +581,176 @@
       (setf (car cell) message)
       t)))
 
+(defun %stream-tool-call-preview-key (index tool-call-id tool-name arguments)
+  (cond
+    ((integerp index) index)
+    ((and (stringp tool-call-id) (plusp (length tool-call-id)))
+     (concatenate 'string "id:" tool-call-id))
+    ((and (stringp tool-name) (plusp (length tool-name)))
+     (concatenate 'string "name:" tool-name))
+    ((and (stringp arguments) (plusp (length arguments)))
+     (concatenate 'string "args:" arguments))
+    (t
+     :unknown)))
+
+(defun %ensure-stream-tool-call-preview (chat-state key)
+  (let* ((table (chat-ui-state-stream-tool-calls chat-state))
+         (entry (and (hash-table-p table) (gethash key table))))
+    (or entry
+        (let ((fresh (list :key key
+                           :index nil
+                           :tool-name nil
+                           :tool-call-id nil
+                           :arguments nil
+                           :started-p nil
+                           :arguments-complete-p nil
+                           :executed-p nil
+                           :execution-error nil)))
+          (setf (gethash key table) fresh)
+          fresh))))
+
+(defun %stream-tool-call-from-event (event)
+  (let ((tool-call (getf event :tool-call)))
+    (if (pseudopod:tool-call-p tool-call)
+        tool-call
+        (let* ((tool-name (getf event :tool-name))
+               (arguments (getf event :arguments))
+               (tool-call-id (getf event :tool-call-id)))
+          (when (and (stringp tool-name) (plusp (length tool-name)))
+            (pseudopod:make-tool-call
+             :id (and (stringp tool-call-id) tool-call-id)
+             :name tool-name
+             :arguments (and (stringp arguments) arguments)))))))
+
+(defun %stream-tool-call-preview-signature (chat-state)
+  (let (items)
+    (maphash (lambda (key value)
+               (declare (ignore key))
+               (when (listp value)
+                 (push (list (getf value :index)
+                             (getf value :tool-name)
+                             (getf value :tool-call-id)
+                             (getf value :arguments)
+                             (not (null (getf value :started-p)))
+                             (not (null (getf value :arguments-complete-p)))
+                             (not (null (getf value :executed-p)))
+                             (getf value :execution-error))
+                       items)))
+             (chat-ui-state-stream-tool-calls chat-state))
+    (sort items #'string<
+          :key (lambda (item)
+                 (with-output-to-string (out)
+                   (dolist (field item)
+                     (write-string (princ-to-string field) out)
+                     (write-char #\| out)))))))
+
+(defun %update-stream-tool-call-preview! (chat-state event)
+  (let* ((tool-call (%stream-tool-call-from-event event))
+         (index (getf event :index))
+         (tool-name (or (and (pseudopod:tool-call-p tool-call)
+                             (pseudopod:tool-call-name tool-call))
+                        (getf event :tool-name)))
+         (tool-call-id (or (and (pseudopod:tool-call-p tool-call)
+                                (pseudopod:tool-call-id tool-call))
+                           (getf event :tool-call-id)))
+         (arguments (or (and (pseudopod:tool-call-p tool-call)
+                             (pseudopod:tool-call-arguments tool-call))
+                        (getf event :arguments)))
+         (key (%stream-tool-call-preview-key index tool-call-id tool-name arguments))
+         (entry (%ensure-stream-tool-call-preview chat-state key))
+         (kind (getf event :kind)))
+    (when (integerp index)
+      (setf (getf entry :index) index))
+    (when (and (stringp tool-name) (plusp (length tool-name)))
+      (setf (getf entry :tool-name) tool-name))
+    (when (and (stringp tool-call-id) (plusp (length tool-call-id)))
+      (setf (getf entry :tool-call-id) tool-call-id))
+    (when (stringp arguments)
+      (setf (getf entry :arguments) arguments))
+    (setf (getf entry :started-p)
+          (or (getf entry :started-p)
+              (eq kind :tool-call-started)
+              (eq kind :tool-call-argument-complete)
+              (and (stringp tool-name) (plusp (length tool-name)))))
+    (setf (getf entry :arguments-complete-p)
+          (or (getf entry :arguments-complete-p)
+              (eq kind :tool-call-argument-complete)
+              (not (null (getf event :arguments-complete-p)))))
+    entry))
+
+(defun %clear-stream-tool-tracking! (chat-state)
+  (let ((tool-calls (chat-ui-state-stream-tool-calls chat-state))
+        (executed (chat-ui-state-stream-executed-tool-call-keys chat-state)))
+    (when (hash-table-p tool-calls)
+      (clrhash tool-calls))
+    (when (hash-table-p executed)
+      (clrhash executed))
+    chat-state))
+
+(defun %set-stream-tool-call-execution-status! (chat-state preview-key
+                                                &key executed-p execution-error)
+  (let* ((table (chat-ui-state-stream-tool-calls chat-state))
+         (entry (and (hash-table-p table)
+                     (gethash preview-key table))))
+    (when entry
+      (when executed-p
+        (setf (getf entry :executed-p) t))
+      (when execution-error
+        (setf (getf entry :execution-error) execution-error)))
+    entry))
+
+(defun %stream-tool-call-execution-key (tool-call preview-key)
+  (or (and (pseudopod:tool-call-p tool-call)
+           (pseudopod:tool-call-id tool-call)
+           (plusp (length (pseudopod:tool-call-id tool-call)))
+           (concatenate 'string "id:" (pseudopod:tool-call-id tool-call)))
+      (and (pseudopod:tool-call-p tool-call)
+           (pseudopod:tool-call-name tool-call)
+           (plusp (length (pseudopod:tool-call-name tool-call)))
+           (concatenate 'string
+                        "call:"
+                        (pseudopod:tool-call-name tool-call)
+                        ":"
+                        (or (pseudopod:tool-call-arguments tool-call) "")))
+      preview-key))
+
+(defun %execute-stream-tool-call! (chat-state event)
+  (let* ((tool-call (%stream-tool-call-from-event event))
+         (preview-entry (%update-stream-tool-call-preview! chat-state event))
+         (preview-key (and (listp preview-entry) (getf preview-entry :key)))
+         (execution-key (%stream-tool-call-execution-key tool-call preview-key))
+         (executed-table (chat-ui-state-stream-executed-tool-call-keys chat-state)))
+    (unless (and (pseudopod:tool-call-p tool-call)
+                 execution-key)
+      (return-from %execute-stream-tool-call! nil))
+    (when (gethash execution-key executed-table)
+      (return-from %execute-stream-tool-call! nil))
+    (setf (gethash execution-key executed-table) t)
+    (%set-stream-tool-call-execution-status! chat-state preview-key :executed-p t)
+    (let* ((toolset (or (chat-ui-state-stream-tools chat-state) *toolset*))
+           (config (%chat-config))
+           (permission-mode (and (config-p config)
+                                 (config-permission-mode config))))
+      (handler-case
+          (if (pseudopod:find-tool toolset (pseudopod:tool-call-name tool-call))
+              (execute-tool tool-call
+                            (make-amoebum-context
+                             :toolset toolset
+                             :permission-mode permission-mode
+                             :event-bus (%context-event-bus chat-state)))
+              (%set-stream-tool-call-execution-status!
+               chat-state
+               preview-key
+               :execution-error (format nil "Unregistered tool ~A."
+                                        (or (pseudopod:tool-call-name tool-call)
+                                            "<unknown>"))))
+        (error (condition)
+          (%set-stream-tool-call-execution-status!
+           chat-state
+           preview-key
+           :execution-error (princ-to-string condition)))))
+    t))
+
 (defun %stream-status-summary (chat-state)
   (token-stream-progress-summary (chat-ui-state-stream-state chat-state)))
 
@@ -405,12 +758,14 @@
   (let ((status (or (getf summary :status) :idle))
         (tokens (or (getf summary :tokens) 0))
         (chunks (or (getf summary :chunks) 0))
+        (budget-warning-emitted-p (not (null (getf summary :budget-warning-emitted-p))))
         (cancel-requested-p (not (null (getf summary :cancel-requested-p))))
         (tokens-per-second (or (getf summary :tokens-per-second) 0.0d0))
         (elapsed-ms (or (getf summary :elapsed-ms) 0)))
     (list status
           tokens
           chunks
+          budget-warning-emitted-p
           cancel-requested-p
           (if (eq status :running)
               (truncate (* 10 tokens-per-second))
@@ -435,11 +790,52 @@
           status
           (getf summary :tokens)
           (getf summary :chunks)
+          (getf summary :budget-warning-emitted-p)
           (if (eq status :running)
               (truncate elapsed-ms 100)
               elapsed-ms)
           (getf summary :cancel-requested-p)
-          (getf summary :error-message))))
+          (getf summary :error-message)
+          (%stream-tool-call-preview-signature chat-state))))
+
+(defun %stream-tool-call-preview-lines (chat-state width)
+  (let ((safe-width (max 24 width))
+        (entries '()))
+    (maphash
+     (lambda (key entry)
+       (declare (ignore key))
+       (when (listp entry)
+         (let* ((tool-name (or (getf entry :tool-name) "<tool>"))
+                (arguments (or (getf entry :arguments) ""))
+                (status (cond
+                          ((getf entry :execution-error) "error")
+                          ((getf entry :executed-p) "running")
+                          ((getf entry :arguments-complete-p) "args-ready")
+                          (t "streaming")))
+                (arguments-limit (max 6 (- safe-width 26)))
+                (snippet (%truncate-inline-text arguments arguments-limit))
+                (detail (if (plusp (length snippet))
+                            (format nil " ~A" snippet)
+                            ""))
+                (error-fragment
+                  (if (getf entry :execution-error)
+                      (format nil
+                              " ! ~A"
+                              (%truncate-inline-text (getf entry :execution-error)
+                                                     (max 8 (- safe-width 40))))
+                      ""))
+                (text (format nil "TOOL> [~A] ~A~A~A"
+                              status
+                              tool-name
+                              detail
+                              error-fragment)))
+           (push (list :id (list :stream-tool-call (or (getf entry :key) tool-name))
+                       :text (%truncate-inline-text text safe-width)
+                       :role :tool)
+                 entries))))
+     (chat-ui-state-stream-tool-calls chat-state))
+    (sort entries #'string<
+          :key (lambda (entry) (princ-to-string (getf entry :id))))))
 
 (defun %set-streaming-assistant-message (chat-state target-index text &key partialp)
   (let ((messages (chat-ui-state-messages chat-state)))
@@ -452,7 +848,9 @@
        (make-chat-message "assistant"
                           (or text "")
                           :partial partialp))
-      (setf (chat-ui-state-message-scrollback-lines chat-state) 0)
+      (when (or (not (token-stream-active-p (chat-ui-state-stream-state chat-state)))
+                (chat-ui-state-stream-scroll-follow-p chat-state))
+        (setf (chat-ui-state-message-scrollback-lines chat-state) 0))
       (%sync-chat-context-usage! chat-state)
       t)))
 
@@ -486,7 +884,29 @@
           (when (pseudopod:message-p updated-message)
             (conversation-state-update-entry (%ensure-chat-conversation-state chat-state)
                                              target-index
-                                             updated-message)))))))
+                                             updated-message)))))
+    (setf (chat-ui-state-stream-scroll-follow-p chat-state) t)))
+
+(defun %emit-stream-budget-warning-if-needed (chat-state)
+  (let* ((stream-state (chat-ui-state-stream-state chat-state))
+         (used-tokens (chat-ui-state-context-used-tokens chat-state))
+         (limit-tokens (chat-ui-state-context-window-limit chat-state)))
+    (when (and (token-stream-active-p stream-state)
+               (integerp used-tokens)
+               (integerp limit-tokens)
+               (> limit-tokens 0))
+      (let ((warning
+              (token-stream-maybe-budget-warning stream-state
+                                                 used-tokens
+                                                 limit-tokens)))
+        (when warning
+          (publish (%context-event-bus chat-state)
+                   (make-stream-budget-warning-event
+                    :used-tokens (getf warning :used-tokens)
+                    :limit-tokens (getf warning :limit-tokens)
+                    :usage-percent (getf warning :usage-percent)
+                    :threshold-percent (getf warning :threshold-percent))))
+        warning))))
 
 (defun %drain-stream-events (chat-state)
   (let ((conversation (%ensure-chat-conversation-state chat-state)))
@@ -494,16 +914,58 @@
    (chat-ui-state-stream-state chat-state)
    (lambda (event)
      (case (getf event :kind)
+       (:text-delta
+        (%append-streaming-assistant-chunk chat-state (getf event :text))
+        (%emit-stream-budget-warning-if-needed chat-state))
        (:chunk
-        (%append-streaming-assistant-chunk chat-state (getf event :text)))
+        (%append-streaming-assistant-chunk chat-state (getf event :text))
+        (%emit-stream-budget-warning-if-needed chat-state))
+       (:tool-call-delta
+        (%update-stream-tool-call-preview! chat-state event))
+       (:tool-call-started
+        (let* ((entry (%update-stream-tool-call-preview! chat-state event))
+               (tool-name (or (getf event :tool-name)
+                              (and (listp entry) (getf entry :tool-name))))
+               (tool-call-id (or (getf event :tool-call-id)
+                                 (and (listp entry) (getf entry :tool-call-id))))
+               (arguments (or (getf event :arguments)
+                              (and (listp entry) (getf entry :arguments))))
+               (index (or (getf event :index)
+                          (and (listp entry) (getf entry :index)))))
+          (publish (%context-event-bus chat-state)
+                   (make-tool-call-started-event
+                    :tool-name tool-name
+                    :tool-call-id tool-call-id
+                    :arguments arguments
+                    :index index))))
+       (:tool-call-argument-complete
+        (let* ((entry (%update-stream-tool-call-preview! chat-state event))
+               (tool-name (or (getf event :tool-name)
+                              (and (listp entry) (getf entry :tool-name))))
+               (tool-call-id (or (getf event :tool-call-id)
+                                 (and (listp entry) (getf entry :tool-call-id))))
+               (arguments (or (getf event :arguments)
+                              (and (listp entry) (getf entry :arguments))))
+               (index (or (getf event :index)
+                          (and (listp entry) (getf entry :index)))))
+          (publish (%context-event-bus chat-state)
+                   (make-tool-call-argument-complete-event
+                    :tool-name tool-name
+                    :tool-call-id tool-call-id
+                    :arguments arguments
+                    :index index))
+          (%execute-stream-tool-call! chat-state event)))
        (:complete
         (%finalize-streaming-assistant-message chat-state :partialp nil)
+        (%clear-stream-tool-tracking! chat-state)
         (conversation-transition! conversation :idle))
        (:cancelled
         (%finalize-streaming-assistant-message chat-state :partialp t)
+        (%clear-stream-tool-tracking! chat-state)
         (conversation-transition! conversation :idle))
        (:failed
         (%finalize-streaming-assistant-message chat-state :partialp t)
+        (%clear-stream-tool-tracking! chat-state)
         (conversation-transition! conversation :error-recovery))
        (otherwise nil))))))
 
@@ -564,9 +1026,11 @@
                (stream-state (chat-ui-state-stream-state chat-state))
                (system-prompt (%resolve-chat-system-prompt chat-state)))
           (setf (chat-ui-state-stream-system-prompt chat-state) system-prompt)
+          (setf (chat-ui-state-stream-scroll-follow-p chat-state) t)
           (conversation-transition! (%ensure-chat-conversation-state chat-state)
                                     :streaming)
           (chat-ui-add-message chat-state "assistant" "" :partial t)
+          (%clear-stream-tool-tracking! chat-state)
           (token-stream-start
            stream-state
            (lambda (active-stream-state)
@@ -579,43 +1043,93 @@
                       :tools (chat-ui-state-stream-tools chat-state)))
            :target-message-index target-index))))))
 
-(defun %message-line-entries (messages width)
+(defun %styled-segments->text (segments)
+  (with-output-to-string (out)
+    (dolist (segment segments)
+      (write-string (or (getf segment :text) "") out))))
+
+(defun %assistant-message-styled-lines (chat-state message message-index content-width)
+  (let* ((stream-state (chat-ui-state-stream-state chat-state))
+         (stream-active-p (token-stream-active-p stream-state))
+         (target-index (token-stream-state-target-message-index stream-state))
+         (partialp (not (null (pseudopod:message-partial message))))
+         (cursor-visible-p
+           (and partialp
+                stream-active-p
+                (integerp target-index)
+                (= target-index message-index)
+                (stream-cursor-visible-p stream-state))))
+    (stream-markdown-styled-lines (%message-content->text message)
+                                  content-width
+                                  :partialp partialp
+                                  :cursor-visible-p cursor-visible-p)))
+
+(defun %message-line-entries (chat-state messages width)
   (let ((entries '())
         (safe-width (max 1 width)))
     (loop for message in messages
           for index from 0 do
             (let* ((role (%normalize-chat-role (pseudopod:message-role message)))
                    (prefix (chat-role-prefix role))
-                   (body (%message-content->text message))
                    (prefix-width (ptui.text.width:string-width prefix))
                    (content-width (max 1 (- safe-width (+ prefix-width 1))))
-                   (wrapped (ptui.text.layout:wrap-by-width body content-width))
-                   (wrapped (if (null wrapped) (list "") wrapped))
                    (indent (make-string (+ prefix-width 1) :initial-element #\Space)))
-              (loop for line in wrapped
-                    for line-index from 0 do
-                      (push (list :id (list :chat-message index line-index)
-                                  :text (if (zerop line-index)
-                                            (format nil "~A ~A" prefix line)
-                                            (concatenate 'string indent line))
-                                  :role role)
-                            entries))
+              (if (string= role "assistant")
+                  (let ((styled-lines
+                          (%assistant-message-styled-lines
+                           chat-state
+                           message
+                           index
+                           content-width)))
+                    (loop for styled-line in styled-lines
+                          for line-index from 0 do
+                            (let* ((prefix-text (if (zerop line-index)
+                                                    (concatenate 'string prefix " ")
+                                                    indent))
+                                   (prefix-segment (list :text prefix-text
+                                                         :role role))
+                                   (content-segments (or styled-line
+                                                         (list (list :text ""
+                                                                     :role role))))
+                                   (segments (append (list prefix-segment)
+                                                     content-segments)))
+                              (push (list :id (list :chat-message index line-index)
+                                          :text (%styled-segments->text segments)
+                                          :role role
+                                          :styled-segments segments)
+                                    entries))))
+                  (let* ((body (%message-content->text message))
+                         (wrapped (ptui.text.layout:wrap-by-width body content-width))
+                         (wrapped (if (null wrapped) (list "") wrapped)))
+                    (loop for line in wrapped
+                          for line-index from 0 do
+                            (push (list :id (list :chat-message index line-index)
+                                        :text (if (zerop line-index)
+                                                  (format nil "~A ~A" prefix line)
+                                                  (concatenate 'string indent line))
+                                        :role role)
+                                  entries))))
               (unless (= index (1- (length messages)))
                 (push (list :id (list :chat-gap index)
                             :text ""
                             :role :meta)
                       entries))))
+    (let ((preview-lines (%stream-tool-call-preview-lines chat-state safe-width)))
+      (when (and entries preview-lines)
+        (push (list :id :chat-stream-tool-gap :text "" :role :meta) entries))
+      (dolist (preview preview-lines)
+        (push preview entries)))
     (if entries
         (nreverse entries)
         (list (list :id :chat-empty
                     :text "No conversation yet. Type below and press Enter."
                     :role :system)))))
 
-(defun %chat-text-widget (text id role)
+(defun %chat-text-widget (text id role &key styled-segments)
   (ptui.ui.elements:make-element
    :text
    :id id
-   :props (list :text text :role role)
+   :props (list :text text :role role :styled-segments styled-segments)
    :children '()))
 
 (defun %clamp-layout-size (size avail-width avail-height)
@@ -670,6 +1184,15 @@
 
 (defun chat-ui-build-tree (state cols rows)
   (let* ((chat-state (ensure-chat-ui-state state))
+         (picker-state (%chat-sync-fuzzy-picker! chat-state))
+         (tree-state (%ensure-chat-tree-browser-state chat-state))
+         (picker-widget
+           (when (fuzzy-picker-state-active-p picker-state)
+             (make-fuzzy-picker-widget picker-state)))
+         (tree-widget
+           (when (and (typep tree-state 'tree-browser-state)
+                      (tree-browser-state-active-p tree-state))
+             (make-tree-browser-widget tree-state)))
          (inner-width (max 20 (- cols 4)))
          (inner-height (max 8 (- rows 4)))
          (input (ptui.components.prompt-box:make-prompt-box-widget
@@ -684,14 +1207,36 @@
          (input-height (ptui.layout:layout-size-height
                         (ptui.widgets.core:widget-measure input)))
          (header-height 2)
-         (history-height (max 1 (- inner-height input-height header-height 1)))
-         (message-lines (%message-line-entries (chat-ui-state-messages chat-state)
+         (picker-height (if picker-widget
+                            (ptui.layout:layout-size-height
+                             (ptui.widgets.core:widget-measure picker-widget))
+                            0))
+         (tree-height (if tree-widget
+                          (ptui.layout:layout-size-height
+                           (ptui.widgets.core:widget-measure tree-widget))
+                          0))
+         (stream-stop-hint-widget
+           (when (token-stream-active-p (chat-ui-state-stream-state chat-state))
+             (%chat-text-widget "Streaming... Press Ctrl-C to stop early."
+                                :chat-stream-stop-hint
+                                :meta)))
+         (stream-stop-hint-height (if stream-stop-hint-widget 1 0))
+         (history-height (max 1 (- inner-height
+                                   input-height
+                                   header-height
+                                   picker-height
+                                   tree-height
+                                   stream-stop-hint-height
+                                   1)))
+         (message-lines (%message-line-entries chat-state
+                                               (chat-ui-state-messages chat-state)
                                                inner-width))
          (message-widgets
            (mapcar (lambda (entry)
                      (%chat-text-widget (getf entry :text)
                                         (getf entry :id)
-                                        (getf entry :role)))
+                                        (getf entry :role)
+                                        :styled-segments (getf entry :styled-segments)))
                    message-lines))
          (history-stack (ptui.widgets.core:make-stack-widget
                          message-widgets
@@ -710,6 +1255,9 @@
                               (chat-ui-state-message-scrollback-lines chat-state)))
     (setf (chat-ui-state-message-scrollback-lines chat-state) scrollback
           (chat-ui-state-max-message-scrollback-lines chat-state) max-scrollback)
+    (when (token-stream-active-p (chat-ui-state-stream-state chat-state))
+      (setf (chat-ui-state-stream-scroll-follow-p chat-state)
+            (zerop scrollback)))
     (let* ((history-scroll
              (ptui.widgets.core:make-scroll-widget
               history-stack
@@ -724,11 +1272,21 @@
               :width inner-width))
            (content
              (ptui.widgets.core:make-stack-widget
-              (list
-               (%chat-text-widget "amoebum chat" :chat-title :meta)
-               status-widget
-               history-scroll
-               input)
+              (append
+               (list
+                (%chat-text-widget "amoebum chat" :chat-title :meta)
+                status-widget)
+               (if tree-widget
+                   (list tree-widget)
+                   '())
+               (list history-scroll)
+               (if picker-widget
+                   (list picker-widget)
+                   '())
+               (if stream-stop-hint-widget
+                   (list stream-stop-hint-widget)
+                   '())
+               (list input))
               :id :chat-content
               :direction :column
               :gap 0)))
@@ -745,7 +1303,36 @@
    bg
    (ptui.core.types:make-attrs :boldp boldp)))
 
-(defun chat-role-cell (role &key (focusp nil))
+(defun %chat-cell-with-attrs (cell
+                              &key
+                                boldp
+                                italicp
+                                underlinep
+                                invertp
+                                dimp
+                                strikep)
+  (let ((attrs (ptui.core.types:cell-attrs cell)))
+    (ptui.core.types:make-cell
+     (ptui.core.types:cell-glyph cell)
+     (ptui.core.types:cell-fg cell)
+     (ptui.core.types:cell-bg cell)
+     (ptui.core.types:make-attrs
+      :boldp (or (ptui.core.types:attrs-boldp attrs) (not (null boldp)))
+      :italicp (or (ptui.core.types:attrs-italicp attrs) (not (null italicp)))
+      :underlinep (or (ptui.core.types:attrs-underlinep attrs) (not (null underlinep)))
+      :invertp (or (ptui.core.types:attrs-invertp attrs) (not (null invertp)))
+      :dimp (or (ptui.core.types:attrs-dimp attrs) (not (null dimp)))
+      :strikep (or (ptui.core.types:attrs-strikep attrs) (not (null strikep)))))))
+
+(defun chat-role-cell (role
+                       &key
+                         (focusp nil)
+                         boldp
+                         italicp
+                         underlinep
+                         invertp
+                         dimp
+                         strikep)
   (let ((base
           (case (intern (string-upcase (princ-to-string role)) :keyword)
             (:system
@@ -754,6 +1341,8 @@
              (%chat-template-cell :fg (ptui.core.color:make-color-rgb 130 210 255) :boldp t))
             (:assistant
              (%chat-template-cell :fg (ptui.core.color:make-color-rgb 150 235 170)))
+            (:assistant-heading
+             (%chat-template-cell :fg (ptui.core.color:make-color-rgb 195 235 255) :boldp t))
             (:tool
              (%chat-template-cell :fg (ptui.core.color:make-color-rgb 230 185 255)))
             (:prompt
@@ -765,14 +1354,18 @@
             (:context-red
              (%chat-template-cell :fg (ptui.core.color:make-color-rgb 255 135 135) :boldp t))
             (otherwise
-             (%chat-template-cell :fg (ptui.core.color:make-color-rgb 175 175 175))))))
+             (%chat-template-cell :fg (ptui.core.color:make-color-rgb 175 175 175)))))
+        (styled nil))
+    (setf styled (%chat-cell-with-attrs base
+                                        :boldp boldp
+                                        :italicp italicp
+                                        :underlinep underlinep
+                                        :invertp invertp
+                                        :dimp dimp
+                                        :strikep strikep))
     (if focusp
-        (ptui.core.types:make-cell
-         " "
-         (ptui.core.types:cell-fg base)
-         (ptui.core.types:cell-bg base)
-         (ptui.core.types:make-attrs :boldp t :invertp t))
-        base)))
+        (%chat-cell-with-attrs styled :boldp t :invertp t)
+        styled)))
 
 (defun %fit-line-width (text width)
   (ptui.text.layout:truncate-to-width text (max 0 width)))
@@ -796,8 +1389,12 @@
 (defun %styled-text-segments (segments &key (focusp nil))
   (let ((result '()))
     (dolist (segment segments)
-      (let* ((text
+      (let* ((plist-segment (and (listp segment)
+                                 (keywordp (first segment))))
+             (text
                (cond
+                 (plist-segment
+                  (or (getf segment :text) ""))
                  ((and (consp segment) (stringp (car segment)))
                   (car segment))
                  ((stringp segment)
@@ -806,14 +1403,24 @@
                   (princ-to-string segment))))
              (role
                (cond
+                 (plist-segment
+                  (or (getf segment :role) :meta))
                  ((and (consp segment) (cdr segment))
                   (cdr segment))
-                 ((and (listp segment) (getf segment :role))
-                  (getf segment :role))
                  (t
                   :meta))))
         (when (plusp (length text))
-          (push (list text (chat-role-cell role :focusp focusp)) result))))
+          (push
+           (list text
+                 (chat-role-cell role
+                                 :focusp focusp
+                                 :boldp (and plist-segment (getf segment :boldp))
+                                 :italicp (and plist-segment (getf segment :italicp))
+                                 :underlinep (and plist-segment (getf segment :underlinep))
+                                 :invertp (and plist-segment (getf segment :invertp))
+                                 :dimp (and plist-segment (getf segment :dimp))
+                                 :strikep (and plist-segment (getf segment :strikep))))
+           result))))
     (nreverse result)))
 
 (defun %render-ui-element (buf element layout focus-id &key (dx 0) (dy 0))
@@ -927,6 +1534,10 @@
         (chat-ui-state-message-scrollback-lines state)
         (chat-ui-state-prompt-scroll-offset state)
         (%chat-tree-signature (chat-ui-state-messages state))
+        (tree-browser-render-key
+         (%ensure-chat-tree-browser-state state))
+        (fuzzy-picker-render-key
+         (%ensure-chat-fuzzy-picker-state state))
         (%stream-tree-key state)))
 
 (defun render-chat-ui-buffer (state size)
@@ -937,12 +1548,20 @@
          (agent-completion-count (%inject-agent-completions chat-state))
          (drained-event-count (%drain-stream-events chat-state))
          (stream-summary (%publish-status-bar-stream-summary-if-needed chat-state))
+         (picker-state (%chat-sync-fuzzy-picker! chat-state))
          (tree-key (%chat-tree-key chat-state cols rows))
          (tree (chat-ui-state-cached-tree chat-state))
          (layout (chat-ui-state-cached-layout chat-state))
          (focus-id nil))
-    (declare (ignore agent-completion-count drained-event-count stream-summary))
+    (declare (ignore agent-completion-count drained-event-count stream-summary picker-state))
     (%sync-chat-context-usage! chat-state)
+    (%emit-stream-budget-warning-if-needed chat-state)
+    (let ((checkpoint
+            (maybe-auto-checkpoint
+             :conversation (%ensure-chat-conversation-state chat-state)
+             :config (%chat-config)
+             :busy-p (token-stream-active-p (chat-ui-state-stream-state chat-state)))))
+      (declare (ignore checkpoint)))
     (incf (chat-ui-state-frame-count chat-state))
     (unless (and tree layout
                  (equal tree-key (chat-ui-state-cached-tree-key chat-state)))
@@ -995,10 +1614,12 @@
         (conversation (%ensure-chat-conversation-state chat-state)))
   (case (slash-command-result-action result)
     (:clear-chat
-     (setf (chat-ui-state-messages chat-state) '()
+     (conversation-reset! conversation)
+     (%chat-deactivate-history-search! chat-state)
+     (setf (chat-ui-state-messages chat-state)
+           (conversation-state-messages conversation)
            (chat-ui-state-message-scrollback-lines chat-state) 0
-           (chat-ui-state-max-message-scrollback-lines chat-state) 0)
-     (conversation-transition! conversation :idle))
+           (chat-ui-state-max-message-scrollback-lines chat-state) 0))
     (:compact-chat
      (let ((compression
              (%compress-chat-history!
@@ -1135,8 +1756,95 @@
                  (%agent-completion-summary completion)))))
     count))
 
+(defun %chat-apply-fuzzy-picker-selection! (chat-state)
+  (let* ((picker (%ensure-chat-fuzzy-picker-state chat-state))
+         (selected-path (fuzzy-picker-selected-path picker)))
+    (if (and (stringp selected-path)
+             (plusp (length selected-path)))
+        (let* ((raw-input (chat-ui-state-input-text chat-state))
+               (replaced (fuzzy-picker-apply-selection raw-input picker selected-path))
+               (next-input (if (and (plusp (length replaced))
+                                    (%whitespace-char-p
+                                     (char replaced (1- (length replaced)))))
+                               replaced
+                               (concatenate 'string replaced " "))))
+          (setf (chat-ui-state-input-text chat-state) next-input
+                (chat-ui-state-prompt-scroll-offset chat-state) nil)
+          (fuzzy-picker-deactivate! picker)
+          t)
+        (progn
+          (fuzzy-picker-deactivate! picker)
+          t))))
+
+(defun %chat-apply-history-picker-selection! (chat-state)
+  (let* ((picker (%ensure-chat-fuzzy-picker-state chat-state))
+         (selected-path (fuzzy-picker-selected-path picker))
+         (table (chat-ui-state-history-selection-map chat-state))
+         (replacement (and (hash-table-p table)
+                           (stringp selected-path)
+                           (gethash selected-path table))))
+    (setf (chat-ui-state-input-text chat-state) (or replacement "")
+          (chat-ui-state-prompt-scroll-offset chat-state) nil)
+    (%chat-deactivate-history-search! chat-state)
+    t))
+
+(defun %handle-fuzzy-picker-key (chat-state key)
+  (let ((picker (%ensure-chat-fuzzy-picker-state chat-state)))
+    (when (fuzzy-picker-state-active-p picker)
+      (fuzzy-picker-step! picker)
+      (case key
+        (:up
+         (fuzzy-picker-move-selection! picker -1)
+         t)
+        (:down
+         (fuzzy-picker-move-selection! picker 1)
+         t)
+        (:pgup
+         (fuzzy-picker-move-selection! picker -5)
+         t)
+        ((:pgdn :pgdown)
+         (fuzzy-picker-move-selection! picker 5)
+         t)
+        (:home
+         (fuzzy-picker-home-selection! picker)
+         t)
+        (:end
+         (fuzzy-picker-end-selection! picker)
+         t)
+        (:escape
+         (if (chat-ui-state-history-search-active-p chat-state)
+             (%chat-deactivate-history-search! chat-state :restore-input-p t)
+             (fuzzy-picker-deactivate! picker))
+         t)
+        ((:enter :return)
+         (if (chat-ui-state-history-search-active-p chat-state)
+             (%chat-apply-history-picker-selection! chat-state)
+             (%chat-apply-fuzzy-picker-selection! chat-state)))
+        (otherwise
+         nil)))))
+
+(defun %handle-tree-browser-key (chat-state key)
+  (let ((tree-state (%ensure-chat-tree-browser-state chat-state)))
+    (when (and (typep tree-state 'tree-browser-state)
+               (zerop (length (chat-ui-state-input-text chat-state)))
+               (member key '(:up :down :left :right :enter :return :escape)))
+      (cond
+        ((eql key :escape)
+         (when (tree-browser-state-active-p tree-state)
+           (setf (tree-browser-state-active-p tree-state) nil)
+           t))
+        (t
+         (unless (tree-browser-state-active-p tree-state)
+           (setf (tree-browser-state-active-p tree-state) t))
+         (tree-browser-handle-key! tree-state key))))))
+
 (defun %handle-input-key (state key text)
   (cond
+    ((eql key :ctrl-r)
+     (if (chat-ui-state-history-search-active-p state)
+         (%chat-deactivate-history-search! state :restore-input-p t)
+         (%chat-activate-history-search! state))
+     t)
     ((and (eql key :text) (stringp text))
      (chat-ui-set-input state
                         (concatenate 'string
@@ -1174,7 +1882,7 @@
     (:up (chat-ui-scroll-history state 1))
     (:down (chat-ui-scroll-history state -1))
     (:pgup (chat-ui-scroll-history state 5))
-    (:pgdn (chat-ui-scroll-history state -5))
+    ((:pgdn :pgdown) (chat-ui-scroll-history state -5))
     (otherwise nil)))
 
 (defun handle-chat-ui-event (state event)
@@ -1189,16 +1897,19 @@
          (target (getf route :target)))
     (declare (ignore agent-completion-count drained-event-count))
     (when (typep event 'ptui.core.events:key-event)
+      (checkpoint-mark-activity)
       (let ((key (ptui.core.events:key-event-key event))
             (text (ptui.core.events:key-event-text? event)))
         (when (and (member key '(:escape :ctrl-c))
                    (token-stream-active-p (chat-ui-state-stream-state chat-state)))
           (token-stream-request-cancel (chat-ui-state-stream-state chat-state)))
-        (%handle-scroll-key chat-state key)
-        (when (or (eql target :chat-input)
-                  (eql kind :unhandled)
-                  (null target))
-          (%handle-input-key chat-state key text))))
+        (unless (%handle-fuzzy-picker-key chat-state key)
+          (unless (%handle-tree-browser-key chat-state key)
+            (%handle-scroll-key chat-state key)
+            (when (or (eql target :chat-input)
+                      (eql kind :unhandled)
+                      (null target))
+              (%handle-input-key chat-state key text))))))
     (when (and (ptui.ui.runtime:runtime-root runtime)
                (listp route))
       (ptui.widgets.core:dispatch-widget-event
@@ -1207,6 +1918,7 @@
     (%drain-stream-events chat-state)
     (%publish-status-bar-stream-summary-if-needed chat-state)
     (%sync-chat-context-usage! chat-state)
+    (%emit-stream-budget-warning-if-needed chat-state)
     chat-state))
 
 (defun run-chat-ui (&key (backend :auto) (fps 20) initial-state)
@@ -1214,8 +1926,10 @@
           (if initial-state
               initial-state
               (chat-ui-restore-latest-session (make-chat-ui-state)))))
-  (ptui.engine.loop:run #'render-chat-ui-buffer
-                        :backend backend
-                        :fps fps
-                        :initial-state (ensure-chat-ui-state resolved-state)
-                        :on-event #'handle-chat-ui-event)))
+    (checkpoint-mark-activity)
+    (load-user-extensions)
+    (ptui.engine.loop:run #'render-chat-ui-buffer
+                          :backend backend
+                          :fps fps
+                          :initial-state (ensure-chat-ui-state resolved-state)
+                          :on-event #'handle-chat-ui-event)))

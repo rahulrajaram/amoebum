@@ -7,6 +7,7 @@
 (defparameter +event-type-tool-invoked+ (%event-type-keyword "tool:invoked"))
 (defparameter +event-type-tool-completed+ (%event-type-keyword "tool:completed"))
 (defparameter +event-type-tool-error+ (%event-type-keyword "tool:error"))
+(defparameter +event-type-tool-redefined+ (%event-type-keyword "tool:redefined"))
 (defparameter +event-type-config-changed+ (%event-type-keyword "config:changed"))
 (defparameter +event-type-permission-prompted+ (%event-type-keyword "permission:prompted"))
 (defparameter +event-type-memory-updated+ (%event-type-keyword "memory:updated"))
@@ -15,18 +16,40 @@
 (defparameter +event-type-context-compressed+ (%event-type-keyword "context:compressed"))
 (defparameter +event-type-mcp-tool-discovered+ (%event-type-keyword "mcp:tool-discovered"))
 (defparameter +event-type-mcp-tool-invoked+ (%event-type-keyword "mcp:tool-invoked"))
+(defparameter +event-type-keymap-overlay-enter+ (%event-type-keyword "keymap-overlay-enter"))
+(defparameter +event-type-keymap-overlay-exit+ (%event-type-keyword "keymap-overlay-exit"))
+(defparameter +event-type-extension-loaded+ (%event-type-keyword "extension:loaded"))
+(defparameter +event-type-extension-error+ (%event-type-keyword "extension:error"))
+(defparameter +event-type-stream-budget-warning+ (%event-type-keyword "stream:budget-warning"))
+(defparameter +event-type-conversation-forked+ (%event-type-keyword "conversation:forked"))
+(defparameter +event-type-tool-call-started+ (%event-type-keyword "tool-call:started"))
+(defparameter +event-type-tool-call-argument-complete+
+  (%event-type-keyword "tool-call:argument-complete"))
+(defparameter +event-type-session-checkpointed+ (%event-type-keyword "session:checkpointed"))
+(defparameter +event-type-session-restored+ (%event-type-keyword "session:restored"))
 
 (defparameter +core-event-types+
   (list +event-type-tool-invoked+
         +event-type-tool-completed+
         +event-type-tool-error+
+        +event-type-tool-redefined+
         +event-type-config-changed+
         +event-type-permission-prompted+
         +event-type-memory-updated+
         +event-type-memory-backend-selected+
         +event-type-context-compressed+
         +event-type-mcp-tool-discovered+
-        +event-type-mcp-tool-invoked+))
+        +event-type-mcp-tool-invoked+
+        +event-type-keymap-overlay-enter+
+        +event-type-keymap-overlay-exit+
+        +event-type-extension-loaded+
+        +event-type-extension-error+
+        +event-type-stream-budget-warning+
+        +event-type-conversation-forked+
+        +event-type-tool-call-started+
+        +event-type-tool-call-argument-complete+
+        +event-type-session-checkpointed+
+        +event-type-session-restored+))
 
 (defparameter *event-bus* nil)
 
@@ -71,6 +94,14 @@
   condition
   elapsed-ms
   request-id)
+
+(defstruct (tool-redefined-payload
+            (:constructor make-tool-redefined-payload
+                (&key tool-name old-metadata new-metadata metadata-diff)))
+  tool-name
+  old-metadata
+  new-metadata
+  metadata-diff)
 
 (defstruct (config-changed-payload
             (:constructor make-config-changed-payload
@@ -135,6 +166,83 @@
   namespaced-name
   args
   request-id)
+
+(defstruct (extension-loaded-payload
+            (:constructor make-extension-loaded-payload
+                (&key path scope)))
+  path
+  scope)
+
+(defstruct (extension-error-payload
+            (:constructor make-extension-error-payload
+                (&key path scope condition)))
+  path
+  scope
+  condition)
+
+(defstruct (stream-budget-warning-payload
+            (:constructor make-stream-budget-warning-payload
+                (&key
+                   (used-tokens 0)
+                   (limit-tokens 0)
+                   (usage-percent 0)
+                   (threshold-percent 90))))
+  (used-tokens 0 :type integer)
+  (limit-tokens 0 :type integer)
+  (usage-percent 0 :type integer)
+  (threshold-percent 90 :type integer))
+
+(defstruct (tool-call-started-payload
+            (:constructor make-tool-call-started-payload
+                (&key tool-name tool-call-id arguments index)))
+  tool-name
+  tool-call-id
+  arguments
+  index)
+
+(defstruct (tool-call-argument-complete-payload
+            (:constructor make-tool-call-argument-complete-payload
+                (&key tool-name tool-call-id arguments index)))
+  tool-name
+  tool-call-id
+  arguments
+  index)
+
+(defstruct (session-checkpointed-payload
+            (:constructor make-session-checkpointed-payload
+                (&key checkpoint-id
+                 path
+                 (trigger :manual)
+                 (auto-p nil)
+                 (message-count 0)
+                 (extension-count 0)
+                 (tool-count 0)
+                 (memory-count 0))))
+  checkpoint-id
+  path
+  (trigger :manual :type keyword)
+  (auto-p nil :type boolean)
+  (message-count 0 :type integer)
+  (extension-count 0 :type integer)
+  (tool-count 0 :type integer)
+  (memory-count 0 :type integer))
+
+(defstruct (session-restored-payload
+            (:constructor make-session-restored-payload
+                (&key checkpoint-id
+                 path
+                 (trigger :manual)
+                 (message-count 0)
+                 (extension-count 0)
+                 (tool-count 0)
+                 (memory-count 0))))
+  checkpoint-id
+  path
+  (trigger :manual :type keyword)
+  (message-count 0 :type integer)
+  (extension-count 0 :type integer)
+  (tool-count 0 :type integer)
+  (memory-count 0 :type integer))
 
 (defstruct (event-subscription
             (:constructor %make-event-subscription
@@ -364,6 +472,16 @@
                         :elapsed-ms elapsed-ms
                         :request-id request-id)))
 
+(defun make-tool-redefined-event (&key tool-name old-metadata new-metadata metadata-diff)
+  (make-event :type +event-type-tool-redefined+
+              :source :amoebum
+              :severity :info
+              :payload (make-tool-redefined-payload
+                        :tool-name tool-name
+                        :old-metadata old-metadata
+                        :new-metadata new-metadata
+                        :metadata-diff metadata-diff)))
+
 (defun make-config-changed-event (&key key old-value new-value)
   (make-event :type +event-type-config-changed+
               :source :amoebum
@@ -447,3 +565,104 @@
                         :namespaced-name namespaced-name
                         :args args
                         :request-id request-id)))
+
+(defun make-extension-loaded-event (&key path scope)
+  (make-event :type +event-type-extension-loaded+
+              :source :amoebum
+              :severity :info
+              :payload (make-extension-loaded-payload
+                        :path path
+                        :scope scope)))
+
+(defun make-extension-error-event (&key path scope condition)
+  (make-event :type +event-type-extension-error+
+              :source :amoebum
+              :severity :error
+              :payload (make-extension-error-payload
+                        :path path
+                        :scope scope
+                        :condition condition)))
+
+(defun make-stream-budget-warning-event (&key
+                                           used-tokens
+                                           limit-tokens
+                                           usage-percent
+                                           (threshold-percent 90))
+  (make-event :type +event-type-stream-budget-warning+
+              :source :amoebum
+              :severity :warning
+              :payload (make-stream-budget-warning-payload
+                        :used-tokens used-tokens
+                        :limit-tokens limit-tokens
+                        :usage-percent usage-percent
+                        :threshold-percent threshold-percent)))
+
+(defun make-tool-call-started-event (&key
+                                       tool-name
+                                       tool-call-id
+                                       arguments
+                                       index)
+  (make-event :type +event-type-tool-call-started+
+              :source :amoebum
+              :severity :info
+              :payload (make-tool-call-started-payload
+                        :tool-name tool-name
+                        :tool-call-id tool-call-id
+                        :arguments arguments
+                        :index index)))
+
+(defun make-tool-call-argument-complete-event (&key
+                                                 tool-name
+                                                 tool-call-id
+                                                 arguments
+                                                 index)
+  (make-event :type +event-type-tool-call-argument-complete+
+              :source :amoebum
+              :severity :info
+              :payload (make-tool-call-argument-complete-payload
+                        :tool-name tool-name
+                        :tool-call-id tool-call-id
+                        :arguments arguments
+                        :index index)))
+
+(defun make-session-checkpointed-event (&key
+                                          checkpoint-id
+                                          path
+                                          (trigger :manual)
+                                          (auto-p nil)
+                                          (message-count 0)
+                                          (extension-count 0)
+                                          (tool-count 0)
+                                          (memory-count 0))
+  (make-event :type +event-type-session-checkpointed+
+              :source :amoebum
+              :severity :info
+              :payload (make-session-checkpointed-payload
+                        :checkpoint-id checkpoint-id
+                        :path path
+                        :trigger trigger
+                        :auto-p auto-p
+                        :message-count message-count
+                        :extension-count extension-count
+                        :tool-count tool-count
+                        :memory-count memory-count)))
+
+(defun make-session-restored-event (&key
+                                      checkpoint-id
+                                      path
+                                      (trigger :manual)
+                                      (message-count 0)
+                                      (extension-count 0)
+                                      (tool-count 0)
+                                      (memory-count 0))
+  (make-event :type +event-type-session-restored+
+              :source :amoebum
+              :severity :info
+              :payload (make-session-restored-payload
+                        :checkpoint-id checkpoint-id
+                        :path path
+                        :trigger trigger
+                        :message-count message-count
+                        :extension-count extension-count
+                        :tool-count tool-count
+                        :memory-count memory-count)))

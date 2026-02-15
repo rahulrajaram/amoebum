@@ -44,6 +44,10 @@
     :initarg :player-command
     :initform nil
     :accessor sound-backend-player-command)
+   (theme
+    :initarg :theme
+    :initform nil
+    :accessor sound-backend-theme)
    (sound-map
     :initarg :sound-map
     :initform (make-hash-table :test #'eq)
@@ -293,9 +297,32 @@
     (error ()
       nil)))
 
-(defmethod notify-send ((backend sound-backend) (notification notification))
+(defun %sound-path-string (sound-path)
+  (typecase sound-path
+    (pathname (namestring sound-path))
+    (string sound-path)
+    (t (princ-to-string sound-path))))
+
+(defun %sound-backend-theme-name (backend)
+  (or (sound-backend-theme backend)
+      (active-sound-theme-name)
+      :standard))
+
+(defun %sound-path-for-notification (backend notification)
   (let* ((category (notification-category notification))
-         (sound-path (gethash category (sound-backend-sound-map backend)))
+         (override-map (sound-backend-sound-map backend))
+         (cfg (or (backend-config backend) (current-config))))
+    (or (and override-map
+             (multiple-value-bind (override presentp)
+                 (gethash category override-map)
+               (and presentp override)))
+        (resolve-sound-path (%sound-backend-theme-name backend)
+                            category
+                            :config cfg))))
+
+(defmethod notify-send ((backend sound-backend) (notification notification))
+  (let* ((theme-name (%sound-backend-theme-name backend))
+         (sound-path (%sound-path-for-notification backend notification))
          (command (sound-backend-player-command backend)))
     (cond
       ((null sound-path)
@@ -303,14 +330,14 @@
       ((not (notify-available-p backend))
        (values nil :backend-unavailable))
       ((null (probe-file sound-path))
-       (ptui.util.log:log-warn "notification sound missing: ~A" sound-path)
+       (ptui.util.log:log-warn
+        "notification sound missing: theme=~A category=~A path=~A"
+        theme-name
+        (notification-category notification)
+        sound-path)
        (values nil :missing-sound-file))
       (t
-       (let* ((sound-path-string
-                (typecase sound-path
-                  (pathname (namestring sound-path))
-                  (string sound-path)
-                  (t (princ-to-string sound-path))))
+       (let* ((sound-path-string (%sound-path-string sound-path))
               (result (notification-run-command (list command sound-path-string)))
               (exit-code (getf result :exit-code))
               (stderr (getf result :stderr)))
@@ -382,29 +409,20 @@
             (%normalize-trigger-list raw)
             '(:task-complete :error :approval-needed)))))
 
-(defun %sound-map-from-config (cfg)
-  (let ((table (make-hash-table :test #'eq)))
-    (setf (gethash :task-complete table)
-          (config-value :notification-sound-task-complete cfg)
-          (gethash :error table)
-          (config-value :notification-sound-error cfg)
-          (gethash :approval-needed table)
-          (config-value :notification-sound-approval-needed cfg))
-    table))
-
-(defun make-sound-backend (&key config (enabled-p t) player-command sound-map)
+(defun make-sound-backend (&key config (enabled-p t) player-command sound-map theme)
   (let* ((cfg (or config (current-config)))
          (resolved-enabled (and enabled-p
                                 (not (null (config-value :notification-sound-enabled cfg)))))
          (resolved-command (or player-command
                                (config-value :notification-sound-player cfg)))
          (resolved-map (or sound-map
-                           (%sound-map-from-config cfg))))
+                           (make-hash-table :test #'eq))))
     (make-instance 'sound-backend
                    :name :sound
                    :enabled-p resolved-enabled
-                   :config nil
+                   :config cfg
                    :player-command resolved-command
+                   :theme theme
                    :sound-map resolved-map)))
 
 (defun make-desktop-backend (&key config (enabled-p t) command)
@@ -416,7 +434,7 @@
     (make-instance 'desktop-backend
                    :name :desktop
                    :enabled-p resolved-enabled
-                   :config nil
+                   :config cfg
                    :command resolved-command
                    :app-name "Amoebum")))
 
@@ -430,9 +448,32 @@
     (make-instance 'log-backend
                    :name :log
                    :enabled-p resolved-enabled
-                   :config nil
+                   :config cfg
                    :path resolved-path
                    :include-event-payload-p t)))
+
+(defun preview-notification-sound (&key (category :error) config theme)
+  (let* ((cfg (or config (current-config)))
+         (backend (make-sound-backend :config cfg :theme theme))
+         (sound-path (resolve-sound-path (or theme (active-sound-theme-name))
+                                         category
+                                         :config cfg)))
+    (cond
+      ((null sound-path)
+       (values nil :no-sound-configured nil))
+      ((not (backend-enabled-p backend))
+       (values nil :backend-disabled sound-path))
+      ((not (notify-available-p backend))
+       (values nil :backend-unavailable sound-path))
+      (t
+       (multiple-value-bind (ok detail)
+           (notify-send backend
+                        (make-notification :title "Sound Preview"
+                                           :body "Preview"
+                                           :severity :info
+                                           :category category
+                                           :timestamp (get-universal-time)))
+         (values ok detail sound-path))))))
 
 (defun %default-backends (cfg)
   (list (make-sound-backend :config cfg)

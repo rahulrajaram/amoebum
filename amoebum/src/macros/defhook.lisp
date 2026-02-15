@@ -1,5 +1,16 @@
 (in-package :amoebum)
 
+(define-condition defhook-definition-warning (style-warning)
+  ((hook-point :initarg :hook-point
+               :reader defhook-definition-warning-hook-point)
+   (reason :initarg :reason
+           :reader defhook-definition-warning-reason))
+  (:report (lambda (condition stream)
+             (format stream
+                     "DEFHOOK ~S: ~A"
+                     (defhook-definition-warning-hook-point condition)
+                     (defhook-definition-warning-reason condition)))))
+
 (defparameter +hook-point-definitions+
   '((:pre-tool-use
      :params (tool-name args)
@@ -36,12 +47,32 @@
 
 (defparameter *hook-registry* (make-hash-table :test #'equal))
 (defparameter *hook-registration-counter* 0)
+(defparameter *hook-active-stack* '())
+(defparameter *hook-trace-limit* 256)
+(defparameter *hook-trace-log* '())
+
+(defparameter +default-hook-max-ms+ 1000)
+(defparameter +default-hook-failure-threshold+ 3)
+(defparameter +known-hook-on-error-policies+
+  '(:log-and-continue :signal :disable-hook))
 
 (defstruct (hook-entry
             (:constructor %make-hook-entry
                 (&key hook-point hook-id handler (priority 100)
                  async-p source-file source-line docstring
-                 (registered-at 0))))
+                 (registered-at 0)
+                 (max-ms +default-hook-max-ms+)
+                 (on-error :log-and-continue)
+                 (failure-threshold +default-hook-failure-threshold+)
+                 (disabled-p nil)
+                 (consecutive-failures 0)
+                 (call-count 0)
+                 (total-time-ms 0)
+                 (failure-count 0)
+                 (timeout-count 0)
+                 (last-elapsed-ms 0)
+                 (last-status :never)
+                 (last-error nil))))
   hook-point
   hook-id
   handler
@@ -50,7 +81,100 @@
   source-file
   source-line
   docstring
-  (registered-at 0 :type integer))
+  (registered-at 0 :type integer)
+  (max-ms +default-hook-max-ms+ :type integer)
+  (on-error :log-and-continue :type keyword)
+  (failure-threshold +default-hook-failure-threshold+ :type integer)
+  (disabled-p nil :type boolean)
+  (consecutive-failures 0 :type integer)
+  (call-count 0 :type integer)
+  (total-time-ms 0 :type integer)
+  (failure-count 0 :type integer)
+  (timeout-count 0 :type integer)
+  (last-elapsed-ms 0 :type integer)
+  (last-status :never :type keyword)
+  last-error)
+
+(defun %hook-monotonic-milliseconds ()
+  (truncate (* 1000
+               (/ (coerce (get-internal-real-time) 'double-float)
+                  (coerce internal-time-units-per-second 'double-float)))))
+
+(defun %ensure-known-hook-on-error-policy (policy)
+  (unless (member policy +known-hook-on-error-policies+ :test #'eq)
+    (error "Unknown hook :on-error policy ~S; expected one of ~S."
+           policy
+           +known-hook-on-error-policies+))
+  policy)
+
+(defun %trim-hook-trace-log ()
+  (when (and (integerp *hook-trace-limit*)
+             (> *hook-trace-limit* 0))
+    (let ((current-length (length *hook-trace-log*)))
+      (when (> current-length *hook-trace-limit*)
+        (setf *hook-trace-log*
+              (subseq *hook-trace-log* 0 *hook-trace-limit*))))))
+
+(defun %record-hook-trace (hook-point hook-id status &key elapsed-ms result detail)
+  (push (list :timestamp (%hook-monotonic-milliseconds)
+              :hook-point hook-point
+              :hook-id hook-id
+              :status status
+              :elapsed-ms (or elapsed-ms 0)
+              :result result
+              :detail (and detail (princ-to-string detail)))
+        *hook-trace-log*)
+  (%trim-hook-trace-log)
+  t)
+
+(defun clear-hook-trace ()
+  (setf *hook-trace-log* '())
+  t)
+
+(defun hook-trace (&key (limit 20) hook-point)
+  (unless (and (integerp limit) (> limit 0))
+    (error "LIMIT must be a positive integer, got ~S." limit))
+  (let ((normalized (and hook-point (%normalize-hook-point hook-point)))
+        (collected '()))
+    (dolist (entry *hook-trace-log* (nreverse collected))
+      (when (or (null normalized)
+                (eq normalized (getf entry :hook-point)))
+        (push entry collected)
+        (when (>= (length collected) limit)
+          (return (nreverse collected)))))))
+
+(defun %entry-snapshot (entry)
+  (list :hook-point (hook-entry-hook-point entry)
+        :hook-id (hook-entry-hook-id entry)
+        :priority (hook-entry-priority entry)
+        :async-p (hook-entry-async-p entry)
+        :enabled-p (not (hook-entry-disabled-p entry))
+        :on-error (hook-entry-on-error entry)
+        :max-ms (hook-entry-max-ms entry)
+        :failure-threshold (hook-entry-failure-threshold entry)
+        :consecutive-failures (hook-entry-consecutive-failures entry)
+        :call-count (hook-entry-call-count entry)
+        :total-time-ms (hook-entry-total-time-ms entry)
+        :failure-count (hook-entry-failure-count entry)
+        :timeout-count (hook-entry-timeout-count entry)
+        :last-elapsed-ms (hook-entry-last-elapsed-ms entry)
+        :last-status (hook-entry-last-status entry)
+        :last-error (hook-entry-last-error entry)
+        :source-file (hook-entry-source-file entry)
+        :source-line (hook-entry-source-line entry)
+        :docstring (hook-entry-docstring entry)))
+
+(defun hook-metrics (&optional hook-point hook-id)
+  (let ((entries
+          (cond
+            ((and hook-point hook-id)
+             (let ((entry (gethash (%hook-key hook-point hook-id) *hook-registry*)))
+               (if entry (list entry) '())))
+            (hook-point
+             (list-hooks hook-point))
+            (t
+             (list-hooks)))))
+    (mapcar #'%entry-snapshot entries)))
 
 (defun %normalize-hook-point (hook-point)
   (cond
@@ -129,6 +253,9 @@
 (defun register-hook (hook-point hook-id handler
                       &key (priority 100)
                         (async nil)
+                        (max-ms +default-hook-max-ms+)
+                        (on-error :log-and-continue)
+                        (failure-threshold +default-hook-failure-threshold+)
                         docstring
                         source-file
                         source-line)
@@ -138,6 +265,11 @@
     (error "HANDLER must be a function, got ~S." handler))
   (unless (integerp priority)
     (error "PRIORITY must be an integer, got ~S." priority))
+  (unless (and (integerp max-ms) (> max-ms 0))
+    (error "MAX-MS must be a positive integer, got ~S." max-ms))
+  (unless (and (integerp failure-threshold) (> failure-threshold 0))
+    (error "FAILURE-THRESHOLD must be a positive integer, got ~S." failure-threshold))
+  (%ensure-known-hook-on-error-policy on-error)
   (let* ((normalized (%normalize-hook-point hook-point))
          (spec (%ensure-hook-point-spec normalized))
          (blocking (not (null (getf (cdr spec) :blocking))))
@@ -153,6 +285,9 @@
                             :handler handler
                             :priority priority
                             :async-p (not (null async))
+                            :max-ms max-ms
+                            :on-error on-error
+                            :failure-threshold failure-threshold
                             :source-file source-file
                             :source-line source-line
                             :docstring docstring
@@ -168,11 +303,17 @@
 (defun describe-hooks (&optional hook-point)
   (with-output-to-string (stream)
     (dolist (entry (list-hooks hook-point))
-      (format stream "~S (~S): priority=~D async=~:[no~;yes~]"
+      (format stream "~S (~S): priority=~D async=~:[no~;yes~] enabled=~:[no~;yes~] on-error=~A budget=~Dms threshold=~D calls=~D failures=~D"
               (hook-entry-hook-point entry)
               (hook-entry-hook-id entry)
               (hook-entry-priority entry)
-              (hook-entry-async-p entry))
+              (hook-entry-async-p entry)
+              (not (hook-entry-disabled-p entry))
+              (hook-entry-on-error entry)
+              (hook-entry-max-ms entry)
+              (hook-entry-failure-threshold entry)
+              (hook-entry-call-count entry)
+              (hook-entry-failure-count entry))
       (when (hook-entry-docstring entry)
         (format stream " doc=~S" (hook-entry-docstring entry)))
       (when (hook-entry-source-file entry)
@@ -203,6 +344,106 @@
                  :name "amoebum-hook")
         (apply handler args))))
 
+(defun %record-hook-success (entry elapsed-ms)
+  (incf (hook-entry-call-count entry))
+  (incf (hook-entry-total-time-ms entry) elapsed-ms)
+  (setf (hook-entry-consecutive-failures entry) 0
+        (hook-entry-last-elapsed-ms entry) elapsed-ms
+        (hook-entry-last-status entry) :ok
+        (hook-entry-last-error entry) nil))
+
+(defun %record-hook-failure (entry status elapsed-ms condition)
+  (incf (hook-entry-call-count entry))
+  (incf (hook-entry-total-time-ms entry) elapsed-ms)
+  (incf (hook-entry-failure-count entry))
+  (when (eq status :timeout)
+    (incf (hook-entry-timeout-count entry)))
+  (incf (hook-entry-consecutive-failures entry))
+  (setf (hook-entry-last-elapsed-ms entry) elapsed-ms
+        (hook-entry-last-status entry)
+        (if (eq status :timeout) :timeout :error)
+        (hook-entry-last-error entry)
+        (and condition (princ-to-string condition)))
+  (when (>= (hook-entry-consecutive-failures entry)
+            (hook-entry-failure-threshold entry))
+    (setf (hook-entry-disabled-p entry) t))
+  entry)
+
+(defun %invoke-hook-handler-with-budget (entry args)
+  (let ((start-ms (%hook-monotonic-milliseconds))
+        (budget-ms (hook-entry-max-ms entry)))
+    (flet ((elapsed-ms ()
+             (max 0 (- (%hook-monotonic-milliseconds) start-ms))))
+      (handler-case
+          (let ((result
+                  #+sbcl
+                  (if (and (integerp budget-ms) (> budget-ms 0))
+                      (sb-ext:with-timeout
+                          (/ (coerce budget-ms 'double-float) 1000d0)
+                        (apply (hook-entry-handler entry) args))
+                      (apply (hook-entry-handler entry) args))
+                  #-sbcl
+                  (apply (hook-entry-handler entry) args)))
+            (values :ok result (elapsed-ms) nil))
+        #+sbcl
+        (sb-ext:timeout (condition)
+          (values :timeout nil (elapsed-ms) condition))
+        (error (condition)
+          (values :error nil (elapsed-ms) condition))))))
+
+(defun %handle-hook-failure (hook-point entry status elapsed-ms condition)
+  (%record-hook-failure entry status elapsed-ms condition)
+  (let* ((hook-id (hook-entry-hook-id entry))
+         (policy (hook-entry-on-error entry))
+         (hook-condition
+           (make-condition 'hook-execution-error
+                           :hook-id hook-id
+                           :hook-point hook-point
+                           :cause condition
+                           :message (princ-to-string condition))))
+    (when (eq policy :disable-hook)
+      (setf (hook-entry-disabled-p entry) t))
+    (when (hook-entry-disabled-p entry)
+      (setf (hook-entry-last-status entry) :disabled))
+    (%record-hook-trace hook-point
+                        hook-id
+                        (if (eq status :timeout) :timeout :error)
+                        :elapsed-ms elapsed-ms
+                        :result (if (eq status :timeout) :hook-timeout :hook-error)
+                        :detail condition)
+    (case policy
+      (:signal
+       (error hook-condition))
+      (:disable-hook
+       :hook-disabled)
+      (otherwise
+       (warn "~A" hook-condition)
+       (if (eq status :timeout) :hook-timeout :hook-error)))))
+
+(defun %invoke-hook-entry (hook-point entry args)
+  (let* ((hook-id (hook-entry-hook-id entry))
+         (hook-key (%hook-key hook-point hook-id)))
+    (cond
+      ((hook-entry-disabled-p entry)
+       (%record-hook-trace hook-point hook-id :disabled :elapsed-ms 0 :result :disabled)
+       :disabled)
+      ((member hook-key *hook-active-stack* :test #'equal)
+       (%record-hook-trace hook-point hook-id :reentrant-skip :elapsed-ms 0 :result :reentrant-skip)
+       :reentrant-skip)
+      (t
+       (let ((*hook-active-stack* (cons hook-key *hook-active-stack*)))
+         (multiple-value-bind (status result elapsed-ms condition)
+             (%invoke-hook-handler-with-budget entry args)
+           (case status
+             (:ok
+              (%record-hook-success entry elapsed-ms)
+              (%record-hook-trace hook-point hook-id :ok :elapsed-ms elapsed-ms :result result)
+              result)
+             ((:timeout :error)
+              (%handle-hook-failure hook-point entry status elapsed-ms condition))
+             (otherwise
+              (%handle-hook-failure hook-point entry :error elapsed-ms condition)))))))))
+
 (defun run-hooks (hook-point &rest args)
   (let* ((normalized (%normalize-hook-point hook-point))
          (blocking (%hook-point-blocking-p normalized))
@@ -213,9 +454,13 @@
       (let ((hook-id (hook-entry-hook-id entry)))
         (if (hook-entry-async-p entry)
             (progn
-              (%dispatch-async (hook-entry-handler entry) args)
+              (%dispatch-async
+               (lambda ()
+                 (%invoke-hook-entry normalized entry args))
+               '())
+              (%record-hook-trace normalized hook-id :async-dispatched :elapsed-ms 0 :result :async-dispatched)
               (push (cons hook-id :async-dispatched) results))
-            (let ((result (apply (hook-entry-handler entry) args)))
+            (let ((result (%invoke-hook-entry normalized entry args)))
               (push (cons hook-id result) results)
               (when (and blocking (eq result :deny))
                 (return (values :deny (nreverse results))))))))))
@@ -242,7 +487,11 @@
 
   (defun %parse-defhook-options-and-clauses (forms)
     (let ((docstring nil)
-          (options (list :priority 100 :async nil))
+          (options (list :priority 100
+                         :async nil
+                         :max-ms +default-hook-max-ms+
+                         :on-error :log-and-continue
+                         :failure-threshold +default-hook-failure-threshold+))
           (remaining forms)
           (clauses '()))
       (when (and remaining (stringp (first remaining)))
@@ -252,7 +501,7 @@
                        (consp (first remaining))
                        (keywordp (first (first remaining)))
                        (member (first (first remaining))
-                               '(:priority :async)
+                               '(:priority :async :max-ms :on-error :failure-threshold)
                                :test #'eq))
             do (destructuring-bind (option value &rest extra) (first remaining)
                  (declare (ignore extra))
@@ -262,7 +511,21 @@
                       (error ":priority requires integer value, got ~S." value))
                     (setf (getf options :priority) value))
                    (:async
-                    (setf (getf options :async) (not (null value)))))
+                    (setf (getf options :async) (not (null value))))
+                   (:max-ms
+                    (unless (and (integerp value) (> value 0))
+                      (error ":max-ms requires a positive integer value, got ~S." value))
+                    (setf (getf options :max-ms) value))
+                   (:on-error
+                    (unless (keywordp value)
+                      (error ":on-error requires a keyword value, got ~S." value))
+                    (%ensure-known-hook-on-error-policy value)
+                    (setf (getf options :on-error) value))
+                   (:failure-threshold
+                    (unless (and (integerp value) (> value 0))
+                      (error ":failure-threshold requires a positive integer value, got ~S."
+                             value))
+                    (setf (getf options :failure-threshold) value)))
                  (setf remaining (rest remaining))))
       (dolist (form remaining)
         (unless (and (consp form) (eq (first form) :match))
@@ -361,12 +624,19 @@
 
 (defmacro defhook (hook-point parameters &body forms)
   (let* ((normalized-hook-point (%normalize-hook-point hook-point)))
-    (%ensure-hook-point-spec normalized-hook-point)
+    (unless (%hook-point-spec normalized-hook-point)
+      (warn 'defhook-definition-warning
+            :hook-point normalized-hook-point
+            :reason "Unknown hook point; definition skipped.")
+      (return-from defhook nil))
     (%validate-hook-signature normalized-hook-point parameters)
     (multiple-value-bind (docstring options clauses)
         (%parse-defhook-options-and-clauses forms)
       (let* ((priority (getf options :priority))
              (async (getf options :async))
+             (max-ms (getf options :max-ms))
+             (on-error (getf options :on-error))
+             (failure-threshold (getf options :failure-threshold))
              (blocking (%hook-point-blocking-p normalized-hook-point))
              (handler-symbol (gensym
                               (format nil "HOOK-HANDLER-~A-"
@@ -398,6 +668,9 @@
                           #',handler-symbol
                           :priority ,priority
                           :async ,async
+                          :max-ms ,max-ms
+                          :on-error ,on-error
+                          :failure-threshold ,failure-threshold
                           :docstring ,docstring
                           :source-file ,source-file
                           :source-line nil)

@@ -3,6 +3,10 @@
 (defparameter +chat-stream-default-system-prompt+
   +system-prompt-base-layer+)
 
+(defparameter +stream-cursor-glyph+ "█")
+(defparameter +stream-cursor-blink-ms+ 450)
+(defparameter +stream-budget-warning-threshold-percent+ 90)
+
 (define-condition token-stream-cancelled (condition)
   ())
 
@@ -17,7 +21,10 @@
                    (chunk-count 0)
                    (target-message-index nil)
                    (cancel-requested-p nil)
-                   (error-message nil))))
+                   (error-message nil)
+                   (budget-warning-threshold-percent
+                     +stream-budget-warning-threshold-percent+)
+                   (budget-warning-emitted-p nil))))
   (status :idle)
   (events (ptui.runtime.queue:make-event-queue)
           :type ptui.runtime.queue:event-queue)
@@ -28,6 +35,10 @@
   target-message-index
   (cancel-requested-p nil :type boolean)
   (error-message nil)
+  (budget-warning-threshold-percent
+    +stream-budget-warning-threshold-percent+
+    :type integer)
+  (budget-warning-emitted-p nil :type boolean)
   (worker-thread nil)
   (lock (bordeaux-threads:make-lock "amoebum-token-stream-lock")))
 
@@ -45,6 +56,10 @@
                (member char '(#\Space #\Tab #\Newline #\Return) :test #'char=))
              value)))
 
+(defun %token-stream-empty-string-p (value)
+  (or (null value)
+      (zerop (length value))))
+
 (defun %token-stream-estimate-token-count (text)
   (if (%token-stream-blank-string-p text)
       0
@@ -58,6 +73,16 @@
                 (setf inside-token-p t))))
         count)))
 
+(defun %token-stream-valid-threshold-percent-p (value)
+  (and (integerp value)
+       (>= value 1)
+       (<= value 100)))
+
+(defun %token-stream-normalize-threshold-percent (value)
+  (if (%token-stream-valid-threshold-percent-p value)
+      value
+      +stream-budget-warning-threshold-percent+))
+
 (defun %token-stream-reset! (stream-state)
   (%with-token-stream-lock (stream-state)
     (setf (token-stream-state-status stream-state) :idle
@@ -68,6 +93,7 @@
           (token-stream-state-target-message-index stream-state) nil
           (token-stream-state-cancel-requested-p stream-state) nil
           (token-stream-state-error-message stream-state) nil
+          (token-stream-state-budget-warning-emitted-p stream-state) nil
           (token-stream-state-worker-thread stream-state) nil))
   (ptui.runtime.queue:queue-pop-all (token-stream-state-events stream-state))
   stream-state)
@@ -91,13 +117,125 @@
     (error 'token-stream-cancelled))
   nil)
 
+(defun token-stream-set-budget-warning-threshold (stream-state threshold-percent)
+  (check-type stream-state token-stream-state)
+  (unless (%token-stream-valid-threshold-percent-p threshold-percent)
+    (error "THRESHOLD-PERCENT must be an integer in [1, 100], got ~S."
+           threshold-percent))
+  (%with-token-stream-lock (stream-state)
+    (setf (token-stream-state-budget-warning-threshold-percent stream-state)
+          threshold-percent
+          (token-stream-state-budget-warning-emitted-p stream-state) nil))
+  threshold-percent)
+
+(defun token-stream-maybe-budget-warning (stream-state used-tokens limit-tokens
+                                          &key threshold-percent)
+  (check-type stream-state token-stream-state)
+  (unless (and (integerp used-tokens) (>= used-tokens 0))
+    (error "USED-TOKENS must be a non-negative integer, got ~S." used-tokens))
+  (unless (and (integerp limit-tokens) (> limit-tokens 0))
+    (error "LIMIT-TOKENS must be a positive integer, got ~S." limit-tokens))
+  (let ((warning nil))
+    (%with-token-stream-lock (stream-state)
+      (when threshold-percent
+        (setf (token-stream-state-budget-warning-threshold-percent stream-state)
+              (%token-stream-normalize-threshold-percent threshold-percent)))
+      (let* ((status (token-stream-state-status stream-state))
+             (threshold (token-stream-state-budget-warning-threshold-percent stream-state))
+             (emitted-p (token-stream-state-budget-warning-emitted-p stream-state))
+             (usage-percent (truncate (/ (* used-tokens 100.0d0)
+                                        (max 1 limit-tokens)))))
+        (when (and (eq status :running)
+                   (not emitted-p)
+                   (>= usage-percent threshold))
+          (setf (token-stream-state-budget-warning-emitted-p stream-state) t)
+          (setf warning
+                (list :used-tokens used-tokens
+                      :limit-tokens limit-tokens
+                      :usage-percent usage-percent
+                      :threshold-percent threshold)))))
+    warning))
+
+(defun stream-cursor-visible-p (stream-state
+                                &key
+                                  (now-ms (%token-stream-now-ms))
+                                  (blink-ms +stream-cursor-blink-ms+))
+  (check-type stream-state token-stream-state)
+  (let* ((safe-blink-ms (max 80 (if (integerp blink-ms)
+                                    blink-ms
+                                    +stream-cursor-blink-ms+)))
+         (cycle (* 2 safe-blink-ms)))
+    (%with-token-stream-lock (stream-state)
+      (and (eq (token-stream-state-status stream-state) :running)
+           (> cycle 0)
+           (let* ((started (token-stream-state-started-ms stream-state))
+                  (elapsed (max 0 (- (if (and (integerp now-ms) (>= now-ms 0))
+                                         now-ms
+                                         (%token-stream-now-ms))
+                                     started)))
+                  (phase (mod elapsed cycle)))
+             (< phase safe-blink-ms))))))
+
 (defun token-stream-emit-chunk (stream-state chunk)
   (token-stream-check-cancel stream-state)
   (when (and (stringp chunk) (plusp (length chunk)))
     (ptui.runtime.queue:queue-push (token-stream-state-events stream-state)
-                                   (list :kind :chunk
+                                   (list :kind :text-delta
                                          :text chunk
                                          :token-count (%token-stream-estimate-token-count chunk))))
+  nil)
+
+(defun token-stream-emit-tool-call-delta (stream-state chunk)
+  (token-stream-check-cancel stream-state)
+  (let* ((type (and (listp chunk) (getf chunk :type)))
+         (tool-call (and (listp chunk) (getf chunk :tool-call)))
+         (tool-name
+           (or (and (pseudopod:tool-call-p tool-call)
+                    (pseudopod:tool-call-name tool-call))
+               (and (listp chunk) (getf chunk :name))))
+         (arguments
+           (or (and (pseudopod:tool-call-p tool-call)
+                    (pseudopod:tool-call-arguments tool-call))
+               (and (listp chunk) (getf chunk :arguments))))
+         (index (and (listp chunk) (getf chunk :index)))
+         (arguments-complete-p
+           (and (listp chunk) (not (null (getf chunk :arguments-complete-p))))))
+    (when (and (eq type :tool-call-delta)
+               (or (and (stringp tool-name) (plusp (length tool-name)))
+                   (and (stringp arguments) (plusp (length arguments)))))
+      (ptui.runtime.queue:queue-push
+       (token-stream-state-events stream-state)
+       (list :kind :tool-call-delta
+             :index index
+             :tool-call tool-call
+             :tool-name tool-name
+             :arguments arguments
+             :arguments-complete-p arguments-complete-p
+             :chunk chunk))))
+  nil)
+
+(defun token-stream-emit-tool-call-started (stream-state tool-call)
+  (token-stream-check-cancel stream-state)
+  (when (pseudopod:tool-call-p tool-call)
+    (ptui.runtime.queue:queue-push
+     (token-stream-state-events stream-state)
+     (list :kind :tool-call-started
+           :tool-call tool-call
+           :tool-name (pseudopod:tool-call-name tool-call)
+           :arguments (pseudopod:tool-call-arguments tool-call)
+           :tool-call-id (pseudopod:tool-call-id tool-call))))
+  nil)
+
+(defun token-stream-emit-tool-call-argument-complete (stream-state tool-call)
+  (token-stream-check-cancel stream-state)
+  (when (pseudopod:tool-call-p tool-call)
+    (ptui.runtime.queue:queue-push
+     (token-stream-state-events stream-state)
+     (list :kind :tool-call-argument-complete
+           :tool-call tool-call
+           :tool-name (pseudopod:tool-call-name tool-call)
+           :arguments (pseudopod:tool-call-arguments tool-call)
+           :tool-call-id (pseudopod:tool-call-id tool-call))))
   nil)
 
 (defun token-stream-mark-complete (stream-state)
@@ -134,13 +272,21 @@
           (token-stream-mark-cancelled stream-state)
           (token-stream-mark-failed stream-state condition)))))
 
-(defun token-stream-start (stream-state worker-fn &key target-message-index)
+(defun token-stream-start (stream-state worker-fn
+                           &key
+                             target-message-index
+                             budget-warning-threshold-percent)
   (check-type stream-state token-stream-state)
   (check-type worker-fn function)
   (%token-stream-reset! stream-state)
   (%with-token-stream-lock (stream-state)
     (setf (token-stream-state-status stream-state) :running
           (token-stream-state-started-ms stream-state) (%token-stream-now-ms)
+          (token-stream-state-budget-warning-threshold-percent stream-state)
+          (%token-stream-normalize-threshold-percent
+           (or budget-warning-threshold-percent
+               (token-stream-state-budget-warning-threshold-percent stream-state)))
+          (token-stream-state-budget-warning-emitted-p stream-state) nil
           (token-stream-state-target-message-index stream-state) target-message-index))
   #+sb-thread
   (let ((thread
@@ -161,6 +307,11 @@
     (dolist (event events)
       (let ((kind (getf event :kind)))
         (case kind
+          (:text-delta
+           (%with-token-stream-lock (stream-state)
+             (incf (token-stream-state-token-count stream-state)
+                   (or (getf event :token-count) 0))
+             (incf (token-stream-state-chunk-count stream-state))))
           (:chunk
            (%with-token-stream-lock (stream-state)
              (incf (token-stream-state-token-count stream-state)
@@ -217,6 +368,10 @@
           (chunks (token-stream-state-chunk-count stream-state))
           (cancel-requested-p (token-stream-state-cancel-requested-p stream-state))
           (error-message (token-stream-state-error-message stream-state))
+          (budget-warning-threshold
+            (token-stream-state-budget-warning-threshold-percent stream-state))
+          (budget-warning-emitted-p
+            (token-stream-state-budget-warning-emitted-p stream-state))
           (target-index (token-stream-state-target-message-index stream-state))
           (started (token-stream-state-started-ms stream-state))
           (ended (token-stream-state-ended-ms stream-state))
@@ -236,7 +391,232 @@
             :cancel-requested-p cancel-requested-p
             :elapsed-ms elapsed-ms
             :tokens-per-second (/ tokens elapsed-seconds)
+            :budget-warning-threshold-percent budget-warning-threshold
+            :budget-warning-emitted-p budget-warning-emitted-p
             :error-message error-message))))
+
+(defun %stream-markdown-split-lines (text)
+  (let ((value (if (stringp text)
+                   text
+                   (princ-to-string (or text "")))))
+    (if (zerop (length value))
+        (list "")
+        (let ((lines '())
+              (start 0)
+              (length (length value)))
+          (loop for index from 0 below length do
+            (when (char= (char value index) #\Newline)
+              (push (subseq value start index) lines)
+              (setf start (1+ index))))
+          (push (subseq value start length) lines)
+          (nreverse lines)))))
+
+(defun %stream-markdown-heading-prefix-length (line)
+  (let* ((length (length line))
+         (count 0))
+    (loop while (and (< count length)
+                     (< count 6)
+                     (char= (char line count) #\#))
+          do (incf count))
+    (if (and (> count 0)
+             (or (= count length)
+                 (member (char line count) '(#\Space #\Tab) :test #'char=)))
+        count
+        nil)))
+
+(defun %stream-markdown-line-style (line)
+  (let ((heading-prefix-length (%stream-markdown-heading-prefix-length line)))
+    (if heading-prefix-length
+        (values (string-left-trim '(#\Space #\Tab)
+                                  (subseq line heading-prefix-length))
+                :assistant-heading
+                t)
+        (values line :assistant nil))))
+
+(defun %stream-markdown-style-key (segment)
+  (list (getf segment :role :assistant)
+        (not (null (getf segment :boldp)))
+        (not (null (getf segment :italicp)))
+        (not (null (getf segment :underlinep)))
+        (not (null (getf segment :invertp)))
+        (not (null (getf segment :dimp)))
+        (not (null (getf segment :strikep)))))
+
+(defun %stream-markdown-make-segment (text role
+                                      &key
+                                        (boldp nil)
+                                        (italicp nil)
+                                        (underlinep nil)
+                                        (invertp nil)
+                                        (dimp nil)
+                                        (strikep nil))
+  (list :text (or text "")
+        :role role
+        :boldp (not (null boldp))
+        :italicp (not (null italicp))
+        :underlinep (not (null underlinep))
+        :invertp (not (null invertp))
+        :dimp (not (null dimp))
+        :strikep (not (null strikep))))
+
+(defun %stream-markdown-push-segment (segments-rev text role
+                                      &key
+                                        (boldp nil)
+                                        (italicp nil)
+                                        (underlinep nil)
+                                        (invertp nil)
+                                        (dimp nil)
+                                        (strikep nil))
+  (if (%token-stream-empty-string-p text)
+      segments-rev
+      (let* ((segment (%stream-markdown-make-segment text role
+                                                     :boldp boldp
+                                                     :italicp italicp
+                                                     :underlinep underlinep
+                                                     :invertp invertp
+                                                     :dimp dimp
+                                                     :strikep strikep))
+             (head (first segments-rev)))
+        (if (and head
+                 (equal (%stream-markdown-style-key head)
+                        (%stream-markdown-style-key segment)))
+            (progn
+              (setf (getf head :text)
+                    (concatenate 'string
+                                 (getf head :text "")
+                                 (getf segment :text "")))
+              segments-rev)
+            (cons segment segments-rev)))))
+
+(defun %stream-markdown-parse-inline (line role &key (headingp nil))
+  (let ((length (length line))
+        (index 0)
+        (boldp nil)
+        (italicp nil)
+        (codep nil)
+        (buffer (make-string-output-stream))
+        (segments-rev '()))
+    (labels ((flush-buffer ()
+               (let ((text (get-output-stream-string buffer)))
+                 (setf segments-rev
+                       (%stream-markdown-push-segment
+                        segments-rev
+                        text
+                        role
+                        :boldp (or headingp boldp)
+                        :italicp italicp
+                        :invertp codep)))))
+      (loop while (< index length) do
+        (let* ((char (char line index))
+               (next-char (and (< (1+ index) length)
+                               (char line (1+ index)))))
+          (cond
+            ((and (not codep)
+                  next-char
+                  (or (and (char= char #\*) (char= next-char #\*))
+                      (and (char= char #\_) (char= next-char #\_))))
+             (flush-buffer)
+             (setf boldp (not boldp))
+             (incf index 2))
+            ((char= char #\`)
+             (flush-buffer)
+             (setf codep (not codep))
+             (incf index))
+            ((and (not codep)
+                  (or (char= char #\*) (char= char #\_)))
+             (flush-buffer)
+             (setf italicp (not italicp))
+             (incf index))
+            (t
+             (write-char char buffer)
+             (incf index)))))
+      (flush-buffer)
+      (if segments-rev
+          (nreverse segments-rev)
+          (list (%stream-markdown-make-segment ""
+                                              role
+                                              :boldp headingp))))))
+
+(defun %stream-markdown-wrap-segments (segments width &key (default-role :assistant))
+  (let ((safe-width (max 1 (if (integerp width) width 1)))
+        (lines-rev '())
+        (line-segments-rev '())
+        (line-width 0))
+    (labels ((emit-line ()
+               (let ((line
+                       (if line-segments-rev
+                           (nreverse line-segments-rev)
+                           (list (%stream-markdown-make-segment "" default-role)))))
+                 (push line lines-rev)
+                 (setf line-segments-rev '()
+                       line-width 0)))
+             (append-grapheme (style-segment grapheme)
+               (setf line-segments-rev
+                     (%stream-markdown-push-segment
+                      line-segments-rev
+                      grapheme
+                      (getf style-segment :role default-role)
+                      :boldp (getf style-segment :boldp)
+                      :italicp (getf style-segment :italicp)
+                      :underlinep (getf style-segment :underlinep)
+                      :invertp (getf style-segment :invertp)
+                      :dimp (getf style-segment :dimp)
+                      :strikep (getf style-segment :strikep)))))
+      (dolist (segment segments)
+        (let ((segment-text (getf segment :text "")))
+          (dolist (grapheme (ptui.text.grapheme:split-graphemes segment-text))
+            (let ((grapheme-width (max 0 (ptui.text.width:grapheme-width grapheme))))
+              (when (and (> line-width 0)
+                         (> (+ line-width grapheme-width) safe-width))
+                (emit-line))
+              (append-grapheme segment grapheme)
+              (incf line-width grapheme-width)))))
+      (when (or line-segments-rev (null lines-rev))
+        (emit-line)))
+    (nreverse lines-rev)))
+
+(defun %stream-markdown-line-width (segments)
+  (reduce #'+ segments
+          :initial-value 0
+          :key (lambda (segment)
+                 (ptui.text.width:string-width (getf segment :text "")))))
+
+(defun stream-markdown-styled-lines (text width
+                                     &key
+                                       (partialp nil)
+                                       (cursor-visible-p nil)
+                                       (cursor-glyph +stream-cursor-glyph+))
+  (let* ((safe-width (max 1 (if (integerp width) width 1)))
+         (raw-lines (%stream-markdown-split-lines text))
+         (styled-lines '()))
+    (dolist (raw-line raw-lines)
+      (multiple-value-bind (line-text line-role headingp)
+          (%stream-markdown-line-style raw-line)
+        (let* ((inline-segments
+                 (%stream-markdown-parse-inline line-text line-role :headingp headingp))
+               (wrapped
+                 (%stream-markdown-wrap-segments inline-segments safe-width
+                                                 :default-role line-role)))
+          (setf styled-lines (append styled-lines wrapped)))))
+    (unless styled-lines
+      (setf styled-lines (list (list (%stream-markdown-make-segment "" :assistant)))))
+    (when (and partialp
+               cursor-visible-p
+               (stringp cursor-glyph)
+               (plusp (length cursor-glyph)))
+      (let* ((cursor-segment (%stream-markdown-make-segment cursor-glyph :assistant
+                                                            :boldp t
+                                                            :invertp t))
+             (last-line (car (last styled-lines)))
+             (last-width (%stream-markdown-line-width last-line))
+             (cursor-width (ptui.text.width:string-width cursor-glyph)))
+        (if (and (> cursor-width 0)
+                 (> (+ last-width cursor-width) safe-width))
+            (setf styled-lines
+                  (append styled-lines (list (list cursor-segment))))
+            (setf (car (last styled-lines))
+                  (append last-line (list cursor-segment))))))
+    styled-lines))
 
 (defun stream-pseudopod-chat (stream-state prompt messages
                               &key
@@ -251,4 +631,11 @@
      :messages messages
      :tools tools
      :on-content (lambda (chunk)
-                   (token-stream-emit-chunk stream-state chunk)))))
+                   (token-stream-emit-chunk stream-state chunk))
+     :on-tool-call-delta (lambda (chunk)
+                           (token-stream-emit-tool-call-delta stream-state chunk))
+     :on-tool-call-started (lambda (tool-call)
+                             (token-stream-emit-tool-call-started stream-state tool-call))
+     :on-tool-call-argument-complete
+     (lambda (tool-call)
+       (token-stream-emit-tool-call-argument-complete stream-state tool-call)))))

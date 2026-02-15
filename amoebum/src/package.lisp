@@ -4,6 +4,42 @@
            #:deftool
            #:defhook
            #:defkeys
+           #:defskill
+           #:*skill-registry*
+           #:*skill-review-analyzer*
+           #:skill-argument
+           #:skill-argument-p
+           #:make-skill-argument
+           #:skill-argument-name
+           #:skill-argument-variable
+           #:skill-argument-type
+           #:skill-argument-required-p
+           #:skill-argument-default
+           #:skill-argument-default-supplied-p
+           #:skill-argument-choices
+           #:skill-argument-greedy-p
+           #:skill-argument-prompt
+           #:skill-argument-description
+           #:skill-argument-completer
+           #:skill-metadata
+           #:skill-metadata-p
+           #:make-skill-metadata
+           #:skill-metadata-name
+           #:skill-metadata-description
+           #:skill-metadata-usage
+           #:skill-metadata-aliases
+           #:skill-metadata-category
+           #:skill-metadata-keybinding
+           #:skill-metadata-arguments
+           #:skill-metadata-handler
+           #:skill-metadata-completer
+           #:skill-metadata-source-file
+           #:skill-metadata-source-line
+           #:skill-metadata-defined-at
+           #:register-skill
+           #:find-skill
+           #:list-skills
+           #:describe-skill
            #:event
            #:event-p
            #:make-event
@@ -23,9 +59,19 @@
            #:subscribe
            #:unsubscribe
            #:publish
+           #:filter-by-type
+           #:filter-by-severity
+           #:filter-by-source
+           #:filter-and
+           #:filter-or
+           #:filter-not
+           #:filter-by-tool
+           #:filter-by-permission-mode
+           #:event-router
            #:+event-type-tool-invoked+
            #:+event-type-tool-completed+
            #:+event-type-tool-error+
+           #:+event-type-tool-redefined+
            #:+event-type-config-changed+
            #:+event-type-permission-prompted+
            #:+event-type-memory-updated+
@@ -33,6 +79,16 @@
            #:+event-type-context-compressed+
            #:+event-type-mcp-tool-discovered+
            #:+event-type-mcp-tool-invoked+
+           #:+event-type-keymap-overlay-enter+
+           #:+event-type-keymap-overlay-exit+
+           #:+event-type-extension-loaded+
+           #:+event-type-extension-error+
+           #:+event-type-stream-budget-warning+
+           #:+event-type-conversation-forked+
+           #:+event-type-tool-call-started+
+           #:+event-type-tool-call-argument-complete+
+           #:+event-type-session-checkpointed+
+           #:+event-type-session-restored+
            #:+core-event-types+
            #:tool-invoked-payload
            #:tool-invoked-payload-p
@@ -43,6 +99,13 @@
            #:tool-error-payload
            #:tool-error-payload-p
            #:make-tool-error-payload
+           #:tool-redefined-payload
+           #:tool-redefined-payload-p
+           #:make-tool-redefined-payload
+           #:tool-redefined-payload-tool-name
+           #:tool-redefined-payload-old-metadata
+           #:tool-redefined-payload-new-metadata
+           #:tool-redefined-payload-metadata-diff
            #:config-changed-payload
            #:config-changed-payload-p
            #:make-config-changed-payload
@@ -70,6 +133,59 @@
            #:mcp-tool-invoked-payload
            #:mcp-tool-invoked-payload-p
            #:make-mcp-tool-invoked-payload
+           #:extension-loaded-payload
+           #:extension-loaded-payload-p
+           #:make-extension-loaded-payload
+           #:extension-loaded-payload-path
+           #:extension-loaded-payload-scope
+           #:extension-error-payload
+           #:extension-error-payload-p
+           #:make-extension-error-payload
+           #:extension-error-payload-path
+           #:extension-error-payload-scope
+           #:extension-error-payload-condition
+           #:stream-budget-warning-payload
+           #:stream-budget-warning-payload-p
+           #:make-stream-budget-warning-payload
+           #:stream-budget-warning-payload-used-tokens
+           #:stream-budget-warning-payload-limit-tokens
+           #:stream-budget-warning-payload-usage-percent
+           #:stream-budget-warning-payload-threshold-percent
+           #:tool-call-started-payload
+           #:tool-call-started-payload-p
+           #:make-tool-call-started-payload
+           #:tool-call-started-payload-tool-name
+           #:tool-call-started-payload-tool-call-id
+           #:tool-call-started-payload-arguments
+           #:tool-call-started-payload-index
+           #:tool-call-argument-complete-payload
+           #:tool-call-argument-complete-payload-p
+           #:make-tool-call-argument-complete-payload
+           #:tool-call-argument-complete-payload-tool-name
+           #:tool-call-argument-complete-payload-tool-call-id
+           #:tool-call-argument-complete-payload-arguments
+           #:tool-call-argument-complete-payload-index
+           #:session-checkpointed-payload
+           #:session-checkpointed-payload-p
+           #:make-session-checkpointed-payload
+           #:session-checkpointed-payload-checkpoint-id
+           #:session-checkpointed-payload-path
+           #:session-checkpointed-payload-trigger
+           #:session-checkpointed-payload-auto-p
+           #:session-checkpointed-payload-message-count
+           #:session-checkpointed-payload-extension-count
+           #:session-checkpointed-payload-tool-count
+           #:session-checkpointed-payload-memory-count
+           #:session-restored-payload
+           #:session-restored-payload-p
+           #:make-session-restored-payload
+           #:session-restored-payload-checkpoint-id
+           #:session-restored-payload-path
+           #:session-restored-payload-trigger
+           #:session-restored-payload-message-count
+           #:session-restored-payload-extension-count
+           #:session-restored-payload-tool-count
+           #:session-restored-payload-memory-count
            #:context-compressed-payload-before-tokens
            #:context-compressed-payload-after-tokens
            #:context-compressed-payload-saved-tokens
@@ -79,6 +195,7 @@
            #:make-tool-invoked-event
            #:make-tool-completed-event
            #:make-tool-error-event
+           #:make-tool-redefined-event
            #:make-config-changed-event
            #:make-permission-prompted-event
            #:make-memory-updated-event
@@ -86,6 +203,34 @@
            #:make-context-compressed-event
            #:make-mcp-tool-discovered-event
            #:make-mcp-tool-invoked-event
+           #:make-extension-loaded-event
+           #:make-extension-error-event
+           #:make-stream-budget-warning-event
+           #:make-tool-call-started-event
+           #:make-tool-call-argument-complete-event
+           #:make-session-checkpointed-event
+           #:make-session-restored-event
+           #:sound-theme
+           #:sound-theme-p
+           #:make-sound-theme
+           #:sound-theme-name
+           #:sound-theme-parent
+           #:sound-theme-mappings
+           #:*sound-theme-registry*
+           #:*active-sound-theme*
+           #:register-sound-theme
+           #:clear-sound-themes
+           #:find-sound-theme
+           #:list-sound-themes
+           #:list-sound-theme-names
+           #:active-sound-theme
+           #:active-sound-theme-name
+           #:set-active-sound-theme
+           #:resolve-sound
+           #:resolve-sound-path
+           #:resolve-active-sound-path
+           #:defsoundtheme
+           #:defsound-theme
            #:notification
            #:notification-p
            #:make-notification
@@ -104,6 +249,7 @@
            #:sound-backend
            #:sound-backend-player-command
            #:sound-backend-sound-map
+           #:sound-backend-theme
            #:desktop-backend
            #:desktop-backend-command
            #:desktop-backend-app-name
@@ -128,6 +274,7 @@
            #:make-sound-backend
            #:make-desktop-backend
            #:make-log-backend
+           #:preview-notification-sound
            #:dispatch-notification
            #:make-notification-manager
            #:ensure-notification-manager
@@ -135,6 +282,8 @@
            #:stop-all-notification-managers
            #:*toolset*
            #:*tool-metadata*
+           #:*tool-history*
+           #:*tool-history-max-versions*
            #:tool-metadata
            #:tool-metadata-p
            #:tool-metadata-name
@@ -146,11 +295,22 @@
            #:tool-metadata-source-line
            #:tool-metadata-parameter-specs
            #:tool-metadata-defined-at
+           #:tool-history-entry
+           #:tool-history-entry-p
+           #:make-tool-history-entry
+           #:tool-history-entry-tool-definition
+           #:tool-history-entry-tool-metadata
+           #:tool-history-entry-timestamp
+           #:tool-history-entry-source-file
+           #:tool-history-entry-source-line
+           #:tool-history
+           #:rollback-tool
            #:cl-type-to-json-schema
            #:config
            #:config-p
            #:config-model
            #:config-permission-mode
+           #:*known-sandbox-policies*
            #:config-memory-backend
            #:config-project-root
            #:config-values
@@ -163,9 +323,19 @@
            #:reload-config
            #:current-config
            #:config-value
+           #:config-layer-source
            #:setconfig
            #:emit-config-changed
            #:*current-config*
+           #:+amoebum-readtable-name+
+           #:activate-amoebum-readtable
+           #:reader-project-root
+           #:resolve-reader-path
+           #:glob-paths
+           #:compile-reader-regex
+           #:malformed-regex
+           #:malformed-regex-pattern
+           #:malformed-regex-reason
            #:+default-context-window-limit+
            #:+model-context-window-limits+
            #:+context-budget-green-threshold-percent+
@@ -193,6 +363,14 @@
            #:conversation-history-entry-name
            #:conversation-history-entry-partial
            #:conversation-history-entry-tool-call-id
+           #:conversation-history-search-result
+           #:conversation-history-search-result-p
+           #:make-conversation-history-search-result
+           #:conversation-history-search-result-index
+           #:conversation-history-search-result-score
+           #:conversation-history-search-result-entry
+           #:conversation-history-search-result-before
+           #:conversation-history-search-result-after
            #:conversation-state
            #:conversation-state-p
            #:make-conversation-state
@@ -201,21 +379,32 @@
            #:conversation-state-entries
            #:conversation-state-created-at
            #:conversation-state-updated-at
+           #:conversation-state-active-fork
+           #:conversation-state-fork-branch-point
+           #:conversation-state-forks
            #:conversation-state-project-root
            #:conversation-state-session-path
            #:conversation-message->entry
            #:conversation-entry->message
            #:conversation-session-directory
            #:conversation-session-path
+           #:conversation-fork-directory
+           #:conversation-fork-path
+           #:conversation-active-fork-name
+           #:conversation-list-forks
            #:conversation-transition-allowed-p
            #:conversation-transition!
+           #:conversation-reset!
            #:conversation-save
+           #:fork-conversation
+           #:conversation-switch-fork
            #:conversation-state-add-message
            #:conversation-state-messages
            #:conversation-load
            #:conversation-load-latest
            #:conversation-load-session
            #:parse-history-timestamp
+           #:history-search
            #:conversation-search-history
            #:format-history-timestamp
            #:format-history-entry-line
@@ -331,6 +520,46 @@
            #:run-memory-command
            #:extract-durable-memory-candidate
            #:apply-memory-candidate
+           #:extension-load-record
+           #:extension-load-record-p
+           #:make-extension-load-record
+           #:extension-load-record-path
+           #:extension-load-record-scope
+           #:extension-load-record-status
+           #:extension-load-record-message
+           #:extension-load-record-timestamp
+           #:*extension-load-report*
+           #:*loaded-extensions*
+           #:*disabled-extensions*
+           #:*extensions-global-directory-override*
+           #:*extensions-project-directory-override*
+           #:discover-user-extension-files
+           #:extension-disabled-p
+           #:list-extension-report
+           #:list-loaded-extensions
+           #:extension-report-summary
+           #:known-user-extension-paths
+           #:disable-user-extension
+           #:load-user-extensions
+           #:reload-user-extensions
+           #:session-checkpoint
+           #:session-checkpoint-p
+           #:make-session-checkpoint
+           #:session-checkpoint-id
+           #:session-checkpoint-path
+           #:session-checkpoint-created-at
+           #:session-checkpoint-auto-p
+           #:session-checkpoint-trigger
+           #:*checkpoint-directory-override*
+           #:*checkpoint-last-activity-at*
+           #:*checkpoint-last-auto-checkpoint-at*
+           #:checkpoint-directory
+           #:list-session-checkpoints
+           #:checkpoint-session
+           #:restore-session
+           #:checkpoint-auto-idle-seconds
+           #:checkpoint-mark-activity
+           #:maybe-auto-checkpoint
            #:slash-command-parameter
            #:slash-command-parameter-p
            #:make-slash-command-parameter
@@ -390,6 +619,9 @@
            #:list-hooks
            #:clear-hooks
            #:describe-hooks
+           #:hook-metrics
+           #:hook-trace
+           #:clear-hook-trace
            #:run-hooks
            #:malformed-key-binding
            #:malformed-key-binding-key-spec
@@ -416,6 +648,11 @@
            #:key-chord-source-line
            #:keymap
            #:keymap-p
+           #:keymap-overlay
+           #:keymap-overlay-p
+           #:keymap-overlay-keymap
+           #:keymap-overlay-auto-cleanup-on-escape-p
+           #:keymap-overlay-entered-at
            #:make-keymap
            #:keymap-name
            #:keymap-description
@@ -423,7 +660,12 @@
            #:keymap-chords
            #:*keymap-registry*
            #:*keymap-stack*
+           #:*keymap-overlay-stack*
            #:*key-sequence-buffer*
+           #:*key-sequence-timeout-ms*
+           #:*key-disambiguation-timeout-ms*
+           #:*terminal-key-normalization-profile*
+           #:*terminal-key-normalization-table*
            #:register-keymap
            #:list-keymaps
            #:find-keymap
@@ -434,9 +676,15 @@
            #:push-keymap
            #:pop-keymap
            #:current-keymap
+           #:current-keymap-overlay
+           #:push-keymap-overlay
+           #:pop-keymap-overlay
+           #:clear-keymap-overlays
            #:reset-keymap-stack
            #:dispatch-key-event
            #:dispatch-active-keymaps
+           #:flush-key-dispatch-timeouts
+           #:resolve-terminal-key-normalization-profile
            #:make-key-dispatch-on-event
            #:activate-default-keymaps
            #:*chat-mode-keymap*
@@ -630,11 +878,37 @@
            #:evaluate-path-permission
            #:dangerous-command-p
            #:check-permission
+           #:+sandbox-max-output-size+
+           #:+sandbox-max-read-size+
+           #:sandbox-violation
+           #:sandbox-violation-operation
+           #:sandbox-violation-reason
+           #:sandbox-violation-details
+           #:sandbox-read-eval-disabled
+           #:sandbox-read-eval-disabled-form
+           #:sandbox-read-size-exceeded
+           #:sandbox-read-size-exceeded-path
+           #:sandbox-read-size-exceeded-size-bytes
+           #:sandbox-read-size-exceeded-limit-bytes
+           #:normalize-sandbox-policy
+           #:sandbox-policy
+           #:sandbox-policy-enabled-p
+           #:sandbox-check-tool-call
+           #:safe-open
+           #:safe-run-program
+           #:truncate-sandbox-output
+           #:apply-sandbox-output-guard
+           #:make-restricted-readtable
+           #:*sandbox-restricted-readtable*
+           #:sandbox-read-from-string
            #:+system-prompt-base-layer+
            #:resolve-system-prompt-layers
            #:system-prompt-dynamic-context
            #:assemble-system-prompt
            #:+chat-stream-default-system-prompt+
+           #:+stream-cursor-glyph+
+           #:+stream-cursor-blink-ms+
+           #:+stream-budget-warning-threshold-percent+
            #:token-stream-cancelled
            #:token-stream-state
            #:token-stream-state-p
@@ -647,12 +921,19 @@
            #:token-stream-state-target-message-index
            #:token-stream-state-cancel-requested-p
            #:token-stream-state-error-message
+           #:token-stream-state-budget-warning-threshold-percent
+           #:token-stream-state-budget-warning-emitted-p
            #:token-stream-state-worker-thread
            #:token-stream-active-p
            #:token-stream-cancel-requested-p
            #:token-stream-request-cancel
            #:token-stream-check-cancel
+           #:token-stream-set-budget-warning-threshold
+           #:token-stream-maybe-budget-warning
            #:token-stream-emit-chunk
+           #:token-stream-emit-tool-call-delta
+           #:token-stream-emit-tool-call-started
+           #:token-stream-emit-tool-call-argument-complete
            #:token-stream-mark-complete
            #:token-stream-mark-cancelled
            #:token-stream-mark-failed
@@ -661,6 +942,8 @@
            #:token-stream-elapsed-ms
            #:token-stream-tokens-per-second
            #:token-stream-progress-summary
+           #:stream-cursor-visible-p
+           #:stream-markdown-styled-lines
            #:stream-pseudopod-chat
            #:+event-type-ui-stream-progress+
            #:status-bar-stream-payload
@@ -706,10 +989,13 @@
            #:chat-ui-state-stream-client
            #:chat-ui-state-stream-system-prompt
            #:chat-ui-state-stream-tools
+           #:chat-ui-state-stream-scroll-follow-p
            #:chat-ui-state-status-bar-state
            #:chat-ui-state-conversation
            #:chat-ui-state-context-used-tokens
            #:chat-ui-state-context-window-limit
+           #:chat-ui-state-stream-tool-calls
+           #:chat-ui-state-stream-executed-tool-call-keys
            #:ensure-chat-ui-state
            #:chat-ui-restore-latest-session
            #:make-chat-message
@@ -724,6 +1010,107 @@
            #:render-chat-ui-buffer
            #:handle-chat-ui-event
            #:run-chat-ui))
+
+(defpackage :amoebum.sandbox
+  (:use)
+  (:import-from :cl
+                #:+
+                #:-
+                #:*
+                #:/
+                #:<
+                #:<=
+                #:=
+                #:>
+                #:>=
+                #:1+
+                #:1-
+                #:abs
+                #:and
+                #:append
+                #:aref
+                #:car
+                #:cdr
+                #:cadr
+                #:caddr
+                #:case
+                #:coerce
+                #:cond
+                #:cons
+                #:copy-list
+                #:copy-seq
+                #:defparameter
+                #:defun
+                #:destructuring-bind
+                #:dolist
+                #:dotimes
+                #:eq
+                #:equal
+                #:eql
+                #:error
+                #:evenp
+                #:every
+                #:find
+                #:first
+                #:format
+                #:fourth
+                #:funcall
+                #:if
+                #:incf
+                #:labels
+                #:lambda
+                #:last
+                #:length
+                #:let
+                #:list
+                #:list*
+                #:loop
+                #:mapcar
+                #:max
+                #:member
+                #:min
+                #:mod
+                #:nconc
+                #:not
+                #:nth
+                #:null
+                #:numberp
+                #:oddp
+                #:or
+                #:pop
+                #:position
+                #:progn
+                #:push
+                #:reduce
+                #:remove
+                #:rest
+                #:reverse
+                #:second
+                #:setf
+                #:some
+                #:sort
+                #:string
+                #:string-downcase
+                #:string-upcase
+                #:string=
+                #:subseq
+                #:svref
+                #:third
+                #:unless
+                #:values
+                #:vector
+                #:when)
+  (:import-from :amoebum
+                #:+sandbox-max-output-size+
+                #:+sandbox-max-read-size+
+                #:safe-open
+                #:safe-run-program
+                #:truncate-sandbox-output)
+  (:export #:+sandbox-max-output-size+
+           #:+sandbox-max-read-size+
+           #:safe-open
+           #:safe-run-program
+           #:truncate-sandbox-output))
 
 (defpackage :amoebum.tools
   (:use :cl))

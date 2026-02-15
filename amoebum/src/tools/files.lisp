@@ -112,7 +112,10 @@
       (t nil))))
 
 (defun %read-lines (path)
-  (with-open-file (stream path :direction :input :external-format :utf-8)
+  (with-open-stream (stream (safe-open path
+                                       :tool :read-file
+                                       :direction :input
+                                       :external-format :utf-8))
     (loop for line = (read-line stream nil nil)
           while line
           collect line)))
@@ -198,9 +201,10 @@
   (funcall (or *pdf-text-extractor* #'%run-pdftotext) path pages))
 
 (defun %read-binary-octets (path)
-  (with-open-file (stream path
-                          :direction :input
-                          :element-type '(unsigned-byte 8))
+  (with-open-stream (stream (safe-open path
+                                       :tool :read-file
+                                       :direction :input
+                                       :element-type '(unsigned-byte 8)))
     (let* ((size (file-length stream))
            (octets (make-array size :element-type '(unsigned-byte 8))))
       (read-sequence octets stream)
