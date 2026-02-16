@@ -9,6 +9,7 @@
                #:bordeaux-threads
                #:local-time
                #:ironclad
+               #:cl-json
                #:uuid
                #:jonathan
                #:cl-ppcre
@@ -20,6 +21,7 @@
                              (:file "constants")
                              (:file "errors")
                              (:file "config")
+                             (:file "local-registry")
                              (:file "envelope")
                              (:file "state-machine")
                              (:file "activity-buffer")
@@ -40,9 +42,10 @@
                 :components ((:file "base")
                              (:file "handoff")
                              (:file "gateway")
+                             (:file "workflow")
                              (:file "negotiation-room")
                              (:file "negotiation-room-store"))))
-  :in-order-to ((test-op (test-op #:sw4rm-sdk/tests))))
+  :in-order-to ((asdf:test-op (asdf:test-op #:sw4rm-sdk/tests))))
 
 (asdf:defsystem #:sw4rm-sdk/tests
   :description "Test suite for SW4RM SDK (amoebum-adapted)"
@@ -51,8 +54,9 @@
   :components ((:module "test"
                 :serial t
                 :components ((:file "suite")
-                             (:file "integration-test"))))
-  :perform (test-op (o c)
+                             (:file "integration-test")
+                             (:file "local-registry-test"))))
+  :perform (asdf:test-op (o c)
              (let* ((suite-package (or (find-package :sw4rm-test)
                                        (error "SW4RM test package missing")))
                     (suite-symbol (or (find-symbol "SW4RM-SUITE" suite-package)

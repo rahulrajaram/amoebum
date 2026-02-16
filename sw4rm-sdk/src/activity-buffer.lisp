@@ -50,8 +50,9 @@
     :initform (make-hash-table :test 'equal)
     :documentation "Hash table mapping activity keys to activity-entry structs.")
 
-   (max-items
+  (max-items
     :initarg :max-items
+    :initarg :capacity
     :accessor max-items
     :type (integer 1 *)
     :initform 1000
@@ -156,6 +157,20 @@
       ;; Store entry
       (setf (gethash key (entries buf)) entry)
       entry)))
+
+(defun buffer-count (buf)
+  "Compatibility alias for CURRENT-SIZE."
+  (current-size buf))
+
+(defun add-entry (buf entry)
+  "Compatibility alias that accepts an activity-entry and forwards to upsert."
+  (check-type entry activity-entry)
+  (upsert-activity buf
+                   :task-id (activity-entry-task-id entry)
+                   :repo-id (activity-entry-repo-id entry)
+                   :worktree-id (activity-entry-worktree-id entry)
+                   :branch (activity-entry-branch entry)
+                   :description (activity-entry-description entry)))
 
 (defmethod remove-activity ((buf activity-buffer)
                            &key task-id repo-id worktree-id)

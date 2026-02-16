@@ -328,6 +328,14 @@
   (bt:with-lock-held ((aggregator-lock agg))
     (setf (voting-history agg) nil)))
 
+(defun voting-aggregator (&key strategy max-history)
+  "Construct a voting-aggregator instance.
+
+  Backward-compatible constructor used by older callers."
+  (make-instance 'voting-aggregator
+                 :strategy (or strategy (make-instance 'majority-vote-strategy))
+                 :max-history (or max-history 100)))
+
 ;;; Utility Functions
 
 (defun make-vote-from-plist (plist)

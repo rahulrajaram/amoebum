@@ -205,9 +205,37 @@ See documentation/protocol/spec.md for the canonical protocol specification.")
    #:agent-config-timeout-ms
    #:agent-config-retry-max-attempts
    #:agent-config-heartbeat-interval-ms
+   #:agent-config-model-preference
+   #:agent-config-budget-envelope
+   #:agent-config-interceptor-chain
 
    #:make-default-endpoints
    #:load-config-from-env)
+
+  ;; Local registry
+  (:export
+   #:duplicate-agent-registration
+   #:duplicate-agent-registration-agent-id
+   #:duplicate-agent-registration-existing-config
+   #:duplicate-agent-registration-attempted-config
+   #:make-local-registry
+   #:local-registry
+   #:local-registry-entry
+   #:local-registry-entry-agent-id
+   #:local-registry-entry-config
+   #:local-registry-entry-capabilities
+   #:local-registry-entry-registered-at
+   #:local-registry-entry-last-seen-at
+   #:local-registry-entry-metadata
+   #:local-registry-register
+   #:local-registry-unregister
+   #:local-registry-get
+   #:local-registry-get-entry
+   #:local-registry-list
+   #:local-registry-size
+   #:local-registry-clear
+   #:find-agents-by-capability
+   #:local-registry-touch)
 
   ;; Envelope - Message construction
   (:export

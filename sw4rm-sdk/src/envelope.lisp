@@ -53,6 +53,24 @@ Returns:
 ;;;
 ;;; For idempotency token generation per spec §11.2.
 
+(defun %envelope-key->string (key)
+  (cond
+    ((stringp key) (string-downcase key))
+    ((keywordp key) (string-downcase (substitute #\_ #\- (string key))))
+    ((symbolp key) (string-downcase (substitute #\_ #\- (string key))))
+    (t (string-downcase (princ-to-string key)))))
+
+(defun %plist-or-hash->plist (params-plist)
+  (cond
+    ((hash-table-p params-plist)
+     (let ((result nil))
+       (maphash (lambda (key value)
+                  (push value result)
+                  (push key result))
+                params-plist)
+       (nreverse result)))
+    (t (copy-list params-plist))))
+
 (defun compute-deterministic-hash (params-plist)
   "Compute deterministic SHA256 hash from canonical operation parameters.
 
@@ -67,16 +85,17 @@ Example:
   (compute-deterministic-hash '(:tool \"git-commit\" :repo \"myrepo\" :files (\"a.lisp\")))
   => \"a3b2c1d4e5f6a7b8\""
   ;; Canonicalize: sort keys and create stable representation
-  (let* ((sorted-params (sort (copy-list params-plist)
+  (let* ((normalized-params (%plist-or-hash->plist params-plist))
+         (sorted-params (sort (copy-list normalized-params)
                               #'string<
-                              :key (lambda (x) (string (if (keywordp x) x "")))))
+                              :key #'%envelope-key->string))
          (canonical-string (format nil "~{~A~^:~}" sorted-params))
-         (digest (ironclad:digest-sequence :sha256
-                                           (ironclad:ascii-string-to-byte-array
-                                            canonical-string))))
+         (digest (ironclad:digest-sequence
+                  :sha256
+                  (ironclad:ascii-string-to-byte-array canonical-string))))
     (subseq (ironclad:byte-array-to-hex-string digest) 0 16)))
 
-(defun make-idempotency-token (producer-id operation-type deterministic-hash)
+(defun make-idempotency-token (producer-id operation-type &optional deterministic-hash)
   "Create idempotency token in format: {producer_id}:{operation_type}:{deterministic_hash}.
 
 Per spec §11.2, idempotency tokens SHOULD follow this format for consistency.
@@ -92,7 +111,10 @@ Returns:
 Example:
   (make-idempotency-token \"agent-1\" \"git-commit\" \"abc123\")
   => \"agent-1:git-commit:abc123\""
-  (format nil "~A:~A:~A" producer-id operation-type deterministic-hash))
+  (let ((token-hash (or deterministic-hash
+                        (compute-deterministic-hash (list :producer-id producer-id
+                                                          :operation-type operation-type)))))
+    (format nil "~A:~A:~A" producer-id operation-type token-hash)))
 
 ;;;; Sequence Tracking
 ;;;
@@ -141,6 +163,8 @@ Returns:
 
 (defun make-envelope (&key
                       producer-id
+                      source-agent-id
+                      target-agent-id
                       message-type
                       (content-type "application/json")
                       (payload #())
@@ -155,67 +179,45 @@ Returns:
                       effective-policy-id
                       audit-proof
                       audit-policy-id)
-  "Build a message envelope with Three-ID model support (spec §11.3).
-
-Args:
-  PRODUCER-ID: ID of the producing agent/service (required)
-  MESSAGE-TYPE: Type of message from constants (required, e.g., +DATA+)
-  CONTENT-TYPE: MIME type of payload (default: 'application/json')
-  PAYLOAD: Message payload as byte array (default: empty)
-  CORRELATION-ID: Workflow/session identifier (auto-generated if nil)
-  IDEMPOTENCY-TOKEN: Stable token for deduplication (optional)
-  SEQUENCE-NUMBER: Sequence number for ordering (default: 1)
-  RETRY-COUNT: Number of retry attempts (default: 0)
-  REPO-ID: Repository identifier (optional)
-  WORKTREE-ID: Worktree identifier (optional)
-  TTL-MS: Time-to-live in milliseconds (default: 0 = no expiry)
-  STATE: Initial envelope state (default: +SENT+)
-  EFFECTIVE-POLICY-ID: ID of effective policy governing this operation
-  AUDIT-PROOF: Cryptographic proof for audit trail (bytes)
-  AUDIT-POLICY-ID: ID of audit policy governing this envelope
-
-Returns:
-  Property list compatible with sw4rm.common.Envelope protobuf message.
-
-Note:
-  - MESSAGE-ID is always auto-generated (new UUID per attempt)
-  - CORRELATION-ID is auto-generated if not provided
-  - For retry scenarios: keep CORRELATION-ID and IDEMPOTENCY-TOKEN,
-    but increment RETRY-COUNT and let MESSAGE-ID regenerate
-
-Example:
-  (make-envelope :producer-id \"agent-1\"
-                 :message-type +DATA+
-                 :payload (babel:string-to-octets \"{\\\"task\\\":\\\"test\\\"}\"))"
-  (unless producer-id
-    (error 'validation-error
-           :message "producer-id is required"
-           :field "producer-id"
-           :constraint "must not be nil"))
-  (unless message-type
-    (error 'validation-error
-           :message "message-type is required"
-           :field "message-type"
-           :constraint "must not be nil"))
-
-  (list :message-id (generate-uuid)
-        :idempotency-token (or idempotency-token "")
-        :producer-id producer-id
-        :correlation-id (or correlation-id (generate-uuid))
-        :sequence-number (or sequence-number 1)
-        :retry-count retry-count
-        :message-type message-type
-        :content-type content-type
-        :content-length (length payload)
-        :repo-id (or repo-id "")
-        :worktree-id (or worktree-id "")
-        :hlc-timestamp (generate-hlc-timestamp)
-        :ttl-ms (or ttl-ms 0)
-        :state state
-        :effective-policy-id (or effective-policy-id "")
-        :payload payload
-        :audit-proof (or audit-proof #())
-        :audit-policy-id (or audit-policy-id "")))
+  "Build a message envelope with Three-ID model support (spec §11.3)."
+  (let ((effective-producer-id (or producer-id source-agent-id)))
+    (unless effective-producer-id
+      (error 'validation-error
+             :message "source/producer identifier is required"
+             :field "source-agent-id"
+             :constraint "must not be nil"))
+    (unless message-type
+      (error 'validation-error
+             :message "message-type is required"
+             :field "message-type"
+             :constraint "must not be nil"))
+    (let ((envelope (make-hash-table :test 'equal)))
+      (flet ((setf-envelope (key value)
+               (setf (gethash (%envelope-key->string key) envelope) value)))
+        (setf-envelope :message-id (generate-uuid))
+        (setf-envelope :idempotency-token (or idempotency-token ""))
+        (setf-envelope :producer-id effective-producer-id)
+        (setf-envelope :source-agent-id (or source-agent-id ""))
+        (setf-envelope :target-agent-id (or target-agent-id ""))
+        ;; Keep snake-case aliases for historical compatibility.
+        (setf-envelope :source_agent_id (or source-agent-id ""))
+        (setf-envelope :target_agent_id (or target-agent-id ""))
+        (setf-envelope :correlation-id (or correlation-id (generate-uuid)))
+        (setf-envelope :sequence-number (or sequence-number 1))
+        (setf-envelope :retry-count retry-count)
+        (setf-envelope :message-type message-type)
+        (setf-envelope :content-type content-type)
+        (setf-envelope :content-length (length payload))
+        (setf-envelope :repo-id (or repo-id ""))
+        (setf-envelope :worktree-id (or worktree-id ""))
+        (setf-envelope :hlc-timestamp (generate-hlc-timestamp))
+        (setf-envelope :ttl-ms (or ttl-ms 0))
+        (setf-envelope :state state)
+        (setf-envelope :effective-policy-id (or effective-policy-id ""))
+        (setf-envelope :payload payload)
+        (setf-envelope :audit-proof (or audit-proof #()))
+        (setf-envelope :audit-policy-id (or audit-policy-id "")))
+      envelope)))
 
 ;;;; Envelope State Management
 ;;;
@@ -235,8 +237,16 @@ Example:
   (let ((env (make-envelope :producer-id \"agent-1\" :message-type +DATA+)))
     (update-envelope-state env +received-envelope+)
     (getf env :state)) => 2"
-  (setf (getf envelope :state) new-state)
+  (if (hash-table-p envelope)
+      (setf (gethash "state" envelope) new-state)
+      (setf (getf envelope :state) new-state))
   envelope)
+
+(defun %envelope-get (envelope key)
+  "Read a field from either plist or hash-table envelopes."
+  (if (hash-table-p envelope)
+      (gethash (%envelope-key->string key) envelope)
+      (getf envelope key)))
 
 (defun terminal-state-p (state)
   "Check if an envelope state is terminal (no further transitions expected).
@@ -281,18 +291,18 @@ Returns:
                   (error 'validation-error
                          :message (or ,error-msg
                                       (format nil "~A validation failed" ',field))
-                         :field (string-downcase (symbol-name ',field))
-                         :constraint (format nil "~A" ',constraint)))))
-    (check-field message-id (getf envelope :message-id))
-    (check-field producer-id (getf envelope :producer-id))
-    (check-field correlation-id (getf envelope :correlation-id))
-    (check-field message-type (getf envelope :message-type))
+                          :field (string-downcase (symbol-name ',field))
+                          :constraint (format nil "~A" ',constraint)))))
+    (check-field message-id (%envelope-get envelope :message-id))
+    (check-field producer-id (%envelope-get envelope :producer-id))
+    (check-field correlation-id (%envelope-get envelope :correlation-id))
+    (check-field message-type (%envelope-get envelope :message-type))
     (check-field sequence-number
-                 (and (integerp (getf envelope :sequence-number))
-                      (> (getf envelope :sequence-number) 0))
+                 (and (integerp (%envelope-get envelope :sequence-number))
+                      (> (%envelope-get envelope :sequence-number) 0))
                  "sequence-number must be positive integer")
     (check-field retry-count
-                 (and (integerp (getf envelope :retry-count))
-                      (>= (getf envelope :retry-count) 0))
+                 (and (integerp (%envelope-get envelope :retry-count))
+                      (>= (%envelope-get envelope :retry-count) 0))
                  "retry-count must be non-negative integer"))
   t)
