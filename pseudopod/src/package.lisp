@@ -140,4 +140,56 @@
    #:stream-chat-completion
    #:stream-chat-completion*
    #:print-streamed-completion
-   #:main))
+   #:main
+   ;; Provider protocol (I94)
+   #:provider
+   #:provider-name
+   #:provider-api-key
+   #:provider-base-url
+   #:provider-default-model
+   #:provider-timeout-seconds
+   #:provider-healthy-p
+   #:provider-last-error
+   #:provider-request-count
+   #:provider-error-count
+   #:provider-last-latency-ms
+   #:provider-error-rate
+   #:provider-record-request
+   #:send-chat-completion
+   #:send-streaming-completion
+   #:list-provider-models
+   #:estimate-provider-tokens
+   #:provider-health-check
+   #:with-provider
+   #:current-provider
+   #:*current-provider*
+   ;; Kimi provider
+   #:kimi-provider
+   #:make-kimi-provider
+   #:kimi-provider-client
+   ;; Anthropic provider
+   #:anthropic-provider
+   #:make-anthropic-provider
+   #:anthropic-provider-api-version
+   #:anthropic-provider-beta-features
+   ;; OpenAI-compatible provider
+   #:openai-compatible-provider
+   #:make-openai-compatible-provider
+   #:openai-compat-organization
+   ;; Model router (I95)
+   #:model-router
+   #:model-router-p
+   #:make-model-router
+   #:model-router-strategy
+   #:model-router-providers
+   #:model-router-max-retries
+   #:router-add-provider
+   #:router-remove-provider
+   #:router-find-provider
+   #:router-healthy-providers
+   #:router-select-provider
+   #:router-set-task-route
+   #:router-chat-completion
+   #:router-streaming-completion
+   #:router-check-health
+   #:router-status))

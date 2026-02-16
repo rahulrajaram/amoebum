@@ -13,6 +13,11 @@
    (:file "src/model/file-object")
    (:file "src/tooling/registry")
    (:file "src/client")
+   (:file "src/providers/protocol")
+   (:file "src/providers/kimi")
+   (:file "src/providers/anthropic")
+   (:file "src/providers/openai-compat")
+   (:file "src/providers/router")
    (:file "src/agent/generate")
    (:file "src/agent/conversation"))
   :in-order-to ((asdf:test-op (asdf:test-op "pseudopod/test"))))
@@ -22,7 +27,9 @@
   :depends-on ("pseudopod" "fiveam" "jonathan")
   :serial t
   :components
-  ((:file "test/suite"))
+  ((:file "test/suite")
+   (:file "test/provider-test")
+   (:file "test/router-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (uiop:symbol-call :pseudopod/test :run-all)))

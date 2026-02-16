@@ -681,6 +681,132 @@
   (setf *checkpoint-last-activity-at* timestamp)
   timestamp)
 
+;;; ---------------------------------------------------------------------------
+;;; Image Save/Restore (I99)
+;;;
+;;; Wraps sb-ext:save-lisp-and-die with pre-save cleanup and post-restore reinit.
+;;; Supports image rotation (keep N most recent).
+;;; ---------------------------------------------------------------------------
+
+(defvar *image-directory-override* nil)
+(defvar *image-max-count* 5
+  "Maximum number of saved images to keep.")
+(defvar *image-pre-save-hooks* '()
+  "List of functions called before saving an image.")
+(defvar *image-post-restore-hooks* '()
+  "List of functions called after restoring an image.")
+
+(defun image-directory (&key project-root config)
+  "Return the directory for saved images."
+  (or (and *image-directory-override*
+           (uiop:ensure-directory-pathname *image-directory-override*))
+      (merge-pathnames #P".amoebum/images/"
+                       (%checkpoint-project-root :project-root project-root
+                                                  :config config))))
+
+(defun %image-path (name &key project-root config)
+  "Build image file path."
+  (merge-pathnames (pathname (format nil "~A.core" name))
+                   (image-directory :project-root project-root :config config)))
+
+(defun %image-files (&key project-root config)
+  "List existing image files, sorted newest first."
+  (let* ((dir (image-directory :project-root project-root :config config))
+         (pattern (merge-pathnames #P"*.core" dir)))
+    (sort (copy-list (directory pattern))
+          #'>
+          :key (lambda (path)
+                 (or (ignore-errors (file-write-date path)) 0)))))
+
+(defun rotate-images (&key project-root config (max-count *image-max-count*))
+  "Delete old images, keeping at most MAX-COUNT."
+  (let* ((images (%image-files :project-root project-root :config config))
+         (excess (nthcdr max-count images))
+         (deleted 0))
+    (dolist (old excess)
+      (handler-case
+          (progn (delete-file old) (incf deleted))
+        (error () nil)))
+    deleted))
+
+(defun list-saved-images (&key project-root config)
+  "Return alist of (name . path) for saved images."
+  (mapcar (lambda (path)
+            (cons (pathname-name path) path))
+          (%image-files :project-root project-root :config config)))
+
+(defun %run-image-hooks (hooks label)
+  "Run all functions in HOOKS list, logging errors."
+  (dolist (hook hooks)
+    (handler-case (funcall hook)
+      (error (c)
+        (format *error-output* "~A hook error: ~A~%" label c)))))
+
+(defun %image-pre-save-cleanup ()
+  "Perform cleanup before saving an image."
+  ;; Close open file descriptors where possible
+  ;; Drain MCP notifications
+  ;; Serialize sw4rm state
+  ;; Flush event bus
+  (%run-image-hooks *image-pre-save-hooks* "pre-save"))
+
+(defun %image-post-restore-init ()
+  "Reinitialize after restoring an image."
+  ;; Reinitialize terminal
+  ;; Restart MCP servers
+  ;; Restore sw4rm state
+  (%run-image-hooks *image-post-restore-hooks* "post-restore"))
+
+(defun save-amoebum-image (&key path project-root config
+                                (name nil)
+                                (toplevel-fn nil)
+                                (rotate-p t))
+  "Save the current Lisp image to PATH.
+Pre-save cleanup runs before save; post-restore init runs on resume.
+If ROTATE-P, old images are pruned."
+  (let* ((resolved-name (or name (%checkpoint-id-from-time)))
+         (resolved-path (or path
+                            (%image-path resolved-name
+                                         :project-root project-root
+                                         :config config))))
+    (ensure-directories-exist resolved-path)
+    ;; Pre-save cleanup
+    (%image-pre-save-cleanup)
+    ;; Checkpoint session state before image save
+    (handler-case
+        (checkpoint-session :project-root project-root
+                            :config config
+                            :trigger :image-save
+                            :auto-p nil)
+      (error () nil))
+    ;; Rotate old images
+    (when rotate-p
+      (rotate-images :project-root project-root :config config))
+    ;; Save the image
+    #+sbcl
+    (sb-ext:save-lisp-and-die
+     resolved-path
+     :toplevel (or toplevel-fn
+                   (lambda ()
+                     (%image-post-restore-init)
+                     (handler-case (main)
+                       (error (c)
+                         (format *error-output* "Restore error: ~A~%" c)
+                         (uiop:quit 1)))))
+     :executable t
+     :purify t)
+    #-sbcl
+    (error "Image save/restore requires SBCL (sb-ext:save-lisp-and-die).")
+    resolved-path))
+
+(defun register-image-pre-save-hook (fn)
+  "Register a function to call before saving an image."
+  (pushnew fn *image-pre-save-hooks*))
+
+(defun register-image-post-restore-hook (fn)
+  "Register a function to call after restoring an image."
+  (pushnew fn *image-post-restore-hooks*))
+
 (defun maybe-auto-checkpoint (&key
                                 conversation
                                 config

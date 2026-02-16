@@ -3,7 +3,7 @@
   :author "amoebum"
   :license "MIT"
   :version "0.1.0"
-  :depends-on ("pseudopod" "ptui" "ptui/components" "uiop" "cl-ppcre" "bordeaux-threads" "named-readtables")
+  :depends-on ("pseudopod" "ptui" "ptui/components" "sw4rm-sdk" "uiop" "cl-ppcre" "bordeaux-threads" "named-readtables")
   :serial t
   :components
   ((:file "src/package")
@@ -22,11 +22,15 @@
    (:file "src/commands")
    (:file "src/permissions")
    (:file "src/sandbox")
+   (:file "src/sandbox-os")
+   (:file "src/self-modify")
+   (:file "src/asdf-extensions")
    (:file "src/reader-macros")
    (:file "src/macros/deftool")
    (:file "src/macros/defhook")
    (:file "src/macros/defkeys")
    (:file "src/macros/defskill")
+   (:file "src/indexer")
    (:file "src/compile-validation")
    (:file "src/conditions")
    (:file "src/mcp/jsonrpc")
@@ -41,8 +45,12 @@
    (:file "src/tools/shell")
    (:file "src/tools/git")
    (:file "src/tools/lsp")
+   (:file "src/profiler")
    (:file "src/widgets/fuzzy-picker")
    (:file "src/widgets/tree-browser")
+   (:file "src/widgets/perf-dashboard")
+   (:file "src/swarm")
+   (:file "src/widgets/swarm-panel")
    (:file "src/system-prompt")
    (:file "src/ui/streaming")
    (:file "src/ui/status-bar")
@@ -55,7 +63,13 @@
   :depends-on ("amoebum" "fiveam")
   :serial t
   :components
-  ((:file "test/suite"))
+  ((:file "test/suite")
+   (:file "test/indexer-smoke-test")
+   (:file "test/os-sandbox-smoke-test")
+   (:file "test/self-modify-smoke-test")
+   (:file "test/image-smoke-test")
+   (:file "test/asdf-extensions-smoke-test")
+   (:file "test/profiler-smoke-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (unless (uiop:symbol-call :amoebum/test :run-all)
