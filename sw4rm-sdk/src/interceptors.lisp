@@ -421,6 +421,19 @@
 
         modified-response)))
 
+;;; Budget Interceptor
+
+(defmethod interceptor-name ((interceptor budget-interceptor))
+  "budget")
+
+(defmethod on-request ((interceptor budget-interceptor) request context)
+  (declare (ignore context))
+  (apply-budget-interceptor interceptor request))
+
+(defmethod on-response ((interceptor budget-interceptor) response context)
+  (declare (ignore context))
+  response)
+
 ;;; Utility Functions
 
 ;;; copy-hash-table is provided by alexandria (inherited via :use)

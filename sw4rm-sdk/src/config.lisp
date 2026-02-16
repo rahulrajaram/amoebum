@@ -50,7 +50,12 @@ Implementations SHOULD honor environment variable overrides for deployment flexi
   "Agent runtime configuration.
 
 Specifies agent identity, capabilities, service endpoints, and operational parameters
-such as timeouts and retry policies."
+such as timeouts and retry policies.
+
+Additional governance inputs:
+  - MODEL-PREFERENCE: ordered list of preferred models for routing and fallback.
+  - BUDGET-ENVELOPE: optional budget envelope object associated with the agent.
+  - INTERCEPTOR-CHAIN: optional interceptor chain for request processing."
   (agent-id
    "agent-1"
    :type string
@@ -78,7 +83,16 @@ such as timeouts and retry policies."
    :type integer)                 ; Maximum number of retry attempts for failed operations
   (heartbeat-interval-ms
    *default-heartbeat-interval-ms*
-   :type integer))                ; Interval between heartbeat messages in milliseconds
+   :type integer)                 ; Interval between heartbeat messages in milliseconds
+  (model-preference
+   nil
+   :type (or null list string))
+  (budget-envelope
+   nil
+   :type t)
+  (interceptor-chain
+   nil
+   :type t))
 
 ;;;; Configuration Constructors
 ;;;
@@ -153,4 +167,14 @@ Returns:
                          *default-retry-max-attempts*)
    :heartbeat-interval-ms (if-let ((val (uiop:getenv "SW4RM_HEARTBEAT_INTERVAL_MS")))
                             (parse-integer val :junk-allowed t)
-                            *default-heartbeat-interval-ms*)))
+                            *default-heartbeat-interval-ms*)
+  :model-preference (if-let ((val (uiop:getenv "SW4RM_MODEL_PREFERENCE")))
+                        (let ((parts (split-sequence:split-sequence #\, val)))
+                          (remove ""
+                                  (mapcar (lambda (item)
+                                            (string-trim '(#\Space #\Tab) item))
+                                          parts)
+                                  :test #'string=))
+                        nil)
+   :budget-envelope nil
+   :interceptor-chain nil))

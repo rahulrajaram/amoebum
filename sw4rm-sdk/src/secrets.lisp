@@ -70,7 +70,7 @@
   ((file-path
     :initarg :file-path
     :accessor backend-file-path
-    :type string
+    :type (or pathname string)
     :initform (merge-pathnames ".secrets.json" (user-homedir-pathname))
     :documentation "Path to JSON file storing secrets.")
 
@@ -221,7 +221,8 @@
   (let ((env-var (format nil "~A~A"
                         (env-prefix backend)
                         (string-upcase key))))
-    (uiop:getenv env-var)))
+    (or (uiop:getenv env-var)
+        (uiop:getenv (string-upcase key)))))
 
 (defmethod set-secret ((backend env-backend) key value)
   "Environment backend is read-only."

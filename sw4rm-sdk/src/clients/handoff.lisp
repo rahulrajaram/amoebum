@@ -50,6 +50,26 @@
     :documentation "Map: correlation-id -> cancellation flag plist."))
   (:documentation "In-memory handoff client with SW4-004/SW4-005 extensions."))
 
+(define-condition handoff-rejected (sw4rm-error)
+  ((handoff-id
+    :initarg :handoff-id
+    :reader handoff-rejected-handoff-id)
+   (response
+    :initarg :response
+    :reader handoff-rejected-response)
+   (rejection-code
+    :initarg :rejection-code
+    :reader handoff-rejected-rejection-code)
+   (rejection-reason
+    :initarg :rejection-reason
+    :reader handoff-rejected-rejection-reason))
+  (:default-initargs :error-code +no-route+)
+  (:report (lambda (condition stream)
+             (format stream "Handoff ~A rejected (~A): ~A"
+                     (handoff-rejected-handoff-id condition)
+                     (handoff-rejected-rejection-code condition)
+                     (handoff-rejected-rejection-reason condition)))))
+
 (defun %required-string (plist key)
   "Read KEY from PLIST and require a non-empty string value."
   (let ((value (getf plist key)))
@@ -67,6 +87,24 @@
 (defun %copy-plist (plist)
   "Return a shallow copy of PLIST."
   (copy-list plist))
+
+(defun serialize-handoff-context (context &key (max-bytes 65536))
+  "Serialize handoff CONTEXT to JSON, truncating if MAX-BYTES is exceeded."
+  (let* ((as-json (if (stringp context)
+                      context
+                      (jonathan:to-json context)))
+         (length-bytes (length as-json)))
+    (if (> length-bytes max-bytes)
+        (subseq as-json 0 max-bytes)
+        as-json)))
+
+(defun deserialize-handoff-context (serialized-context)
+  "Parse a JSON handoff context payload."
+  (cond
+    ((or (null serialized-context) (string= serialized-context "")) nil)
+    ((stringp serialized-context)
+     (jonathan:parse serialized-context :as :plist))
+    (t serialized-context)))
 
 (defun %normalize-positive-integer (value fallback)
   "Return VALUE when it is a positive integer, otherwise FALLBACK."
@@ -152,6 +190,32 @@
         :rejection-code +validation-error+
         :retry-after-ms nil
         :redirect-to-agent-id nil))
+
+(defun %handle-rejection-restart (response handoff-id)
+  "Expose a restartable rejection hook.
+
+Returns two values:
+  action    - :RETURN or :RETRY
+  next-agent-id - non-empty string when action is :RETRY."
+  (let ((action :return)
+        (next-agent-id nil))
+    (restart-case
+        (signal 'handoff-rejected
+                :message (or (getf response :rejection-reason) "handoff rejected")
+                :handoff-id handoff-id
+                :response response
+                :rejection-code (getf response :rejection-code)
+                :rejection-reason (or (getf response :rejection-reason) "unknown"))
+      (try-next-agent (agent-id)
+        :report "Retry delegation against another agent."
+        (setf action :retry)
+        (setf next-agent-id
+              (and (stringp agent-id)
+                   (string-trim '(#\Space #\Tab #\Newline #\Return) agent-id))))
+      (return-rejection ()
+        :report "Return the original rejection response."
+        (setf action :return)))
+    (values action next-agent-id)))
 
 (defun %effective-max-redirects (policy)
   "Return configured max redirects, or effective default when not positive."
@@ -293,8 +357,17 @@ handoff response plist."
                        (let ((after-sleep-ms (funcall now-fn)))
                          (%consume-wall-time request-budget
                                              (max (- after-sleep-ms before-sleep-ms) 0))))))
-                 (if (not (eql rejection-code +redirect+))
-                     (return response)
+                (if (not (eql rejection-code +redirect+))
+                     (multiple-value-bind (action next-target)
+                         (%handle-rejection-restart response request-id-value)
+                       (if (and (eq action :retry)
+                                (stringp next-target)
+                                (> (length next-target) 0)
+                                (not (member next-target visited-agents :test #'string=)))
+                           (progn
+                             (setf (getf request :to-agent) next-target)
+                             (push next-target visited-agents))
+                           (return response)))
                      (if (not (getf policy :allow-spillover-routing))
                          (return response)
                          (let* ((raw-target (getf response :redirect-to-agent-id))

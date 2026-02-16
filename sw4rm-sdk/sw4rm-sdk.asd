@@ -9,6 +9,7 @@
                #:bordeaux-threads
                #:local-time
                #:ironclad
+               #:cl-json
                #:uuid
                #:jonathan
                #:cl-ppcre
@@ -20,10 +21,16 @@
                              (:file "constants")
                              (:file "errors")
                              (:file "config")
+                             (:file "local-registry")
                              (:file "envelope")
                              (:file "state-machine")
+                             (:file "budget")
+                             (:file "local-router")
+                             (:file "workflow-engine")
+                             (:file "local-hitl")
                              (:file "activity-buffer")
                              (:file "worktree-state")
+                             (:file "git-worktree")
                              (:file "voting")
                              (:file "audit")
                              (:file "secrets")
@@ -40,9 +47,10 @@
                 :components ((:file "base")
                              (:file "handoff")
                              (:file "gateway")
-                             (:file "negotiation-room")
-                             (:file "negotiation-room-store"))))
-  :in-order-to ((test-op (test-op #:sw4rm-sdk/tests))))
+                             (:file "workflow")
+                             (:file "negotiation-room-store")
+                             (:file "negotiation-room"))))
+  :in-order-to ((asdf:test-op (asdf:test-op #:sw4rm-sdk/tests))))
 
 (asdf:defsystem #:sw4rm-sdk/tests
   :description "Test suite for SW4RM SDK (amoebum-adapted)"
@@ -51,8 +59,10 @@
   :components ((:module "test"
                 :serial t
                 :components ((:file "suite")
-                             (:file "integration-test"))))
-  :perform (test-op (o c)
+                             (:file "integration-test")
+                             (:file "local-registry-test")
+                             (:file "tranche-83-93-test"))))
+  :perform (asdf:test-op (o c)
              (let* ((suite-package (or (find-package :sw4rm-test)
                                        (error "SW4RM test package missing")))
                     (suite-symbol (or (find-symbol "SW4RM-SUITE" suite-package)

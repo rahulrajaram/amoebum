@@ -10,6 +10,8 @@
 (defstruct activity-entry
   "A single activity entry in the buffer.
    Fields conform to spec §10 requirements."
+  (agent-id nil :type (or null string))
+  (activity-type :task :type t)
   (task-id nil :type (or null string))
   (repo-id nil :type (or null string))
   (worktree-id nil :type (or null string))
@@ -38,6 +40,12 @@
       (when (> word-count 200)
         (error "Activity description exceeds 200 word limit (got ~D words)" word-count))))
 
+  (when (and (activity-entry-agent-id entry)
+             (string= (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                   (activity-entry-agent-id entry))
+                      ""))
+    (error "agent-id must be non-empty when provided"))
+
   t)
 
 ;;; Activity Buffer Class
@@ -50,12 +58,19 @@
     :initform (make-hash-table :test 'equal)
     :documentation "Hash table mapping activity keys to activity-entry structs.")
 
-   (max-items
+  (max-items
     :initarg :max-items
+    :initarg :capacity
     :accessor max-items
     :type (integer 1 *)
     :initform 1000
-    :documentation "Maximum number of activities to store.")
+   :documentation "Maximum number of activities to store.")
+
+   (update-hook
+    :initarg :update-hook
+    :accessor update-hook
+    :initform nil
+    :documentation "Optional callback for activity upsert/remove events.")
 
    (lock
     :accessor buffer-lock
@@ -111,7 +126,8 @@
   (>= (current-size buf) (max-items buf)))
 
 (defmethod upsert-activity ((buf activity-buffer)
-                           &key task-id repo-id worktree-id branch description)
+                           &key agent-id (activity-type :task)
+                             task-id repo-id worktree-id branch description)
   "Insert or update an activity entry in the buffer.
 
    Per spec §10.1, signals BUFFER-FULL-ERROR if buffer is at capacity
@@ -135,6 +151,8 @@
     (let* ((key (make-activity-key task-id repo-id worktree-id))
            (existing (gethash key (entries buf)))
            (entry (make-activity-entry
+                   :agent-id agent-id
+                   :activity-type activity-type
                    :task-id task-id
                    :repo-id repo-id
                    :worktree-id worktree-id
@@ -155,7 +173,25 @@
 
       ;; Store entry
       (setf (gethash key (entries buf)) entry)
+      (when (update-hook buf)
+        (funcall (update-hook buf) :upsert entry))
       entry)))
+
+(defun buffer-count (buf)
+  "Compatibility alias for CURRENT-SIZE."
+  (current-size buf))
+
+(defun add-entry (buf entry)
+  "Compatibility alias that accepts an activity-entry and forwards to upsert."
+  (check-type entry activity-entry)
+  (upsert-activity buf
+                   :agent-id (activity-entry-agent-id entry)
+                   :activity-type (activity-entry-activity-type entry)
+                   :task-id (activity-entry-task-id entry)
+                   :repo-id (activity-entry-repo-id entry)
+                   :worktree-id (activity-entry-worktree-id entry)
+                   :branch (activity-entry-branch entry)
+                   :description (activity-entry-description entry)))
 
 (defmethod remove-activity ((buf activity-buffer)
                            &key task-id repo-id worktree-id)
@@ -171,7 +207,10 @@
      T if entry was found and removed, NIL otherwise"
   (bt:with-lock-held ((buffer-lock buf))
     (let ((key (make-activity-key task-id repo-id worktree-id)))
-      (remhash key (entries buf)))))
+      (let ((existing (gethash key (entries buf))))
+        (prog1 (remhash key (entries buf))
+          (when (and existing (update-hook buf))
+            (funcall (update-hook buf) :remove existing)))))))
 
 (defmethod get-activity ((buf activity-buffer)
                         &key task-id repo-id worktree-id)
@@ -188,7 +227,7 @@
   (let ((key (make-activity-key task-id repo-id worktree-id)))
     (gethash key (entries buf))))
 
-(defmethod list-buffer-activities ((buf activity-buffer) &key task-id repo-id)
+(defmethod list-buffer-activities ((buf activity-buffer) &key task-id repo-id agent-id activity-type)
   "List all activities matching the given filters.
 
    Args:
@@ -204,7 +243,11 @@
                (when (and (or (null task-id)
                             (equal task-id (activity-entry-task-id v)))
                          (or (null repo-id)
-                            (equal repo-id (activity-entry-repo-id v))))
+                            (equal repo-id (activity-entry-repo-id v)))
+                         (or (null agent-id)
+                             (equal agent-id (activity-entry-agent-id v)))
+                         (or (null activity-type)
+                             (equal activity-type (activity-entry-activity-type v))))
                  (push v results)))
              (entries buf))
     results))

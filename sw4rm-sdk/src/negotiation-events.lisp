@@ -22,7 +22,7 @@
 
 (defstruct negotiation-event
   "Event representing an occurrence in a negotiation room."
-  (event-type nil :type (or null negotiation-event-type))
+  (event-type nil :type (or null symbol))
   (room-id nil :type (or null string))
   (agent-id nil :type (or null string))
   (timestamp (get-universal-time) :type integer)
@@ -101,11 +101,10 @@
   (bt:with-lock-held ((emitter-lock emitter))
     (if (eq event-type :all)
         (pushnew listener (global-listeners emitter) :test #'eq)
-        (progn
-          (check-type event-type negotiation-event-type)
-          (let ((listeners (gethash event-type (emitter-listeners emitter))))
-            (pushnew listener listeners :test #'eq)
-            (setf (gethash event-type (emitter-listeners emitter)) listeners))))))
+          (progn
+            (let ((listeners (gethash event-type (emitter-listeners emitter))))
+              (pushnew listener listeners :test #'eq)
+              (setf (gethash event-type (emitter-listeners emitter)) listeners))))))
 
 (defmethod off ((emitter negotiation-event-emitter) event-type listener)
   "Unregister a listener for a specific event type.
@@ -122,7 +121,11 @@
           (setf (gethash event-type (emitter-listeners emitter))
                 (remove listener listeners :test #'eq))))))
 
-(defmethod emit ((emitter negotiation-event-emitter) event)
+(defgeneric emit (emitter event-or-type &optional payload)
+  (:documentation "Emit a negotiation event. Supports both the modern
+    `(emit emitter event-struct)` and compatibility `(emit emitter event-type payload)` forms."))
+
+(defmethod emit ((emitter negotiation-event-emitter) (event negotiation-event) &optional payload)
   "Emit an event to all registered listeners.
 
    Args:
@@ -131,7 +134,7 @@
 
    Returns:
      The event"
-  (check-type event negotiation-event)
+  (declare (ignore payload))
   (bt:with-lock-held ((emitter-lock emitter))
     (let ((event-type (negotiation-event-event-type event)))
 
@@ -157,6 +160,13 @@
             (warn "Error in global event listener: ~A" e)))))
 
     event))
+
+(defmethod emit ((emitter negotiation-event-emitter) (event-type symbol) &optional payload)
+  "Backward-compatible two-argument emit form."
+  (emit emitter
+        (make-negotiation-event-with-id
+         :event-type event-type
+         :data payload)))
 
 (defmethod emit-event ((emitter negotiation-event-emitter)
                       event-type room-id agent-id data)

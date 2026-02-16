@@ -82,6 +82,30 @@
             :total total
             :distribution counts))))
 
+;;; Unanimous Strategy
+
+(defclass unanimous-vote-strategy ()
+  ()
+  (:documentation "Requires all votes to pick the same choice."))
+
+(defmethod strategy-name ((strategy unanimous-vote-strategy))
+  "unanimous")
+
+(defmethod aggregate ((strategy unanimous-vote-strategy) votes)
+  "Aggregate votes by unanimity.
+
+Returns:
+  :winner     unanimous choice when consensus reached, NIL otherwise.
+  :consensus-p boolean indicating unanimity.
+  :total      total votes."
+  (when (null votes)
+    (return-from aggregate (list :winner nil :consensus-p nil :total 0)))
+  (let* ((choices (remove-duplicates (mapcar #'vote-choice votes) :test #'equal))
+         (consensus-p (= (length choices) 1)))
+    (list :winner (and consensus-p (first choices))
+          :consensus-p consensus-p
+          :total (length votes))))
+
 ;;; Simple Average Strategy
 
 (defclass simple-average-strategy ()
@@ -327,6 +351,14 @@
      agg: Voting aggregator instance"
   (bt:with-lock-held ((aggregator-lock agg))
     (setf (voting-history agg) nil)))
+
+(defun voting-aggregator (&key strategy max-history)
+  "Construct a voting-aggregator instance.
+
+  Backward-compatible constructor used by older callers."
+  (make-instance 'voting-aggregator
+                 :strategy (or strategy (make-instance 'majority-vote-strategy))
+                 :max-history (or max-history 100)))
 
 ;;; Utility Functions
 
