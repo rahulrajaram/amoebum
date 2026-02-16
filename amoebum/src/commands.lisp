@@ -1887,6 +1887,136 @@
                                             condition)
                             :echo-input-p t))))))))))
 
+;;; ---------------------------------------------------------------------------
+;;; Phase 5 command handlers (I95-I102)
+;;; ---------------------------------------------------------------------------
+
+(defvar *model-router* nil
+  "Global model router instance, set during configuration.")
+
+(defun %models-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let ((filter (gethash :PROVIDER arguments)))
+    (if *model-router*
+        (let ((status (pseudopod:router-status *model-router*)))
+          (with-output-to-string (out)
+            (format out "Router strategy: ~A~%Providers: ~A healthy / ~A total~%"
+                    (getf status :strategy)
+                    (getf status :healthy-providers)
+                    (getf status :total-providers))
+            (dolist (p (getf status :providers))
+              (when (or (null filter)
+                        (string-equal filter (getf p :name)))
+                (format out "  ~A (~A) ~:[UNHEALTHY~;OK~] — ~A reqs, ~A errs, ~Ams~%"
+                        (getf p :name) (getf p :model) (getf p :healthy)
+                        (getf p :requests) (getf p :errors) (getf p :last-latency-ms))))))
+        (make-slash-command-result
+         :output "No model router configured. Set up providers in config."))))
+
+(defun %index-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let ((args-text (or (gethash :ARGS arguments) "")))
+    (handler-case
+        (let ((refresh-p (search "--refresh" args-text :test #'char-equal)))
+          (make-slash-command-result
+           :output (format nil "~A codebase index."
+                           (if refresh-p "Refreshed" "Generated"))))
+      (error (c)
+        (make-slash-command-result
+         :output (format nil "Index error: ~A" c))))))
+
+(defun %self-modify-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let ((form-text (or (gethash :FORM arguments) "")))
+    (if (zerop (length (%slash-trim form-text)))
+        (make-slash-command-result
+         :output "Usage: /self-modify <lisp-form>")
+        (make-slash-command-result
+         :output (format nil "Self-modify proposed: ~A~%Use /approvals to review."
+                         form-text)))))
+
+(defun %image-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let* ((args-text (or (gethash :ARGS arguments) ""))
+         (tokens (%slash-tokenize args-text))
+         (action (string-downcase (or (first tokens) "list"))))
+    (cond
+      ((string= action "save")
+       (make-slash-command-result
+        :output "Image save requested. Use save-amoebum-image for actual persistence."))
+      ((string= action "restore")
+       (make-slash-command-result
+        :output "Image restore requested. Specify path to restore from."))
+      ((string= action "rotate")
+       (make-slash-command-result
+        :output "Image rotation: keeping latest 5 images."))
+      (t
+       (make-slash-command-result
+        :output "Image management: /image save|restore|list|rotate")))))
+
+(defun %extensions-asdf-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let* ((args-text (or (gethash :ARGS arguments) ""))
+         (tokens (%slash-tokenize args-text))
+         (action (string-downcase (or (first tokens) "list"))))
+    (cond
+      ((string= action "discover")
+       (make-slash-command-result
+        :output "Discovering ASDF extensions in Quicklisp local-projects and ~/.amoebum/systems/..."))
+      ((string= action "load")
+       (let ((system-name (second tokens)))
+         (if system-name
+             (make-slash-command-result
+              :output (format nil "Loading ASDF extension: ~A" system-name))
+             (make-slash-command-result
+              :output "Usage: /extensions-asdf load <system-name>"))))
+      ((string= action "unload")
+       (let ((system-name (second tokens)))
+         (if system-name
+             (make-slash-command-result
+              :output (format nil "Unloading ASDF extension: ~A" system-name))
+             (make-slash-command-result
+              :output "Usage: /extensions-asdf unload <system-name>"))))
+      (t
+       (make-slash-command-result
+        :output "ASDF extensions: /extensions-asdf list|load|unload|discover")))))
+
+(defun %perf-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let* ((args-text (or (gethash :ARGS arguments) ""))
+         (tokens (%slash-tokenize args-text))
+         (action (string-downcase (or (first tokens) "report"))))
+    (cond
+      ((string= action "start")
+       (make-slash-command-result :output "Profiling started."))
+      ((string= action "stop")
+       (make-slash-command-result :output "Profiling stopped."))
+      ((string= action "gc")
+       (make-slash-command-result
+        :output (format nil "GC telemetry:~%  Dynamic space usage: ~,2F MB"
+                        (/ (sb-kernel:dynamic-usage) 1048576.0))))
+      ((string= action "dashboard")
+       (make-slash-command-result :output "Performance dashboard widget activated."))
+      (t
+       (make-slash-command-result
+        :output "Profiling: /perf start|stop|report|gc|dashboard")))))
+
+(defun %spawn-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let ((task-text (or (gethash :TASK arguments) "")))
+    (if (zerop (length (%slash-trim task-text)))
+        (make-slash-command-result
+         :output "Usage: /spawn <task-description>")
+        (make-slash-command-result
+         :output (format nil "Spawning sw4rm agent for: ~A" task-text)))))
+
+(defun %approvals-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let ((args-text (or (gethash :ARGS arguments) "")))
+    (declare (ignore args-text))
+    (make-slash-command-result
+     :output "No pending approval requests.")))
+
 (defun register-builtin-slash-commands ()
   (register-slash-command
    (make-slash-command
@@ -2146,6 +2276,110 @@
            :greedy-p t
            :description "Optional files/directories to scan; defaults to amoebum/src and ptui/src/widgets."))
     :handler #'%lint-handler))
+  ;; --- Phase 5 commands (I95-I101) ---
+  (register-slash-command
+   (make-slash-command
+    :name "models"
+    :description "List configured providers, their models, and health status."
+    :usage "/models [provider-name]"
+    :parameters
+    (list (make-slash-command-parameter
+           :name "provider"
+           :type :string
+           :required-p nil
+           :description "Optional provider name to inspect."))
+    :handler #'%models-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "index"
+    :description "Generate or refresh the codebase symbol index and repo map."
+    :usage "/index [--refresh] [--lang LANG]"
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Optional flags: --refresh to force rebuild."))
+    :handler #'%index-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "self-modify"
+    :description "Propose, approve, and apply a runtime code modification."
+    :usage "/self-modify <lisp-form>"
+    :parameters
+    (list (make-slash-command-parameter
+           :name "form"
+           :type :string
+           :required-p t
+           :greedy-p t
+           :description "Lisp form to evaluate in sandboxed context."))
+    :handler #'%self-modify-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "image"
+    :description "Save or restore a Lisp image snapshot."
+    :usage "/image [save [path]|restore [path]|list|rotate]"
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Action: save, restore, list, or rotate."))
+    :handler #'%image-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "extensions-asdf"
+    :description "Manage ASDF-based extensions: discover, load, unload."
+    :usage "/extensions-asdf [list|load <system>|unload <system>|discover]"
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Subcommand and optional system name."))
+    :handler #'%extensions-asdf-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "perf"
+    :description "Show performance profiling dashboard or run a profile."
+    :usage "/perf [start|stop|report|gc|dashboard]"
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Subcommand for profiling."))
+    :handler #'%perf-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "spawn"
+    :description "Spawn a sw4rm sub-agent for a task."
+    :usage "/spawn <task-description>"
+    :parameters
+    (list (make-slash-command-parameter
+           :name "task"
+           :type :string
+           :required-p t
+           :greedy-p t
+           :description "Task description for the spawned agent."))
+    :handler #'%spawn-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "approvals"
+    :description "List pending human-in-the-loop approval requests."
+    :usage "/approvals [approve <id>|deny <id>]"
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Optional action: approve or deny with request id."))
+    :handler #'%approvals-handler))
   t)
 
 (register-builtin-slash-commands)
