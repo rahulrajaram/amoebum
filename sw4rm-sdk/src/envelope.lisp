@@ -306,3 +306,105 @@ Returns:
                       (>= (%envelope-get envelope :retry-count) 0))
                  "retry-count must be non-negative integer"))
   t)
+
+;;;; Message Log Ring Buffer
+;;;
+;;; Captures envelope traffic for local diagnostics and assertions.
+
+(defstruct message-log-entry
+  "One logged envelope snapshot."
+  (message-id "" :type string)
+  (correlation-id "" :type string)
+  (source-agent-id "" :type string)
+  (target-agent-id "" :type string)
+  (message-type +message-type-unspecified+ :type integer)
+  (state +sent+ :type integer)
+  (timestamp (get-universal-time) :type integer)
+  (envelope nil :type t))
+
+(defclass message-log ()
+  ((entries
+    :initform nil
+    :accessor message-log-entries
+    :documentation "Newest-first list of MESSAGE-LOG-ENTRY values.")
+   (capacity
+    :initarg :capacity
+    :initform 512
+    :accessor message-log-capacity
+    :type (integer 1 *))
+   (lock
+    :initform (bt:make-lock "sw4rm-message-log-lock")
+    :accessor message-log-lock))
+  (:documentation "In-memory ring buffer for envelope logging."))
+
+(defun make-message-log (&key (capacity 512))
+  "Construct a message-log with CAPACITY entries."
+  (make-instance 'message-log :capacity capacity))
+
+(defun message-log-size (log)
+  "Return number of entries currently stored in LOG."
+  (check-type log message-log)
+  (bt:with-lock-held ((message-log-lock log))
+    (length (message-log-entries log))))
+
+(defun clear-message-log (log)
+  "Remove all entries from LOG."
+  (check-type log message-log)
+  (bt:with-lock-held ((message-log-lock log))
+    (setf (message-log-entries log) nil))
+  t)
+
+(defun %copy-envelope (envelope)
+  (cond
+    ((hash-table-p envelope)
+     (alexandria:copy-hash-table envelope))
+    ((listp envelope)
+     (copy-list envelope))
+    (t envelope)))
+
+(defun log-envelope (log envelope)
+  "Append ENVELOPE to LOG and return the resulting MESSAGE-LOG-ENTRY."
+  (check-type log message-log)
+  (let* ((entry (make-message-log-entry
+                 :message-id (or (%envelope-get envelope :message-id) "")
+                 :correlation-id (or (%envelope-get envelope :correlation-id) "")
+                 :source-agent-id (or (%envelope-get envelope :source-agent-id)
+                                      (%envelope-get envelope :producer-id)
+                                      "")
+                 :target-agent-id (or (%envelope-get envelope :target-agent-id) "")
+                 :message-type (or (%envelope-get envelope :message-type)
+                                   +message-type-unspecified+)
+                 :state (or (%envelope-get envelope :state) +sent+)
+                 :timestamp (get-universal-time)
+                 :envelope (%copy-envelope envelope))))
+    (bt:with-lock-held ((message-log-lock log))
+      (push entry (message-log-entries log))
+      (when (> (length (message-log-entries log)) (message-log-capacity log))
+        (setf (message-log-entries log)
+              (subseq (message-log-entries log) 0 (message-log-capacity log)))))
+    entry))
+
+(defun query-message-log (log &key message-id correlation-id source-agent-id target-agent-id
+                              state message-type (limit nil))
+  "Query LOG entries with optional filters, returning newest-first results."
+  (check-type log message-log)
+  (bt:with-lock-held ((message-log-lock log))
+    (let ((results
+            (remove-if-not
+             (lambda (entry)
+               (and (or (null message-id)
+                        (string= message-id (message-log-entry-message-id entry)))
+                    (or (null correlation-id)
+                        (string= correlation-id (message-log-entry-correlation-id entry)))
+                    (or (null source-agent-id)
+                        (string= source-agent-id (message-log-entry-source-agent-id entry)))
+                    (or (null target-agent-id)
+                        (string= target-agent-id (message-log-entry-target-agent-id entry)))
+                    (or (null state)
+                        (eql state (message-log-entry-state entry)))
+                    (or (null message-type)
+                        (eql message-type (message-log-entry-message-type entry)))))
+             (message-log-entries log))))
+      (if limit
+          (subseq results 0 (min limit (length results)))
+          results))))

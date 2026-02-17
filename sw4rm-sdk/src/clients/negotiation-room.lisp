@@ -1,264 +1,275 @@
-;;;; negotiation-room.lisp - Negotiation Room client for SW4RM
-;;;;
-;;;; Manages multi-agent artifact approval workflows using the Negotiation
-;;;; Room pattern. Supports submitting artifacts for review, collecting votes
-;;;; from critics, and coordinating the review process.
+;;;; negotiation-room.lisp - Local negotiation room implementation
 
 (in-package :sw4rm-sdk)
 
-;;;; Client Class
-
 (defclass negotiation-room-client (base-client)
-  ()
-  (:documentation "Client for managing negotiation room operations.
-
-The negotiation room client manages the lifecycle of artifact proposals
-through the multi-agent review process:
-
-Workflow:
-  1. Producer submits an artifact proposal
-  2. Critics evaluate and submit votes
-  3. Coordinator retrieves votes and makes decision
-  4. Decision is stored and made available
-
-This is a local client (not gRPC-based) that uses in-memory or file-based
-storage for proposals, votes, and decisions. For distributed deployments,
-use a shared storage backend.
-
-Note: This differs from the NegotiationService (negotiation.lisp) which
-handles general multi-agent negotiations. The negotiation room is specifically
-for artifact approval workflows."))
-
-;;;; RPC Methods (Local, not gRPC)
+  ((store
+    :initarg :store
+    :accessor negotiation-room-client-store
+    :initform (get-default-store)
+    :documentation "Proposal/vote/decision storage backend.")
+   (rooms
+    :initform (make-hash-table :test #'equal)
+    :accessor negotiation-room-client-rooms
+    :documentation "Room registry keyed by room-id.")
+   (lock
+    :initform (bt:make-lock "negotiation-room-client-lock")
+    :accessor negotiation-room-client-lock))
+  (:documentation "In-process negotiation room client with lifecycle support."))
 
 (defgeneric create-room (client room-id &key description metadata)
-  (:documentation "Create a new negotiation room.
+  (:documentation "Create a negotiation room and return metadata plist."))
 
-Initializes a negotiation room for artifact review workflows.
+(defgeneric submit-artifact (client artifact-proposal)
+  (:documentation "Submit an artifact proposal; returns artifact-id."))
 
-Args:
-  client: The negotiation-room-client instance.
-  room-id: Unique identifier for the room.
-  description: Optional human-readable description.
-  metadata: Optional metadata alist.
+(defgeneric add-critique (client vote)
+  (:documentation "Add a critic vote and possibly trigger room decision finalization."))
 
-Returns:
-  Room creation response plist with :room-id and :created-at.
+(defgeneric score-artifact (client artifact-id)
+  (:documentation "List votes for artifact-id."))
 
-Signals:
-  RPC-ERROR: If room creation fails (e.g., room already exists).
+(defgeneric get-room-status (client room-id)
+  (:documentation "Return room status summary."))
 
-Example:
-  (create-room client \"room-code-review\"
-               :description \"Code artifact review room\"
-               :metadata '((:team . \"backend\")))"))
+(defgeneric wait-for-decision (client artifact-id &key timeout-s poll-interval-s)
+  (:documentation "Wait for a decision or signal RPC-TIMEOUT."))
+
+(defun %require-string (value field)
+  (unless (and (stringp value)
+               (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value)) 0))
+    (error 'validation-error
+           :message (format nil "~A must be a non-empty string" field)
+           :field field
+           :constraint "non-empty string"))
+  (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+
+(defun %ensure-room (client room-id)
+  (or (gethash room-id (negotiation-room-client-rooms client))
+      (error 'rpc-error
+             :message (format nil "Negotiation room '~A' not found" room-id)
+             :status-code "NOT_FOUND"
+             :details "room does not exist")))
+
+(defun %proposal-room-id (proposal)
+  (or (getf proposal :negotiation-room-id)
+      (getf proposal :room-id)))
+
+(defun %vote-passed-p (vote)
+  (let ((passed (getf vote :passed)))
+    (if passed t nil)))
+
+(defun %votes-mixed-p (votes)
+  (let ((saw-pass nil)
+        (saw-fail nil))
+    (dolist (vote votes)
+      (if (%vote-passed-p vote)
+          (setf saw-pass t)
+          (setf saw-fail t)))
+    (and saw-pass saw-fail)))
+
+(defun %all-requested-critics-voted-p (proposal votes)
+  (let ((requested (remove-duplicates
+                    (mapcar #'princ-to-string (or (getf proposal :requested-critics) nil))
+                    :test #'string=))
+        (voters (remove-duplicates
+                 (mapcar (lambda (vote) (princ-to-string (getf vote :critic-id))) votes)
+                 :test #'string=)))
+    (or (null requested)
+        (every (lambda (critic-id) (member critic-id voters :test #'string=))
+               requested))))
+
+(defun %aggregate-score (votes)
+  (let ((scores (remove nil (mapcar (lambda (vote) (getf vote :score)) votes))))
+    (if (null scores)
+        0.0
+        (/ (reduce #'+ scores) (length scores)))))
+
+(defun %decision-outcome-from-votes (proposal votes)
+  (let* ((strategy (or (getf proposal :aggregation-strategy) :confidence-weighted))
+         (all-pass (every #'%vote-passed-p votes)))
+    (cond
+      ((eq strategy :unanimous)
+       (if all-pass :approved :rejected))
+      (t
+       (let* ((pass-count (count-if #'%vote-passed-p votes))
+              (reject-count (- (length votes) pass-count)))
+         (if (>= pass-count reject-count) :approved :rejected))))))
+
+(defun %maybe-finalize-decision (client artifact-id)
+  "Create and persist a decision when room state has enough information."
+  (let* ((store (negotiation-room-client-store client))
+         (proposal (get-proposal store artifact-id)))
+    (unless proposal
+      (error 'rpc-error
+             :message (format nil "Artifact proposal '~A' not found" artifact-id)
+             :status-code "NOT_FOUND"
+             :details "proposal missing"))
+    (or (get-decision store artifact-id)
+        (let* ((votes (get-votes store artifact-id))
+               (deadline (or (getf proposal :deadline-epoch-ms)
+                             (let ((timeout-ms (getf proposal :timeout-ms)))
+                               (when timeout-ms (+ (current-time-ms) timeout-ms)))))
+               (now-ms (current-time-ms))
+               (all-voted-p (%all-requested-critics-voted-p proposal votes))
+               (timed-out-p (and deadline (> now-ms deadline)))
+               (deadlock-p (%votes-mixed-p votes)))
+          (cond
+            ((and (null votes) (not timed-out-p))
+             nil)
+            ((and (not all-voted-p) (not timed-out-p))
+             nil)
+            (t
+             (let* ((outcome
+                      (cond
+                        (timed-out-p :escalated)
+                        (deadlock-p :escalated)
+                        (t (%decision-outcome-from-votes proposal votes))))
+                    (decision
+                      (list :artifact-id artifact-id
+                            :negotiation-room-id (%proposal-room-id proposal)
+                            :outcome outcome
+                            :aggregated-score (%aggregate-score votes)
+                            :votes-count (length votes)
+                            :state (if (eq outcome :escalated) :escalated :decided)
+                            :reason (cond
+                                      (timed-out-p :timeout)
+                                      (deadlock-p :deadlock)
+                                      (t :consensus))
+                            :decided-at (get-universal-time))))
+               (save-decision store decision)
+               (let* ((room-id (%proposal-room-id proposal))
+                      (room (gethash room-id (negotiation-room-client-rooms client))))
+                 (when room
+                   (setf (getf room :state) (getf decision :state))
+                   (setf (getf room :updated-at) (get-universal-time))))
+               decision)))))))
 
 (defmethod create-room ((client negotiation-room-client) room-id
                         &key description metadata)
-  ;; Stub: Local implementation would use in-memory or file-based storage
-  (error 'rpc-error
-         :message "CreateRoom not implemented - requires storage backend integration"
-         :status-code "UNIMPLEMENTED" :details "Stub implementation"))
-
-(defgeneric submit-artifact (client artifact-proposal)
-  (:documentation "Submit an artifact proposal for multi-agent review.
-
-Stores the proposal and initializes empty vote tracking for the artifact.
-This method is typically called by producer agents.
-
-Args:
-  client: The negotiation-room-client instance.
-  artifact-proposal: Artifact proposal plist with:
-    :artifact-type (keyword) - Type: :code, :document, :design, etc.
-    :artifact-id (string) - Unique artifact identifier
-    :producer-id (string) - Agent ID of producer
-    :artifact (bytes) - Artifact content
-    :artifact-content-type (string) - MIME type
-    :requested-critics (list) - List of critic agent IDs
-    :negotiation-room-id (string) - Room identifier
-
-Returns:
-  The artifact-id of the submitted proposal.
-
-Signals:
-  RPC-ERROR: If a proposal with the same artifact-id already exists.
-
-Example:
-  (submit-artifact client
-                   (list :artifact-type :code
-                         :artifact-id \"code-123\"
-                         :producer-id \"agent-producer\"
-                         :artifact (babel:string-to-octets \"(defun hello () 'world)\")
-                         :artifact-content-type \"text/x-common-lisp\"
-                         :requested-critics '(\"critic-1\" \"critic-2\")
-                         :negotiation-room-id \"room-1\"))"))
+  (%require-string room-id "room-id")
+  (bt:with-lock-held ((negotiation-room-client-lock client))
+    (when (gethash room-id (negotiation-room-client-rooms client))
+      (error 'rpc-error
+             :message (format nil "Negotiation room '~A' already exists" room-id)
+             :status-code "ALREADY_EXISTS"
+             :details "duplicate room id"))
+    (setf (gethash room-id (negotiation-room-client-rooms client))
+          (list :room-id room-id
+                :description description
+                :metadata metadata
+                :state :open
+                :created-at (get-universal-time)
+                :updated-at (get-universal-time)
+                :artifact-ids nil)))
+  (list :room-id room-id
+        :created-at (get-universal-time)))
 
 (defmethod submit-artifact ((client negotiation-room-client) artifact-proposal)
-  ;; Stub: Local implementation would save to storage backend
-  (error 'rpc-error
-         :message "SubmitArtifact not implemented - requires storage backend integration"
-         :status-code "UNIMPLEMENTED" :details "Stub implementation"))
-
-(defgeneric add-critique (client vote)
-  (:documentation "Submit a critic's vote for an artifact.
-
-Adds the vote to the collection for the specified artifact. This method
-is typically called by critic agents after evaluating an artifact.
-
-Args:
-  client: The negotiation-room-client instance.
-  vote: Negotiation vote plist with:
-    :artifact-id (string) - Artifact being evaluated
-    :critic-id (string) - Agent ID of critic
-    :score (float) - Numeric score (0.0-10.0)
-    :confidence (float) - Confidence in score (0.0-1.0)
-    :passed (boolean) - Whether artifact passes review
-    :strengths (list of strings) - Identified strengths
-    :weaknesses (list of strings) - Identified weaknesses
-    :recommendations (list of strings) - Improvement suggestions
-    :negotiation-room-id (string) - Room identifier
-
-Returns:
-  NIL on success.
-
-Signals:
-  RPC-ERROR: If no proposal exists or critic has already voted.
-
-Example:
-  (add-critique client
-                (list :artifact-id \"code-123\"
-                      :critic-id \"critic-1\"
-                      :score 8.5
-                      :confidence 0.9
-                      :passed t
-                      :strengths '(\"Good structure\")
-                      :weaknesses '(\"Needs tests\")
-                      :recommendations '(\"Add unit tests\")
-                      :negotiation-room-id \"room-1\"))"))
+  (let* ((artifact-id (%require-string (or (getf artifact-proposal :artifact-id) "")
+                                       "artifact-id"))
+         (room-id (%require-string (or (%proposal-room-id artifact-proposal) "")
+                                   "negotiation-room-id"))
+         (room (%ensure-room client room-id))
+         (store (negotiation-room-client-store client))
+         (proposal (copy-list artifact-proposal)))
+    (setf (getf proposal :artifact-id) artifact-id)
+    (setf (getf proposal :negotiation-room-id) room-id)
+    (setf (getf proposal :submitted-at) (get-universal-time))
+    (when (has-proposal store artifact-id)
+      (error 'rpc-error
+             :message (format nil "Artifact '~A' already submitted" artifact-id)
+             :status-code "ALREADY_EXISTS"
+             :details "duplicate artifact id"))
+    (save-proposal store proposal)
+    (pushnew artifact-id (getf room :artifact-ids) :test #'string=)
+    (setf (getf room :state) :voting)
+    (setf (getf room :updated-at) (get-universal-time))
+    artifact-id))
 
 (defmethod add-critique ((client negotiation-room-client) vote)
-  ;; Stub: Local implementation would validate and store vote
-  (error 'rpc-error
-         :message "AddCritique not implemented - requires storage backend integration"
-         :status-code "UNIMPLEMENTED" :details "Stub implementation"))
-
-(defgeneric score-artifact (client artifact-id)
-  (:documentation "Retrieve all votes for a specific artifact.
-
-Returns all critic votes that have been submitted for the artifact.
-This method is typically called by coordinator agents to aggregate
-votes and make decisions.
-
-Args:
-  client: The negotiation-room-client instance.
-  artifact-id: The identifier of the artifact.
-
-Returns:
-  List of vote plists (empty list if no votes yet).
-
-Signals:
-  RPC-ERROR: If no proposal exists for the artifact-id.
-
-Example:
-  (score-artifact client \"code-123\")
-  => ((:critic-id \"critic-1\" :score 8.5 :passed t)
-      (:critic-id \"critic-2\" :score 7.0 :passed t))"))
+  (let* ((artifact-id (%require-string (or (getf vote :artifact-id) "") "artifact-id"))
+         (critic-id (%require-string (or (getf vote :critic-id) "") "critic-id"))
+         (store (negotiation-room-client-store client))
+         (proposal (get-proposal store artifact-id)))
+    (unless proposal
+      (error 'rpc-error
+             :message (format nil "Artifact proposal '~A' not found" artifact-id)
+             :status-code "NOT_FOUND"
+             :details "proposal missing"))
+    (let ((normalized-vote (copy-list vote)))
+      (setf (getf normalized-vote :artifact-id) artifact-id)
+      (setf (getf normalized-vote :critic-id) critic-id)
+      (setf (getf normalized-vote :submitted-at) (get-universal-time))
+      (add-vote store normalized-vote))
+    (%maybe-finalize-decision client artifact-id)
+    nil))
 
 (defmethod score-artifact ((client negotiation-room-client) artifact-id)
-  ;; Stub: Local implementation would retrieve votes from storage
-  (error 'rpc-error
-         :message "ScoreArtifact not implemented - requires storage backend integration"
-         :status-code "UNIMPLEMENTED" :details "Stub implementation"))
-
-(defgeneric get-room-status (client room-id)
-  (:documentation "Get the status and statistics of a negotiation room.
-
-Retrieves room metadata, pending proposals, and summary statistics.
-
-Args:
-  client: The negotiation-room-client instance.
-  room-id: Unique identifier of the room.
-
-Returns:
-  Room status plist with:
-    :room-id (string) - Room identifier
-    :pending-proposals (integer) - Number of pending proposals
-    :completed-decisions (integer) - Number of completed reviews
-    :active-critics (list) - List of critic agent IDs with pending reviews
-
-Signals:
-  RPC-ERROR: If room not found.
-
-Example:
-  (get-room-status client \"room-1\")
-  => (:room-id \"room-1\"
-      :pending-proposals 2
-      :completed-decisions 5
-      :active-critics (\"critic-1\" \"critic-2\"))"))
+  (let ((store (negotiation-room-client-store client)))
+    (unless (has-proposal store artifact-id)
+      (error 'rpc-error
+             :message (format nil "Artifact proposal '~A' not found" artifact-id)
+             :status-code "NOT_FOUND"
+             :details "proposal missing"))
+    (get-votes store artifact-id)))
 
 (defmethod get-room-status ((client negotiation-room-client) room-id)
-  ;; Stub: Local implementation would aggregate statistics from storage
-  (error 'rpc-error
-         :message "GetRoomStatus not implemented - requires storage backend integration"
-         :status-code "UNIMPLEMENTED" :details "Stub implementation"))
-
-;;;; Additional Helper Methods
-
-(defgeneric get-decision (client artifact-id)
-  (:documentation "Retrieve the decision for a specific artifact if available.
-
-Returns the final decision if one has been made, or NIL if the artifact
-is still under review.
-
-Args:
-  client: The negotiation-room-client instance.
-  artifact-id: The identifier of the artifact.
-
-Returns:
-  The negotiation decision plist if available, NIL otherwise.
-
-Signals:
-  RPC-ERROR: If no proposal exists for the artifact-id.
-
-Example:
-  (get-decision client \"code-123\")
-  => (:artifact-id \"code-123\"
-      :outcome :approved
-      :aggregated-score 8.2)"))
+  (let* ((room (%ensure-room client room-id))
+         (store (negotiation-room-client-store client))
+         (pending 0)
+         (completed 0)
+         (active-critics nil))
+    (dolist (artifact-id (getf room :artifact-ids))
+      (let* ((proposal (get-proposal store artifact-id))
+             (votes (get-votes store artifact-id))
+             (decision (or (get-decision store artifact-id)
+                           (%maybe-finalize-decision client artifact-id))))
+        (if decision
+            (incf completed)
+            (progn
+              (incf pending)
+              (let ((requested (or (getf proposal :requested-critics) nil))
+                    (already-voted (mapcar (lambda (vote) (getf vote :critic-id)) votes)))
+                (dolist (critic requested)
+                  (unless (member critic already-voted :test #'string=)
+                    (pushnew critic active-critics :test #'string=))))))))
+    (list :room-id room-id
+          :state (getf room :state)
+          :pending-proposals pending
+          :completed-decisions completed
+          :active-critics (nreverse active-critics)
+          :updated-at (getf room :updated-at))))
 
 (defmethod get-decision ((client negotiation-room-client) artifact-id)
-  ;; Stub: Local implementation would retrieve decision from storage
-  (error 'rpc-error
-         :message "GetDecision not implemented - requires storage backend integration"
-         :status-code "UNIMPLEMENTED" :details "Stub implementation"))
-
-(defgeneric wait-for-decision (client artifact-id &key timeout-s poll-interval-s)
-  (:documentation "Wait for a decision to be made on an artifact.
-
-Polls for a decision until one is available or the timeout is reached.
-This method is useful for producer agents waiting for the outcome of
-their artifact review.
-
-Args:
-  client: The negotiation-room-client instance.
-  artifact-id: The identifier of the artifact.
-  timeout-s: Maximum time to wait in seconds (default: 30.0).
-  poll-interval-s: Time between polling attempts in seconds (default: 0.1).
-
-Returns:
-  The negotiation decision once available.
-
-Signals:
-  RPC-ERROR: If no proposal exists for the artifact-id.
-  RPC-TIMEOUT: If no decision is made within the timeout period.
-
-Example:
-  (wait-for-decision client \"code-123\" :timeout-s 10.0)
-  => (:artifact-id \"code-123\" :outcome :approved)"))
+  (let ((store (negotiation-room-client-store client)))
+    (unless (has-proposal store artifact-id)
+      (error 'rpc-error
+             :message (format nil "Artifact proposal '~A' not found" artifact-id)
+             :status-code "NOT_FOUND"
+             :details "proposal missing"))
+    (or (get-decision store artifact-id)
+        (%maybe-finalize-decision client artifact-id))))
 
 (defmethod wait-for-decision ((client negotiation-room-client) artifact-id
                               &key (timeout-s 30.0) (poll-interval-s 0.1))
-  ;; Stub: Local implementation would poll storage for decision
-  (error 'rpc-error
-         :message "WaitForDecision not implemented - requires storage backend integration"
-         :status-code "UNIMPLEMENTED" :details "Stub implementation"))
+  (let ((start (get-internal-real-time))
+        (timeout-ms (floor (* timeout-s 1000)))
+        (poll-seconds (max 0.01 poll-interval-s)))
+    (loop
+      for elapsed-ms = (floor (* 1000
+                                 (/ (- (get-internal-real-time) start)
+                                    internal-time-units-per-second)))
+      do
+         (let ((decision (handler-case
+                             (get-decision client artifact-id)
+                           (rpc-error (condition)
+                             (error condition)))))
+           (when decision
+             (return decision)))
+         (when (> elapsed-ms timeout-ms)
+           (error 'rpc-timeout
+                  :message (format nil "Timed out waiting for decision on ~A" artifact-id)
+                  :status-code "DEADLINE_EXCEEDED"
+                  :details "negotiation room timeout"))
+         (sleep poll-seconds))))

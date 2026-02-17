@@ -181,12 +181,29 @@
 
       ;; Validate transition
       (unless (valid-transition-p from-state to-state)
-        (error 'state-transition-error
-               :from-state from-state
-               :to-state to-state
-               :allowed-transitions (valid-transitions from-state)
-               :message (format nil "No valid transition from ~A to ~A"
-                               from-state to-state)))
+        (restart-case
+            (error 'state-transition-error
+                   :from-state from-state
+                   :to-state to-state
+                   :allowed-transitions (valid-transitions from-state)
+                   :message (format nil "No valid transition from ~A to ~A"
+                                    from-state to-state))
+          (use-force-transition ()
+            :report "Force transition despite transition matrix constraints."
+            ;; Force transitions are audited with :forced metadata for downstream inspection.
+            (setf current-state to-state)
+            (push (make-transition-history-entry
+                   :from-state from-state
+                   :to-state to-state
+                   :timestamp timestamp
+                   :metadata (append metadata (list :forced t)))
+                  transition-history)
+            (when (> (length transition-history) max-history)
+              (setf transition-history (subseq transition-history 0 max-history)))
+            (return-from transition-to to-state))
+          (retry-transition ()
+            :report "Retry transition after external state update."
+            (return-from transition-to (transition-to sm to-state :metadata metadata)))))
 
       ;; Call before-transition hooks
       (dolist (hook (before-transition-hooks sm))
@@ -260,3 +277,55 @@
    Returns:
      List of valid target states"
   (valid-transitions (current-state sm)))
+
+(defun %transition-entry->plist (entry)
+  "Convert a TRANSITION-HISTORY-ENTRY struct to a plist."
+  (list :from-state (transition-history-entry-from-state entry)
+        :to-state (transition-history-entry-to-state entry)
+        :timestamp (transition-history-entry-timestamp entry)
+        :metadata (copy-list (transition-history-entry-metadata entry))))
+
+(defun %plist->transition-entry (plist)
+  "Convert a serialized transition plist to TRANSITION-HISTORY-ENTRY."
+  (make-transition-history-entry
+   :from-state (getf plist :from-state)
+   :to-state (getf plist :to-state)
+   :timestamp (or (getf plist :timestamp) (get-universal-time))
+   :metadata (copy-list (getf plist :metadata))))
+
+(defun %state-get (data key)
+  "Read KEY from plist/alist/hash-table DATA."
+  (cond
+    ((hash-table-p data)
+     (or (gethash key data)
+         (gethash (string-downcase (string key)) data)))
+    ((and (listp data) (keywordp (first data)))
+     (getf data key))
+    ((listp data)
+     (or (cdr (assoc key data))
+         (cdr (assoc (string-downcase (string key)) data :test #'string=))))
+    (t nil)))
+
+(defun serialize-agent-state (sm &key (include-history t))
+  "Serialize an AGENT-STATE-MACHINE to a plist for persistence."
+  (check-type sm agent-state-machine)
+  (let ((result (list :current-state (current-state sm)
+                      :max-history (max-history sm))))
+    (when include-history
+      (setf (getf result :transition-history)
+            (mapcar #'%transition-entry->plist
+                    (reverse (transition-history sm)))))
+    result))
+
+(defun deserialize-agent-state (serialized-state)
+  "Restore an AGENT-STATE-MACHINE from SERIALIZED-STATE."
+  (let* ((state (or (%state-get serialized-state :current-state) :initializing))
+         (history-data (%state-get serialized-state :transition-history))
+         (max-history-value (or (%state-get serialized-state :max-history) 100))
+         (sm (make-instance 'agent-state-machine
+                            :current-state state
+                            :max-history max-history-value)))
+    (when history-data
+      (setf (transition-history sm)
+            (reverse (mapcar #'%plist->transition-entry history-data))))
+    sm))

@@ -360,4 +360,133 @@ See documentation/protocol/spec.md for the canonical protocol specification.")
    #:cancelled-delegation-p
    #:cancellation-grace-expired-p
    #:forced-preemption-error-code
-   #:collect-forced-preemptions))
+   #:collect-forced-preemptions
+   #:serialize-handoff-context
+   #:deserialize-handoff-context
+   #:handoff-rejected
+   #:handoff-rejected-handoff-id
+   #:handoff-rejected-response
+   #:handoff-rejected-rejection-code
+   #:handoff-rejected-rejection-reason)
+
+  ;; State machine persistence helpers
+  (:export
+   #:serialize-agent-state
+   #:deserialize-agent-state)
+
+  ;; Envelope message-log support
+  (:export
+   #:message-log
+   #:make-message-log
+   #:message-log-size
+   #:clear-message-log
+   #:log-envelope
+   #:query-message-log
+   #:message-log-entry
+   #:message-log-entry-message-id
+   #:message-log-entry-correlation-id
+   #:message-log-entry-source-agent-id
+   #:message-log-entry-target-agent-id
+   #:message-log-entry-message-type
+   #:message-log-entry-state
+   #:message-log-entry-timestamp
+   #:message-log-entry-envelope)
+
+  ;; Budget
+  (:export
+   #:budget-envelope
+   #:make-budget-envelope
+   #:copy-budget-envelope
+   #:tighten-budget
+   #:split-budget
+   #:check-budget
+   #:decrement-budget
+   #:budget-exhausted-p
+   #:cancel-budget
+   #:cancelled-p
+   #:budget-exhausted
+   #:budget-exhausted-budget
+   #:budget-exhausted-required-tokens
+   #:budget-exhausted-required-wall-time-ms
+   #:budget-interceptor
+   #:apply-budget-interceptor)
+
+  ;; Local router
+  (:export
+   #:local-router
+   #:make-local-router
+   #:register-route
+   #:unregister-route
+   #:route-envelope
+   #:dequeue-envelope
+   #:schedule-next-envelope
+   #:router-queue-size
+   #:router-snapshot
+   #:dead-letter
+   #:dead-letter-envelope
+   #:dead-letter-reason
+   #:dead-letter-timestamp
+   #:dead-letter-entries
+   #:clear-dead-letters
+   #:queue-full-error
+   #:queue-full-error-agent-id
+   #:queue-full-error-queue-size
+   #:queue-full-error-queue-capacity)
+
+  ;; Workflow engine
+  (:export
+   #:workflow-node
+   #:workflow-edge
+   #:workflow-definition
+   #:workflow-run
+   #:workflow-engine
+   #:make-workflow-engine
+   #:add-node
+   #:add-edge
+   #:topological-sort
+   #:execute-workflow
+   #:serialize-workflow-state
+   #:restore-workflow-state
+   #:register-workflow
+   #:run-workflow
+   #:get-workflow-run
+   #:list-workflow-runs
+   #:defworkflow
+   #:make-feature-workflow-template
+   #:make-bugfix-workflow-template
+   #:make-refactor-workflow-template)
+
+  ;; Negotiation room + voting
+  (:export
+   #:negotiation-room-client
+   #:create-room
+   #:submit-artifact
+   #:add-critique
+   #:score-artifact
+   #:get-room-status
+   #:get-decision
+   #:wait-for-decision
+   #:unanimous-vote-strategy)
+
+  ;; Local HITL
+  (:export
+   #:local-hitl-gate
+   #:make-local-hitl-gate
+   #:request-hitl-approval
+   #:approve-hitl-request
+   #:deny-hitl-request
+   #:get-hitl-request
+   #:list-pending-hitl-requests)
+
+  ;; Git worktree coordination
+  (:export
+   #:with-worktree-lock
+   #:git-worktree-add
+   #:git-worktree-remove
+   #:git-worktree-prune
+   #:git-worktree-list
+   #:git-worktree-coordinator
+   #:make-git-worktree-coordinator
+   #:spawn-worktree
+   #:collect-worktree
+   #:kill-worktree))
