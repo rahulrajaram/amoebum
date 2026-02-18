@@ -134,6 +134,9 @@
 
 ;;; --- sb-sprof Integration ---
 
+#+sbcl (eval-when (:compile-toplevel :load-toplevel :execute)
+         (require :sb-sprof))
+
 (defvar *profiler-running-p* nil
   "Track whether sb-sprof is currently running.")
 

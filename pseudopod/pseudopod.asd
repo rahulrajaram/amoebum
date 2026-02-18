@@ -3,7 +3,7 @@
   :author "amoebum"
   :license "MIT"
   :version "0.1.0"
-  :depends-on ("uiop" "dexador" "jonathan" "usocket")
+  :depends-on ("uiop" "dexador" "jonathan" "usocket" "babel")
   :serial t
   :components
   ((:file "src/package")
@@ -12,6 +12,9 @@
    (:file "src/model/model-info")
    (:file "src/model/file-object")
    (:file "src/tooling/registry")
+   (:file "src/tooling/file-read")
+   (:file "src/tooling/structured-read")
+   (:file "src/tooling/write-file")
    (:file "src/client")
    (:file "src/providers/protocol")
    (:file "src/providers/kimi")
@@ -29,7 +32,10 @@
   :components
   ((:file "test/suite")
    (:file "test/provider-test")
-   (:file "test/router-test"))
+   (:file "test/router-test")
+   (:file "test/file-read-test")
+   (:file "test/structured-read-test")
+   (:file "test/write-file-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (uiop:symbol-call :pseudopod/test :run-all)))

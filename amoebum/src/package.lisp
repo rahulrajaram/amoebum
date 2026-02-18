@@ -1247,7 +1247,16 @@
            #:+sandbox-max-read-size+
            #:safe-open
            #:safe-run-program
-           #:truncate-sandbox-output))
+           #:truncate-sandbox-output
+           ;; Read orchestration (I105)
+           #:read-orchestration-error
+           #:validate-read-arguments
+           #:orchestrate-read
+           #:orchestrate-read-via-pipeline
+           #:format-read-error-for-user
+           #:*read-orchestration-max-line-limit*
+           #:*read-orchestration-max-file-size-bytes*
+           #:*read-orchestration-supported-extensions*))
 
 (defpackage :amoebum.tools
   (:use :cl))

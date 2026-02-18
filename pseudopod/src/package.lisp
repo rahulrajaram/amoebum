@@ -192,4 +192,37 @@
    #:router-chat-completion
    #:router-streaming-completion
    #:router-check-health
-   #:router-status))
+   #:router-status
+   ;; File read primitive (I103)
+   #:pseudopod-file-error
+   #:pseudopod-file-error-path
+   #:pseudopod-file-not-found
+   #:file-read-result
+   #:file-read-result-p
+   #:file-read-result-content
+   #:file-read-result-path
+   #:file-read-result-size
+   #:file-read-result-modification-time
+   #:file-read-result-encoding
+   #:read-file
+   ;; Structured file read (I104)
+   #:structured-read-result
+   #:structured-read-result-p
+   #:structured-read-result-content
+   #:structured-read-result-path
+   #:structured-read-result-lines
+   #:structured-read-result-bytes
+   #:structured-read-result-truncated
+   #:read-file-lines
+   #:read-file-bytes
+   #:read-file-bounded
+   ;; Whole-file write primitive (I106)
+   #:pseudopod-write-error
+   #:pseudopod-write-error-path
+   #:write-file
+   #:write-result
+   #:write-result-p
+   #:write-result-path
+   #:write-result-bytes
+   #:write-result-created-p
+   #:write-result-encoding))
