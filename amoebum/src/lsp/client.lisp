@@ -111,6 +111,13 @@
     (error "~A must be a positive real, got ~S." label value))
   (float value 1.0d0))
 
+(defun %normalize-lsp-query (query)
+  (let ((normalized (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                 (princ-to-string query))))
+    (unless (> (length normalized) 0)
+      (error "LSP workspace query must not be empty."))
+    normalized))
+
 (defun make-lsp-server-spec (&key name language-id command (args nil) (file-extensions nil))
   (let ((normalized-command (%normalize-lsp-name command "LSP COMMAND")))
     (%make-lsp-server-spec
@@ -320,6 +327,13 @@
           (gethash "textDocument" params) text-document)
     params))
 
+(defun %lsp-text-document-uri-params (file-path)
+  (let ((params (make-hash-table :test #'equal))
+        (text-document (make-hash-table :test #'equal)))
+    (setf (gethash "uri" text-document) (%file-uri file-path)
+          (gethash "textDocument" params) text-document)
+    params))
+
 (defun %lsp-send-shutdown-sequence (client jsonrpc-client)
   (when jsonrpc-client
     (ignore-errors
@@ -431,6 +445,41 @@
     (t
      (%lsp-start-connection client connection))))
 
+(defun %lsp-restart-on-failure (client connection condition retried-p)
+  (setf (lsp-server-connection-last-error connection) condition)
+  (if (or retried-p
+          (not (lsp-client-auto-restart-p client)))
+      (error condition)
+      (progn
+        (%lsp-restart-connection client connection)
+        t)))
+
+(defun %lsp-call-with-lifecycle-retry (client connection thunk)
+  (let ((retried-p nil))
+    (loop
+      do
+         (handler-case
+             (progn
+               (%lsp-ensure-connection-running client connection)
+               (let ((result (funcall thunk)))
+                 (setf (lsp-server-connection-last-error connection) nil)
+                 (return result)))
+           (mcp-timeout (condition)
+             (when (%lsp-restart-on-failure client connection condition retried-p)
+               (setf retried-p t)))
+           (stream-error (condition)
+             (when (%lsp-restart-on-failure client connection condition retried-p)
+               (setf retried-p t)))
+           (end-of-file (condition)
+             (when (%lsp-restart-on-failure client connection condition retried-p)
+               (setf retried-p t)))
+           (error (condition)
+             (if (or (not (%lsp-connection-ready-p connection))
+                     (null (lsp-server-connection-jsonrpc-client connection)))
+                 (when (%lsp-restart-on-failure client connection condition retried-p)
+                   (setf retried-p t))
+                 (error condition)))))))
+
 (defun lsp-client-connection (client language-id)
   (unless (lsp-client-p client)
     (error "CLIENT must be an LSP-CLIENT, got ~S." client))
@@ -476,11 +525,14 @@
                     :text (or text (%read-file-text path-text))
                     :version version)))
     (%with-lsp-client-lock (client)
-      (%lsp-ensure-connection-running client connection)
-      (mcp-jsonrpc-send-notification
-       (lsp-server-connection-jsonrpc-client connection)
-       "textDocument/didOpen"
-       :params (%lsp-did-open-params document))
+      (%lsp-call-with-lifecycle-retry
+       client
+       connection
+       (lambda ()
+         (mcp-jsonrpc-send-notification
+          (lsp-server-connection-jsonrpc-client connection)
+          "textDocument/didOpen"
+          :params (%lsp-did-open-params document))))
       (setf (gethash path-text (lsp-server-connection-open-documents connection))
             document))
     (list :language-id (lsp-server-spec-language-id spec)
@@ -493,15 +545,18 @@
     (error "CLIENT must be an LSP-CLIENT, got ~S." client))
   (let ((connection (lsp-client-ensure-server client file-path :language-id language-id)))
     (%with-lsp-client-lock (client)
-      (%lsp-ensure-connection-running client connection)
-      (if params
-          (mcp-jsonrpc-send-notification
-           (lsp-server-connection-jsonrpc-client connection)
-           method
-           :params params)
-          (mcp-jsonrpc-send-notification
-           (lsp-server-connection-jsonrpc-client connection)
-           method)))))
+      (%lsp-call-with-lifecycle-retry
+       client
+       connection
+       (lambda ()
+         (if params
+             (mcp-jsonrpc-send-notification
+              (lsp-server-connection-jsonrpc-client connection)
+              method
+              :params params)
+             (mcp-jsonrpc-send-notification
+              (lsp-server-connection-jsonrpc-client connection)
+              method)))))))
 
 (defun lsp-send-request (client file-path method
                          &key
@@ -517,19 +572,50 @@
         (unless (gethash document-key (lsp-server-connection-open-documents connection))
           (lsp-open-document client file-path :language-id language-id))))
     (%with-lsp-client-lock (client)
-      (%lsp-ensure-connection-running client connection)
-      (if params
-          (mcp-jsonrpc-send-request
-           (lsp-server-connection-jsonrpc-client connection)
-           method
-           :params params
-           :timeout-seconds (or timeout-seconds
-                                (lsp-client-request-timeout-seconds client)))
-          (mcp-jsonrpc-send-request
-           (lsp-server-connection-jsonrpc-client connection)
-           method
-           :timeout-seconds (or timeout-seconds
-                                (lsp-client-request-timeout-seconds client)))))))
+      (%lsp-call-with-lifecycle-retry
+       client
+       connection
+       (lambda ()
+         (if params
+             (mcp-jsonrpc-send-request
+              (lsp-server-connection-jsonrpc-client connection)
+              method
+              :params params
+              :timeout-seconds (or timeout-seconds
+                                   (lsp-client-request-timeout-seconds client)))
+             (mcp-jsonrpc-send-request
+              (lsp-server-connection-jsonrpc-client connection)
+              method
+              :timeout-seconds (or timeout-seconds
+                                   (lsp-client-request-timeout-seconds client)))))))))
+
+(defun lsp-request-document-symbols (client file-path
+                                     &key language-id timeout-seconds)
+  (unless file-path
+    (error "FILE-PATH is required for textDocument/documentSymbol requests."))
+  (lsp-send-request
+   client
+   file-path
+   "textDocument/documentSymbol"
+   :params (%lsp-text-document-uri-params file-path)
+   :language-id language-id
+   :timeout-seconds timeout-seconds
+   :open-document-p t))
+
+(defun lsp-request-workspace-symbols (client file-path query
+                                      &key language-id timeout-seconds)
+  (unless file-path
+    (error "FILE-PATH is required for workspace/symbol requests."))
+  (lsp-send-request
+   client
+   file-path
+   "workspace/symbol"
+   :params (let ((params (make-hash-table :test #'equal)))
+             (setf (gethash "query" params) (%normalize-lsp-query query))
+             params)
+   :language-id language-id
+   :timeout-seconds timeout-seconds
+   :open-document-p nil))
 
 (defun lsp-drain-notifications (client language-id)
   (unless (lsp-client-p client)
@@ -550,6 +636,8 @@
        (declare (ignore _language-id))
        (multiple-value-bind (process jsonrpc-client)
            (%lsp-detach-connection connection)
-         (%lsp-shutdown-connection client process jsonrpc-client)))
-     (lsp-client-connections client)))
+         (%lsp-shutdown-connection client process jsonrpc-client))
+       (clrhash (lsp-server-connection-open-documents connection)))
+     (lsp-client-connections client))
+    (clrhash (lsp-client-connections client)))
   client)

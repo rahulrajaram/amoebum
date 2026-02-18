@@ -105,6 +105,13 @@
                   (when (>= (get-internal-real-time) deadline)
                     (return nil))
                   (sleep poll-seconds))))
+         (process-running-p (process)
+           #+sbcl
+           (and process (ignore-errors (sb-ext:process-alive-p process)))
+           #-sbcl
+           (declare (ignore process))
+           #-sbcl
+           nil)
          (write-file-text (path lines)
            (ensure-directories-exist path)
            (with-open-file (stream path
@@ -122,6 +129,7 @@
               "import sys"
               ""
               "log_path = sys.argv[1]"
+              "last_open_uri = None"
               ""
               "def log(event, payload=None):"
               "    with open(log_path, \"a\", encoding=\"utf-8\") as handle:"
@@ -192,6 +200,7 @@
               "        uri = text_document.get(\"uri\")"
               "        log(\"didOpen\", uri)"
               "        if uri:"
+              "            last_open_uri = uri"
               "            send_publish_diagnostics(uri)"
               "        continue"
               ""
@@ -218,6 +227,53 @@
               "                    {\"uri\": uri, \"range\": {\"start\": {\"line\": 3, \"character\": 8}, \"end\": {\"line\": 3, \"character\": 14}}}"
               "                ]"
               "            })"
+              "        continue"
+              ""
+              "    if method == \"textDocument/documentSymbol\":"
+              "        if request_id is not None:"
+              "            uri = (params.get(\"textDocument\") or {}).get(\"uri\")"
+              "            send_message({"
+              "                \"jsonrpc\": \"2.0\","
+              "                \"id\": request_id,"
+              "                \"result\": ["
+              "                    {"
+              "                        \"name\": \"answer\","
+              "                        \"kind\": 12,"
+              "                        \"detail\": \"answer() -> int\","
+              "                        \"selectionRange\": {\"start\": {\"line\": 0, \"character\": 4}, \"end\": {\"line\": 0, \"character\": 10}},"
+              "                        \"range\": {\"start\": {\"line\": 0, \"character\": 0}, \"end\": {\"line\": 1, \"character\": 13}}"
+              "                    },"
+              "                    {"
+              "                        \"name\": \"value\","
+              "                        \"kind\": 13,"
+              "                        \"selectionRange\": {\"start\": {\"line\": 3, \"character\": 0}, \"end\": {\"line\": 3, \"character\": 5}},"
+              "                        \"range\": {\"start\": {\"line\": 3, \"character\": 0}, \"end\": {\"line\": 3, \"character\": 16}},"
+              "                        \"uri\": uri"
+              "                    }"
+              "                ]"
+              "            })"
+              "        continue"
+              ""
+              "    if method == \"workspace/symbol\":"
+              "        if request_id is not None:"
+              "            query = (params.get(\"query\") or \"\").lower()"
+              "            symbols = ["
+              "                {"
+              "                    \"name\": \"answer\","
+              "                    \"kind\": 12,"
+              "                    \"containerName\": \"sample\","
+              "                    \"location\": {\"uri\": last_open_uri, \"range\": {\"start\": {\"line\": 0, \"character\": 4}, \"end\": {\"line\": 0, \"character\": 10}}}"
+              "                },"
+              "                {"
+              "                    \"name\": \"value\","
+              "                    \"kind\": 13,"
+              "                    \"containerName\": \"sample\","
+              "                    \"location\": {\"uri\": last_open_uri, \"range\": {\"start\": {\"line\": 3, \"character\": 0}, \"end\": {\"line\": 3, \"character\": 5}}}"
+              "                }"
+              "            ]"
+              "            if query:"
+              "                symbols = [entry for entry in symbols if query in (entry.get(\"name\") or \"\").lower()]"
+              "            send_message({\"jsonrpc\": \"2.0\", \"id\": request_id, \"result\": symbols})"
               "        continue"
               ""
               "    if method == \"textDocument/hover\":"
@@ -299,8 +355,10 @@
                                                                         (get-universal-time))))
                          (funcall temporary-directory))))
              (script-path (merge-pathnames #P"mock-lsp-server.py" tmp-root))
-             (log-path (merge-pathnames #P"lsp-events.jsonl" tmp-root))
+             (python-log-path (merge-pathnames #P"python-lsp-events.jsonl" tmp-root))
+             (rust-log-path (merge-pathnames #P"rust-lsp-events.jsonl" tmp-root))
              (source-path (merge-pathnames #P"sample.py" tmp-root))
+             (rust-source-path (merge-pathnames #P"sample.rs" tmp-root))
              (client nil))
         (assert-true (string= (funcall lsp-language-id-for-path-fn "probe.py") "python")
                      "Expected .py default language-id to resolve to python.")
@@ -324,6 +382,14 @@
                            "    return 42"
                            ""
                            "value = answer()"))
+        (write-file-text rust-source-path
+                         '("fn answer() -> i32 {"
+                           "    42"
+                           "}"
+                           ""
+                           "fn main() {"
+                           "    let _ = answer();"
+                           "}"))
 
         (setf client
               (funcall make-lsp-client-fn
@@ -333,12 +399,23 @@
                                                     :language-id "python"
                                                     :command python-command
                                                     :args (list (namestring script-path)
-                                                                (namestring log-path))
-                                                    :file-extensions '(".py")))
+                                                                (namestring python-log-path))
+                                                    :file-extensions '(".py"))
+                                           (funcall make-lsp-server-spec-fn
+                                                    :name "rust-analyzer"
+                                                    :language-id "rust"
+                                                    :command python-command
+                                                    :args (list (namestring script-path)
+                                                                (namestring rust-log-path))
+                                                    :file-extensions '(".rs")))
                        :initialize-timeout-seconds 2.0d0
                        :request-timeout-seconds 2.0d0
                        :restart-backoff-base-seconds 0.05d0
                        :restart-backoff-max-seconds 0.2d0))
+        (assert-true (null (funcall lsp-client-connection-fn client "python"))
+                     "Expected lazy startup: no Python connection before first use.")
+        (assert-true (null (funcall lsp-client-connection-fn client "rust"))
+                     "Expected lazy startup: no Rust connection before first use.")
 
         (unwind-protect
              (progn
@@ -353,6 +430,30 @@
                               "Expected initial mockEcho response result hash-table.")
                  (assert-true (hash-table-p (gethash "echo" result))
                               "Expected initial mockEcho echo payload."))
+               (funcall lsp-open-document-fn client rust-source-path)
+               (let* ((response (funcall lsp-send-request-fn
+                                         client
+                                         rust-source-path
+                                         "workspace/mockEcho"
+                                         :params (make-json-object "phase" "rust-initial")))
+                      (result (and response (gethash "result" response))))
+                 (assert-true (hash-table-p result)
+                              "Expected rust mockEcho response result hash-table."))
+
+               (let* ((python-connection (funcall lsp-client-connection-fn client "python"))
+                      (rust-connection (funcall lsp-client-connection-fn client "rust"))
+                      (python-process (and python-connection
+                                           (funcall lsp-server-connection-process-fn
+                                                    python-connection)))
+                      (rust-process (and rust-connection
+                                         (funcall lsp-server-connection-process-fn
+                                                  rust-connection))))
+                 (assert-true python-process
+                              "Expected active Python LSP process after didOpen.")
+                 (assert-true rust-process
+                              "Expected active Rust LSP process after didOpen.")
+                 (assert-true (not (eq python-process rust-process))
+                              "Expected separate processes for python and rust LSP servers."))
 
                (let* ((connection (funcall lsp-client-connection-fn client "python"))
                       (process (and connection
@@ -387,7 +488,7 @@
                    (assert-true (hash-table-p result)
                                 "Expected restart mockEcho response result hash-table.")
                    (assert-true process-after
-                                "Expected restart to relaunch Python LSP process.")
+                               "Expected restart to relaunch Python LSP process.")
                  (assert-true (and restart-count (>= restart-count 1))
                               "Expected restart-count >= 1 after forced crash, got ~S."
                               restart-count)))
@@ -420,6 +521,34 @@
                  (assert-true (>= (length references) 2)
                               "Expected at least two references, got ~S."
                               references))
+
+               (let* ((document-symbols-result (invoke-tool "lsp-document-symbols"
+                                                            "path" (namestring source-path)))
+                      (symbols (getf document-symbols-result :symbols))
+                      (first-symbol (first symbols)))
+                 (assert-true (>= (length symbols) 2)
+                              "Expected at least two document symbols, got ~S."
+                              symbols)
+                 (assert-true (string= (getf first-symbol :name) "answer")
+                              "Expected first document symbol to be answer, got ~S."
+                              first-symbol)
+                 (assert-true (eq (getf first-symbol :kind) :function)
+                              "Expected first document symbol kind :function, got ~S."
+                              first-symbol))
+
+               (let* ((workspace-symbols-result (invoke-tool "lsp-workspace-symbols"
+                                                             "path" (namestring source-path)
+                                                             "query" "answer"))
+                      (symbols (getf workspace-symbols-result :symbols))
+                      (answer-entry (find "answer" symbols
+                                          :test #'string=
+                                          :key (lambda (entry) (getf entry :name)))))
+                 (assert-true (>= (length symbols) 1)
+                              "Expected at least one workspace symbol, got ~S."
+                              symbols)
+                 (assert-true answer-entry
+                              "Expected workspace symbol query to include answer, got ~S."
+                              symbols))
 
                (let* ((hover-result (invoke-tool "lsp-hover"
                                                  "path" (namestring source-path)
@@ -458,15 +587,48 @@
                               first-diagnostic))
 
                (sleep 0.1d0)
-               (let* ((entries (read-json-lines log-path))
-                      (initialize-count (count-log-event entries "initialize"))
-                      (did-open-count (count-log-event entries "didOpen")))
-                 (assert-true (>= initialize-count 2)
-                              "Expected at least two initialize events (startup + restart), got ~S."
-                              initialize-count)
-                 (assert-true (>= did-open-count 2)
-                              "Expected didOpen resync on restart, got ~S."
-                              did-open-count)))
+               (let* ((python-entries (read-json-lines python-log-path))
+                      (rust-entries (read-json-lines rust-log-path))
+                      (python-initialize-count (count-log-event python-entries "initialize"))
+                      (python-did-open-count (count-log-event python-entries "didOpen"))
+                      (rust-initialize-count (count-log-event rust-entries "initialize"))
+                      (rust-did-open-count (count-log-event rust-entries "didOpen")))
+                 (assert-true (>= python-initialize-count 2)
+                              "Expected at least two python initialize events (startup + restart), got ~S."
+                              python-initialize-count)
+                 (assert-true (>= python-did-open-count 2)
+                              "Expected python didOpen resync on restart, got ~S."
+                              python-did-open-count)
+                 (assert-true (>= rust-initialize-count 1)
+                              "Expected rust initialize event, got ~S."
+                              rust-initialize-count)
+                 (assert-true (>= rust-did-open-count 1)
+                              "Expected rust didOpen event, got ~S."
+                              rust-did-open-count))
+
+               (let* ((python-connection (funcall lsp-client-connection-fn client "python"))
+                      (rust-connection (funcall lsp-client-connection-fn client "rust"))
+                      (python-process (and python-connection
+                                           (funcall lsp-server-connection-process-fn
+                                                    python-connection)))
+                      (rust-process (and rust-connection
+                                         (funcall lsp-server-connection-process-fn
+                                                  rust-connection))))
+                 (let ((stopped-client client))
+                   (funcall lsp-client-stop-fn stopped-client)
+                   (assert-true (null (funcall lsp-client-connection-fn stopped-client "python"))
+                                "Expected no python connection after client stop.")
+                   (assert-true (null (funcall lsp-client-connection-fn stopped-client "rust"))
+                                "Expected no rust connection after client stop."))
+                 (assert-true (wait-until (lambda ()
+                                            (not (process-running-p python-process)))
+                                          2.0d0)
+                              "Expected Python LSP process to exit on client stop.")
+                 (assert-true (wait-until (lambda ()
+                                            (not (process-running-p rust-process)))
+                                          2.0d0)
+                              "Expected Rust LSP process to exit on client stop.")
+                 (setf client nil)))
           (when client
             (ignore-errors
               (funcall lsp-client-stop-fn client)))

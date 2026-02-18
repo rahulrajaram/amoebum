@@ -3,7 +3,7 @@
   :author "amoebum"
   :license "MIT"
   :version "0.1.0"
-  :depends-on ("pseudopod" "ptui" "ptui/components" "sw4rm-sdk" "uiop" "cl-ppcre" "bordeaux-threads" "named-readtables")
+  :depends-on ("pseudopod" "ptui" "ptui/components" "sw4rm-sdk" "uiop" "cl-ppcre" "bordeaux-threads")
   :serial t
   :components
   ((:file "src/package")
@@ -40,9 +40,15 @@
    (:file "src/notifications")
    (:file "src/pipeline")
    (:file "src/tools/files")
+   (:file "src/tools/read-orchestration")
    (:file "src/tools/search")
+   (:file "src/tools/search-orchestration")
    (:file "src/tools/web")
    (:file "src/tools/shell")
+   (:file "src/tools/write-safety")
+   (:file "src/tools/edit-validation")
+   (:file "src/tools/shell-env")
+   (:file "src/tools/shell-safety")
    (:file "src/tools/git")
    (:file "src/tools/lsp")
    (:file "src/profiler")
@@ -69,7 +75,15 @@
    (:file "test/self-modify-smoke-test")
    (:file "test/image-smoke-test")
    (:file "test/asdf-extensions-smoke-test")
-   (:file "test/profiler-smoke-test"))
+   (:file "test/profiler-smoke-test")
+   (:file "test/read-orchestration-test")
+   (:file "test/write-safety-test")
+   (:file "test/edit-validation-test")
+   (:file "test/permission-path-normalization-test")
+   (:file "test/permission-command-matching-test")
+   (:file "test/permission-command-canonicalization-test")
+   (:file "test/shell-env-test")
+   (:file "test/shell-safety-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (unless (uiop:symbol-call :amoebum/test :run-all)

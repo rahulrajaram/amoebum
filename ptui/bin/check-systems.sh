@@ -22,6 +22,7 @@ systems=(
   "ptui/runtime"
   "ptui/term"
   "ptui/text"
+  "ptui/search"
   "ptui/layout"
   "ptui/layout/yoga"
   "ptui/ui"

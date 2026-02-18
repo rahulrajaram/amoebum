@@ -12,10 +12,10 @@
 
 ;;; --- Event Types ---
 
-(defconstant +event-type-self-modify-proposed+ "self-modify:proposed")
-(defconstant +event-type-self-modify-approved+ "self-modify:approved")
-(defconstant +event-type-self-modify-applied+ "self-modify:applied")
-(defconstant +event-type-self-modify-rolled-back+ "self-modify:rolled-back")
+(defparameter +event-type-self-modify-proposed+ "self-modify:proposed")
+(defparameter +event-type-self-modify-approved+ "self-modify:approved")
+(defparameter +event-type-self-modify-applied+ "self-modify:applied")
+(defparameter +event-type-self-modify-rolled-back+ "self-modify:rolled-back")
 
 ;;; --- Modification Journal ---
 

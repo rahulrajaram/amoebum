@@ -10,6 +10,7 @@
 (defparameter *web-search-default-timeout-seconds* 20)
 (defparameter *web-search-default-duckduckgo-url* "https://duckduckgo.com/html/")
 (defparameter *web-search-default-user-agent* "amoebum-web-search/0.1")
+(defparameter *web-fetch-http-get-runner* nil)
 (defparameter *web-fetch-default-timeout-seconds* 20)
 (defparameter *web-fetch-default-cache-ttl-seconds* 900)
 (defparameter *web-fetch-default-max-markdown-bytes* 10240)
@@ -572,22 +573,54 @@
        "Potential authentication wall: page resembles a login form.")
       (t nil))))
 
+(defun %web-fetch-response->plist (response)
+  (list :engine :pseudopod
+        :url (pseudopod:fetch-response-url response)
+        :effective-url (pseudopod:fetch-response-effective-url response)
+        :status (pseudopod:fetch-response-status response)
+        :body (pseudopod:fetch-response-body response)
+        :content-type (pseudopod:fetch-response-content-type response)
+        :fetched-at (pseudopod:fetch-response-fetched-at response)))
+
+(defun %web-fetch-via-pseudopod (url timeout-seconds user-agent)
+  (%web-fetch-response->plist
+   (pseudopod:fetch-backend
+    url
+    :timeout-seconds timeout-seconds
+    :user-agent user-agent
+    :http-get-fn *web-fetch-http-get-runner*)))
+
+(defun %web-pseudopod-hit->result (hit)
+  (list :title (pseudopod:search-hit-title hit)
+        :url (pseudopod:search-hit-url hit)
+        :snippet (pseudopod:search-hit-snippet hit)
+        :source-domain (pseudopod:search-hit-source-domain hit)))
+
 (defun %web-search-searxng (query limit searxng-url user-agent)
-  (let* ((response (%web-http-get searxng-url
-                                  :params (list (cons "q" query)
-                                                (cons "format" "json"))
-                                  :timeout-seconds *web-search-default-timeout-seconds*
-                                  :user-agent user-agent))
-         (body (getf response :body)))
-    (%web-parse-searxng-results body limit)))
+  (let* ((response
+           (pseudopod:search-backend
+            :searxng
+            query
+            :limit limit
+            :searxng-url searxng-url
+            :timeout-seconds *web-search-default-timeout-seconds*
+            :user-agent user-agent
+            :min-interval-seconds *web-search-rate-limit-seconds*))
+         (hits (pseudopod:search-response-results response)))
+    (mapcar #'%web-pseudopod-hit->result hits)))
 
 (defun %web-search-duckduckgo (query limit user-agent)
-  (let* ((response (%web-http-get (%web-effective-duckduckgo-url)
-                                  :params (list (cons "q" query))
-                                  :timeout-seconds *web-search-default-timeout-seconds*
-                                  :user-agent user-agent))
-         (body (getf response :body)))
-    (%web-parse-duckduckgo-results body limit)))
+  (let* ((response
+           (pseudopod:search-backend
+            :duckduckgo
+            query
+            :limit limit
+            :duckduckgo-url (%web-effective-duckduckgo-url)
+            :timeout-seconds *web-search-default-timeout-seconds*
+            :user-agent user-agent
+            :min-interval-seconds *web-search-rate-limit-seconds*))
+         (hits (pseudopod:search-response-results response)))
+    (mapcar #'%web-pseudopod-hit->result hits)))
 
 (defun %web-search-backend-order (backend searxng-url)
   (case backend
@@ -697,16 +730,17 @@
            (cached (%web-fetch-cache-get cache-key now)))
       (if cached
           (append (list :cached t) cached)
-          (let* ((response (%web-http-get normalized-url
-                                          :timeout-seconds resolved-timeout
-                                          :user-agent resolved-user-agent
-                                          :respect-rate-limit nil))
+          (let* ((response (%web-fetch-via-pseudopod normalized-url
+                                                     resolved-timeout
+                                                     resolved-user-agent))
                  (status (or (getf response :status) 0))
                  (body (or (getf response :body) ""))
                  (effective-url (or (getf response :effective-url)
                                     (getf response :url)
                                     normalized-url))
                  (content-type (or (getf response :content-type) ""))
+                 (fetch-engine (or (getf response :engine) :unknown))
+                 (fetched-at (or (getf response :fetched-at) 0))
                  (base-markdown (%web-document->markdown normalized-url effective-url body))
                  (auth-warning (%web-authentication-warning normalized-url effective-url body status))
                  (host-changed (%web-host-changed-p normalized-url effective-url)))
@@ -718,6 +752,8 @@
                             :effective-url effective-url
                             :status status
                             :content-type content-type
+                            :fetch-engine fetch-engine
+                            :fetched-at fetched-at
                             :host-changed host-changed
                             :authentication-warning auth-warning
                             :truncated-p truncated-p

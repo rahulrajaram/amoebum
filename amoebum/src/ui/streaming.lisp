@@ -632,6 +632,8 @@
      :tools tools
      :on-content (lambda (chunk)
                    (token-stream-emit-chunk stream-state chunk))
+     :on-reasoning (lambda (chunk)
+                     (token-stream-emit-chunk stream-state chunk))
      :on-tool-call-delta (lambda (chunk)
                            (token-stream-emit-tool-call-delta stream-state chunk))
      :on-tool-call-started (lambda (tool-call)

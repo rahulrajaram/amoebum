@@ -168,6 +168,21 @@
     ((hash-table-p content) (list (hash-to-content-part content)))
     (t (mapcar #'%coerce-content-part (%sequence->list-safe content)))))
 
+(defun %extract-reasoning-content (content)
+  (let ((parts (if (or (listp content) (vectorp content))
+                   (if (listp content)
+                       content
+                       (loop for item across content collect item))
+                   (list content))))
+    (loop for part in parts
+          for normalized = (%coerce-content-part part)
+          for think = (content-part-think normalized)
+          for text = (content-part-text normalized)
+          for candidate = (or (and (stringp think) think)
+                             (and (stringp text) text))
+          when (and (stringp candidate) (plusp (length candidate)))
+            do (return candidate))))
+
 (defun %coerce-tool-calls (tool-calls)
   (cond
     ((null tool-calls) nil)
@@ -209,6 +224,13 @@
                     'vector)))
     (when (message-tool-call-id message)
       (setf (gethash "tool_call_id" hash) (message-tool-call-id message)))
+    (when (and (string= "assistant" (message-role message))
+               (message-tool-calls message)
+               (plusp (length (message-tool-calls message)))
+               (not (gethash "reasoning_content" hash)))
+      (let ((reasoning (%extract-reasoning-content (message-content message))))
+        (when (stringp reasoning)
+          (setf (gethash "reasoning_content" hash) reasoning))))
     (when (message-partial message)
       (setf (gethash "partial" hash) (message-partial message)))
     hash))

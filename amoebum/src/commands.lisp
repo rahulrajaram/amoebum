@@ -2001,21 +2001,252 @@
        (make-slash-command-result
         :output "Profiling: /perf start|stop|report|gc|dashboard")))))
 
+(defun %mcp-auth-usage ()
+  "/mcp-auth [list|set <server|default> <allow|deny|prompt>|clear <server|all>]")
+
+(defun %mcp-auth-string (value)
+  (cond
+    ((null value) "")
+    ((stringp value) value)
+    ((symbolp value) (symbol-name value))
+    (t (princ-to-string value))))
+
+(defun %mcp-auth-normalize-server (value)
+  (let ((trimmed (string-downcase (%slash-trim (%mcp-auth-string value)))))
+    (cond
+      ((or (string= trimmed "")
+           (string= trimmed "*")
+           (string= trimmed "default"))
+       "default")
+      ((uiop:string-prefix-p "mcp/" trimmed)
+       (let* ((rest (subseq trimmed (length "mcp/")))
+              (separator (position #\/ rest)))
+         (if (and separator (> separator 0))
+             (subseq rest 0 separator)
+             rest)))
+      (t trimmed))))
+
+(defun %mcp-auth-normalize-decision (value)
+  (let ((trimmed (string-downcase (%slash-trim (%mcp-auth-string value)))))
+    (cond
+      ((string= trimmed "allow") :allow)
+      ((string= trimmed "deny") :deny)
+      ((or (string= trimmed "prompt")
+           (string= trimmed "ask")) :prompt)
+      (t nil))))
+
+(defun %mcp-auth-config-pairs (value)
+  (cond
+    ((hash-table-p value)
+     (loop for key being the hash-keys of value using (hash-value decision)
+           collect (cons key decision)))
+    ((and (listp value)
+          (every #'consp value))
+     value)
+    ((and (listp value)
+          (evenp (length value)))
+     (loop for (key decision) on value by #'cddr
+           collect (cons key decision)))
+    (t nil)))
+
+(defun %mcp-auth-normalized-rules ()
+  (let* ((cfg (current-config))
+         (raw (and cfg (config-value :mcp-server-permissions cfg)))
+         (rules '()))
+    (dolist (entry (%mcp-auth-config-pairs raw))
+      (let* ((server (%mcp-auth-normalize-server (car entry)))
+             (decision (%mcp-auth-normalize-decision (cdr entry))))
+        (when (and decision
+                   server
+                   (not (assoc server rules :test #'string=)))
+          (push (cons server decision) rules))))
+    (nreverse rules)))
+
+(defun %mcp-auth-render-rules (&optional (rules (%mcp-auth-normalized-rules)))
+  (with-output-to-string (out)
+    (let ((default (or (cdr (assoc "default" rules :test #'string=))
+                       :prompt)))
+      (format out "MCP authorization rules:~%")
+      (format out "- default: ~A~%"
+              (string-downcase (symbol-name default)))
+      (dolist (entry (sort (remove-if (lambda (entry)
+                                        (string= (car entry) "default"))
+                                      (copy-list rules))
+                           #'string<
+                           :key #'car))
+        (format out "- ~A: ~A~%"
+                (car entry)
+                (string-downcase (symbol-name (cdr entry))))))))
+
+(defun %mcp-auth-upsert-rule (rules server decision)
+  (let* ((normalized-server (%mcp-auth-normalize-server server))
+         (existing (assoc normalized-server rules :test #'string=)))
+    (if existing
+        (setf (cdr existing) decision)
+        (push (cons normalized-server decision) rules))
+    rules))
+
+(defun %mcp-auth-remove-rule (rules server)
+  (let ((normalized-server (%mcp-auth-normalize-server server)))
+    (remove-if (lambda (entry)
+                 (string= (car entry) normalized-server))
+               rules)))
+
+(defun %mcp-auth-known-server-names ()
+  (let ((names '()))
+    (dolist (entry (%mcp-auth-normalized-rules))
+      (unless (string= (car entry) "default")
+        (pushnew (car entry) names :test #'string=)))
+    (sort names #'string<)))
+
+(defun %mcp-auth-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let* ((raw (or (gethash :ARGS arguments) ""))
+         (tokens (%tokenize-command-arguments raw))
+         (action (if tokens
+                     (string-downcase (first tokens))
+                     "list")))
+    (labels ((invalid-usage (&optional detail)
+               (make-slash-command-result
+                :echo-input-p t
+                :output (format nil "~@[~A~%~]Usage: ~A"
+                                detail
+                                (%mcp-auth-usage)))))
+      (cond
+        ((member action '("list" "ls") :test #'string=)
+         (if (> (length tokens) 1)
+             (invalid-usage (format nil "Unexpected argument ~S." (second tokens)))
+             (make-slash-command-result
+              :echo-input-p t
+              :output (%mcp-auth-render-rules))))
+        ((string= action "set")
+         (let* ((server-token (second tokens))
+                (decision-token (third tokens))
+                (extra (fourth tokens))
+                (server (%mcp-auth-normalize-server server-token))
+                (decision (%mcp-auth-normalize-decision decision-token)))
+           (cond
+             (extra
+              (invalid-usage (format nil "Unexpected argument ~S." extra)))
+             ((or (null server-token) (%slash-blank-p server-token))
+              (invalid-usage "Missing server token for set action."))
+             ((null decision)
+              (invalid-usage (format nil "Unknown MCP decision ~S." decision-token)))
+             (t
+              (let* ((updated (%mcp-auth-upsert-rule (%mcp-auth-normalized-rules)
+                                                     server
+                                                     decision))
+                     (next-rules
+                       (sort (copy-list updated) #'string< :key #'car)))
+                (setconfig :mcp-server-permissions next-rules)
+                (make-slash-command-result
+                 :echo-input-p t
+                 :output (format nil "Set MCP authorization for ~A to ~A."
+                                 server
+                                 (string-downcase (symbol-name decision)))))))))
+        ((string= action "clear")
+         (let ((target (second tokens))
+               (extra (third tokens)))
+           (cond
+             (extra
+              (invalid-usage (format nil "Unexpected argument ~S." extra)))
+             ((or (null target) (%slash-blank-p target))
+              (invalid-usage "Missing server token for clear action."))
+             ((member (string-downcase (%slash-trim target))
+                      '("all" "*")
+                      :test #'string=)
+              (setconfig :mcp-server-permissions nil)
+              (make-slash-command-result
+               :echo-input-p t
+               :output "Cleared all MCP authorization overrides (default prompt)."))
+             (t
+              (let* ((server (%mcp-auth-normalize-server target))
+                     (updated (%mcp-auth-remove-rule (%mcp-auth-normalized-rules)
+                                                     server)))
+                (setconfig :mcp-server-permissions updated)
+                (make-slash-command-result
+                 :echo-input-p t
+                 :output (format nil "Cleared MCP authorization override for ~A."
+                                 server)))))))
+        (t
+         (invalid-usage (format nil "Unknown /mcp-auth action ~S." action)))))))
+
+(defun %mcp-auth-arg-completer (_command _invocation index fragment prefix-tokens)
+  (declare (ignore _command _invocation))
+  (let ((prefix (%slash-trim fragment))
+        (action (and prefix-tokens (string-downcase (first prefix-tokens)))))
+    (cond
+      ((= index 0)
+       (loop for option in '("list" "set" "clear")
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      ((and (string= action "set") (= index 1))
+       (loop for option in (append '("default") (%mcp-auth-known-server-names))
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      ((and (string= action "set") (= index 2))
+       (loop for option in '("allow" "deny" "prompt")
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      ((and (string= action "clear") (= index 1))
+       (loop for option in (append '("all" "default") (%mcp-auth-known-server-names))
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      (t nil))))
+
 (defun %spawn-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
   (let ((task-text (or (gethash :TASK arguments) "")))
     (if (zerop (length (%slash-trim task-text)))
         (make-slash-command-result
          :output "Usage: /spawn <task-description>")
-        (make-slash-command-result
-         :output (format nil "Spawning sw4rm agent for: ~A" task-text)))))
+        (handler-case
+            (let* ((agent (spawn-agent task-text :agent-type :task))
+                   (agent-id (agent-record-id agent)))
+              (make-slash-command-result
+               :echo-input-p t
+               :output (format nil "Spawned agent ~A for task: ~A"
+                               agent-id
+                               task-text)))
+          (error (condition)
+            (make-slash-command-result
+             :echo-input-p t
+             :output (format nil "Failed to spawn agent: ~A" condition)))))))
 
 (defun %approvals-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
-  (let ((args-text (or (gethash :ARGS arguments) "")))
-    (declare (ignore args-text))
-    (make-slash-command-result
-     :output "No pending approval requests.")))
+  (let* ((args-text (or (gethash :ARGS arguments) ""))
+         (tokens (%slash-tokenize args-text))
+         (action (string-downcase (or (first tokens) "status")))
+         (policy-token (second tokens))
+         (cfg (%current-config-safe))
+         (current-policy (config-value :approval-policy cfg)))
+    (cond
+      ((or (string= action "status")
+           (string= action "list"))
+       (make-slash-command-result
+        :output (format nil
+                        "Approval policy: ~A (presets: untrusted, on-failure, on-request, never)."
+                        (string-downcase
+                         (symbol-name (or current-policy :on-request))))))
+      ((string= action "set")
+       (if (null policy-token)
+           (make-slash-command-result
+            :output "Usage: /approvals set <untrusted|on-failure|on-request|never>")
+           (let ((normalized (%approval-policy-keyword policy-token)))
+             (if (member normalized *known-approval-policies* :test #'eq)
+                 (progn
+                   (setconfig :approval-policy normalized)
+                   (make-slash-command-result
+                    :output (format nil "Approval policy set to ~A."
+                                    (string-downcase (symbol-name normalized)))))
+                 (make-slash-command-result
+                  :output (format nil
+                                  "Unknown approval policy ~S. Valid values: untrusted, on-failure, on-request, never."
+                                  policy-token))))))
+      (t
+       (make-slash-command-result
+        :output "Approvals: /approvals status | /approvals set <policy>")))))
 
 (defun register-builtin-slash-commands ()
   (register-slash-command
@@ -2251,6 +2482,20 @@
     :completer #'%hooks-arg-completer))
   (register-slash-command
    (make-slash-command
+    :name "mcp-auth"
+    :description "Inspect or update MCP per-server authorization decisions."
+    :usage (%mcp-auth-usage)
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Optional action: list, set <server> <allow|deny|prompt>, clear <server|all>."))
+    :handler #'%mcp-auth-handler
+    :completer #'%mcp-auth-arg-completer))
+  (register-slash-command
+   (make-slash-command
     :name "sounds"
     :description "List sound themes, set the active theme, or preview a theme sound."
     :usage (%sounds-usage)
@@ -2370,15 +2615,15 @@
   (register-slash-command
    (make-slash-command
     :name "approvals"
-    :description "List pending human-in-the-loop approval requests."
-    :usage "/approvals [approve <id>|deny <id>]"
+    :description "Inspect or set approval policy presets."
+    :usage "/approvals [status|set <untrusted|on-failure|on-request|never>]"
     :parameters
     (list (make-slash-command-parameter
            :name "args"
            :type :string
            :required-p nil
            :greedy-p t
-           :description "Optional action: approve or deny with request id."))
+           :description "Optional action: status or set <policy>."))
     :handler #'%approvals-handler))
   t)
 

@@ -750,9 +750,12 @@
            #:mcp-server-p
            #:make-mcp-server
            #:mcp-server-name
+           #:mcp-server-transport
            #:mcp-server-command
            #:mcp-server-args
            #:mcp-server-cwd
+           #:mcp-server-endpoint-url
+           #:mcp-server-http-headers
            #:mcp-server-initialize-timeout-seconds
            #:mcp-server-ping-timeout-seconds
            #:mcp-server-health-check-interval-seconds
@@ -835,6 +838,8 @@
            #:lsp-open-document
            #:lsp-send-notification
            #:lsp-send-request
+           #:lsp-request-document-symbols
+           #:lsp-request-workspace-symbols
            #:lsp-drain-notifications
            #:lsp-client-stop
            #:context-overflow-error
@@ -868,14 +873,49 @@
            #:permission-rule-p
            #:permission-rule-effect
            #:permission-rule-path
+           #:permission-rule-command
            #:permission-rule-tool
+           #:permission-rule-command
+           #:permission-rule-arguments
            #:permission-rule-source
            #:make-permission-rule
+           #:command-canonical-form
+           #:command-canonical-form-p
+           #:make-command-canonical-form
+           #:command-canonical-form-raw
+           #:command-canonical-form-normalized
+           #:command-canonical-form-policy-key
+           #:command-canonical-form-executable
+           #:command-canonical-form-argv
+           #:command-canonical-form-operators
+           #:command-canonical-form-wrappers
+           #:command-canonical-form-commands
+           #:path-approval-entry
+           #:path-approval-entry-p
+           #:make-path-approval-entry
+           #:path-approval-entry-tool
+           #:path-approval-entry-path
+           #:path-approval-entry-scope
+           #:path-approval-entry-created-at
+           #:path-approval-entry-uses-remaining
            #:*permission-rules*
+           #:*path-approval-memory*
+           #:*path-approval-memory-limit*
+           #:*path-approval-persistence-relative-path*
            #:*dangerous-command-patterns*
            #:clear-permission-rules
            #:add-permission-rule
+           #:canonicalize-permission-command
+           #:normalize-permission-path
            #:evaluate-path-permission
+           #:evaluate-command-permission
+           #:path-approval-store-path
+           #:load-path-approvals
+           #:save-path-approvals
+           #:clear-path-approvals
+           #:list-path-approvals
+           #:remember-path-approval
+           #:forget-path-approval
            #:dangerous-command-p
            #:check-permission
            #:+sandbox-max-output-size+
@@ -1146,7 +1186,67 @@
            #:list-swarm-agents
            #:find-swarm-agent
            #:clear-swarm-registry
-           #:swarm-status-summary))
+           #:swarm-status-summary
+           ;; Read orchestration (I105, re-exported for tests)
+           #:read-orchestration-error
+           #:validate-read-arguments
+           #:orchestrate-read
+           #:orchestrate-read-via-pipeline
+           #:format-read-error-for-user
+           #:*read-orchestration-max-line-limit*
+           #:*read-orchestration-max-file-size-bytes*
+           #:*read-orchestration-supported-extensions*
+           ;; Write safety checks (I107)
+           #:*write-forbidden-path-prefixes*
+           #:*write-deny-filename-patterns*
+           #:write-safety-denied
+           #:write-safety-denied-path
+           #:write-safety-denied-denial-reason
+           #:check-write-safety
+           #:write-safety-check-p
+           ;; Edit validation (I109)
+           #:edit-validation-error
+           #:*edit-validation-enabled-p*
+           #:*edit-validation-post-hooks*
+           #:*edit-validation-content-hashes*
+           #:validate-edit-preconditions
+           #:validate-edit-postconditions
+           #:register-post-edit-hook
+           #:unregister-post-edit-hook
+           #:clear-post-edit-hooks
+           #:install-edit-validation-hooks
+           #:uninstall-edit-validation-hooks
+           ;; Shell environment handling (I111)
+           #:*shell-env-sensitive-patterns*
+           #:shell-environment
+           #:shell-environment-p
+           #:make-shell-environment
+           #:shell-environment-cwd
+           #:shell-environment-inherit-cwd-p
+           #:shell-environment-env-overrides
+           #:shell-environment-inherit-env-p
+           #:shell-environment-filter-sensitive-p
+           #:shell-environment-sensitive-patterns
+           #:shell-environment-extra-path-dirs
+           #:filter-sensitive-env
+           #:resolve-shell-env-cwd
+           #:assemble-shell-env
+           #:shell-env-to-string-list
+           #:merge-shell-environment
+           #:describe-shell-environment
+           ;; Shell safety policy hooks (I112)
+           #:*shell-safety-deny-patterns*
+           #:*shell-safety-escalate-patterns*
+           #:+event-type-shell-command-blocked+
+           #:+event-type-shell-command-escalated+
+           #:shell-safety-result
+           #:shell-safety-result-p
+           #:shell-safety-result-decision
+           #:shell-safety-result-reason
+           #:shell-safety-result-matched-pattern
+           #:evaluate-shell-safety-policy
+           #:shell-safety-policy-hook
+           #:shell-command-safe-p))
 
 (defpackage :amoebum.sandbox
   (:use)
@@ -1247,7 +1347,16 @@
            #:+sandbox-max-read-size+
            #:safe-open
            #:safe-run-program
-           #:truncate-sandbox-output))
+           #:truncate-sandbox-output
+           ;; Read orchestration (I105)
+           #:read-orchestration-error
+           #:validate-read-arguments
+           #:orchestrate-read
+           #:orchestrate-read-via-pipeline
+           #:format-read-error-for-user
+           #:*read-orchestration-max-line-limit*
+           #:*read-orchestration-max-file-size-bytes*
+           #:*read-orchestration-supported-extensions*))
 
 (defpackage :amoebum.tools
   (:use :cl))

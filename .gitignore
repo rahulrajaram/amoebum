@@ -9,6 +9,12 @@ ptui/dist/
 ptui/native/*.so
 ptui/dist/*.so
 
+# Session artifacts from agentic loop tests
+.amoebum/session/
+
+# Build output
+dist/
+
 # Scratch outputs
 *.out
 *.log

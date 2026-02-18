@@ -100,6 +100,38 @@
         (setf max-used (max max-used last-used))))
     max-used))
 
+(defun make-temp-directory (prefix)
+  (uiop:ensure-directory-pathname
+   (merge-pathnames
+    (make-pathname
+     :directory `(:relative
+                  ,(format nil "~A-~D-~D"
+                           prefix
+                           (get-universal-time)
+                           (random 1000000))))
+    (uiop:ensure-directory-pathname (uiop:temporary-directory)))))
+
+(defun write-text-file (path content)
+  (ensure-directories-exist path)
+  (with-open-file (stream path
+                          :direction :output
+                          :if-exists :supersede
+                          :if-does-not-exist :create
+                          :external-format :utf-8)
+    (write-string content stream))
+  path)
+
+(defun delete-directory-tree-safe (path)
+  (when (and path (probe-file path))
+    (ignore-errors
+      (uiop:delete-directory-tree path
+                                  :validate t
+                                  :if-does-not-exist :ignore))))
+
+(defun glob-relative-paths (result)
+  (mapcar #'ptui.search.glob:glob-entry-relative-path
+          (ptui.search.glob:glob-scan-result-matches result)))
+
 (defun make-atop-snapshot-fixture (&key
                                      (timestamp-ms 0)
                                      (cpu-user 0)
@@ -804,6 +836,108 @@
                  "prompt-box height should be max-rows+border, got ~D"
                  (ptui.layout:layout-size-height size))))
 
+(deftest widgets-glob-widget-api-boundary
+  (multiple-value-bind (widgets-sym widgets-status)
+      (find-symbol "MAKE-GLOB-WIDGET" :ptui.widgets.core)
+    (assert-true (null widgets-sym)
+                 "glob-widget constructor must not exist in ptui.widgets.core, got ~S/~S"
+                 widgets-sym widgets-status))
+  (multiple-value-bind (components-sym components-status)
+      (find-symbol "MAKE-GLOB-WIDGET" :ptui.components.glob-widget)
+    (assert-true (and components-sym (eql components-status :external))
+                 "glob-widget constructor should be exported by ptui.components.glob-widget, got ~S/~S"
+                 components-sym components-status)
+    (assert-true (fboundp components-sym)
+                 "glob-widget constructor symbol should be fboundp: ~S"
+                 components-sym)))
+
+(deftest widgets-glob-widget-streaming-and-cancellation
+  (let* ((stream (ptui.components.glob-widget:make-sequence-glob-stream
+                  '("src/main.lisp"
+                    "README.md"
+                    "src/util.lisp")))
+         (state (ptui.components.glob-widget:make-glob-widget-state
+                 :pattern "src/*.lisp"
+                 :stream stream
+                 :batch-size 1)))
+    (multiple-value-bind (_ consumed matched)
+        (ptui.components.glob-widget:glob-widget-step state)
+      (declare (ignore _))
+      (assert-true (= consumed 1)
+                   "expected first stream step to consume one candidate, got ~D"
+                   consumed)
+      (assert-true (= matched 1)
+                   "expected first stream step to match one candidate, got ~D"
+                   matched)
+      (assert-true (eq (ptui.components.glob-widget:glob-widget-status state) :streaming)
+                   "expected status :streaming after first step, got ~S"
+                   (ptui.components.glob-widget:glob-widget-status state)))
+    (ptui.components.glob-widget:glob-widget-step state :max-items 8)
+    (assert-true (equal (ptui.components.glob-widget:glob-widget-matches state)
+                        '("src/main.lisp" "src/util.lisp"))
+                 "expected deterministic match order from stream, got ~S"
+                 (ptui.components.glob-widget:glob-widget-matches state))
+    (assert-true (eq (ptui.components.glob-widget:glob-widget-status state) :done)
+                 "expected status :done after draining stream, got ~S"
+                 (ptui.components.glob-widget:glob-widget-status state))
+    (ptui.components.glob-widget:glob-widget-start
+     state
+     (ptui.components.glob-widget:make-sequence-glob-stream
+      '("notes/todo.txt" "notes/next.txt"))
+     :pattern "notes/*.txt")
+    (assert-true (eq (ptui.components.glob-widget:glob-widget-status state) :streaming)
+                 "expected status :streaming after restart, got ~S"
+                 (ptui.components.glob-widget:glob-widget-status state))
+    (ptui.components.glob-widget:glob-widget-cancel state)
+    (assert-true (eq (ptui.components.glob-widget:glob-widget-status state) :cancelled)
+                 "expected status :cancelled after cancel, got ~S"
+                 (ptui.components.glob-widget:glob-widget-status state))))
+
+(deftest widgets-glob-widget-event-dispatch-and-selection
+  (let* ((selected nil)
+         (state (ptui.components.glob-widget:make-glob-widget-state
+                 :pattern "src/*.lisp"
+                 :on-select (lambda (match _state)
+                              (declare (ignore _state))
+                              (setf selected match))))
+         (stream (ptui.components.glob-widget:make-sequence-glob-stream
+                  '("src/main.lisp" "src/util.lisp")))
+         (runtime (ptui.ui.runtime:make-runtime)))
+    (ptui.components.glob-widget:glob-widget-start state stream)
+    (ptui.components.glob-widget:glob-widget-step state :max-items 8)
+    (let* ((widget (ptui.components.glob-widget:make-glob-widget
+                    state
+                    :id :glob-root
+                    :input-id :glob-input))
+           (root (ptui.widgets.core:make-stack-widget (list widget) :id :root))
+           (size (ptui.widgets.core:widget-measure widget)))
+      (ptui.ui.runtime:update-runtime runtime root)
+      (assert-true (> (ptui.layout:layout-size-width size) 0)
+                   "glob-widget composed width should be > 0")
+      (assert-true (> (ptui.layout:layout-size-height size) 0)
+                   "glob-widget composed height should be > 0")
+      (ptui.widgets.core:dispatch-widget-event
+       root
+       (list :target :glob-input
+             :event (ptui.core.events:make-key-event :down)))
+      (assert-true (= (ptui.components.glob-widget:glob-widget-selected-index state) 1)
+                   "expected :down event to move selection to second match")
+      (ptui.widgets.core:dispatch-widget-event
+       root
+       (list :target :glob-input
+             :event (ptui.core.events:make-key-event :enter)))
+      (assert-true (string= selected "src/util.lisp")
+                   "expected enter event to select highlighted match, got ~S"
+                   selected)
+      (ptui.widgets.core:dispatch-widget-event
+       root
+       (list :target :glob-input
+             :event (ptui.core.events:make-key-event :text :text? "a")))
+      (assert-true (string= (ptui.components.glob-widget:glob-widget-pattern state)
+                            "src/*.lispa")
+                   "expected text event to mutate pattern, got ~S"
+                   (ptui.components.glob-widget:glob-widget-pattern state)))))
+
 (deftest dashboard-ui-render-and-grapheme-backspace
   (let* ((state (ptui.examples.metrics-dashboard::make-dashboard-ui-state
                  :runtime (ptui.ui.runtime:make-runtime)))
@@ -1347,6 +1481,335 @@
                  "help key should coexist with process interactions")
     (assert-true (ptui.examples.atop-dashboard::atop-dashboard-state-show-process-detail-p state)
                  "detail overlay should stay enabled after pause/help toggles")))
+
+(deftest glob-matcher-wildcard-edge-vectors
+  (let ((vectors
+          '(("*.lisp" "main.lisp" t)
+            ("*.lisp" "src/main.lisp" nil)
+            ("**/*.lisp" "src/main.lisp" t)
+            ("src/?ain.lisp" "src/main.lisp" t)
+            ("src/?ain.lisp" "src/chain.lisp" nil)
+            ("src/[mw]ain.lisp" "src/main.lisp" t)
+            ("src/[mw]ain.lisp" "src/wain.lisp" t)
+            ("src/[mw]ain.lisp" "src/xain.lisp" nil)
+            ("src/{main,test}.lisp" "src/main.lisp" t)
+            ("src/{main,test}.lisp" "src/test.lisp" t)
+            ("src/{main,test}.lisp" "src/util.lisp" nil)
+            ("docs/**" "docs/guides/setup.md" t)
+            ("literal[abc" "literal[abc" t))))
+    (dolist (entry vectors)
+      (destructuring-bind (pattern path expected) entry
+        (let ((actual (ptui.search.glob:glob-match-p pattern path)))
+          (assert-true (eql actual expected)
+                       "glob vector mismatch pattern=~S path=~S expected=~S actual=~S"
+                       pattern path expected actual))))))
+
+(deftest glob-scan-sorts-by-mtime-with-limit
+  (let ((root (make-temp-directory "ptui-glob-order")))
+    (unwind-protect
+         (progn
+           (write-text-file (merge-pathnames #P"src/oldest.lisp" root) "oldest")
+           (sleep 1)
+           (write-text-file (merge-pathnames #P"src/newer.lisp" root) "newer")
+           (sleep 1)
+           (write-text-file (merge-pathnames #P"src/newest.lisp" root) "newest")
+           (let* ((result (ptui.search.glob:scan-glob-files "**/*.lisp"
+                                                            :root root
+                                                            :limit 2
+                                                            :respect-gitignore nil))
+                  (paths (glob-relative-paths result)))
+             (assert-true (= (length paths) 2)
+                          "expected 2 files after limit, got ~D"
+                          (length paths))
+             (assert-true (equal paths '("src/newest.lisp" "src/newer.lisp"))
+                          "expected mtime-desc ordering, got ~S"
+                          paths)))
+      (delete-directory-tree-safe root))))
+
+(deftest glob-scan-respects-gitignore-and-custom-ignore
+  (let ((root (make-temp-directory "ptui-glob-ignore")))
+    (unwind-protect
+         (progn
+           (write-text-file (merge-pathnames #P".gitignore" root)
+                            "ignored-dir/
+*.tmp
+!visible/keep.tmp
+")
+           (write-text-file (merge-pathnames #P"ignored-dir/secret.lisp" root) "secret")
+           (write-text-file (merge-pathnames #P"visible/show.lisp" root) "show")
+           (write-text-file (merge-pathnames #P"visible/skip.tmp" root) "skip")
+           (write-text-file (merge-pathnames #P"visible/keep.tmp" root) "keep")
+           (let* ((result
+                    (ptui.search.glob:scan-glob-files
+                     "**/*"
+                     :root root
+                     :respect-gitignore t
+                     :ignore-patterns '(".gitignore" "visible/show.lisp")))
+                  (paths (sort (copy-list (glob-relative-paths result)) #'string<)))
+             (assert-true (equal paths '("visible/keep.tmp"))
+                          "ignore handling mismatch, got ~S" paths)))
+      (delete-directory-tree-safe root))))
+
+(deftest glob-scan-supports-cancel-and-stream-callback
+  (let ((root (make-temp-directory "ptui-glob-cancel")))
+    (unwind-protect
+         (progn
+           (write-text-file (merge-pathnames #P"src/a.lisp" root) "a")
+           (write-text-file (merge-pathnames #P"src/b.lisp" root) "b")
+           (write-text-file (merge-pathnames #P"src/c.lisp" root) "c")
+           (write-text-file (merge-pathnames #P"src/d.lisp" root) "d")
+           (let ((seen '())
+                 (stop-p nil))
+             (let ((result
+                     (ptui.search.glob:scan-glob-files
+                      "**/*.lisp"
+                      :root root
+                      :respect-gitignore nil
+                      :on-match (lambda (entry)
+                                  (push (ptui.search.glob:glob-entry-relative-path entry)
+                                        seen)
+                                  (when (>= (length seen) 2)
+                                    (setf stop-p t)))
+                      :cancel-fn (lambda ()
+                                   stop-p))))
+               (assert-true (ptui.search.glob:glob-scan-result-canceled-p result)
+                            "expected scan to report canceled")
+               (assert-true (>= (length seen) 1)
+                            "expected at least one streamed match")
+               (assert-true (< (length (glob-relative-paths result)) 4)
+                            "expected cancellation before full traversal; got ~S"
+                            (glob-relative-paths result)))))
+      (delete-directory-tree-safe root))))
+
+(deftest search-engine-file-ranking-priority
+  (let* ((results (ptui.search.engine:rank-file-matches
+                   "search"
+                   '("search"
+                     "search-core.lisp"
+                     "src/tool-search-ui.md"
+                     "docs/notes.txt")))
+         (paths (mapcar #'ptui.search.engine:search-file-match-path results))
+         (kinds (mapcar #'ptui.search.engine:search-file-match-kind results))
+         (scores (mapcar #'ptui.search.engine:search-file-match-score results)))
+    (assert-true (= (length results) 3)
+                 "expected three ranked file matches, got ~D (~S)" (length results) paths)
+    (assert-true (equal paths
+                        '("search" "search-core.lisp" "src/tool-search-ui.md"))
+                 "unexpected file ranking order: ~S" paths)
+    (assert-true (equal kinds '(:exact :prefix :substring))
+                 "unexpected ranking kinds: ~S" kinds)
+    (assert-true (>= (first scores) (second scores) (third scores))
+                 "expected monotonic descending scores, got ~S" scores)))
+
+(deftest search-engine-file-no-results
+  (let ((results (ptui.search.engine:rank-file-matches
+                  "does-not-exist"
+                  '("src/main.lisp" "README.md"))))
+    (assert-true (null results)
+                 "expected empty file result set, got ~S" results)))
+
+(deftest search-engine-content-context-and-ranking
+  (let* ((documents
+           (list
+            (ptui.search.engine:make-search-document
+             :path "logs/old.txt"
+             :content (format nil "alpha~%target needle~%omega~%"))
+            (ptui.search.engine:make-search-document
+             :path "logs/new.txt"
+             :content (format nil "needle needle~%"))))
+         (matches (ptui.search.engine:search-content-matches
+                   "needle"
+                   documents
+                   :regex-mode nil
+                   :before-context 1
+                   :after-context 1))
+         (first-match (first matches)))
+    (assert-true (= (length matches) 3)
+                 "expected three content matches, got ~D" (length matches))
+    (assert-true (string= (ptui.search.engine:search-content-match-path first-match)
+                          "logs/new.txt")
+                 "expected top-ranked match in newest/high-density line, got ~S"
+                 (ptui.search.engine:search-content-match-path first-match))
+    (let ((context-match
+            (find "logs/old.txt"
+                  matches
+                  :test #'string=
+                  :key #'ptui.search.engine:search-content-match-path)))
+      (assert-true context-match
+                   "expected match entry for logs/old.txt")
+      (assert-true (= (ptui.search.engine:search-content-match-line context-match) 2)
+                   "expected logs/old.txt match on line 2")
+      (assert-true (equal (ptui.search.engine:search-content-match-context-before context-match)
+                          '((:line 1 :text "alpha")))
+                   "expected one context-before line for logs/old.txt")
+      (assert-true (equal (ptui.search.engine:search-content-match-context-after context-match)
+                          '((:line 3 :text "omega")))
+                   "expected one context-after line for logs/old.txt"))))
+
+(deftest search-engine-content-multiline-toggle
+  (let* ((documents
+           (list
+            (ptui.search.engine:make-search-document
+             :path "src/example.txt"
+             :content (format nil "alpha~%beta~%"))))
+         (line-mode (ptui.search.engine:search-content-matches
+                     "alpha\\s+beta"
+                     documents
+                     :regex-mode t
+                     :multiline-mode nil))
+         (multiline-mode (ptui.search.engine:search-content-matches
+                          "alpha\\s+beta"
+                          documents
+                          :regex-mode t
+                          :multiline-mode t)))
+    (assert-true (null line-mode)
+                 "expected no line-mode matches for newline-spanning pattern")
+    (assert-true (= (length multiline-mode) 1)
+                 "expected one multiline match, got ~D" (length multiline-mode))))
+
+(deftest search-engine-content-no-results
+  (let* ((documents
+           (list
+            (ptui.search.engine:make-search-document
+             :path "src/example.lisp"
+             :content (format nil "(defun hello ())~%"))))
+         (matches (ptui.search.engine:search-content-matches
+                   "not-found"
+                   documents
+                   :regex-mode nil)))
+    (assert-true (null matches)
+                 "expected empty content match list, got ~S" matches)))
+
+(deftest widgets-search-widget-api-boundary
+  (multiple-value-bind (widgets-sym widgets-status)
+      (find-symbol "MAKE-SEARCH-WIDGET" :ptui.widgets.core)
+    (assert-true (null widgets-sym)
+                 "search-widget constructor must not exist in ptui.widgets.core, got ~S/~S"
+                 widgets-sym widgets-status))
+  (multiple-value-bind (components-sym components-status)
+      (find-symbol "MAKE-SEARCH-WIDGET" :ptui.components.search-widget)
+    (assert-true (and components-sym (eql components-status :external))
+                 "search-widget constructor should be exported by ptui.components.search-widget, got ~S/~S"
+                 components-sym components-status)
+    (assert-true (fboundp components-sym)
+                 "search-widget constructor symbol should be fboundp: ~S"
+                 components-sym)))
+
+(deftest widgets-search-widget-file-results-and-events
+  (let* ((selected nil)
+         (state (ptui.components.search-widget:make-search-widget-state
+                 :mode :files
+                 :query "src/"
+                 :file-candidates '("README.md" "src/main.lisp" "src/search.lisp")
+                 :visible-count 4
+                 :limit 10
+                 :on-select (lambda (result _state)
+                              (declare (ignore _state))
+                              (setf selected
+                                    (ptui.search.engine:search-file-match-path result)))))
+         (runtime (ptui.ui.runtime:make-runtime)))
+    (assert-true (equal (mapcar #'ptui.search.engine:search-file-match-path
+                                (ptui.components.search-widget:search-widget-results state))
+                        '("src/main.lisp" "src/search.lisp"))
+                 "unexpected initial file-search ordering: ~S"
+                 (mapcar #'ptui.search.engine:search-file-match-path
+                         (ptui.components.search-widget:search-widget-results state)))
+    (let* ((widget (ptui.components.search-widget:make-search-widget
+                    state
+                    :id :search-root
+                    :input-id :search-input))
+           (root (ptui.widgets.core:make-stack-widget (list widget) :id :root))
+           (size (ptui.widgets.core:widget-measure widget)))
+      (ptui.ui.runtime:update-runtime runtime root)
+      (assert-true (> (ptui.layout:layout-size-width size) 0)
+                   "search-widget composed width should be > 0")
+      (assert-true (> (ptui.layout:layout-size-height size) 0)
+                   "search-widget composed height should be > 0")
+      (ptui.widgets.core:dispatch-widget-event
+       root
+       (list :target :search-input
+             :event (ptui.core.events:make-key-event :down)))
+      (assert-true (= (ptui.components.search-widget:search-widget-selected-index state) 1)
+                   "expected :down event to move selection to second result")
+      (ptui.widgets.core:dispatch-widget-event
+       root
+       (list :target :search-input
+             :event (ptui.core.events:make-key-event :enter)))
+      (assert-true (string= selected "src/search.lisp")
+                   "expected enter event to select highlighted path, got ~S"
+                   selected)
+      (ptui.widgets.core:dispatch-widget-event
+       root
+       (list :target :search-input
+             :event (ptui.core.events:make-key-event :text :text? "x")))
+      (assert-true (string= (ptui.components.search-widget:search-widget-query state)
+                            "src/x")
+                   "expected text event to mutate query, got ~S"
+                   (ptui.components.search-widget:search-widget-query state))
+      (assert-true (eq (ptui.components.search-widget:search-widget-status state) :empty)
+                   "expected :empty status after no-match query, got ~S"
+                   (ptui.components.search-widget:search-widget-status state))
+      (ptui.widgets.core:dispatch-widget-event
+       root
+       (list :target :search-input
+             :event (ptui.core.events:make-key-event :backspace)))
+      (assert-true (string= (ptui.components.search-widget:search-widget-query state)
+                            "src/")
+                   "expected backspace to restore query, got ~S"
+                   (ptui.components.search-widget:search-widget-query state))
+      (assert-true (eq (ptui.components.search-widget:search-widget-status state) :ready)
+                   "expected :ready status after restoring query, got ~S"
+                   (ptui.components.search-widget:search-widget-status state)))))
+
+(deftest widgets-search-widget-content-results-and-refresh
+  (let* ((documents
+           (list
+            (ptui.search.engine:make-search-document
+             :path "logs/old.txt"
+             :content (format nil "alpha~%needle one~%omega~%"))
+            (ptui.search.engine:make-search-document
+             :path "logs/new.txt"
+             :content (format nil "needle two~%needle three~%"))))
+         (state
+           (ptui.components.search-widget:make-search-widget-state
+            :mode :content
+            :query "needle"
+            :documents documents
+            :regex-mode nil
+            :before-context 1
+            :after-context 0
+            :visible-count 1
+            :limit 10)))
+    (assert-true (= (length (ptui.components.search-widget:search-widget-results state)) 3)
+                 "expected three content matches, got ~D"
+                 (length (ptui.components.search-widget:search-widget-results state)))
+    (assert-true (string= (ptui.search.engine:search-content-match-path
+                           (first (ptui.components.search-widget:search-widget-results state)))
+                          "logs/new.txt")
+                 "expected highest ranked content match from logs/new.txt")
+    (setf (ptui.components.search-widget:search-widget-selected-index state) 1)
+    (let* ((all (ptui.components.search-widget:search-widget-results state))
+           (visible (ptui.components.search-widget:search-widget-visible-results state)))
+      (assert-true (= (length visible) 1)
+                   "expected visible window size 1, got ~D" (length visible))
+      (assert-true (eq (first visible) (second all))
+                   "expected visible window to track selected index"))
+    (ptui.components.search-widget:search-widget-set-documents
+     state
+     (list (ptui.search.engine:make-search-document
+            :path "logs/single.txt"
+            :content (format nil "needle once~%"))))
+    (assert-true (= (length (ptui.components.search-widget:search-widget-results state)) 1)
+                 "expected one match after corpus refresh, got ~D"
+                 (length (ptui.components.search-widget:search-widget-results state)))
+    (setf (ptui.components.search-widget:search-widget-query state) "missing")
+    (assert-true (eq (ptui.components.search-widget:search-widget-status state) :empty)
+                 "expected :empty status for missing query, got ~S"
+                 (ptui.components.search-widget:search-widget-status state))
+    (setf (ptui.components.search-widget:search-widget-query state) "needle")
+    (assert-true (eq (ptui.components.search-widget:search-widget-status state) :ready)
+                 "expected :ready status after restoring query, got ~S"
+                 (ptui.components.search-widget:search-widget-status state))))
 
 ;; Script entry
 (multiple-value-bind (passed failed) (run-all-tests)

@@ -262,6 +262,9 @@
   (or (context-event-bus context)
       (current-event-bus)))
 
+(defun %context-effective-permission-mode (context)
+  (%effective-permission-mode (context-permission-mode context)))
+
 (defun %publish-permission-prompted (context tool-name arguments decision)
   (publish (%effective-event-bus context)
            (make-permission-prompted-event
@@ -269,10 +272,11 @@
             :path (%coerce-path-string (%extract-path-argument arguments))
             :command (%coerce-command-string (%extract-command-argument arguments))
             :reason (format nil "permission decision ~A" decision)
-            :permission-mode (context-permission-mode context))))
+            :permission-mode (%context-effective-permission-mode context))))
 
 (defun %check-permission-or-signal (tool-name arguments context)
-  (let* ((metadata (%pipeline-tool-metadata-for tool-name))
+  (let* ((effective-mode (%context-effective-permission-mode context))
+         (metadata (%pipeline-tool-metadata-for tool-name))
          (dangerous-p (and metadata (tool-metadata-dangerous-p metadata)))
          (decision (check-permission :tool tool-name
                                      :path (%coerce-path-string
@@ -280,7 +284,7 @@
                                      :command (%coerce-command-string
                                                (%extract-command-argument arguments))
                                      :dangerous-p dangerous-p
-                                     :permission-mode (context-permission-mode context))))
+                                     :permission-mode effective-mode)))
     (unless (eq decision :allow)
       (when (eq decision :prompt)
         (%publish-permission-prompted context tool-name arguments decision))
@@ -317,7 +321,7 @@
                :tool-invoked
                :tool-name tool-name
                :arguments arguments
-               :permission-mode (context-permission-mode context)))))
+               :permission-mode (%context-effective-permission-mode context)))))
 
 (defun %run-hook-dispatch (context hook-point &rest args)
   (let ((*hook-registry* (or (context-hook-registry context)
@@ -454,12 +458,13 @@
 (defmethod execute-tool :before ((call pseudopod:tool-call)
                                  (context tool-execution-context))
   (let* ((tool-name *pipeline-current-tool-name*)
-         (arguments (%call-arguments call)))
+         (arguments (%call-arguments call))
+         (effective-mode (%context-effective-permission-mode context)))
     (%ensure-tool-registered context tool-name arguments)
     (%validate-tool-arguments tool-name arguments)
     (%check-permission-or-signal tool-name arguments context)
     (sandbox-check-tool-call tool-name arguments
-                             :permission-mode (context-permission-mode context))
+                             :permission-mode effective-mode)
     (%maybe-log-invocation context tool-name arguments)
     (multiple-value-bind (decision details)
         (%run-hook-dispatch context :pre-tool-use tool-name arguments)
@@ -476,7 +481,7 @@
              (make-tool-invoked-event
               :tool-name tool-name
               :args arguments
-              :permission-mode (context-permission-mode context)
+              :permission-mode effective-mode
               :request-id *pipeline-current-request-id*))))
 
 (defmethod execute-tool ((call pseudopod:tool-call)

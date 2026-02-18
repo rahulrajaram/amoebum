@@ -1,7 +1,5 @@
 (in-package :amoebum)
 
-(defparameter +amoebum-readtable-name+ :amoebum-readtable)
-
 (define-condition malformed-regex (error)
   ((pattern :initarg :pattern
             :reader malformed-regex-pattern)
@@ -167,15 +165,12 @@
   (declare (ignore sub-char arg))
   (compile-reader-regex (%read-dispatch-string stream "#r")))
 
-(named-readtables:defreadtable :amoebum-readtable
-  (:merge :standard)
-  (:dispatch-macro-char #\# #\p #'%path-reader-dispatch)
-  (:dispatch-macro-char #\# #\g #'%glob-reader-dispatch)
-  (:dispatch-macro-char #\# #\r #'%regex-reader-dispatch))
-
 (defun activate-amoebum-readtable ()
-  (setf *readtable*
-        (named-readtables:find-readtable +amoebum-readtable-name+)))
+  (let ((table (copy-readtable)))
+    (set-dispatch-macro-character #\# #\p #'%path-reader-dispatch table)
+    (set-dispatch-macro-character #\# #\g #'%glob-reader-dispatch table)
+    (set-dispatch-macro-character #\# #\r #'%regex-reader-dispatch table)
+    (setf *readtable* table)))
 
 (eval-when (:load-toplevel :execute)
   (when (eq *package* (find-package :amoebum))

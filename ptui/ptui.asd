@@ -28,6 +28,16 @@
   ((:file "src/util/log")
    (:file "src/util/time")))
 
+(asdf:defsystem "ptui/search"
+  :description "PTUI file-set search primitives (glob matcher/scan engine)"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ("cl-ppcre")
+  :serial t
+  :components
+  ((:file "src/search/glob")
+   (:file "src/search/engine")))
+
 (asdf:defsystem "ptui/runtime"
   :description "PTUI runtime primitives (queue/scheduler)"
   :author "Ralph"
@@ -73,6 +83,7 @@
    (:file "src/text/width")
    (:file "src/text/layout")))
 
+
 (asdf:defsystem "ptui/layout"
   :description "PTUI layout foundation (node contracts + deterministic solver)"
   :author "Ralph"
@@ -115,10 +126,12 @@
   :description "PTUI higher-level composable widgets"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui/widgets")
+  :depends-on ("ptui/widgets" "ptui/search")
   :serial t
   :components
-  ((:file "src/components/prompt-box")))
+  ((:file "src/components/prompt-box")
+   (:file "src/components/glob-widget")
+   (:file "src/components/search-widget")))
 
 (asdf:defsystem "ptui/backend"
   :description "PTUI backend boundary and implementations"
@@ -145,7 +158,7 @@
   :description "PTUI standalone system (monolithic; no internal ptui/* dependencies)"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("cffi" "bordeaux-threads"
+  :depends-on ("cffi" "bordeaux-threads" "cl-ppcre"
                #+ptui-ncurses "cl-charms")
   :serial t
   :components
@@ -155,6 +168,7 @@
    (:file "src/core/events")
    (:file "src/util/log")
    (:file "src/util/time")
+   (:file "src/search/engine")
    (:file "src/runtime/queue")
    (:file "src/runtime/scheduler")
    (:file "src/term/tty")
@@ -166,6 +180,7 @@
    (:file "src/text/grapheme")
    (:file "src/text/width")
    (:file "src/text/layout")
+   (:file "src/search/glob")
    (:file "src/layout/api")
    #+ptui-layout-yoga (:file "src/layout/yoga")
    (:file "src/ui/elements")
@@ -186,13 +201,15 @@
   :depends-on ("ptui/standalone")
   :serial t
   :components
-  ((:file "src/components/prompt-box")))
+  ((:file "src/components/prompt-box")
+   (:file "src/components/glob-widget")
+   (:file "src/components/search-widget")))
 
 (asdf:defsystem "ptui"
   :description "PTUI umbrella system"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui/core" "ptui/util" "ptui/runtime" "ptui/term" "ptui/text" "ptui/layout" "ptui/ui" "ptui/widgets" "ptui/render" "ptui/backend" "ptui/engine")
+  :depends-on ("ptui/core" "ptui/util" "ptui/search" "ptui/runtime" "ptui/term" "ptui/text" "ptui/layout" "ptui/ui" "ptui/widgets" "ptui/render" "ptui/backend" "ptui/engine")
   :serial t
   :components ())
 
@@ -216,11 +233,23 @@
   ((:file "examples/metrics-dashboard")
    (:file "examples/atop-dashboard")))
 
+(asdf:defsystem "ptui/test-support"
+  :description "PTUI snapshot testing framework"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ("ptui/backend" "ptui/render" "ptui/core")
+  :serial t
+  :components
+  ((:file "src/backend/test")
+   (:file "src/test-support/snapshot")
+   (:file "src/test-support/harness")))
+
 (asdf:defsystem "ptui/tests"
   :description "PTUI FiveAM suites"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui" "fiveam")
+  :depends-on ("ptui" "ptui/test-support" "fiveam")
   :serial t
   :components
-  ((:file "test/defwidget-test")))
+  ((:file "test/defwidget-test")
+   (:file "test/snapshot-test")))

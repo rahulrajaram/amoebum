@@ -82,44 +82,95 @@
           (subseq sorted 0 (min limit (length sorted)))
           sorted))))
 
-(defun %line-context (line-vector start end)
-  (loop for index from start below end
-        collect (list :line (1+ index)
-                      :text (aref line-vector index))))
+(defun %read-file-content-safe (path)
+  (handler-case
+      (uiop:read-file-string path :external-format :utf-8)
+    (error () "")))
 
-(defun %grep-matches-for-file (file scanner before after root)
-  (let* ((lines (handler-case
-                    (coerce (%read-lines file) 'vector)
-                  (error () #())))
-         (line-count (length lines))
-         (results '()))
-    (loop for index from 0 below line-count do
-          (let ((line (aref lines index)))
-            (when (cl-ppcre:scan scanner line)
-              (let* ((before-start (max 0 (- index before)))
-                     (after-end (min line-count (+ index after 1)))
-                     (before-context (%line-context lines before-start index))
-                     (after-context (%line-context lines (1+ index) after-end)))
-                (push (list :path (%path-text file)
-                            :relative-path (%relative-path-text file root)
-                            :modified-at (%path-mtime file)
-                            :line (1+ index)
-                            :text line
-                            :context-before before-context
-                            :context-after after-context)
-                      results)))))
-    (nreverse results)))
+(defun %search-documents-for-files (files)
+  (mapcar (lambda (file)
+            (ptui.search.engine:make-search-document
+             :path (%path-text file)
+             :content (%read-file-content-safe file)))
+          files))
 
-(defun %grep-matches (files scanner before after limit root)
-  (let ((matches '())
-        (count 0))
+(defun %mtime-from-table (table key)
+  (multiple-value-bind (value present-p)
+      (gethash key table)
+    (if present-p value 0)))
+
+(defun %content-match-better-p (left right mtime-table)
+  (let* ((left-path (ptui.search.engine:search-content-match-path left))
+         (right-path (ptui.search.engine:search-content-match-path right))
+         (left-mtime (%mtime-from-table mtime-table left-path))
+         (right-mtime (%mtime-from-table mtime-table right-path))
+         (left-score (ptui.search.engine:search-content-match-score left))
+         (right-score (ptui.search.engine:search-content-match-score right))
+         (left-line (ptui.search.engine:search-content-match-line left))
+         (right-line (ptui.search.engine:search-content-match-line right))
+         (left-column (ptui.search.engine:search-content-match-column left))
+         (right-column (ptui.search.engine:search-content-match-column right)))
+    (cond
+      ((> left-mtime right-mtime) t)
+      ((< left-mtime right-mtime) nil)
+      ((> left-score right-score) t)
+      ((< left-score right-score) nil)
+      ((string< left-path right-path) t)
+      ((string< right-path left-path) nil)
+      ((< left-line right-line) t)
+      ((> left-line right-line) nil)
+      (t
+       (< left-column right-column)))))
+
+(defun %search-widget-match->plist (match root mtime-table)
+  (let* ((path-text (ptui.search.engine:search-content-match-path match))
+         (path (pathname path-text))
+         (modified-at (%mtime-from-table mtime-table path-text)))
+    (list :path path-text
+          :relative-path (%relative-path-text path root)
+          :modified-at modified-at
+          :line (ptui.search.engine:search-content-match-line match)
+          :column (ptui.search.engine:search-content-match-column match)
+          :text (ptui.search.engine:search-content-match-text match)
+          :matched-text (ptui.search.engine:search-content-match-matched-text match)
+          :context-before (ptui.search.engine:search-content-match-context-before match)
+          :context-after (ptui.search.engine:search-content-match-context-after match))))
+
+(defun %grep-matches-via-search-widget (files pattern before after limit case-insensitive root)
+  (let ((mtime-table (make-hash-table :test #'equal)))
     (dolist (file files)
-      (dolist (entry (%grep-matches-for-file file scanner before after root))
-        (when (and limit (>= count limit))
-          (return-from %grep-matches (nreverse matches)))
-        (push entry matches)
-        (incf count)))
-    (nreverse matches)))
+      (setf (gethash (%path-text file) mtime-table)
+            (%path-mtime file)))
+    (let* ((state (ptui.components.search-widget:make-search-widget-state
+                   :mode :content
+                   :visible-count (max 1 (or limit 200))
+                   :limit nil
+                   :regex-mode t
+                   :case-insensitive case-insensitive
+                   :multiline-mode nil
+                   :before-context before
+                   :after-context after))
+           (documents (%search-documents-for-files files)))
+      (ptui.components.search-widget:search-widget-start-content-search
+       state
+       pattern
+       documents
+       :limit nil
+       :regex-mode t
+       :case-insensitive case-insensitive
+       :multiline-mode nil
+       :before-context before
+       :after-context after)
+      (let* ((raw (copy-list (ptui.components.search-widget:search-widget-content-results state)))
+             (sorted (sort raw
+                           (lambda (left right)
+                             (%content-match-better-p left right mtime-table))))
+             (limited (if limit
+                          (subseq sorted 0 (min limit (length sorted)))
+                          sorted)))
+        (mapcar (lambda (match)
+                  (%search-widget-match->plist match root mtime-table))
+                limited)))))
 
 (deftool glob-files ((pattern string :description "Glob pattern to match" :required t)
                      (root (or null pathname) :description "Search root directory" :default nil)
@@ -159,9 +210,13 @@
   (%ensure-non-negative-integer "LIMIT" limit)
   (let* ((root-path (%resolve-search-root root))
          (files (%matching-files-sorted :grep-content root-path path-glob :limit nil))
-         (scanner (cl-ppcre:create-scanner pattern
-                                           :case-insensitive-mode case-insensitive))
-         (matches (%grep-matches files scanner before after limit root-path)))
+         (matches (%grep-matches-via-search-widget files
+                                                   pattern
+                                                   before
+                                                   after
+                                                   limit
+                                                   case-insensitive
+                                                   root-path)))
     (list :root (%path-text root-path)
           :pattern pattern
           :path-glob path-glob
