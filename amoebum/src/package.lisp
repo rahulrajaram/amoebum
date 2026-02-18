@@ -1146,7 +1146,67 @@
            #:list-swarm-agents
            #:find-swarm-agent
            #:clear-swarm-registry
-           #:swarm-status-summary))
+           #:swarm-status-summary
+           ;; Read orchestration (I105, re-exported for tests)
+           #:read-orchestration-error
+           #:validate-read-arguments
+           #:orchestrate-read
+           #:orchestrate-read-via-pipeline
+           #:format-read-error-for-user
+           #:*read-orchestration-max-line-limit*
+           #:*read-orchestration-max-file-size-bytes*
+           #:*read-orchestration-supported-extensions*
+           ;; Write safety checks (I107)
+           #:*write-forbidden-path-prefixes*
+           #:*write-deny-filename-patterns*
+           #:write-safety-denied
+           #:write-safety-denied-path
+           #:write-safety-denied-denial-reason
+           #:check-write-safety
+           #:write-safety-check-p
+           ;; Edit validation (I109)
+           #:edit-validation-error
+           #:*edit-validation-enabled-p*
+           #:*edit-validation-post-hooks*
+           #:*edit-validation-content-hashes*
+           #:validate-edit-preconditions
+           #:validate-edit-postconditions
+           #:register-post-edit-hook
+           #:unregister-post-edit-hook
+           #:clear-post-edit-hooks
+           #:install-edit-validation-hooks
+           #:uninstall-edit-validation-hooks
+           ;; Shell environment handling (I111)
+           #:*shell-env-sensitive-patterns*
+           #:shell-environment
+           #:shell-environment-p
+           #:make-shell-environment
+           #:shell-environment-cwd
+           #:shell-environment-inherit-cwd-p
+           #:shell-environment-env-overrides
+           #:shell-environment-inherit-env-p
+           #:shell-environment-filter-sensitive-p
+           #:shell-environment-sensitive-patterns
+           #:shell-environment-extra-path-dirs
+           #:filter-sensitive-env
+           #:resolve-shell-env-cwd
+           #:assemble-shell-env
+           #:shell-env-to-string-list
+           #:merge-shell-environment
+           #:describe-shell-environment
+           ;; Shell safety policy hooks (I112)
+           #:*shell-safety-deny-patterns*
+           #:*shell-safety-escalate-patterns*
+           #:+event-type-shell-command-blocked+
+           #:+event-type-shell-command-escalated+
+           #:shell-safety-result
+           #:shell-safety-result-p
+           #:shell-safety-result-decision
+           #:shell-safety-result-reason
+           #:shell-safety-result-matched-pattern
+           #:evaluate-shell-safety-policy
+           #:shell-safety-policy-hook
+           #:shell-command-safe-p))
 
 (defpackage :amoebum.sandbox
   (:use)

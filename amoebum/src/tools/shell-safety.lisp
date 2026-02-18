@@ -1,0 +1,220 @@
+(in-package :amoebum)
+
+;;; ---------------------------------------------------------------------------
+;;; Shell Safety Policy Hooks (I112)
+;;;
+;;; Evaluates shell commands against a configurable safety policy before
+;;; execution. Dangerous commands are blocked with clear deny reasons,
+;;; ambiguous commands are escalated for approval, and safe commands pass
+;;; through. Emits events for blocked and escalated commands.
+;;; ---------------------------------------------------------------------------
+
+;;; --- Configurable pattern sets ---------------------------------------------
+
+(defparameter *shell-safety-deny-patterns*
+  '(("(?i)\\brm\\s+[^\\n]*-r[^\\n]*\\s+/\\s*$" .
+     "Recursive delete of root filesystem")
+    ("(?i)\\brm\\s+-rf\\s+/\\s*$" .
+     "rm -rf / destroys the entire filesystem")
+    ("(?i)\\bdd\\s+.*\\bof=/dev/sd[a-z]\\b" .
+     "dd writing directly to block device can destroy partitions")
+    ("(?i)\\bdd\\s+.*\\bof=/dev/nvme" .
+     "dd writing to NVMe device can destroy partitions")
+    ("(?i)\\bmkfs(?:\\.[A-Za-z0-9_+-]+)?\\s" .
+     "mkfs formats a device, destroying all data")
+    ("(?i)\\b:[(][)][{][:][|][:][&][}];" .
+     "Fork bomb will exhaust system resources")
+    ("(?i)> /dev/sd[a-z]\\b" .
+     "Redirecting output to a block device destroys data")
+    ("(?i)\\bchmod\\s+-R\\s+777\\s+/" .
+     "Recursive chmod 777 on root removes all file protections")
+    ("(?i)\\bwget\\s[^\\n]*\\|\\s*(?:bash|sh|zsh)\\b" .
+     "Piping remote content directly to shell is unsafe")
+    ("(?i)\\bcurl\\s[^\\n]*\\|\\s*(?:bash|sh|zsh)\\b" .
+     "Piping remote content directly to shell is unsafe"))
+  "Alist of (REGEX . DENY-REASON) for commands that must be blocked outright.
+Each entry is a cons of a CL-PPCRE regex string and a human-readable reason
+explaining why the command is denied.")
+
+(defparameter *shell-safety-escalate-patterns*
+  '(("(?i)^\\s*sudo\\b" .
+     "Command uses sudo, which requires elevated privileges")
+    ("(?i)\\bsystemctl\\s+(?:start|stop|restart|enable|disable)\\b" .
+     "Modifying system services can affect system stability")
+    ("(?i)\\bapt(?:-get)?\\s+(?:install|remove|purge|dist-upgrade)\\b" .
+     "Package management modifies system packages")
+    ("(?i)\\byum\\s+(?:install|remove|erase|update)\\b" .
+     "Package management modifies system packages")
+    ("(?i)\\bdnf\\s+(?:install|remove|erase|update)\\b" .
+     "Package management modifies system packages")
+    ("(?i)\\bpacman\\s+-[SRU]" .
+     "Package management modifies system packages")
+    ("(?i)\\b(?:mv|cp|rm)\\s+[^\\n]*/(?:etc|boot|usr|var/lib)/" .
+     "Modifying system directories can compromise system integrity")
+    ("(?i)\\bchown\\s+-R\\b" .
+     "Recursive ownership change can affect system file access")
+    ("(?i)\\biptables\\b" .
+     "Modifying firewall rules affects network security")
+    ("(?i)\\bnpm\\s+publish\\b" .
+     "Publishing packages has irreversible public consequences")
+    ("(?i)\\bcargo\\s+publish\\b" .
+     "Publishing packages has irreversible public consequences")
+    ("(?i)\\bgit\\s+push\\s+[^\\n]*--force" .
+     "Force pushing can rewrite shared history")
+    ("(?i)\\bgit\\s+reset\\s+--hard\\b" .
+     "Hard reset discards uncommitted changes permanently")
+    ("(?i)\\bdocker\\s+system\\s+prune\\b" .
+     "Docker system prune removes unused containers, images, and volumes"))
+  "Alist of (REGEX . ESCALATION-REASON) for commands requiring approval.
+These commands are not outright dangerous but need explicit user confirmation.")
+
+;;; --- Event types for shell safety ------------------------------------------
+
+(defparameter +event-type-shell-command-blocked+
+  (%event-type-keyword "shell:command-blocked"))
+
+(defparameter +event-type-shell-command-escalated+
+  (%event-type-keyword "shell:command-escalated"))
+
+;;; --- Event payload structs -------------------------------------------------
+
+(defstruct (shell-command-blocked-payload
+            (:constructor make-shell-command-blocked-payload
+                (&key command deny-reason matched-pattern)))
+  command
+  deny-reason
+  matched-pattern)
+
+(defstruct (shell-command-escalated-payload
+            (:constructor make-shell-command-escalated-payload
+                (&key command escalation-reason matched-pattern)))
+  command
+  escalation-reason
+  matched-pattern)
+
+;;; --- Event constructors ----------------------------------------------------
+
+(defun make-shell-command-blocked-event (&key command deny-reason matched-pattern)
+  (make-event :type +event-type-shell-command-blocked+
+              :source :amoebum
+              :severity :warning
+              :payload (make-shell-command-blocked-payload
+                        :command command
+                        :deny-reason deny-reason
+                        :matched-pattern matched-pattern)))
+
+(defun make-shell-command-escalated-event (&key command escalation-reason matched-pattern)
+  (make-event :type +event-type-shell-command-escalated+
+              :source :amoebum
+              :severity :warning
+              :payload (make-shell-command-escalated-payload
+                        :command command
+                        :escalation-reason escalation-reason
+                        :matched-pattern matched-pattern)))
+
+;;; --- Policy evaluation result struct ---------------------------------------
+
+(defstruct (shell-safety-result
+            (:constructor make-shell-safety-result
+                (&key decision reason matched-pattern)))
+  (decision :allow :type keyword)
+  reason
+  matched-pattern)
+
+;;; --- Core policy evaluation ------------------------------------------------
+
+(defun %match-command-against-patterns (command patterns)
+  "Try each (REGEX . REASON) in PATTERNS against COMMAND.
+Returns (VALUES MATCHED-PATTERN REASON) on first match, or NIL."
+  (let ((cmd (%command-string command)))
+    (when cmd
+      (loop for (pattern . reason) in patterns
+            when (cl-ppcre:scan pattern cmd)
+              do (return (values pattern reason))))))
+
+(defun evaluate-shell-safety-policy (command
+                                     &key (deny-patterns *shell-safety-deny-patterns*)
+                                       (escalate-patterns *shell-safety-escalate-patterns*))
+  "Evaluate COMMAND against the shell safety policy.
+Returns a SHELL-SAFETY-RESULT with :decision being one of:
+  :deny     - command is blocked (dangerous)
+  :escalate - command requires approval (ambiguous)
+  :allow    - command may proceed"
+  (let ((cmd (%command-string command)))
+    (unless cmd
+      (return-from evaluate-shell-safety-policy
+        (make-shell-safety-result :decision :deny
+                                  :reason "Empty or nil command")))
+    ;; Check deny patterns first (highest priority)
+    (multiple-value-bind (pattern reason)
+        (%match-command-against-patterns cmd deny-patterns)
+      (when pattern
+        (return-from evaluate-shell-safety-policy
+          (make-shell-safety-result :decision :deny
+                                    :reason reason
+                                    :matched-pattern pattern))))
+    ;; Check escalation patterns
+    (multiple-value-bind (pattern reason)
+        (%match-command-against-patterns cmd escalate-patterns)
+      (when pattern
+        (return-from evaluate-shell-safety-policy
+          (make-shell-safety-result :decision :escalate
+                                    :reason reason
+                                    :matched-pattern pattern))))
+    ;; No patterns matched -- allow
+    (make-shell-safety-result :decision :allow)))
+
+;;; --- Policy hook for pipeline integration ----------------------------------
+
+(defun shell-safety-policy-hook (command &key (event-bus nil)
+                                           (deny-patterns *shell-safety-deny-patterns*)
+                                           (escalate-patterns *shell-safety-escalate-patterns*))
+  "Enforce the shell safety policy on COMMAND.
+- Blocked commands signal TOOL-PERMISSION-DENIED with a deny reason.
+- Escalated commands signal TOOL-PERMISSION-DENIED with an escalation reason.
+- Safe commands return :ALLOW.
+Emits shell:command-blocked or shell:command-escalated events when applicable."
+  (let* ((bus (or event-bus (ignore-errors (current-event-bus))))
+         (result (evaluate-shell-safety-policy command
+                                               :deny-patterns deny-patterns
+                                               :escalate-patterns escalate-patterns))
+         (decision (shell-safety-result-decision result))
+         (reason (shell-safety-result-reason result))
+         (pattern (shell-safety-result-matched-pattern result)))
+    (case decision
+      (:deny
+       (when (and bus (event-bus-p bus))
+         (publish bus
+                  (make-shell-command-blocked-event
+                   :command command
+                   :deny-reason reason
+                   :matched-pattern pattern)))
+       (error 'tool-permission-denied
+              :tool-name "bash-exec"
+              :arguments nil
+              :message (format nil "Shell command blocked: ~A" reason)
+              :reason reason))
+      (:escalate
+       (when (and bus (event-bus-p bus))
+         (publish bus
+                  (make-shell-command-escalated-event
+                   :command command
+                   :escalation-reason reason
+                   :matched-pattern pattern)))
+       (error 'tool-permission-denied
+              :tool-name "bash-exec"
+              :arguments nil
+              :message (format nil "Shell command requires approval: ~A" reason)
+              :reason reason))
+      (otherwise
+       :allow))))
+
+;;; --- Convenience: check without signalling ---------------------------------
+
+(defun shell-command-safe-p (command &key (deny-patterns *shell-safety-deny-patterns*)
+                                       (escalate-patterns *shell-safety-escalate-patterns*))
+  "Return T if COMMAND passes both deny and escalate checks."
+  (let ((result (evaluate-shell-safety-policy command
+                                              :deny-patterns deny-patterns
+                                              :escalate-patterns escalate-patterns)))
+    (eq (shell-safety-result-decision result) :allow)))

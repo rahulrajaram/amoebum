@@ -225,4 +225,32 @@
    #:write-result-path
    #:write-result-bytes
    #:write-result-created-p
-   #:write-result-encoding))
+   #:write-result-encoding
+   ;; String-replace edit primitive (I108)
+   #:pseudopod-edit-error
+   #:pseudopod-edit-error-path
+   #:pseudopod-edit-no-match
+   #:pseudopod-edit-ambiguous
+   #:pseudopod-edit-ambiguous-match-count
+   #:string-replace-result
+   #:string-replace-result-p
+   #:string-replace-result-path
+   #:string-replace-result-match-count
+   #:string-replace-result-replaced
+   #:string-replace-result-old-string
+   #:string-replace-result-new-string
+   #:string-replace-in-file
+   ;; Command execution primitive (I110)
+   #:pseudopod-command-error
+   #:pseudopod-command-error-command
+   #:pseudopod-command-timeout
+   #:pseudopod-command-timeout-seconds
+   #:command-result
+   #:command-result-p
+   #:command-result-stdout
+   #:command-result-stderr
+   #:command-result-exit-code
+   #:command-result-duration-ms
+   #:command-result-command
+   #:run-command
+   #:*default-command-timeout*))
