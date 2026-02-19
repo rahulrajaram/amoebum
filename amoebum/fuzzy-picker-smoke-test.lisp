@@ -91,6 +91,7 @@
         (ensure-directories-exist (merge-pathnames #P"placeholder" root-dir))
         (write-file gitignore (format nil "ignored/~%*.tmp~%"))
         (write-file (merge-pathnames #P"src/chat.lisp" root-dir) "(defun chat () :ok)")
+        (sleep 1)
         (write-file (merge-pathnames #P"src/changelog.lisp" root-dir) "(defun changes () :ok)")
         (write-file (merge-pathnames #P"docs/guide.md" root-dir) "# guide")
         (write-file (merge-pathnames #P"ignored/secret.txt" root-dir) "ignored")
@@ -135,6 +136,18 @@
                             (plusp (length selected)))
                        "Expected selected fuzzy path to be non-empty.")
           (assert-true (search (concatenate 'string "@" selected) result :test #'char=)
-                       "Expected selection replacement in input, got ~S." result)))))
+                       "Expected selection replacement in input, got ~S." result))
+
+        ;; Glob queries in @ mention flows should use glob candidate resolution directly.
+        (funcall fuzzy-picker-sync-input-fn state "open @src/*.lisp" :root root-dir)
+        (funcall fuzzy-picker-step-fn state :batch-size 1)
+        (assert-true (funcall fuzzy-picker-scan-complete-p-fn state)
+                     "Expected glob-based @ file discovery to resolve in a single step.")
+        (let ((paths (match-paths (funcall fuzzy-picker-top-results-fn state))))
+          (assert-true (equal paths '("src/changelog.lisp" "src/chat.lisp"))
+                       "Expected glob @ discovery candidates in mtime order, got ~S."
+                       paths)
+          (assert-true (not (member "docs/guide.md" paths :test #'string=))
+                       "Expected glob @ discovery to exclude non-matching files.")))))
 
   (format t "AMOEBUM_FUZZY_PICKER_SMOKE_OK~%"))

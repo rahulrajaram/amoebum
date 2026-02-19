@@ -74,6 +74,30 @@
 (defun %fuzzy-resolve-root (root)
   (%resolve-search-root (or root (%fuzzy-default-root))))
 
+(defun %fuzzy-live-file-root-p (state)
+  (let ((root (fuzzy-picker-state-project-root state)))
+    (and (stringp root)
+         (not (string= root ""))
+         (not (string= root ":history")))))
+
+(defun %fuzzy-glob-query-p (query)
+  (and (stringp query)
+       (> (length query) 0)
+       (%contains-glob-char-p query)))
+
+(defun %fuzzy-prime-glob-query! (state &key root)
+  (let* ((resolved-root (%fuzzy-resolve-root root))
+         (root-key (%path-text resolved-root)))
+    (setf (fuzzy-picker-state-project-root state) root-key
+          (fuzzy-picker-state-ignore-rules state) '()
+          (fuzzy-picker-state-files state) #()
+          (fuzzy-picker-state-index-ready-p state) nil
+          (fuzzy-picker-state-scan-cursor state) 0
+          (fuzzy-picker-state-scan-complete-p state) nil
+          (fuzzy-picker-state-top-results state) '()
+          (fuzzy-picker-state-selected-index state) 0))
+  state)
+
 (defun %fuzzy-path-depth (path)
   (count #\/ path))
 
@@ -366,41 +390,65 @@
 
 (defun fuzzy-picker-sync-input! (state input &key root)
   (check-type state fuzzy-picker-state)
-  (ensure-fuzzy-picker-index! state :root root)
   (multiple-value-bind (query token-start token-end)
       (fuzzy-picker-extract-query input)
     (if query
         (progn
+          (if (%fuzzy-glob-query-p query)
+              (%fuzzy-prime-glob-query! state :root root)
+              (ensure-fuzzy-picker-index! state :root root))
           (setf (fuzzy-picker-state-active-p state) t)
           (fuzzy-picker-set-query! state query token-start token-end))
         (fuzzy-picker-deactivate! state)))
   state)
 
+(defun %fuzzy-glob-top-results (state)
+  (check-type state fuzzy-picker-state)
+  (let* ((root (%fuzzy-resolve-root (fuzzy-picker-state-project-root state)))
+         (query (fuzzy-picker-state-query state))
+         (limit (max 1 (fuzzy-picker-state-visible-count state)))
+         (matches (%matching-files-sorted :glob-files root query :limit limit)))
+    (loop for path in matches
+          for index from 0
+          for relative = (%relative-path-text path root)
+          collect (%make-fuzzy-match :path relative
+                                     :score (- 100000 index)
+                                     :kind :glob
+                                     :spans '()
+                                     :depth (%fuzzy-path-depth relative)))))
+
 (defun fuzzy-picker-step! (state &key batch-size)
   (check-type state fuzzy-picker-state)
   (when (and (fuzzy-picker-state-active-p state)
              (not (fuzzy-picker-state-scan-complete-p state)))
-    (let* ((files (fuzzy-picker-state-files state))
-           (total (length files))
-           (cursor (fuzzy-picker-state-scan-cursor state))
-           (limit (max 1 (or batch-size
-                             (fuzzy-picker-state-batch-size state))))
-           (processed 0)
-           (top (fuzzy-picker-state-top-results state))
-           (top-limit (max 1 (fuzzy-picker-state-visible-count state)))
-           (query (fuzzy-picker-state-query state)))
-      (loop while (and (< cursor total)
-                       (< processed limit)) do
-        (let* ((candidate (aref files cursor))
-               (match (%fuzzy-score-path query candidate)))
-          (when match
-            (setf top (%fuzzy-insert-top-result match top top-limit))))
-        (incf cursor)
-        (incf processed))
-      (setf (fuzzy-picker-state-scan-cursor state) cursor
-            (fuzzy-picker-state-scan-complete-p state) (>= cursor total)
-            (fuzzy-picker-state-top-results state) top)
-      (%fuzzy-clamp-selection! state)))
+    (if (and (%fuzzy-live-file-root-p state)
+             (%fuzzy-glob-query-p (fuzzy-picker-state-query state)))
+        (let ((top (%fuzzy-glob-top-results state)))
+          (setf (fuzzy-picker-state-scan-cursor state) (length top)
+                (fuzzy-picker-state-scan-complete-p state) t
+                (fuzzy-picker-state-top-results state) top)
+          (%fuzzy-clamp-selection! state))
+        (let* ((files (fuzzy-picker-state-files state))
+               (total (length files))
+               (cursor (fuzzy-picker-state-scan-cursor state))
+               (limit (max 1 (or batch-size
+                                 (fuzzy-picker-state-batch-size state))))
+               (processed 0)
+               (top (fuzzy-picker-state-top-results state))
+               (top-limit (max 1 (fuzzy-picker-state-visible-count state)))
+               (query (fuzzy-picker-state-query state)))
+          (loop while (and (< cursor total)
+                           (< processed limit)) do
+            (let* ((candidate (aref files cursor))
+                   (match (%fuzzy-score-path query candidate)))
+              (when match
+                (setf top (%fuzzy-insert-top-result match top top-limit))))
+            (incf cursor)
+            (incf processed))
+          (setf (fuzzy-picker-state-scan-cursor state) cursor
+                (fuzzy-picker-state-scan-complete-p state) (>= cursor total)
+                (fuzzy-picker-state-top-results state) top)
+          (%fuzzy-clamp-selection! state))))
   state)
 
 (defun fuzzy-picker-move-selection! (state delta)
