@@ -100,6 +100,38 @@
         (setf max-used (max max-used last-used))))
     max-used))
 
+(defun make-temp-directory (prefix)
+  (uiop:ensure-directory-pathname
+   (merge-pathnames
+    (make-pathname
+     :directory `(:relative
+                  ,(format nil "~A-~D-~D"
+                           prefix
+                           (get-universal-time)
+                           (random 1000000))))
+    (uiop:ensure-directory-pathname (uiop:temporary-directory)))))
+
+(defun write-text-file (path content)
+  (ensure-directories-exist path)
+  (with-open-file (stream path
+                          :direction :output
+                          :if-exists :supersede
+                          :if-does-not-exist :create
+                          :external-format :utf-8)
+    (write-string content stream))
+  path)
+
+(defun delete-directory-tree-safe (path)
+  (when (and path (probe-file path))
+    (ignore-errors
+      (uiop:delete-directory-tree path
+                                  :validate t
+                                  :if-does-not-exist :ignore))))
+
+(defun glob-relative-paths (result)
+  (mapcar #'ptui.search.glob:glob-entry-relative-path
+          (ptui.search.glob:glob-scan-result-matches result)))
+
 (defun make-atop-snapshot-fixture (&key
                                      (timestamp-ms 0)
                                      (cpu-user 0)
@@ -1347,6 +1379,105 @@
                  "help key should coexist with process interactions")
     (assert-true (ptui.examples.atop-dashboard::atop-dashboard-state-show-process-detail-p state)
                  "detail overlay should stay enabled after pause/help toggles")))
+
+(deftest glob-matcher-wildcard-edge-vectors
+  (let ((vectors
+          '(("*.lisp" "main.lisp" t)
+            ("*.lisp" "src/main.lisp" nil)
+            ("**/*.lisp" "src/main.lisp" t)
+            ("src/?ain.lisp" "src/main.lisp" t)
+            ("src/?ain.lisp" "src/chain.lisp" nil)
+            ("src/[mw]ain.lisp" "src/main.lisp" t)
+            ("src/[mw]ain.lisp" "src/wain.lisp" t)
+            ("src/[mw]ain.lisp" "src/xain.lisp" nil)
+            ("src/{main,test}.lisp" "src/main.lisp" t)
+            ("src/{main,test}.lisp" "src/test.lisp" t)
+            ("src/{main,test}.lisp" "src/util.lisp" nil)
+            ("docs/**" "docs/guides/setup.md" t)
+            ("literal[abc" "literal[abc" t))))
+    (dolist (entry vectors)
+      (destructuring-bind (pattern path expected) entry
+        (let ((actual (ptui.search.glob:glob-match-p pattern path)))
+          (assert-true (eql actual expected)
+                       "glob vector mismatch pattern=~S path=~S expected=~S actual=~S"
+                       pattern path expected actual))))))
+
+(deftest glob-scan-sorts-by-mtime-with-limit
+  (let ((root (make-temp-directory "ptui-glob-order")))
+    (unwind-protect
+         (progn
+           (write-text-file (merge-pathnames #P"src/oldest.lisp" root) "oldest")
+           (sleep 1)
+           (write-text-file (merge-pathnames #P"src/newer.lisp" root) "newer")
+           (sleep 1)
+           (write-text-file (merge-pathnames #P"src/newest.lisp" root) "newest")
+           (let* ((result (ptui.search.glob:scan-glob-files "**/*.lisp"
+                                                            :root root
+                                                            :limit 2
+                                                            :respect-gitignore nil))
+                  (paths (glob-relative-paths result)))
+             (assert-true (= (length paths) 2)
+                          "expected 2 files after limit, got ~D"
+                          (length paths))
+             (assert-true (equal paths '("src/newest.lisp" "src/newer.lisp"))
+                          "expected mtime-desc ordering, got ~S"
+                          paths)))
+      (delete-directory-tree-safe root))))
+
+(deftest glob-scan-respects-gitignore-and-custom-ignore
+  (let ((root (make-temp-directory "ptui-glob-ignore")))
+    (unwind-protect
+         (progn
+           (write-text-file (merge-pathnames #P".gitignore" root)
+                            "ignored-dir/
+*.tmp
+!visible/keep.tmp
+")
+           (write-text-file (merge-pathnames #P"ignored-dir/secret.lisp" root) "secret")
+           (write-text-file (merge-pathnames #P"visible/show.lisp" root) "show")
+           (write-text-file (merge-pathnames #P"visible/skip.tmp" root) "skip")
+           (write-text-file (merge-pathnames #P"visible/keep.tmp" root) "keep")
+           (let* ((result
+                    (ptui.search.glob:scan-glob-files
+                     "**/*"
+                     :root root
+                     :respect-gitignore t
+                     :ignore-patterns '(".gitignore" "visible/show.lisp")))
+                  (paths (sort (copy-list (glob-relative-paths result)) #'string<)))
+             (assert-true (equal paths '("visible/keep.tmp"))
+                          "ignore handling mismatch, got ~S" paths)))
+      (delete-directory-tree-safe root))))
+
+(deftest glob-scan-supports-cancel-and-stream-callback
+  (let ((root (make-temp-directory "ptui-glob-cancel")))
+    (unwind-protect
+         (progn
+           (write-text-file (merge-pathnames #P"src/a.lisp" root) "a")
+           (write-text-file (merge-pathnames #P"src/b.lisp" root) "b")
+           (write-text-file (merge-pathnames #P"src/c.lisp" root) "c")
+           (write-text-file (merge-pathnames #P"src/d.lisp" root) "d")
+           (let ((seen '())
+                 (stop-p nil))
+             (let ((result
+                     (ptui.search.glob:scan-glob-files
+                      "**/*.lisp"
+                      :root root
+                      :respect-gitignore nil
+                      :on-match (lambda (entry)
+                                  (push (ptui.search.glob:glob-entry-relative-path entry)
+                                        seen)
+                                  (when (>= (length seen) 2)
+                                    (setf stop-p t)))
+                      :cancel-fn (lambda ()
+                                   stop-p))))
+               (assert-true (ptui.search.glob:glob-scan-result-canceled-p result)
+                            "expected scan to report canceled")
+               (assert-true (>= (length seen) 1)
+                            "expected at least one streamed match")
+               (assert-true (< (length (glob-relative-paths result)) 4)
+                            "expected cancellation before full traversal; got ~S"
+                            (glob-relative-paths result)))))
+      (delete-directory-tree-safe root))))
 
 ;; Script entry
 (multiple-value-bind (passed failed) (run-all-tests)

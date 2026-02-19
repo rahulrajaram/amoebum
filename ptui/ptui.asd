@@ -73,6 +73,15 @@
    (:file "src/text/width")
    (:file "src/text/layout")))
 
+(asdf:defsystem "ptui/search"
+  :description "PTUI file-set search primitives (glob matcher/scan engine)"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ()
+  :serial t
+  :components
+  ((:file "src/search/glob")))
+
 (asdf:defsystem "ptui/layout"
   :description "PTUI layout foundation (node contracts + deterministic solver)"
   :author "Ralph"
@@ -166,6 +175,7 @@
    (:file "src/text/grapheme")
    (:file "src/text/width")
    (:file "src/text/layout")
+   (:file "src/search/glob")
    (:file "src/layout/api")
    #+ptui-layout-yoga (:file "src/layout/yoga")
    (:file "src/ui/elements")
@@ -192,7 +202,7 @@
   :description "PTUI umbrella system"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui/core" "ptui/util" "ptui/runtime" "ptui/term" "ptui/text" "ptui/layout" "ptui/ui" "ptui/widgets" "ptui/render" "ptui/backend" "ptui/engine")
+  :depends-on ("ptui/core" "ptui/util" "ptui/runtime" "ptui/term" "ptui/text" "ptui/search" "ptui/layout" "ptui/ui" "ptui/widgets" "ptui/render" "ptui/backend" "ptui/engine")
   :serial t
   :components ())
 

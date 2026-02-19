@@ -35,6 +35,7 @@ required_files=(
   "src/term/tty.lisp"
   "src/term/signals.lisp"
   "src/term/input.lisp"
+  "src/search/glob.lisp"
   "src/render/buffer.lisp"
   "src/render/diff.lisp"
   "src/backend/protocol.lisp"
