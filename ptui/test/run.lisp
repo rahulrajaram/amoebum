@@ -836,6 +836,108 @@
                  "prompt-box height should be max-rows+border, got ~D"
                  (ptui.layout:layout-size-height size))))
 
+(deftest widgets-glob-widget-api-boundary
+  (multiple-value-bind (widgets-sym widgets-status)
+      (find-symbol "MAKE-GLOB-WIDGET" :ptui.widgets.core)
+    (assert-true (null widgets-sym)
+                 "glob-widget constructor must not exist in ptui.widgets.core, got ~S/~S"
+                 widgets-sym widgets-status))
+  (multiple-value-bind (components-sym components-status)
+      (find-symbol "MAKE-GLOB-WIDGET" :ptui.components.glob-widget)
+    (assert-true (and components-sym (eql components-status :external))
+                 "glob-widget constructor should be exported by ptui.components.glob-widget, got ~S/~S"
+                 components-sym components-status)
+    (assert-true (fboundp components-sym)
+                 "glob-widget constructor symbol should be fboundp: ~S"
+                 components-sym)))
+
+(deftest widgets-glob-widget-streaming-and-cancellation
+  (let* ((stream (ptui.components.glob-widget:make-sequence-glob-stream
+                  '("src/main.lisp"
+                    "README.md"
+                    "src/util.lisp")))
+         (state (ptui.components.glob-widget:make-glob-widget-state
+                 :pattern "src/*.lisp"
+                 :stream stream
+                 :batch-size 1)))
+    (multiple-value-bind (_ consumed matched)
+        (ptui.components.glob-widget:glob-widget-step state)
+      (declare (ignore _))
+      (assert-true (= consumed 1)
+                   "expected first stream step to consume one candidate, got ~D"
+                   consumed)
+      (assert-true (= matched 1)
+                   "expected first stream step to match one candidate, got ~D"
+                   matched)
+      (assert-true (eq (ptui.components.glob-widget:glob-widget-status state) :streaming)
+                   "expected status :streaming after first step, got ~S"
+                   (ptui.components.glob-widget:glob-widget-status state)))
+    (ptui.components.glob-widget:glob-widget-step state :max-items 8)
+    (assert-true (equal (ptui.components.glob-widget:glob-widget-matches state)
+                        '("src/main.lisp" "src/util.lisp"))
+                 "expected deterministic match order from stream, got ~S"
+                 (ptui.components.glob-widget:glob-widget-matches state))
+    (assert-true (eq (ptui.components.glob-widget:glob-widget-status state) :done)
+                 "expected status :done after draining stream, got ~S"
+                 (ptui.components.glob-widget:glob-widget-status state))
+    (ptui.components.glob-widget:glob-widget-start
+     state
+     (ptui.components.glob-widget:make-sequence-glob-stream
+      '("notes/todo.txt" "notes/next.txt"))
+     :pattern "notes/*.txt")
+    (assert-true (eq (ptui.components.glob-widget:glob-widget-status state) :streaming)
+                 "expected status :streaming after restart, got ~S"
+                 (ptui.components.glob-widget:glob-widget-status state))
+    (ptui.components.glob-widget:glob-widget-cancel state)
+    (assert-true (eq (ptui.components.glob-widget:glob-widget-status state) :cancelled)
+                 "expected status :cancelled after cancel, got ~S"
+                 (ptui.components.glob-widget:glob-widget-status state))))
+
+(deftest widgets-glob-widget-event-dispatch-and-selection
+  (let* ((selected nil)
+         (state (ptui.components.glob-widget:make-glob-widget-state
+                 :pattern "src/*.lisp"
+                 :on-select (lambda (match _state)
+                              (declare (ignore _state))
+                              (setf selected match))))
+         (stream (ptui.components.glob-widget:make-sequence-glob-stream
+                  '("src/main.lisp" "src/util.lisp")))
+         (runtime (ptui.ui.runtime:make-runtime)))
+    (ptui.components.glob-widget:glob-widget-start state stream)
+    (ptui.components.glob-widget:glob-widget-step state :max-items 8)
+    (let* ((widget (ptui.components.glob-widget:make-glob-widget
+                    state
+                    :id :glob-root
+                    :input-id :glob-input))
+           (root (ptui.widgets.core:make-stack-widget (list widget) :id :root))
+           (size (ptui.widgets.core:widget-measure widget)))
+      (ptui.ui.runtime:update-runtime runtime root)
+      (assert-true (> (ptui.layout:layout-size-width size) 0)
+                   "glob-widget composed width should be > 0")
+      (assert-true (> (ptui.layout:layout-size-height size) 0)
+                   "glob-widget composed height should be > 0")
+      (ptui.widgets.core:dispatch-widget-event
+       root
+       (list :target :glob-input
+             :event (ptui.core.events:make-key-event :down)))
+      (assert-true (= (ptui.components.glob-widget:glob-widget-selected-index state) 1)
+                   "expected :down event to move selection to second match")
+      (ptui.widgets.core:dispatch-widget-event
+       root
+       (list :target :glob-input
+             :event (ptui.core.events:make-key-event :enter)))
+      (assert-true (string= selected "src/util.lisp")
+                   "expected enter event to select highlighted match, got ~S"
+                   selected)
+      (ptui.widgets.core:dispatch-widget-event
+       root
+       (list :target :glob-input
+             :event (ptui.core.events:make-key-event :text :text? "a")))
+      (assert-true (string= (ptui.components.glob-widget:glob-widget-pattern state)
+                            "src/*.lispa")
+                   "expected text event to mutate pattern, got ~S"
+                   (ptui.components.glob-widget:glob-widget-pattern state)))))
+
 (deftest dashboard-ui-render-and-grapheme-backspace
   (let* ((state (ptui.examples.metrics-dashboard::make-dashboard-ui-state
                  :runtime (ptui.ui.runtime:make-runtime)))

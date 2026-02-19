@@ -127,7 +127,8 @@
   :depends-on ("ptui/widgets")
   :serial t
   :components
-  ((:file "src/components/prompt-box")))
+  ((:file "src/components/prompt-box")
+   (:file "src/components/glob-widget")))
 
 (asdf:defsystem "ptui/backend"
   :description "PTUI backend boundary and implementations"
@@ -196,7 +197,8 @@
   :depends-on ("ptui/standalone")
   :serial t
   :components
-  ((:file "src/components/prompt-box")))
+  ((:file "src/components/prompt-box")
+   (:file "src/components/glob-widget")))
 
 (asdf:defsystem "ptui"
   :description "PTUI umbrella system"
