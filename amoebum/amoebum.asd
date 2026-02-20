@@ -42,6 +42,7 @@
    (:file "src/tools/files")
    (:file "src/tools/read-orchestration")
    (:file "src/tools/search")
+   (:file "src/tools/search-orchestration")
    (:file "src/tools/web")
    (:file "src/tools/shell")
    (:file "src/tools/write-safety")

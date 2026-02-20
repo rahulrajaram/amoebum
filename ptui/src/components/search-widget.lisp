@@ -10,6 +10,9 @@
    #:search-widget-content-results
    #:search-widget-selected-index
    #:search-widget-visible-count
+   #:search-widget-visible-results
+   #:search-widget-set-file-candidates
+   #:search-widget-set-documents
    #:search-widget-start-file-search
    #:search-widget-start-content-search
    #:search-widget-set-documents
@@ -86,21 +89,22 @@
   (check-type after-context (integer 0 *))
   (when on-select
     (check-type on-select function))
-  (let ((state (%make-search-widget-state :mode mode
-                                          :query query
-                                          :file-candidates (%normalize-file-candidates file-candidates)
-                                          :documents (%normalize-documents documents)
-                                          :visible-count visible-count
-                                          :limit limit
-                                          :regex-mode regex-mode
-                                          :case-insensitive case-insensitive
-                                          :multiline-mode multiline-mode
-                                          :before-context before-context
-                                          :after-context after-context
-                                          :on-select on-select
-                                          :prompt prompt
-                                          :empty-message empty-message)))
-    (when (> (length query) 0)
+  (let ((state
+          (%make-search-widget-state :mode mode
+                                     :query query
+                                     :file-candidates (%normalize-file-candidates file-candidates)
+                                     :documents (%normalize-documents documents)
+                                     :visible-count visible-count
+                                     :limit limit
+                                     :regex-mode regex-mode
+                                     :case-insensitive case-insensitive
+                                     :multiline-mode multiline-mode
+                                     :before-context before-context
+                                     :after-context after-context
+                                     :on-select on-select
+                                     :prompt prompt
+                                     :empty-message empty-message)))
+    (unless (zerop (length query))
       (search-widget-rerun state))
     state))
 
@@ -113,7 +117,14 @@
 (defun (setf search-widget-query) (value state)
   (check-type value string)
   (setf (search-widget-state-query state) value)
-  (search-widget-rerun state)
+  (if (zerop (length value))
+      (progn
+        (setf (search-widget-state-file-results state) '()
+              (search-widget-state-content-results state) '()
+              (search-widget-state-status state) :idle
+              (search-widget-state-selected-index state) 0)
+        state)
+      (search-widget-rerun state))
   value)
 
 (defun search-widget-status (state)
@@ -164,6 +175,20 @@
   (if (null documents)
       '()
       (map 'list #'%ensure-search-document documents)))
+
+(defun search-widget-set-file-candidates (state candidates &key (rerun t))
+  (check-type state search-widget-state)
+  (setf (search-widget-state-file-candidates state) (%normalize-file-candidates candidates))
+  (when rerun
+    (search-widget-rerun state))
+  state)
+
+(defun search-widget-set-documents (state documents &key (rerun t))
+  (check-type state search-widget-state)
+  (setf (search-widget-state-documents state) (%normalize-documents documents))
+  (when rerun
+    (search-widget-rerun state))
+  state)
 
 (defun search-widget-results (state)
   (ecase (search-widget-state-mode state)
@@ -343,6 +368,8 @@
 (defun %status-line (state)
   (format nil "~A (~D result~:P)"
           (case (search-widget-state-status state)
+            (:ready "ready")
+            (:empty "empty")
             (:done "done")
             (:streaming "searching")
             (:cancelled "cancelled")
@@ -372,6 +399,13 @@
                          (- count visible))))
          (end (min count (+ start visible))))
     (values (subseq results start end) start)))
+
+(defun search-widget-visible-results (state)
+  (check-type state search-widget-state)
+  (multiple-value-bind (visible _start)
+      (%visible-window state)
+    (declare (ignore _start))
+    visible))
 
 (defun make-search-widget (state &key id key (input-id :search-input) (borderp t) (padding 0))
   "Build a composable PTUI element tree for search interaction."
