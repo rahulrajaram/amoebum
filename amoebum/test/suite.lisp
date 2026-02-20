@@ -13,6 +13,7 @@
   '(("agents-smoke-test.lisp" "AMOEBUM_AGENTS_SMOKE_OK")
     ("chat-ui-smoke-test.lisp" "AMOEBUM_CHAT_UI_SMOKE_OK")
     ("checkpoint-smoke-test.lisp" "AMOEBUM_CHECKPOINT_SMOKE_OK")
+    ("codex-parity-smoke-test.lisp" "AMOEBUM_CODEX_PARITY_SMOKE_OK")
     ("commands-smoke-test.lisp" "AMOEBUM_COMMANDS_SMOKE_OK")
     ("compile-validation-smoke-test.lisp" "AMOEBUM_COMPILE_VALIDATION_SMOKE_OK")
     ("conditions-smoke-test.lisp" "AMOEBUM_CONDITIONS_SMOKE_OK")

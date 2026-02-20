@@ -230,16 +230,61 @@
          (loop for pattern in patterns
                thereis (cl-ppcre:scan pattern command-string)))))
 
-(defun %effective-permission-mode (mode)
-  (case mode
-    ((:supervised :auto-edit :full-auto :yolo) mode)
-    (:no-confirm :yolo)
-    (otherwise
-     (let ((cfg-mode (ignore-errors (config-permission-mode (current-config)))))
-       (case cfg-mode
-         ((:supervised :auto-edit :full-auto :yolo) cfg-mode)
-         (:no-confirm :yolo)
-         (otherwise :supervised))))))
+(defun %normalize-approval-policy (value)
+  (let ((normalized
+          (cond
+            ((keywordp value) value)
+            ((stringp value)
+             (intern (string-upcase
+                      (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                   (substitute #\- #\_ value)))
+                     :keyword))
+            ((symbolp value)
+             (intern (string-upcase (symbol-name value)) :keyword))
+            (t nil))))
+    (case normalized
+      (:UNTRUSTED :untrusted)
+      (:ON-FAILURE :on-failure)
+      (:ON_FAILURE :on-failure)
+      (:ON-REQUEST :on-request)
+      (:ON_REQUEST :on-request)
+      (:NEVER :never)
+      (otherwise nil))))
+
+(defun %approval-policy->permission-mode (approval-policy)
+  (case (%normalize-approval-policy approval-policy)
+    (:untrusted :supervised)
+    (:on-request :supervised)
+    (:on-failure :auto-edit)
+    (:never :yolo)
+    (otherwise nil)))
+
+(defun %configured-approval-policy ()
+  (ignore-errors
+    (config-value :approval-policy (current-config))))
+
+(defun %effective-permission-mode (mode &optional approval-policy)
+  (or
+   (case mode
+     ((:supervised :auto-edit :full-auto :yolo) mode)
+     (:no-confirm :yolo)
+     (:untrusted :supervised)
+     (:on-request :supervised)
+     (:on-failure :auto-edit)
+     (:never :yolo)
+     (otherwise nil))
+   (%approval-policy->permission-mode approval-policy)
+   (let ((cfg-mode (ignore-errors (config-permission-mode (current-config)))))
+     (or (case cfg-mode
+           ((:supervised :auto-edit :full-auto :yolo) cfg-mode)
+           (:no-confirm :yolo)
+           (:untrusted :supervised)
+           (:on-request :supervised)
+           (:on-failure :auto-edit)
+           (:never :yolo)
+           (otherwise nil))
+         (%approval-policy->permission-mode (%configured-approval-policy))
+         :supervised))))
 
 (defun %shell-tool-p (tool command)
   (or command
@@ -337,10 +382,10 @@
          (or (%shell-tool-p tool command)
              (member tool-name *plan-mode-blocked-tool-names* :test #'string=)))))
 
-(defun check-permission (&key tool path command dangerous-p permission-mode
+(defun check-permission (&key tool path command dangerous-p permission-mode approval-policy
                            (rules *permission-rules*))
   (let* ((tool-name (%tool-name tool))
-         (mode (%effective-permission-mode permission-mode))
+         (mode (%effective-permission-mode permission-mode approval-policy))
          (mcp-server-name (%mcp-tool-server-name tool-name))
          (mcp-decision (and mcp-server-name
                             (or (%mcp-server-config-decision mcp-server-name)

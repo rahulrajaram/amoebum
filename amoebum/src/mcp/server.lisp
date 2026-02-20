@@ -9,14 +9,18 @@
 (defparameter *mcp-server-post-term-grace-seconds* 1.0d0)
 (defparameter *mcp-server-post-kill-grace-seconds* 1.0d0)
 (defparameter *mcp-server-poll-interval-seconds* 0.05d0)
+(defparameter *mcp-server-known-transports* '(:stdio :streamable-http))
 
 (defstruct (mcp-server
             (:constructor %make-mcp-server
                 (&key
                    name
+                   (transport :stdio)
                    command
                    (args nil)
                    cwd
+                   endpoint-url
+                   (http-headers nil)
                    (initialize-timeout-seconds
                     *mcp-server-initialize-timeout-seconds*)
                    (ping-timeout-seconds *mcp-server-ping-timeout-seconds*)
@@ -29,9 +33,12 @@
                    (shutdown-grace-seconds *mcp-server-shutdown-grace-seconds*)
                    (auto-restart-p t))))
   name
+  (transport :stdio)
   command
   args
   cwd
+  endpoint-url
+  (http-headers nil)
   (initialize-timeout-seconds *mcp-server-initialize-timeout-seconds* :type real)
   (ping-timeout-seconds *mcp-server-ping-timeout-seconds* :type real)
   (health-check-interval-seconds *mcp-server-health-check-interval-seconds*
@@ -56,16 +63,35 @@
   `(bordeaux-threads:with-lock-held ((mcp-server-lock ,server))
      ,@body))
 
-(defun %normalize-mcp-server-name (name command)
+(defun %normalize-mcp-server-name (name command endpoint-url)
   (let ((normalized
           (if name
               (string-trim '(#\Space #\Tab #\Newline #\Return)
                            (princ-to-string name))
-              (string-trim '(#\Space #\Tab #\Newline #\Return)
-                           (princ-to-string command)))))
+              (let ((fallback (or command endpoint-url "")))
+                (string-trim '(#\Space #\Tab #\Newline #\Return)
+                             (princ-to-string fallback))))))
     (unless (> (length normalized) 0)
       (error "MCP server NAME must not be empty."))
     normalized))
+
+(defun %normalize-mcp-server-transport (transport)
+  (let ((normalized
+          (cond
+            ((keywordp transport) transport)
+            ((symbolp transport)
+             (intern (string-upcase (symbol-name transport)) :keyword))
+            ((stringp transport)
+             (intern (string-upcase
+                      (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                   (substitute #\- #\_ transport)))
+                     :keyword))
+            (t :stdio))))
+    (if (member normalized *mcp-server-known-transports* :test #'eq)
+        normalized
+        (error "Unsupported MCP transport ~S (expected one of ~S)."
+               transport
+               *mcp-server-known-transports*))))
 
 (defun %normalize-mcp-server-command (command)
   (unless (stringp command)
@@ -74,6 +100,34 @@
     (unless (> (length trimmed) 0)
       (error "MCP server COMMAND must not be empty."))
     trimmed))
+
+(defun %normalize-mcp-server-endpoint-url (value)
+  (cond
+    ((null value) nil)
+    ((stringp value)
+     (let ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return) value)))
+       (unless (> (length trimmed) 0)
+         (error "MCP server ENDPOINT-URL must not be empty."))
+       trimmed))
+    (t
+     (error "MCP server ENDPOINT-URL must be a string or NIL, got ~S." value))))
+
+(defun %normalize-mcp-server-http-headers (headers)
+  (unless (or (null headers) (listp headers))
+    (error "MCP server HTTP-HEADERS must be a list of string pairs, got ~S." headers))
+  (loop for entry in (or headers '())
+        collect
+        (cond
+          ((and (consp entry)
+                (stringp (car entry))
+                (stringp (cdr entry)))
+           entry)
+          ((and (consp entry)
+                (keywordp (car entry))
+                (stringp (cdr entry)))
+           (cons (string-downcase (symbol-name (car entry))) (cdr entry)))
+          (t
+           (error "Invalid MCP HTTP header entry ~S." entry)))))
 
 (defun %normalize-mcp-server-args (args)
   (unless (listp args)
@@ -200,24 +254,30 @@
   (error "MCP server lifecycle requires SBCL run-program support."))
 
 (defun %mcp-server-start-connection (server)
-  (let* ((process (%mcp-server-spawn-process server))
-         (client (make-mcp-jsonrpc-client
-                  :input-stream #+sbcl (sb-ext:process-output process)
-                  :output-stream #+sbcl (sb-ext:process-input process)
-                  :start-reader-p t)))
-    (handler-case
-        (progn
-          (mcp-jsonrpc-send-request
-           client
-           "initialize"
-           :params (%mcp-server-initialize-params)
-           :timeout-seconds (mcp-server-initialize-timeout-seconds server))
-          (mcp-jsonrpc-send-notification client "initialized")
-          (%mcp-server-set-active-connection server process client))
-      (error (condition)
-        (%mcp-server-shutdown-connection process client
-                                         (mcp-server-shutdown-grace-seconds server))
-        (error condition)))))
+  (case (mcp-server-transport server)
+    (:stdio
+     (let* ((process (%mcp-server-spawn-process server))
+            (client (make-mcp-jsonrpc-client
+                     :input-stream #+sbcl (sb-ext:process-output process)
+                     :output-stream #+sbcl (sb-ext:process-input process)
+                     :start-reader-p t)))
+       (handler-case
+           (progn
+             (mcp-jsonrpc-send-request
+              client
+              "initialize"
+              :params (%mcp-server-initialize-params)
+              :timeout-seconds (mcp-server-initialize-timeout-seconds server))
+             (mcp-jsonrpc-send-notification client "initialized")
+             (%mcp-server-set-active-connection server process client))
+         (error (condition)
+           (%mcp-server-shutdown-connection process client
+                                            (mcp-server-shutdown-grace-seconds server))
+           (error condition)))))
+    (:streamable-http
+     (%mcp-server-set-active-connection server nil nil))
+    (otherwise
+     (error "Unsupported MCP transport ~S." (mcp-server-transport server)))))
 
 (defun %mcp-server-monitor-sleep (server seconds)
   (let ((remaining (max 0.0d0 (float seconds 1.0d0))))
@@ -242,23 +302,30 @@
 (defun mcp-server-health-check (server)
   (unless (mcp-server-p server)
     (error "SERVER must be an MCP-SERVER, got ~S." server))
-  (multiple-value-bind (process client)
-      (%mcp-server-active-connection server)
-    (cond
-      ((or (null process)
-           (null client)
-           (not (%mcp-server-process-alive-p process)))
-       nil)
-      (t
-       (handler-case
-           (progn
-             (mcp-jsonrpc-send-request
-              client
-              "ping"
-              :timeout-seconds (mcp-server-ping-timeout-seconds server))
-             t)
-         (mcp-timeout () nil)
-         (error () nil))))))
+  (case (mcp-server-transport server)
+    (:streamable-http
+     (and (%mcp-server-running-p server)
+          (let ((endpoint (mcp-server-endpoint-url server)))
+            (and (stringp endpoint)
+                 (> (length endpoint) 0)))))
+    (otherwise
+     (multiple-value-bind (process client)
+         (%mcp-server-active-connection server)
+       (cond
+         ((or (null process)
+              (null client)
+              (not (%mcp-server-process-alive-p process)))
+          nil)
+         (t
+          (handler-case
+              (progn
+                (mcp-jsonrpc-send-request
+                 client
+                 "ping"
+                 :timeout-seconds (mcp-server-ping-timeout-seconds server))
+                t)
+            (mcp-timeout () nil)
+            (error () nil))))))))
 
 (defun mcp-server-restart (server &key reason)
   (declare (ignore reason))
@@ -324,9 +391,12 @@
 
 (defun make-mcp-server (&key
                           name
+                          (transport :stdio)
                           command
                           (args nil)
                           cwd
+                          endpoint-url
+                          (http-headers nil)
                           (initialize-timeout-seconds
                             *mcp-server-initialize-timeout-seconds*)
                           (ping-timeout-seconds *mcp-server-ping-timeout-seconds*)
@@ -338,12 +408,26 @@
                             *mcp-server-restart-backoff-max-seconds*)
                           (shutdown-grace-seconds *mcp-server-shutdown-grace-seconds*)
                           (auto-restart-p t))
-  (let ((normalized-command (%normalize-mcp-server-command command)))
+  (let* ((normalized-transport (%normalize-mcp-server-transport transport))
+         (normalized-endpoint-url (%normalize-mcp-server-endpoint-url endpoint-url))
+         (normalized-command
+           (case normalized-transport
+             (:stdio (%normalize-mcp-server-command command))
+             (:streamable-http
+              (progn
+                (unless normalized-endpoint-url
+                  (error "MCP streamable-http transport requires ENDPOINT-URL."))
+                nil))
+             (otherwise
+              (error "Unsupported MCP transport ~S." normalized-transport)))))
     (%make-mcp-server
-     :name (%normalize-mcp-server-name name normalized-command)
+     :name (%normalize-mcp-server-name name normalized-command normalized-endpoint-url)
+     :transport normalized-transport
      :command normalized-command
      :args (%normalize-mcp-server-args args)
      :cwd (%normalize-mcp-server-cwd cwd)
+     :endpoint-url normalized-endpoint-url
+     :http-headers (%normalize-mcp-server-http-headers http-headers)
      :initialize-timeout-seconds
      (%normalize-mcp-server-positive-real initialize-timeout-seconds
                                           "INITIALIZE-TIMEOUT-SECONDS")
@@ -377,7 +461,8 @@
       (handler-case
           (progn
             (%mcp-server-start-connection server)
-            (%mcp-server-start-monitor server))
+            (when (eq (mcp-server-transport server) :stdio)
+              (%mcp-server-start-monitor server)))
         (error (condition)
           (%with-mcp-server-lock (server)
             (setf (mcp-server-running-p server) nil

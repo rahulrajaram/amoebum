@@ -4,7 +4,10 @@
   '(:model "moonshot-v1-128k"
     :context-window-limit nil
     :permission-mode :supervised
+    :approval-policy :on-request
     :sandbox-policy :strict
+    :sandbox-mode :workspace-write
+    :swarm-delegation-mode :local
     :memory-backend :auto
     :web-search-searxng-url nil
     :web-search-duckduckgo-url "https://duckduckgo.com/html/"
@@ -36,8 +39,17 @@
 (defparameter *known-permission-modes*
   '(:supervised :auto-edit :full-auto :yolo :no-confirm))
 
+(defparameter *known-approval-policies*
+  '(:untrusted :on-failure :on-request :never))
+
 (defparameter *known-sandbox-policies*
   '(:strict :off))
+
+(defparameter *known-sandbox-modes*
+  '(:read-only :workspace-write :danger-full-access))
+
+(defparameter *known-swarm-delegation-modes*
+  '(:local :networked))
 
 (defparameter *known-memory-backends*
   '(:auto :file :haake-cli :haake-mcp))
@@ -123,9 +135,18 @@
                                (and (integerp value)
                                     (> value 0))))
     (:permission-mode (member value *known-permission-modes* :test #'eq))
+    (:approval-policy (member (%approval-policy-keyword value)
+                              *known-approval-policies*
+                              :test #'eq))
     (:sandbox-policy (member (%sandbox-policy-keyword value)
                              *known-sandbox-policies*
                              :test #'eq))
+    (:sandbox-mode (member (%sandbox-mode-keyword value)
+                           *known-sandbox-modes*
+                           :test #'eq))
+    (:swarm-delegation-mode (member (%swarm-delegation-mode-keyword value)
+                                    *known-swarm-delegation-modes*
+                                    :test #'eq))
     (:memory-backend (member value *known-memory-backends* :test #'eq))
     (:web-search-searxng-url (or (null value)
                                  (and (stringp value)
@@ -218,11 +239,19 @@
               (%signal-invalid-value key value "failed validation" project-root)))
         (final-value nil))
     (setf final-value
-          (if (eq key :project-root)
-              (%normalize-project-root validated)
-              (if (eq key :sandbox-policy)
-                  (%sandbox-policy-keyword validated)
-                  validated)))
+          (cond
+            ((eq key :project-root)
+             (%normalize-project-root validated))
+            ((eq key :sandbox-policy)
+             (%sandbox-policy-keyword validated))
+            ((eq key :approval-policy)
+             (%approval-policy-keyword validated))
+            ((eq key :sandbox-mode)
+             (%sandbox-mode-keyword validated))
+            ((eq key :swarm-delegation-mode)
+             (%swarm-delegation-mode-keyword validated))
+            (t
+             validated)))
     (setf (gethash key (config-values cfg)) final-value
           (gethash key (config-sources cfg)) source)
     (case key
@@ -303,13 +332,7 @@
         when discovered
           do (return discovered)))
 
-(defun %permission-mode-keyword (value)
-  (let* ((trimmed (%trim-string value))
-         (normalized (substitute #\- #\_ (string-downcase trimmed))))
-    (when (> (length normalized) 0)
-      (intern (string-upcase normalized) :keyword))))
-
-(defun %sandbox-policy-keyword (value)
+(defun %keyword-from-value (value)
   (cond
     ((keywordp value)
      value)
@@ -323,15 +346,68 @@
     (t
      nil)))
 
+(defun %permission-mode-keyword (value)
+  (let ((normalized (%keyword-from-value value)))
+    (case normalized
+      (:UNTRUSTED :supervised)
+      (:ON-FAILURE :auto-edit)
+      (:ON-REQUEST :supervised)
+      (:NEVER :yolo)
+      (otherwise normalized))))
+
+(defun %approval-policy-keyword (value)
+  (let ((normalized (%keyword-from-value value)))
+    (case normalized
+      (:ON_FAILURE :on-failure)
+      (:ON-FAILURE :on-failure)
+      (:ON_REQUEST :on-request)
+      (:ON-REQUEST :on-request)
+      (:UNTRUSTED :untrusted)
+      (:NEVER :never)
+      (otherwise normalized))))
+
+(defun %sandbox-policy-keyword (value)
+  (%keyword-from-value value))
+
+(defun %sandbox-mode-keyword (value)
+  (let ((normalized (%keyword-from-value value)))
+    (case normalized
+      (:READ_ONLY :read-only)
+      (:READ-ONLY :read-only)
+      (:WORKSPACE_WRITE :workspace-write)
+      (:WORKSPACE-WRITE :workspace-write)
+      (:DANGER_FULL_ACCESS :danger-full-access)
+      (:DANGER-FULL-ACCESS :danger-full-access)
+      (otherwise normalized))))
+
+(defun %swarm-delegation-mode-keyword (value)
+  (let ((normalized (%keyword-from-value value)))
+    (case normalized
+      (:NETWORKED :networked)
+      (:LOCAL :local)
+      (otherwise normalized))))
+
 (defun %environment-config-values ()
   (let ((values (make-hash-table :test 'eq))
         (model (uiop:getenv "AMOEBUM_MODEL"))
-        (permission-mode (uiop:getenv "AMOEBUM_PERMISSION_MODE")))
+        (permission-mode (uiop:getenv "AMOEBUM_PERMISSION_MODE"))
+        (approval-policy (uiop:getenv "AMOEBUM_APPROVAL_POLICY"))
+        (sandbox-mode (uiop:getenv "AMOEBUM_SANDBOX_MODE"))
+        (swarm-delegation-mode (uiop:getenv "AMOEBUM_SWARM_DELEGATION_MODE")))
     (when (%non-empty-string-p model)
       (setf (gethash :model values) (%trim-string model)))
     (when (%non-empty-string-p permission-mode)
       (setf (gethash :permission-mode values)
             (%permission-mode-keyword permission-mode)))
+    (when (%non-empty-string-p approval-policy)
+      (setf (gethash :approval-policy values)
+            (%approval-policy-keyword approval-policy)))
+    (when (%non-empty-string-p sandbox-mode)
+      (setf (gethash :sandbox-mode values)
+            (%sandbox-mode-keyword sandbox-mode)))
+    (when (%non-empty-string-p swarm-delegation-mode)
+      (setf (gethash :swarm-delegation-mode values)
+            (%swarm-delegation-mode-keyword swarm-delegation-mode)))
     values))
 
 (defun %starts-with-string-p (prefix string)
@@ -364,7 +440,30 @@
             ((%starts-with-string-p "--permission-mode=" argument)
              (setf (gethash :permission-mode values)
                    (%permission-mode-keyword
-                    (%trim-string (subseq argument (length "--permission-mode=")))))))))
+                    (%trim-string (subseq argument (length "--permission-mode="))))))
+            ((string= argument "--approval-policy")
+             (setf (gethash :approval-policy values)
+                   (%approval-policy-keyword (consume-value "--approval-policy"))))
+            ((%starts-with-string-p "--approval-policy=" argument)
+             (setf (gethash :approval-policy values)
+                   (%approval-policy-keyword
+                    (%trim-string (subseq argument (length "--approval-policy="))))))
+            ((string= argument "--sandbox-mode")
+             (setf (gethash :sandbox-mode values)
+                   (%sandbox-mode-keyword (consume-value "--sandbox-mode"))))
+            ((%starts-with-string-p "--sandbox-mode=" argument)
+             (setf (gethash :sandbox-mode values)
+                   (%sandbox-mode-keyword
+                    (%trim-string (subseq argument (length "--sandbox-mode="))))))
+            ((string= argument "--swarm-delegation-mode")
+             (setf (gethash :swarm-delegation-mode values)
+                   (%swarm-delegation-mode-keyword
+                    (consume-value "--swarm-delegation-mode"))))
+            ((%starts-with-string-p "--swarm-delegation-mode=" argument)
+             (setf (gethash :swarm-delegation-mode values)
+                   (%swarm-delegation-mode-keyword
+                    (%trim-string
+                     (subseq argument (length "--swarm-delegation-mode=")))))))))
       values)))
 
 (defun %coerce-layer-values (values)

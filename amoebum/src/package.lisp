@@ -750,9 +750,12 @@
            #:mcp-server-p
            #:make-mcp-server
            #:mcp-server-name
+           #:mcp-server-transport
            #:mcp-server-command
            #:mcp-server-args
            #:mcp-server-cwd
+           #:mcp-server-endpoint-url
+           #:mcp-server-http-headers
            #:mcp-server-initialize-timeout-seconds
            #:mcp-server-ping-timeout-seconds
            #:mcp-server-health-check-interval-seconds

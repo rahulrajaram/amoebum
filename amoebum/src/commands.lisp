@@ -2001,21 +2001,58 @@
        (make-slash-command-result
         :output "Profiling: /perf start|stop|report|gc|dashboard")))))
 
-(defun %spawn-handler (_invocation arguments _context)
-  (declare (ignore _invocation _context))
+(defun %spawn-handler (_invocation arguments context)
+  (declare (ignore _invocation))
   (let ((task-text (or (gethash :TASK arguments) "")))
     (if (zerop (length (%slash-trim task-text)))
         (make-slash-command-result
          :output "Usage: /spawn <task-description>")
-        (make-slash-command-result
-         :output (format nil "Spawning sw4rm agent for: ~A" task-text)))))
+        (let* ((cfg (or (and (typep context 'slash-command-context)
+                             (slash-command-context-config context))
+                        (%current-config-safe)))
+               (mode (or (and (typep cfg 'config)
+                              (config-value :swarm-delegation-mode cfg))
+                         :local)))
+          (make-slash-command-result
+           :output
+           (if (eq mode :networked)
+               (format nil "Delegating to SW4RM networked mode for: ~A" task-text)
+               (format nil "Spawning sw4rm agent for: ~A" task-text)))))))
 
 (defun %approvals-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
-  (let ((args-text (or (gethash :ARGS arguments) "")))
-    (declare (ignore args-text))
-    (make-slash-command-result
-     :output "No pending approval requests.")))
+  (let* ((args-text (or (gethash :ARGS arguments) ""))
+         (tokens (%slash-tokenize args-text))
+         (action (string-downcase (or (first tokens) "status")))
+         (policy-token (second tokens))
+         (cfg (%current-config-safe))
+         (current-policy (config-value :approval-policy cfg)))
+    (cond
+      ((or (string= action "status")
+           (string= action "list"))
+       (make-slash-command-result
+        :output (format nil
+                        "Approval policy: ~A (presets: untrusted, on-failure, on-request, never)."
+                        (string-downcase
+                         (symbol-name (or current-policy :on-request))))))
+      ((string= action "set")
+       (if (null policy-token)
+           (make-slash-command-result
+            :output "Usage: /approvals set <untrusted|on-failure|on-request|never>")
+           (let ((normalized (%approval-policy-keyword policy-token)))
+             (if (member normalized *known-approval-policies* :test #'eq)
+                 (progn
+                   (setconfig :approval-policy normalized)
+                   (make-slash-command-result
+                    :output (format nil "Approval policy set to ~A."
+                                    (string-downcase (symbol-name normalized)))))
+                 (make-slash-command-result
+                  :output (format nil
+                                  "Unknown approval policy ~S. Valid values: untrusted, on-failure, on-request, never."
+                                  policy-token))))))
+      (t
+       (make-slash-command-result
+        :output "Approvals: /approvals status | /approvals set <policy>")))))
 
 (defun register-builtin-slash-commands ()
   (register-slash-command
@@ -2370,15 +2407,15 @@
   (register-slash-command
    (make-slash-command
     :name "approvals"
-    :description "List pending human-in-the-loop approval requests."
-    :usage "/approvals [approve <id>|deny <id>]"
+    :description "Inspect or set approval policy presets."
+    :usage "/approvals [status|set <untrusted|on-failure|on-request|never>]"
     :parameters
     (list (make-slash-command-parameter
            :name "args"
            :type :string
            :required-p nil
            :greedy-p t
-           :description "Optional action: approve or deny with request id."))
+           :description "Optional action: status or set <policy>."))
     :handler #'%approvals-handler))
   t)
 

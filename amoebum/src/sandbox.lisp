@@ -3,6 +3,12 @@
 (defparameter +sandbox-max-output-size+ (* 100 1024))
 (defparameter +sandbox-max-read-size+ (* 10 1024 1024))
 
+(defparameter *sandbox-read-only-write-tools*
+  '("write-file" "edit-file"))
+
+(defparameter *sandbox-shell-tools*
+  '("bash" "bash-exec" "shell" "sh"))
+
 (define-condition sandbox-violation (error)
   ((operation :initarg :operation
               :reader sandbox-violation-operation)
@@ -133,8 +139,40 @@
   (normalize-sandbox-policy
    (and cfg (ignore-errors (config-value :sandbox-policy cfg)))))
 
+(defun normalize-sandbox-mode (value)
+  (let ((normalized
+          (cond
+            ((keywordp value) value)
+            ((symbolp value)
+             (intern (string-upcase (symbol-name value)) :keyword))
+            ((stringp value)
+             (let* ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                    (spaced (substitute #\- #\_ (string-downcase trimmed))))
+               (when (> (length spaced) 0)
+                 (intern (string-upcase spaced) :keyword))))
+            (t nil))))
+    (case normalized
+      (:READ_ONLY :read-only)
+      (:READ-ONLY :read-only)
+      (:WORKSPACE_WRITE :workspace-write)
+      (:WORKSPACE-WRITE :workspace-write)
+      (:DANGER_FULL_ACCESS :danger-full-access)
+      (:DANGER-FULL-ACCESS :danger-full-access)
+      (otherwise :workspace-write))))
+
+(defun sandbox-mode (&optional (cfg (ignore-errors (current-config))))
+  (normalize-sandbox-mode
+   (and cfg (ignore-errors (config-value :sandbox-mode cfg)))))
+
+(defun sandbox-danger-full-access-p (&optional (cfg (ignore-errors (current-config))))
+  (eq (sandbox-mode cfg) :danger-full-access))
+
+(defun sandbox-read-only-p (&optional (cfg (ignore-errors (current-config))))
+  (eq (sandbox-mode cfg) :read-only))
+
 (defun sandbox-policy-enabled-p (&optional (cfg (ignore-errors (current-config))))
-  (not (eq (sandbox-policy cfg) :off)))
+  (and (not (sandbox-danger-full-access-p cfg))
+       (not (eq (sandbox-policy cfg) :off))))
 
 (defun %argument-key-candidates (key-name)
   (let* ((raw (if (symbolp key-name)
@@ -172,6 +210,13 @@
 (defparameter *sandbox-read-guard-tools*
   '("read-file"))
 
+(defun %sandbox-read-only-tool-blocked-p (tool-name command-text)
+  (let ((tool (%tool-name-string tool-name)))
+    (or (member tool *sandbox-read-only-write-tools* :test #'string=)
+        (member tool *sandbox-shell-tools* :test #'string=)
+        (and (stringp command-text)
+             (> (length command-text) 0)))))
+
 (defun sandbox-check-tool-call (tool-name arguments &key permission-mode)
   (when (sandbox-policy-enabled-p)
     (let* ((path (%sandbox-path-argument arguments))
@@ -179,6 +224,12 @@
            (path-text (and path (%sandbox-path-text path)))
            (command-text (%command->string command))
            (dangerous-p (dangerous-command-p command-text)))
+      (when (and (sandbox-read-only-p)
+                 (%sandbox-read-only-tool-blocked-p tool-name command-text))
+        (error 'sandbox-violation
+               :operation (or tool-name :sandbox)
+               :reason "sandbox mode read-only denies mutating or shell tool call"
+               :details (or command-text path-text)))
       (when path-text
         (%assert-permission-allowed :tool tool-name
                                     :path path-text
@@ -208,6 +259,12 @@
          (open-options (%remove-plist-keys
                         options
                         '(:tool :permission-mode :rules :max-read-size))))
+    (when (and (sandbox-read-only-p)
+               (not (%input-direction-p direction)))
+      (error 'sandbox-violation
+             :operation tool-name
+             :reason "sandbox mode read-only denies write access"
+             :details path-text))
     (%assert-permission-allowed :tool tool-name
                                 :path path-text
                                 :permission-mode permission-mode
@@ -229,6 +286,11 @@
          (run-program-options (%remove-plist-keys
                                options
                                '(:tool :permission-mode :rules :check-permission :allow-dangerous))))
+    (when (sandbox-read-only-p)
+      (error 'sandbox-violation
+             :operation tool
+             :reason "sandbox mode read-only denies shell execution"
+             :details command-text))
     (when check-permission
       (%assert-permission-allowed :tool tool
                                   :command command-text
