@@ -431,6 +431,41 @@
     (t
      (%lsp-start-connection client connection))))
 
+(defun %lsp-restart-on-failure (client connection condition retried-p)
+  (setf (lsp-server-connection-last-error connection) condition)
+  (if (or retried-p
+          (not (lsp-client-auto-restart-p client)))
+      (error condition)
+      (progn
+        (%lsp-restart-connection client connection)
+        t)))
+
+(defun %lsp-call-with-lifecycle-retry (client connection thunk)
+  (let ((retried-p nil))
+    (loop
+      do
+         (handler-case
+             (progn
+               (%lsp-ensure-connection-running client connection)
+               (let ((result (funcall thunk)))
+                 (setf (lsp-server-connection-last-error connection) nil)
+                 (return result)))
+           (mcp-timeout (condition)
+             (when (%lsp-restart-on-failure client connection condition retried-p)
+               (setf retried-p t)))
+           (stream-error (condition)
+             (when (%lsp-restart-on-failure client connection condition retried-p)
+               (setf retried-p t)))
+           (end-of-file (condition)
+             (when (%lsp-restart-on-failure client connection condition retried-p)
+               (setf retried-p t)))
+           (error (condition)
+             (if (or (not (%lsp-connection-ready-p connection))
+                     (null (lsp-server-connection-jsonrpc-client connection)))
+                 (when (%lsp-restart-on-failure client connection condition retried-p)
+                   (setf retried-p t))
+                 (error condition)))))))
+
 (defun lsp-client-connection (client language-id)
   (unless (lsp-client-p client)
     (error "CLIENT must be an LSP-CLIENT, got ~S." client))
@@ -476,11 +511,14 @@
                     :text (or text (%read-file-text path-text))
                     :version version)))
     (%with-lsp-client-lock (client)
-      (%lsp-ensure-connection-running client connection)
-      (mcp-jsonrpc-send-notification
-       (lsp-server-connection-jsonrpc-client connection)
-       "textDocument/didOpen"
-       :params (%lsp-did-open-params document))
+      (%lsp-call-with-lifecycle-retry
+       client
+       connection
+       (lambda ()
+         (mcp-jsonrpc-send-notification
+          (lsp-server-connection-jsonrpc-client connection)
+          "textDocument/didOpen"
+          :params (%lsp-did-open-params document))))
       (setf (gethash path-text (lsp-server-connection-open-documents connection))
             document))
     (list :language-id (lsp-server-spec-language-id spec)
@@ -493,15 +531,18 @@
     (error "CLIENT must be an LSP-CLIENT, got ~S." client))
   (let ((connection (lsp-client-ensure-server client file-path :language-id language-id)))
     (%with-lsp-client-lock (client)
-      (%lsp-ensure-connection-running client connection)
-      (if params
-          (mcp-jsonrpc-send-notification
-           (lsp-server-connection-jsonrpc-client connection)
-           method
-           :params params)
-          (mcp-jsonrpc-send-notification
-           (lsp-server-connection-jsonrpc-client connection)
-           method)))))
+      (%lsp-call-with-lifecycle-retry
+       client
+       connection
+       (lambda ()
+         (if params
+             (mcp-jsonrpc-send-notification
+              (lsp-server-connection-jsonrpc-client connection)
+              method
+              :params params)
+             (mcp-jsonrpc-send-notification
+              (lsp-server-connection-jsonrpc-client connection)
+              method)))))))
 
 (defun lsp-send-request (client file-path method
                          &key
@@ -517,19 +558,22 @@
         (unless (gethash document-key (lsp-server-connection-open-documents connection))
           (lsp-open-document client file-path :language-id language-id))))
     (%with-lsp-client-lock (client)
-      (%lsp-ensure-connection-running client connection)
-      (if params
-          (mcp-jsonrpc-send-request
-           (lsp-server-connection-jsonrpc-client connection)
-           method
-           :params params
-           :timeout-seconds (or timeout-seconds
-                                (lsp-client-request-timeout-seconds client)))
-          (mcp-jsonrpc-send-request
-           (lsp-server-connection-jsonrpc-client connection)
-           method
-           :timeout-seconds (or timeout-seconds
-                                (lsp-client-request-timeout-seconds client)))))))
+      (%lsp-call-with-lifecycle-retry
+       client
+       connection
+       (lambda ()
+         (if params
+             (mcp-jsonrpc-send-request
+              (lsp-server-connection-jsonrpc-client connection)
+              method
+              :params params
+              :timeout-seconds (or timeout-seconds
+                                   (lsp-client-request-timeout-seconds client)))
+             (mcp-jsonrpc-send-request
+              (lsp-server-connection-jsonrpc-client connection)
+              method
+              :timeout-seconds (or timeout-seconds
+                                   (lsp-client-request-timeout-seconds client)))))))))
 
 (defun lsp-drain-notifications (client language-id)
   (unless (lsp-client-p client)
@@ -550,6 +594,8 @@
        (declare (ignore _language-id))
        (multiple-value-bind (process jsonrpc-client)
            (%lsp-detach-connection connection)
-         (%lsp-shutdown-connection client process jsonrpc-client)))
-     (lsp-client-connections client)))
+         (%lsp-shutdown-connection client process jsonrpc-client))
+       (clrhash (lsp-server-connection-open-documents connection)))
+     (lsp-client-connections client))
+    (clrhash (lsp-client-connections client)))
   client)

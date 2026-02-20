@@ -12,8 +12,10 @@
    #:search-widget-visible-count
    #:search-widget-start-file-search
    #:search-widget-start-content-search
+   #:search-widget-set-documents
    #:search-widget-rerun
    #:search-widget-results
+   #:search-widget-visible-results
    #:search-widget-selected-result
    #:search-widget-handle-event
    #:make-search-widget))
@@ -84,26 +86,35 @@
   (check-type after-context (integer 0 *))
   (when on-select
     (check-type on-select function))
-  (%make-search-widget-state :mode mode
-                             :query query
-                             :file-candidates (%normalize-file-candidates file-candidates)
-                             :documents (%normalize-documents documents)
-                             :visible-count visible-count
-                             :limit limit
-                             :regex-mode regex-mode
-                             :case-insensitive case-insensitive
-                             :multiline-mode multiline-mode
-                             :before-context before-context
-                             :after-context after-context
-                             :on-select on-select
-                             :prompt prompt
-                             :empty-message empty-message))
+  (let ((state (%make-search-widget-state :mode mode
+                                          :query query
+                                          :file-candidates (%normalize-file-candidates file-candidates)
+                                          :documents (%normalize-documents documents)
+                                          :visible-count visible-count
+                                          :limit limit
+                                          :regex-mode regex-mode
+                                          :case-insensitive case-insensitive
+                                          :multiline-mode multiline-mode
+                                          :before-context before-context
+                                          :after-context after-context
+                                          :on-select on-select
+                                          :prompt prompt
+                                          :empty-message empty-message)))
+    (when (> (length query) 0)
+      (search-widget-rerun state))
+    state))
 
 (defun search-widget-mode (state)
   (search-widget-state-mode state))
 
 (defun search-widget-query (state)
   (search-widget-state-query state))
+
+(defun (setf search-widget-query) (value state)
+  (check-type value string)
+  (setf (search-widget-state-query state) value)
+  (search-widget-rerun state)
+  value)
 
 (defun search-widget-status (state)
   (search-widget-state-status state))
@@ -159,6 +170,12 @@
     (:files (search-widget-state-file-results state))
     (:content (search-widget-state-content-results state))))
 
+(defun search-widget-visible-results (state)
+  (check-type state search-widget-state)
+  (multiple-value-bind (visible _start) (%visible-window state)
+    (declare (ignore _start))
+    visible))
+
 (defun %results-count (state)
   (length (search-widget-results state)))
 
@@ -179,7 +196,7 @@
            :limit (search-widget-state-limit state))))
     (setf (search-widget-state-file-results state) ranked
           (search-widget-state-content-results state) '()
-          (search-widget-state-status state) :done)
+          (search-widget-state-status state) (if ranked :ready :empty))
     (%clamp-selected-index! state)
     state))
 
@@ -196,7 +213,7 @@
            :after-context (search-widget-state-after-context state))))
     (setf (search-widget-state-file-results state) '()
           (search-widget-state-content-results state) matches
-          (search-widget-state-status state) :done)
+          (search-widget-state-status state) (if matches :ready :empty))
     (%clamp-selected-index! state)
     state))
 
@@ -254,6 +271,14 @@
   (when after-context
     (setf (search-widget-state-after-context state) after-context))
   (search-widget-rerun state))
+
+(defun search-widget-set-documents (state documents)
+  (check-type state search-widget-state)
+  (setf (search-widget-state-documents state) (%normalize-documents documents))
+  (when (eq (search-widget-state-mode state) :content)
+    (setf (search-widget-state-selected-index state) 0)
+    (search-widget-rerun state))
+  state)
 
 (defun search-widget-selected-result (state)
   (check-type state search-widget-state)
