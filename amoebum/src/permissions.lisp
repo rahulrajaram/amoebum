@@ -34,9 +34,10 @@
 
 (defstruct (permission-rule
             (:constructor make-permission-rule
-                (&key effect path tool (source :project))))
+                (&key effect path command tool (source :project))))
   effect
   path
+  command
   tool
   source)
 
@@ -86,7 +87,6 @@
       (subseq string 0 (1- (length string)))
       string))
 
-<<<<<<< ours
 (defun %join-path-segments (segments)
   (if segments
       (format nil "~{~A~^/~}" segments)
@@ -499,6 +499,57 @@
        (loop for ch across string
              thereis (find ch "*?[]{}" :test #'char=))))
 
+(defun %trim-command-whitespace (value)
+  (if (stringp value)
+      (string-trim '(#\Space #\Tab #\Newline #\Return) value)
+      ""))
+
+(defun %normalize-command (command)
+  (let* ((raw (%command-string command))
+         (trimmed (%trim-command-whitespace raw)))
+    (when (> (length trimmed) 0)
+      trimmed)))
+
+(defun %string-prefix-ci-p (prefix value)
+  (and (stringp prefix)
+       (stringp value)
+       (<= (length prefix) (length value))
+       (string-equal prefix value :end2 (length prefix))))
+
+(defun %command-regex-body (pattern)
+  (cond
+    ((%string-prefix-ci-p "regex:" pattern)
+     (subseq pattern (length "regex:")))
+    ((%string-prefix-ci-p "re:" pattern)
+     (subseq pattern (length "re:")))
+    (t nil)))
+
+(defun %command-pattern-kind (pattern)
+  (let* ((normalized (%normalize-command pattern))
+         (regex-body (and normalized (%command-regex-body normalized)))
+         (length* (and normalized (length normalized))))
+    (cond
+      ((or (null normalized)
+           (string= normalized "")
+           (string= normalized "*"))
+       :wildcard)
+      (regex-body
+       :regex)
+      ((and length*
+            (> length* 1)
+            (= (count #\* normalized) 1)
+            (char= (char normalized (1- length*)) #\*)
+            (not (find #\? normalized :test #'char=))
+            (not (find #\[ normalized :test #'char=))
+            (not (find #\] normalized :test #'char=))
+            (not (find #\{ normalized :test #'char=))
+            (not (find #\} normalized :test #'char=)))
+       :prefix)
+      ((%contains-glob-char-p normalized)
+       :glob)
+      (t
+       :exact))))
+
 (defun %path-kind (pattern)
   (let* ((raw (%path-string pattern))
          (normalized (and raw
@@ -571,6 +622,43 @@
                  (%regex-escape-char ch stream)))))
       (write-char #\$ stream))))
 
+(defun %command-glob->regex (pattern)
+  (let* ((source (or (%normalize-command pattern) ""))
+         (len (length source)))
+    (with-output-to-string (stream)
+      (write-char #\^ stream)
+      (loop for i from 0 below len do
+            (let ((ch (char source i)))
+              (cond
+                ((char= ch #\*)
+                 (write-string ".*" stream))
+                ((char= ch #\?)
+                 (write-char #\. stream))
+                ((char= ch #\[)
+                 (let ((close (position #\] source :start (1+ i))))
+                   (if close
+                       (progn
+                         (write-string (subseq source i (1+ close)) stream)
+                         (setf i close))
+                       (%regex-escape-char ch stream))))
+                ((char= ch #\{)
+                 (let ((close (position #\} source :start (1+ i))))
+                   (if close
+                       (let* ((inner (subseq source (1+ i) close))
+                              (alternatives (uiop:split-string inner :separator ",")))
+                         (write-string "(?:" stream)
+                         (loop for alt in alternatives
+                               for idx from 0 do
+                                 (when (> idx 0)
+                                   (write-char #\| stream))
+                                 (write-string (cl-ppcre:quote-meta-chars alt) stream))
+                         (write-char #\) stream)
+                         (setf i close))
+                       (%regex-escape-char ch stream))))
+                (t
+                 (%regex-escape-char ch stream)))))
+      (write-char #\$ stream))))
+
 (defun %path-under-directory-p (path directory-pattern)
   (let* ((path* (%normalize-path path))
          (dir* (%trim-trailing-slash (%normalize-pattern-path directory-pattern)))
@@ -595,26 +683,65 @@
            (:glob (cl-ppcre:scan (%glob->regex pattern) candidate))
            (otherwise nil)))))
 
+(defun %command-matches-pattern-p (command pattern &key (command-normalized-p nil))
+  (let* ((candidate (if command-normalized-p
+                        command
+                        (%normalize-command command)))
+         (normalized-pattern (%normalize-command pattern))
+         (kind (%command-pattern-kind normalized-pattern)))
+    (and candidate
+         (case kind
+           (:wildcard t)
+           (:exact (string= candidate normalized-pattern))
+           (:prefix (uiop:string-prefix-p
+                     (subseq normalized-pattern 0 (1- (length normalized-pattern)))
+                     candidate))
+           (:glob (cl-ppcre:scan (%command-glob->regex normalized-pattern)
+                                 candidate))
+           (:regex (let ((regex-body (%command-regex-body normalized-pattern)))
+                     (and regex-body
+                          (cl-ppcre:scan regex-body candidate))))
+           (otherwise nil)))))
+
 (defun %tool-matches-rule-p (tool rule-tool)
   (let ((tool-name (%tool-name tool))
         (rule-tool-name (%tool-name rule-tool)))
     (or (null rule-tool-name)
         (and tool-name (string= tool-name rule-tool-name)))))
 
-(defun %rule-matches-p (rule tool path)
+(defun %rule-matches-p (rule tool path command)
   (and (%tool-matches-rule-p tool (permission-rule-tool rule))
        (let ((rule-path (permission-rule-path rule)))
          (if rule-path
              (%path-matches-pattern-p path rule-path :path-normalized-p t)
+             t))
+       (let ((rule-command (permission-rule-command rule)))
+         (if rule-command
+             (%command-matches-pattern-p command
+                                         rule-command
+                                         :command-normalized-p t)
              t))))
 
-(defun %specificity-score (rule)
+(defun %path-specificity-score (rule)
   (case (%path-kind (permission-rule-path rule))
     (:exact 300)
     (:glob 200)
     (:directory 100)
     (:wildcard 0)
     (otherwise 0)))
+
+(defun %command-specificity-score (rule)
+  (case (%command-pattern-kind (permission-rule-command rule))
+    (:exact 300)
+    (:prefix 200)
+    (:glob 150)
+    (:regex 100)
+    (:wildcard 0)
+    (otherwise 0)))
+
+(defun %specificity-score (rule)
+  (+ (%path-specificity-score rule)
+     (%command-specificity-score rule)))
 
 (defun %scope-score (rule)
   (case (permission-rule-source rule)
@@ -640,11 +767,30 @@
 (defun clear-permission-rules ()
   (setf *permission-rules* nil))
 
-(defun add-permission-rule (&key effect path tool (source :project))
+(defun %validate-command-pattern (command-pattern)
+  (let ((normalized (%normalize-command command-pattern)))
+    (when normalized
+      (let ((kind (%command-pattern-kind normalized)))
+        (when (eq kind :regex)
+          (let ((regex-body (%command-regex-body normalized)))
+            (when (or (null regex-body)
+                      (string= (%trim-command-whitespace regex-body) ""))
+              (error "Command regex pattern must not be empty, got ~S."
+                     command-pattern))
+            (handler-case
+                (cl-ppcre:create-scanner regex-body)
+              (error (condition)
+                (error "Invalid command regex pattern ~S: ~A"
+                       command-pattern
+                       condition)))))))
+    normalized))
+
+(defun add-permission-rule (&key effect path command tool (source :project))
   (unless (member effect '(:allow :deny) :test #'eq)
     (error "Permission rule EFFECT must be :allow or :deny, got ~S." effect))
   (let ((rule (make-permission-rule :effect effect
                                     :path path
+                                    :command (%validate-command-pattern command)
                                     :tool tool
                                     :source source)))
     (push rule *permission-rules*)
@@ -655,7 +801,18 @@
         (normalized-path (%normalize-path path)))
     (when normalized-path
       (dolist (rule rules)
-        (when (%rule-matches-p rule tool normalized-path)
+        (when (%rule-matches-p rule tool normalized-path nil)
+          (when (%better-rule-p rule best)
+            (setf best rule)))))
+    (and best (permission-rule-effect best))))
+
+(defun evaluate-command-permission (&key tool command path (rules *permission-rules*))
+  (let ((best nil)
+        (normalized-command (%normalize-command command))
+        (normalized-path (and path (%normalize-path path))))
+    (when normalized-command
+      (dolist (rule rules)
+        (when (%rule-matches-p rule tool normalized-path normalized-command)
           (when (%better-rule-p rule best)
             (setf best rule)))))
     (and best (permission-rule-effect best))))
@@ -823,6 +980,7 @@
   (let* ((tool-name (%tool-name tool))
          (mode (%effective-permission-mode permission-mode approval-policy))
          (normalized-path (%normalize-path path))
+         (normalized-command (%normalize-command command))
          (mcp-server-name (%mcp-tool-server-name tool-name))
          (mcp-decision (and mcp-server-name
                             (or (%mcp-server-config-decision mcp-server-name)
@@ -831,16 +989,24 @@
                              (evaluate-path-permission :tool tool
                                                        :path normalized-path
                                                        :rules rules)))
+         (command-decision (and normalized-command
+                                (evaluate-command-permission :tool tool
+                                                             :path normalized-path
+                                                             :command normalized-command
+                                                             :rules rules)))
          (decision (cond
-                     ((%plan-mode-blocked-p tool command) :deny)
-                     ((eq path-decision :deny) :deny)
+                     ((%plan-mode-blocked-p tool normalized-command) :deny)
+                     ((or (eq path-decision :deny)
+                          (eq command-decision :deny))
+                      :deny)
                      ((and path (%path-memory-allows-p tool path)) :allow)
+                     ((eq command-decision :allow) :allow)
                      ((eq path-decision :allow) :allow)
                      (mcp-decision mcp-decision)
-                     (t (%mode-default-decision mode tool normalized-path command)))))
+                     (t (%mode-default-decision mode tool normalized-path normalized-command)))))
     (if (and (eq decision :allow)
              (not (eq mode :yolo))
              (or dangerous-p
-                 (dangerous-command-p command)))
+                 (dangerous-command-p normalized-command)))
         :prompt
         decision)))

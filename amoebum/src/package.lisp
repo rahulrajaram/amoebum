@@ -873,6 +873,7 @@
            #:permission-rule-p
            #:permission-rule-effect
            #:permission-rule-path
+           #:permission-rule-command
            #:permission-rule-tool
            #:permission-rule-source
            #:make-permission-rule
@@ -893,6 +894,7 @@
            #:add-permission-rule
            #:normalize-permission-path
            #:evaluate-path-permission
+           #:evaluate-command-permission
            #:path-approval-store-path
            #:load-path-approvals
            #:save-path-approvals

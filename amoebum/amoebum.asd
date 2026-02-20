@@ -80,6 +80,7 @@
    (:file "test/write-safety-test")
    (:file "test/edit-validation-test")
    (:file "test/permission-path-normalization-test")
+   (:file "test/permission-command-matching-test")
    (:file "test/shell-env-test")
    (:file "test/shell-safety-test"))
   :perform (asdf:test-op (op c)
