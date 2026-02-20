@@ -121,6 +121,8 @@
                        "Expected grep-content to return the matching line number.")
           (assert-true (string= (getf first-match :text) "target")
                        "Expected grep-content to return the matching line text.")
+          (assert-true (string= (getf first-match :matched-text) "target")
+                       "Expected grep-content to expose matched-text from PTUI search widget output.")
           (assert-true (equal (getf (first (getf first-match :context-before)) :line) 1)
                        "Expected grep-content to include context before the match.")
           (assert-true (equal (getf (first (getf first-match :context-after)) :line) 3)
@@ -139,6 +141,18 @@
           (assert-true (string= (normalize-path (getf (first order-matches) :path))
                                 (normalize-path grep-new))
                        "Expected grep-content results sorted by file modification time."))
+
+        (let* ((grep-ci-result (invoke-tool "grep-content"
+                                            "pattern" "NEEDLE"
+                                            "path-glob" "logs/*.txt"
+                                            "root" (namestring tmp-root)
+                                            "before" 0
+                                            "after" 0
+                                            "limit" 10
+                                            "case-insensitive" t))
+               (ci-matches (getf grep-ci-result :matches)))
+          (assert-true (= (length ci-matches) 2)
+                       "Expected case-insensitive grep-content to match uppercase query."))
 
         (funcall clear-permission-rules-fn)
         (funcall add-permission-rule-fn
