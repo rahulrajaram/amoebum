@@ -876,12 +876,30 @@
            #:permission-rule-tool
            #:permission-rule-source
            #:make-permission-rule
+           #:path-approval-entry
+           #:path-approval-entry-p
+           #:make-path-approval-entry
+           #:path-approval-entry-tool
+           #:path-approval-entry-path
+           #:path-approval-entry-scope
+           #:path-approval-entry-created-at
+           #:path-approval-entry-uses-remaining
            #:*permission-rules*
+           #:*path-approval-memory*
+           #:*path-approval-memory-limit*
+           #:*path-approval-persistence-relative-path*
            #:*dangerous-command-patterns*
            #:clear-permission-rules
            #:add-permission-rule
            #:normalize-permission-path
            #:evaluate-path-permission
+           #:path-approval-store-path
+           #:load-path-approvals
+           #:save-path-approvals
+           #:clear-path-approvals
+           #:list-path-approvals
+           #:remember-path-approval
+           #:forget-path-approval
            #:dangerous-command-p
            #:check-permission
            #:+sandbox-max-output-size+

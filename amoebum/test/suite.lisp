@@ -39,6 +39,7 @@
     ("mcp-smoke-test.lisp" "AMOEBUM_MCP_SMOKE_OK")
     ("memory-smoke-test.lisp" "AMOEBUM_MEMORY_SMOKE_OK")
     ("notifications-smoke-test.lisp" "AMOEBUM_NOTIFICATIONS_SMOKE_OK")
+    ("permission-path-memory-smoke-test.lisp" "AMOEBUM_PERMISSION_PATH_MEMORY_SMOKE_OK")
     ("permission-mode-smoke-test.lisp" "AMOEBUM_PERMISSION_MODE_SMOKE_OK")
     ("permission-path-identity-smoke-test.lisp" "AMOEBUM_PERMISSION_PATH_IDENTITY_SMOKE_OK")
     ("permissions-smoke-test.lisp" "AMOEBUM_PERMISSIONS_SMOKE_OK")
