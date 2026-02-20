@@ -279,4 +279,32 @@
    #:*default-search-timeout-seconds*
    #:*default-search-rate-limit-seconds*
    #:*default-search-user-agent*
-   #:*default-duckduckgo-search-url*))
+   #:*default-duckduckgo-search-url*
+   ;; Fetch engine (I123)
+   #:pseudopod-fetch-error
+   #:pseudopod-fetch-error-url
+   #:pseudopod-fetch-error-status-code
+   #:pseudopod-fetch-error-effective-url
+   #:pseudopod-fetch-timeout
+   #:pseudopod-fetch-timeout-seconds
+   #:pseudopod-fetch-http-error
+   #:pseudopod-fetch-http-error-body
+   #:pseudopod-fetch-http-error-content-type
+   #:fetch-result
+   #:fetch-result-p
+   #:fetch-result-url
+   #:fetch-result-effective-url
+   #:fetch-result-status-code
+   #:fetch-result-content-type
+   #:fetch-result-body
+   #:fetch-result-body-bytes
+   #:fetch-result-truncated-p
+   #:fetch-result-redirected-p
+   #:fetch-result-host-changed-p
+   #:fetch-result-cached-p
+   #:fetch-result-fetched-at
+   #:fetch-url
+   #:*default-fetch-timeout-seconds*
+   #:*default-fetch-cache-ttl-seconds*
+   #:*default-fetch-max-body-bytes*
+   #:*default-fetch-user-agent*))
