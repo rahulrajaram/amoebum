@@ -50,6 +50,18 @@
   created-at
   uses-remaining)
 
+(defstruct (command-canonical-form
+            (:constructor make-command-canonical-form
+                (&key raw normalized policy-key executable argv operators wrappers commands)))
+  raw
+  normalized
+  policy-key
+  executable
+  argv
+  operators
+  wrappers
+  commands)
+
 (defun %tool-name (tool)
   (cond
     ((null tool) nil)
@@ -71,6 +83,353 @@
     (symbol (symbol-name command))
     (pathname (namestring command))
     (t (prin1-to-string command))))
+
+(defun %trim-command-whitespace (string)
+  (string-trim '(#\Space #\Tab #\Newline #\Return) string))
+
+(defun %command-list-string (command)
+  (when (and (listp command) command)
+    (%trim-command-whitespace
+     (format nil "~{~A~^ ~}"
+             (loop for item in command
+                   for value = (%command-string item)
+                   when value
+                     collect value)))))
+
+(defun %command-raw-text (command)
+  (let ((raw (if (listp command)
+                 (%command-list-string command)
+                 (%command-string command))))
+    (when raw
+      (let ((trimmed (%trim-command-whitespace raw)))
+        (when (> (length trimmed) 0)
+          trimmed)))))
+
+(defun %shell-whitespace-char-p (char)
+  (or (char= char #\Space)
+      (char= char #\Tab)
+      (char= char #\Newline)
+      (char= char #\Return)))
+
+(defun %shell-operator-at (text index)
+  (let* ((len (length text))
+         (remaining (- len index)))
+    (flet ((prefix-p (token)
+             (and (>= remaining (length token))
+                  (string= token text
+                           :start1 0
+                           :end1 (length token)
+                           :start2 index
+                           :end2 (+ index (length token))))))
+      (cond
+        ((prefix-p "&&") (values "&&" 2))
+        ((prefix-p "||") (values "||" 2))
+        ((prefix-p "|&") (values "|&" 2))
+        ((prefix-p "2>>") (values "2>>" 3))
+        ((prefix-p "2>") (values "2>" 2))
+        ((prefix-p "&>") (values "&>" 2))
+        ((prefix-p ">>") (values ">>" 2))
+        ((prefix-p "<<") (values "<<" 2))
+        ((find (char text index) "|;&()<>"
+               :test #'char=)
+         (values (string (char text index)) 1))
+        (t
+         (values nil 0))))))
+
+(defun %shell-safe-char-p (char)
+  (or (and (>= (char-code char) (char-code #\a))
+           (<= (char-code char) (char-code #\z)))
+      (and (>= (char-code char) (char-code #\A))
+           (<= (char-code char) (char-code #\Z)))
+      (and (>= (char-code char) (char-code #\0))
+           (<= (char-code char) (char-code #\9)))
+      (find char "-._/:=+%@,"
+            :test #'char=)))
+
+(defun %shell-single-quote (text)
+  (with-output-to-string (stream)
+    (write-char #\' stream)
+    (loop for char across text do
+          (if (char= char #\')
+              (write-string "'\"'\"'" stream)
+              (write-char char stream)))
+    (write-char #\' stream)))
+
+(defun %canonical-shell-word (word)
+  (let ((text (or word "")))
+    (if (and (> (length text) 0)
+             (loop for char across text
+                   always (%shell-safe-char-p char)))
+        text
+        (%shell-single-quote text))))
+
+(defun %tokenize-shell-command (text)
+  (let ((tokens '())
+        (in-single-p nil)
+        (in-double-p nil)
+        (escape-next-p nil)
+        (buffer (make-string-output-stream))
+        (len (length text)))
+    (labels ((emit-word ()
+               (let ((value (get-output-stream-string buffer)))
+                 (when (> (length value) 0)
+                   (push (cons :word value) tokens))))
+             (emit-operator (value)
+               (push (cons :operator value) tokens)))
+      (loop for index from 0 below len do
+            (let ((char (char text index)))
+              (cond
+                (escape-next-p
+                 (write-char char buffer)
+                 (setf escape-next-p nil))
+                (in-single-p
+                 (if (char= char #\')
+                     (setf in-single-p nil)
+                     (write-char char buffer)))
+                (in-double-p
+                 (cond
+                   ((char= char #\\)
+                    (if (< (1+ index) len)
+                        (progn
+                          (incf index)
+                          (write-char (char text index) buffer))
+                        (write-char char buffer)))
+                   ((char= char #\")
+                    (setf in-double-p nil))
+                   (t
+                    (write-char char buffer))))
+                (t
+                 (cond
+                   ((char= char #\\)
+                    (setf escape-next-p t))
+                   ((char= char #\')
+                    (setf in-single-p t))
+                   ((char= char #\")
+                    (setf in-double-p t))
+                   ((%shell-whitespace-char-p char)
+                    (emit-word))
+                   (t
+                    (multiple-value-bind (operator width)
+                        (%shell-operator-at text index)
+                      (if operator
+                          (progn
+                            (emit-word)
+                            (emit-operator operator)
+                            (incf index (1- width)))
+                          (write-char char buffer)))))))))
+      (when escape-next-p
+        (write-char #\\ buffer))
+      (emit-word)
+      (nreverse tokens))))
+
+(defun %separator-operator-p (operator)
+  (member operator '("|" "||" "&&" ";" "&")
+          :test #'string=))
+
+(defun %canonicalize-shell-tokens (tokens)
+  (when tokens
+    (with-output-to-string (stream)
+      (loop for token in tokens
+            for index from 0 do
+              (when (> index 0)
+                (write-char #\Space stream))
+              (ecase (car token)
+                (:word
+                 (write-string (%canonical-shell-word (cdr token)) stream))
+                (:operator
+                 (write-string (cdr token) stream)))))))
+
+(defun %tokens->command-segments (tokens)
+  (let ((segments '())
+        (operators '())
+        (current '()))
+    (labels ((flush-segment ()
+               (when current
+                 (push (nreverse current) segments)
+                 (setf current '()))))
+      (dolist (token tokens)
+        (ecase (car token)
+          (:word
+           (push (cdr token) current))
+          (:operator
+           (let ((operator (cdr token)))
+             (push operator operators)
+             (when (%separator-operator-p operator)
+               (flush-segment))))))
+      (flush-segment))
+    (values (nreverse segments) (nreverse operators))))
+
+(defun %command-env-assignment-p (value)
+  (and (stringp value)
+       (> (length value) 1)
+       (let ((equals (position #\= value)))
+         (and equals
+              (> equals 0)
+              (let ((first (char value 0)))
+                (or (char= first #\_)
+                    (alpha-char-p first)))
+              (loop for index from 1 below equals
+                    for char = (char value index)
+                    always (or (char= char #\_)
+                               (alpha-char-p char)
+                               (digit-char-p char)))))))
+
+(defun %canonicalize-env-assignments (assignments)
+  (let ((table (make-hash-table :test #'equal))
+        (keys '()))
+    (dolist (assignment assignments)
+      (when (%command-env-assignment-p assignment)
+        (let ((key (subseq assignment 0 (position #\= assignment))))
+          (unless (gethash key table)
+            (push key keys))
+          (setf (gethash key table) assignment))))
+    (loop for key in (sort (copy-list keys)
+                           #'string<
+                           :key #'string-downcase)
+          collect (gethash key table))))
+
+(defun %unwrap-env-command (argv)
+  (if (and argv (string= (string-downcase (first argv)) "env"))
+      (let ((remaining (rest argv))
+            (options '())
+            (assignments '()))
+        (loop while remaining do
+              (let ((token (first remaining)))
+                (cond
+                  ((string= token "--")
+                   (setf remaining (rest remaining))
+                   (return))
+                  ((and (stringp token)
+                        (> (length token) 1)
+                        (char= (char token 0) #\-)
+                        (not (%command-env-assignment-p token)))
+                   (push token options)
+                   (setf remaining (rest remaining))
+                   (when (and remaining
+                              (member token '("-u" "--unset")
+                                      :test #'string=))
+                     (push (first remaining) options)
+                     (setf remaining (rest remaining))))
+                  (t
+                   (return)))))
+        (loop while (and remaining
+                         (%command-env-assignment-p (first remaining))) do
+              (push (first remaining) assignments)
+              (setf remaining (rest remaining)))
+        (if remaining
+            (values remaining
+                    (list :type :env
+                          :options (nreverse options)
+                          :assignments (%canonicalize-env-assignments
+                                        (nreverse assignments))))
+            (values argv nil)))
+      (values argv nil)))
+
+(defun %unwrap-shell-c-command (argv)
+  (let ((program (and argv (string-downcase (first argv)))))
+    (if (member program '("bash" "sh")
+                :test #'string=)
+        (block done
+          (let ((remaining (rest argv))
+                (options '()))
+            (loop while remaining do
+                  (let ((token (first remaining)))
+                    (cond
+                      ((member token '("-c" "-lc" "-cl")
+                               :test #'string=)
+                       (let ((script (second remaining))
+                             (tail (cddr remaining)))
+                         (unless (stringp script)
+                           (return-from done (values argv nil)))
+                         (let* ((nested (canonicalize-permission-command script))
+                                (nested-argv (if nested
+                                                 (command-canonical-form-argv nested)
+                                                 nil))
+                                (wrapper (list :type :shell
+                                               :program program
+                                               :options (nreverse (cons token options))
+                                               :raw-script script
+                                               :normalized-script
+                                               (and nested
+                                                    (command-canonical-form-normalized nested)))))
+                           (return-from done
+                             (values (append nested-argv tail) wrapper)))))
+                      ((and (stringp token)
+                            (> (length token) 1)
+                            (char= (char token 0) #\-))
+                       (push token options)
+                       (setf remaining (rest remaining)))
+                      (t
+                       (return-from done (values argv nil)))))))
+          (values argv nil))
+        (values argv nil))))
+
+(defun %canonical-argv-string (argv)
+  (when argv
+    (format nil "~{~A~^ ~}"
+            (mapcar #'%canonical-shell-word argv))))
+
+(defun %command-policy-key (argv wrappers)
+  (let ((prefixes
+          (loop for wrapper in wrappers
+                when (eq (getf wrapper :type) :env)
+                  collect (let ((assignments (getf wrapper :assignments))
+                                (options (getf wrapper :options)))
+                            (string-trim
+                             '(#\Space)
+                             (format nil "env ~@[~{~A~^ ~} ~]~:[~;~{~A~^ ~}~]"
+                                     options
+                                     assignments
+                                     assignments))))))
+    (let ((base (%canonical-argv-string argv)))
+      (if (or prefixes base)
+          (string-trim
+           '(#\Space)
+           (format nil "~@[~{~A~^ ~} ~]~A"
+                   prefixes
+                   (or base "")))
+          nil))))
+
+(defun canonicalize-permission-command (command)
+  (let ((raw (%command-raw-text command)))
+    (when raw
+      (let* ((tokens (if (listp command)
+                         (loop for item in command
+                               for value = (%command-string item)
+                               when (and value (> (length value) 0))
+                                 collect (cons :word value))
+                         (%tokenize-shell-command raw)))
+             (normalized (%canonicalize-shell-tokens tokens)))
+        (multiple-value-bind (commands operators)
+            (%tokens->command-segments tokens)
+          (let* ((primary-argv (copy-list (or (first commands) '())))
+                 (wrappers '()))
+            (loop repeat 8 do
+                  (let ((changed-p nil))
+                    (multiple-value-bind (after-env env-wrapper)
+                        (%unwrap-env-command primary-argv)
+                      (when env-wrapper
+                        (setf primary-argv after-env
+                              changed-p t)
+                        (push env-wrapper wrappers)))
+                    (multiple-value-bind (after-shell shell-wrapper)
+                        (%unwrap-shell-c-command primary-argv)
+                      (when shell-wrapper
+                        (setf primary-argv after-shell
+                              changed-p t)
+                        (push shell-wrapper wrappers)))
+                    (unless changed-p
+                      (return))))
+            (let ((normalized-wrappers (nreverse wrappers)))
+              (make-command-canonical-form
+               :raw raw
+               :normalized normalized
+               :policy-key (%command-policy-key primary-argv normalized-wrappers)
+               :executable (first primary-argv)
+               :argv primary-argv
+               :operators operators
+               :wrappers normalized-wrappers
+               :commands commands))))))))
 
 (defun %normalize-slashes (string)
   (cl-ppcre:regex-replace-all "/+" (substitute #\/ #\\ string) "/"))
@@ -818,7 +1177,11 @@
     (and best (permission-rule-effect best))))
 
 (defun dangerous-command-p (command &optional (patterns *dangerous-command-patterns*))
-  (let ((command-string (%command-string command)))
+  (let* ((canonical (if (typep command 'command-canonical-form)
+                        command
+                        (canonicalize-permission-command command)))
+         (command-string (or (and canonical (command-canonical-form-normalized canonical))
+                             (%command-string command))))
     (and command-string
          (loop for pattern in patterns
                thereis (cl-ppcre:scan pattern command-string)))))
@@ -980,7 +1343,11 @@
   (let* ((tool-name (%tool-name tool))
          (mode (%effective-permission-mode permission-mode approval-policy))
          (normalized-path (%normalize-path path))
-         (normalized-command (%normalize-command command))
+         (canonical-command (canonicalize-permission-command command))
+         (policy-command-text
+           (or (and canonical-command (command-canonical-form-policy-key canonical-command))
+               (and canonical-command (command-canonical-form-normalized canonical-command))
+               (%command-string command)))
          (mcp-server-name (%mcp-tool-server-name tool-name))
          (mcp-decision (and mcp-server-name
                             (or (%mcp-server-config-decision mcp-server-name)
@@ -989,13 +1356,13 @@
                              (evaluate-path-permission :tool tool
                                                        :path normalized-path
                                                        :rules rules)))
-         (command-decision (and normalized-command
+         (command-decision (and policy-command-text
                                 (evaluate-command-permission :tool tool
                                                              :path normalized-path
-                                                             :command normalized-command
+                                                             :command policy-command-text
                                                              :rules rules)))
          (decision (cond
-                     ((%plan-mode-blocked-p tool normalized-command) :deny)
+                     ((%plan-mode-blocked-p tool policy-command-text) :deny)
                      ((or (eq path-decision :deny)
                           (eq command-decision :deny))
                       :deny)
@@ -1003,10 +1370,10 @@
                      ((eq command-decision :allow) :allow)
                      ((eq path-decision :allow) :allow)
                      (mcp-decision mcp-decision)
-                     (t (%mode-default-decision mode tool normalized-path normalized-command)))))
+                     (t (%mode-default-decision mode tool normalized-path policy-command-text)))))
     (if (and (eq decision :allow)
              (not (eq mode :yolo))
              (or dangerous-p
-                 (dangerous-command-p normalized-command)))
+                 (dangerous-command-p canonical-command)))
         :prompt
         decision)))

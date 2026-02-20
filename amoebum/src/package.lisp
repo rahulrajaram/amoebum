@@ -875,8 +875,21 @@
            #:permission-rule-path
            #:permission-rule-command
            #:permission-rule-tool
+           #:permission-rule-command
+           #:permission-rule-arguments
            #:permission-rule-source
            #:make-permission-rule
+           #:command-canonical-form
+           #:command-canonical-form-p
+           #:make-command-canonical-form
+           #:command-canonical-form-raw
+           #:command-canonical-form-normalized
+           #:command-canonical-form-policy-key
+           #:command-canonical-form-executable
+           #:command-canonical-form-argv
+           #:command-canonical-form-operators
+           #:command-canonical-form-wrappers
+           #:command-canonical-form-commands
            #:path-approval-entry
            #:path-approval-entry-p
            #:make-path-approval-entry
@@ -892,6 +905,7 @@
            #:*dangerous-command-patterns*
            #:clear-permission-rules
            #:add-permission-rule
+           #:canonicalize-permission-command
            #:normalize-permission-path
            #:evaluate-path-permission
            #:evaluate-command-permission
