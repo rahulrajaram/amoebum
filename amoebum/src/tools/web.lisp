@@ -572,22 +572,37 @@
        "Potential authentication wall: page resembles a login form.")
       (t nil))))
 
+(defun %web-pseudopod-hit->result (hit)
+  (list :title (pseudopod:search-hit-title hit)
+        :url (pseudopod:search-hit-url hit)
+        :snippet (pseudopod:search-hit-snippet hit)
+        :source-domain (pseudopod:search-hit-source-domain hit)))
+
 (defun %web-search-searxng (query limit searxng-url user-agent)
-  (let* ((response (%web-http-get searxng-url
-                                  :params (list (cons "q" query)
-                                                (cons "format" "json"))
-                                  :timeout-seconds *web-search-default-timeout-seconds*
-                                  :user-agent user-agent))
-         (body (getf response :body)))
-    (%web-parse-searxng-results body limit)))
+  (let* ((response
+           (pseudopod:search-backend
+            :searxng
+            query
+            :limit limit
+            :searxng-url searxng-url
+            :timeout-seconds *web-search-default-timeout-seconds*
+            :user-agent user-agent
+            :min-interval-seconds *web-search-rate-limit-seconds*))
+         (hits (pseudopod:search-response-results response)))
+    (mapcar #'%web-pseudopod-hit->result hits)))
 
 (defun %web-search-duckduckgo (query limit user-agent)
-  (let* ((response (%web-http-get (%web-effective-duckduckgo-url)
-                                  :params (list (cons "q" query))
-                                  :timeout-seconds *web-search-default-timeout-seconds*
-                                  :user-agent user-agent))
-         (body (getf response :body)))
-    (%web-parse-duckduckgo-results body limit)))
+  (let* ((response
+           (pseudopod:search-backend
+            :duckduckgo
+            query
+            :limit limit
+            :duckduckgo-url (%web-effective-duckduckgo-url)
+            :timeout-seconds *web-search-default-timeout-seconds*
+            :user-agent user-agent
+            :min-interval-seconds *web-search-rate-limit-seconds*))
+         (hits (pseudopod:search-response-results response)))
+    (mapcar #'%web-pseudopod-hit->result hits)))
 
 (defun %web-search-backend-order (backend searxng-url)
   (case backend

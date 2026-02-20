@@ -3,7 +3,7 @@
   :author "amoebum"
   :license "MIT"
   :version "0.1.0"
-  :depends-on ("uiop" "dexador" "jonathan" "usocket" "babel")
+  :depends-on ("uiop" "dexador" "jonathan" "usocket" "babel" "cl-ppcre")
   :serial t
   :components
   ((:file "src/package")
@@ -17,6 +17,7 @@
    (:file "src/tooling/write-file")
    (:file "src/tooling/string-replace")
    (:file "src/tooling/run-command")
+   (:file "src/tooling/search-backend")
    (:file "src/client")
    (:file "src/providers/protocol")
    (:file "src/providers/kimi")
@@ -39,7 +40,8 @@
    (:file "test/structured-read-test")
    (:file "test/write-file-test")
    (:file "test/string-replace-test")
-   (:file "test/run-command-test"))
+   (:file "test/run-command-test")
+   (:file "test/search-backend-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (uiop:symbol-call :pseudopod/test :run-all)))

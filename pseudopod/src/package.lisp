@@ -253,4 +253,30 @@
    #:command-result-duration-ms
    #:command-result-command
    #:run-command
-   #:*default-command-timeout*))
+   #:*default-command-timeout*
+   ;; Search backend adapter (I121)
+   #:pseudopod-search-error
+   #:pseudopod-search-error-backend
+   #:pseudopod-search-error-status-code
+   #:pseudopod-search-error-url
+   #:pseudopod-search-parse-error
+   #:pseudopod-search-parse-error-payload
+   #:search-hit
+   #:search-hit-p
+   #:search-hit-title
+   #:search-hit-url
+   #:search-hit-snippet
+   #:search-hit-source-domain
+   #:search-hit-rank
+   #:search-response
+   #:search-response-p
+   #:search-response-backend
+   #:search-response-query
+   #:search-response-results
+   #:search-response-result-count
+   #:search-response-fetched-at
+   #:search-backend
+   #:*default-search-timeout-seconds*
+   #:*default-search-rate-limit-seconds*
+   #:*default-search-user-agent*
+   #:*default-duckduckgo-search-url*))
