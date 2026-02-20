@@ -17,6 +17,7 @@
          (load-system-fn (symbol-function load-system-sym)))
     (funcall load-asd-fn (merge-pathnames #P"pseudopod/pseudopod.asd" repo-root))
     (funcall load-asd-fn (merge-pathnames #P"ptui/ptui.asd" repo-root))
+    (funcall load-asd-fn (merge-pathnames #P"sw4rm-sdk/sw4rm-sdk.asd" repo-root))
     (funcall load-asd-fn (merge-pathnames #P"amoebum/amoebum.asd" repo-root))
     (funcall load-system-fn "amoebum"))
 
@@ -130,6 +131,65 @@
                       :rules rules)
              :deny)
          "Expected deny to win at equal specificity and scope.")
+
+        ;; Specificity ordering: exact > glob > directory > wildcard.
+        (let ((specificity-rules
+                (list
+                 (funcall make-rule
+                          :effect :allow
+                          :path "**/*"
+                          :tool :write-file
+                          :source :global)
+                 (funcall make-rule
+                          :effect :deny
+                          :path "/tmp/project/src/"
+                          :tool :write-file
+                          :source :global)
+                 (funcall make-rule
+                          :effect :allow
+                          :path "/tmp/project/src/**/*.lisp"
+                          :tool :write-file
+                          :source :global)
+                 (funcall make-rule
+                          :effect :deny
+                          :path "/tmp/project/src/core/blocked.lisp"
+                          :tool :write-file
+                          :source :global))))
+          (assert-true
+           (eq (funcall check-permission :tool :write-file
+                        :path "/tmp/project/src/main.lisp"
+                        :permission-mode :full-auto
+                        :rules specificity-rules)
+               :allow)
+           "Expected ** glob allow to match direct child path and beat directory deny.")
+          (assert-true
+           (eq (funcall check-permission :tool :write-file
+                        :path "/tmp/project/src/core/helper.lisp"
+                        :permission-mode :full-auto
+                        :rules specificity-rules)
+               :allow)
+           "Expected glob allow to beat directory deny for nested .lisp paths.")
+          (assert-true
+           (eq (funcall check-permission :tool :write-file
+                        :path "/tmp/project/src/core/readme.md"
+                        :permission-mode :full-auto
+                        :rules specificity-rules)
+               :deny)
+           "Expected directory deny to beat wildcard allow for non-glob matches.")
+          (assert-true
+           (eq (funcall check-permission :tool :write-file
+                        :path "/tmp/project/docs/readme.md"
+                        :permission-mode :full-auto
+                        :rules specificity-rules)
+               :allow)
+           "Expected wildcard allow outside denied directory subtree.")
+          (assert-true
+           (eq (funcall check-permission :tool :write-file
+                        :path "/tmp/project/src/core/blocked.lisp"
+                        :permission-mode :full-auto
+                        :rules specificity-rules)
+               :deny)
+           "Expected exact deny to beat broader glob allow."))
 
         ;; Escalation can still force prompt when operation is otherwise auto-approved.
         (assert-true

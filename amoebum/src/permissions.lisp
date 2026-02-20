@@ -109,7 +109,14 @@
                           (char= (char source (1+ i)) #\*))
                      (progn
                        (incf i)
-                       (write-string ".*" stream))
+                       ;; Treat **/ as zero-or-more directory segments so
+                       ;; patterns like src/**/*.lisp also match src/main.lisp.
+                       (if (and (< (1+ i) len)
+                                (char= (char source (1+ i)) #\/))
+                           (progn
+                             (incf i)
+                             (write-string "(?:[^/]+/)*" stream))
+                           (write-string ".*" stream)))
                      (write-string "[^/]*" stream)))
                 ((char= ch #\?)
                  (write-string "[^/]" stream))
