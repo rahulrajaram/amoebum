@@ -61,16 +61,111 @@
 (defun %normalize-slashes (string)
   (cl-ppcre:regex-replace-all "/+" (substitute #\/ #\\ string) "/"))
 
+(defun %path-has-trailing-separator-p (string)
+  (and (> (length string) 0)
+       (let ((last (char string (1- (length string)))))
+         (or (char= last #\/)
+             (char= last #\\)))))
+
 (defun %trim-trailing-slash (string)
   (if (and (> (length string) 1)
            (char= (char string (1- (length string))) #\/))
       (subseq string 0 (1- (length string)))
       string))
 
-(defun %normalize-path (path)
-  (let ((raw (%path-string path)))
-    (when raw
-      (%trim-trailing-slash (%normalize-slashes raw)))))
+(defun %join-path-segments (segments)
+  (if segments
+      (format nil "~{~A~^/~}" segments)
+      ""))
+
+(defun normalize-permission-path (path &key (preserve-trailing-slash-p nil))
+  (let* ((raw (%path-string path))
+         (trimmed (and raw (string-trim '(#\Space #\Tab #\Newline #\Return) raw))))
+    (when (and trimmed (> (length trimmed) 0))
+      (let* ((had-trailing-separator-p (%path-has-trailing-separator-p trimmed))
+             (source (substitute #\/ #\\ trimmed))
+             (kind :relative)
+             (root "")
+             (rest source))
+        (labels ((ascii-alpha-p (char)
+                   (or (and (>= (char-code char) (char-code #\a))
+                            (<= (char-code char) (char-code #\z)))
+                       (and (>= (char-code char) (char-code #\A))
+                            (<= (char-code char) (char-code #\Z)))))
+                 (root-only-p (candidate)
+                   (case kind
+                     (:absolute (string= candidate "/"))
+                     (:drive (string= candidate root))
+                     (:unc (string= candidate root))
+                     (:relative (string= candidate "."))
+                     (otherwise nil))))
+          (cond
+            ((and (>= (length source) 2)
+                  (char= (char source 1) #\:)
+                  (ascii-alpha-p (char source 0)))
+             (setf kind :drive
+                   root (format nil "~A:/" (string-downcase (subseq source 0 1)))
+                   rest (string-left-trim "/" (subseq source 2))))
+            ((uiop:string-prefix-p "//" source)
+             (setf kind :unc)
+             (let* ((parts (uiop:split-string (subseq source 2) :separator "/"))
+                    (server (first parts))
+                    (share (second parts))
+                    (remaining (cddr parts)))
+               (setf root (cond
+                            ((and server share)
+                             (format nil "//~A/~A"
+                                     (string-downcase server)
+                                     (string-downcase share)))
+                            (server
+                             (format nil "//~A" (string-downcase server)))
+                            (t "//"))
+                     rest (%join-path-segments remaining))))
+            ((uiop:string-prefix-p "/" source)
+             (setf kind :absolute
+                   root "/"
+                   rest (string-left-trim "/" source))))
+          (let ((segments '()))
+            (dolist (segment (if (string= rest "")
+                                 '()
+                                 (uiop:split-string rest :separator "/")))
+              (cond
+                ((or (string= segment "")
+                     (string= segment "."))
+                 nil)
+                ((string= segment "..")
+                 (if (and segments
+                          (not (string= (car segments) "..")))
+                     (pop segments)
+                     (when (eq kind :relative)
+                       (push segment segments))))
+                (t
+                 (push segment segments))))
+            (let* ((normalized-segments (nreverse segments))
+                   (joined (%join-path-segments normalized-segments))
+                   (normalized
+                     (case kind
+                       (:absolute (if (string= joined "")
+                                      "/"
+                                      (concatenate 'string "/" joined)))
+                       (:drive (if (string= joined "")
+                                   root
+                                   (concatenate 'string root joined)))
+                       (:unc (if (string= joined "")
+                                 root
+                                 (concatenate 'string root "/" joined)))
+                       (otherwise (if (string= joined "")
+                                      "."
+                                      joined)))))
+              (if (and preserve-trailing-slash-p
+                       had-trailing-separator-p
+                       (not (root-only-p normalized))
+                       (not (char= (char normalized (1- (length normalized))) #\/)))
+                  (concatenate 'string normalized "/")
+                  normalized))))))))
+
+(defun %normalize-path (path &key (preserve-trailing-slash-p nil))
+  (normalize-permission-path path :preserve-trailing-slash-p preserve-trailing-slash-p))
 
 (defun %contains-glob-char-p (string)
   (and string
@@ -78,17 +173,18 @@
              thereis (find ch "*?[]{}" :test #'char=))))
 
 (defun %path-kind (pattern)
-  (let ((raw (%path-string pattern)))
+  (let* ((raw (%path-string pattern))
+         (normalized (%normalize-path raw :preserve-trailing-slash-p t)))
     (cond
-      ((or (null raw)
-           (string= raw "")
-           (member raw '("*" "**" "**/*" "/*") :test #'string=))
+      ((or (null normalized)
+           (string= normalized "")
+           (member normalized '("*" "**" "**/*" "/*") :test #'string=))
        :wildcard)
-      ((and (> (length raw) 0)
-            (char= (char raw (1- (length raw))) #\/)
-            (not (%contains-glob-char-p raw)))
+      ((and (> (length normalized) 0)
+            (char= (char normalized (1- (length normalized))) #\/)
+            (not (%contains-glob-char-p normalized)))
        :directory)
-      ((%contains-glob-char-p raw) :glob)
+      ((%contains-glob-char-p normalized) :glob)
       (t :exact))))
 
 (defun %regex-escape-char (char stream)
@@ -97,7 +193,7 @@
   (write-char char stream))
 
 (defun %glob->regex (pattern)
-  (let* ((source (%normalize-slashes (%path-string pattern)))
+  (let* ((source (or (%normalize-path pattern :preserve-trailing-slash-p t) ""))
          (len (length source)))
     (with-output-to-string (stream)
       (write-char #\^ stream)
@@ -149,17 +245,21 @@
 
 (defun %path-under-directory-p (path directory-pattern)
   (let* ((path* (%normalize-path path))
-         (dir* (%trim-trailing-slash (%normalize-slashes (%path-string directory-pattern))))
-         (prefix (if (string= dir* "/")
+         (dir* (%normalize-path directory-pattern :preserve-trailing-slash-p t))
+         (dir-root (and dir* (%trim-trailing-slash dir*)))
+         (prefix (if (string= dir-root "/")
                      "/"
-                     (concatenate 'string dir* "/"))))
+                     (concatenate 'string dir-root "/"))))
     (and path*
-         (or (string= path* dir*)
+         dir-root
+         (or (string= path* dir-root)
              (uiop:string-prefix-p prefix path*)))))
 
-(defun %path-matches-pattern-p (path pattern)
+(defun %path-matches-pattern-p (path pattern &key (path-normalized-p nil))
   (let ((kind (%path-kind pattern))
-        (candidate (%normalize-path path)))
+        (candidate (if path-normalized-p
+                       path
+                       (%normalize-path path))))
     (and candidate
          (case kind
            (:wildcard t)
@@ -178,7 +278,7 @@
   (and (%tool-matches-rule-p tool (permission-rule-tool rule))
        (let ((rule-path (permission-rule-path rule)))
          (if rule-path
-             (%path-matches-pattern-p path rule-path)
+             (%path-matches-pattern-p path rule-path :path-normalized-p t)
              t))))
 
 (defun %specificity-score (rule)
@@ -224,11 +324,13 @@
     rule))
 
 (defun evaluate-path-permission (&key tool path (rules *permission-rules*))
-  (let ((best nil))
-    (dolist (rule rules)
-      (when (%rule-matches-p rule tool path)
-        (when (%better-rule-p rule best)
-          (setf best rule))))
+  (let ((best nil)
+        (normalized-path (%normalize-path path)))
+    (when normalized-path
+      (dolist (rule rules)
+        (when (%rule-matches-p rule tool normalized-path)
+          (when (%better-rule-p rule best)
+            (setf best rule)))))
     (and best (permission-rule-effect best))))
 
 (defun dangerous-command-p (command &optional (patterns *dangerous-command-patterns*))
@@ -393,20 +495,21 @@
                            (rules *permission-rules*))
   (let* ((tool-name (%tool-name tool))
          (mode (%effective-permission-mode permission-mode approval-policy))
+         (normalized-path (%normalize-path path))
          (mcp-server-name (%mcp-tool-server-name tool-name))
          (mcp-decision (and mcp-server-name
                             (or (%mcp-server-config-decision mcp-server-name)
                                 :prompt)))
-         (path-decision (and path
+         (path-decision (and normalized-path
                              (evaluate-path-permission :tool tool
-                                                       :path path
+                                                       :path normalized-path
                                                        :rules rules)))
          (decision (cond
                      ((%plan-mode-blocked-p tool command) :deny)
                      ((eq path-decision :deny) :deny)
                      ((eq path-decision :allow) :allow)
                      (mcp-decision mcp-decision)
-                     (t (%mode-default-decision mode tool path command)))))
+                     (t (%mode-default-decision mode tool normalized-path command)))))
     (if (and (eq decision :allow)
              (not (eq mode :yolo))
              (or dangerous-p

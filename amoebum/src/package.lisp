@@ -880,6 +880,7 @@
            #:*dangerous-command-patterns*
            #:clear-permission-rules
            #:add-permission-rule
+           #:normalize-permission-path
            #:evaluate-path-permission
            #:dangerous-command-p
            #:check-permission

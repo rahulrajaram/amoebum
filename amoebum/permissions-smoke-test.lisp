@@ -32,6 +32,7 @@
              (symbol-function (funcall symbol-in name amoebum-pkg))))
          (make-rule (funcall fn "MAKE-PERMISSION-RULE"))
          (check-permission (funcall fn "CHECK-PERMISSION"))
+         (normalize-permission-path (funcall fn "NORMALIZE-PERMISSION-PATH"))
          (dangerous-command-p (funcall fn "DANGEROUS-COMMAND-P"))
          (setconfig-fn (funcall fn "SETCONFIG"))
          (config-value-fn (funcall fn "CONFIG-VALUE"))
@@ -131,6 +132,22 @@
                       :rules rules)
              :deny)
          "Expected deny to win at equal specificity and scope.")
+        (assert-true
+         (string=
+          (funcall normalize-permission-path "C:\\Work\\repo\\src\\..\\src\\main.lisp")
+          "c:/Work/repo/src/main.lisp")
+         "Expected canonical normalization to collapse windows-style separators and dot segments.")
+        (assert-true
+         (eq (funcall check-permission :tool :write-file
+                      :path "C:\\tmp\\project\\src\\..\\src\\main.lisp"
+                      :permission-mode :full-auto
+                      :rules (list (funcall make-rule
+                                            :effect :deny
+                                            :path "c:/tmp/project/src/main.lisp"
+                                            :tool :write-file
+                                            :source :project)))
+             :deny)
+         "Expected permission decision to canonicalize platform-style equivalent paths before rule matching.")
 
         ;; Specificity ordering: exact > glob > directory > wildcard.
         (let ((specificity-rules
