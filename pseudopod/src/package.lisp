@@ -254,6 +254,21 @@
    #:command-result-command
    #:run-command
    #:*default-command-timeout*
+   ;; Fetch backend adapter (I123 foundation)
+   #:pseudopod-fetch-error
+   #:pseudopod-fetch-error-status-code
+   #:pseudopod-fetch-error-url
+   #:fetch-response
+   #:fetch-response-p
+   #:fetch-response-url
+   #:fetch-response-effective-url
+   #:fetch-response-status
+   #:fetch-response-body
+   #:fetch-response-content-type
+   #:fetch-response-fetched-at
+   #:fetch-backend
+   #:*default-fetch-timeout-seconds*
+   #:*default-fetch-user-agent*
    ;; Search backend adapter (I121)
    #:pseudopod-search-error
    #:pseudopod-search-error-backend

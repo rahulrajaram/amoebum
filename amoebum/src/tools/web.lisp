@@ -10,6 +10,7 @@
 (defparameter *web-search-default-timeout-seconds* 20)
 (defparameter *web-search-default-duckduckgo-url* "https://duckduckgo.com/html/")
 (defparameter *web-search-default-user-agent* "amoebum-web-search/0.1")
+(defparameter *web-fetch-http-get-runner* nil)
 (defparameter *web-fetch-default-timeout-seconds* 20)
 (defparameter *web-fetch-default-cache-ttl-seconds* 900)
 (defparameter *web-fetch-default-max-markdown-bytes* 10240)
@@ -572,6 +573,23 @@
        "Potential authentication wall: page resembles a login form.")
       (t nil))))
 
+(defun %web-fetch-response->plist (response)
+  (list :engine :pseudopod
+        :url (pseudopod:fetch-response-url response)
+        :effective-url (pseudopod:fetch-response-effective-url response)
+        :status (pseudopod:fetch-response-status response)
+        :body (pseudopod:fetch-response-body response)
+        :content-type (pseudopod:fetch-response-content-type response)
+        :fetched-at (pseudopod:fetch-response-fetched-at response)))
+
+(defun %web-fetch-via-pseudopod (url timeout-seconds user-agent)
+  (%web-fetch-response->plist
+   (pseudopod:fetch-backend
+    url
+    :timeout-seconds timeout-seconds
+    :user-agent user-agent
+    :http-get-fn *web-fetch-http-get-runner*)))
+
 (defun %web-pseudopod-hit->result (hit)
   (list :title (pseudopod:search-hit-title hit)
         :url (pseudopod:search-hit-url hit)
@@ -712,16 +730,17 @@
            (cached (%web-fetch-cache-get cache-key now)))
       (if cached
           (append (list :cached t) cached)
-          (let* ((response (%web-http-get normalized-url
-                                          :timeout-seconds resolved-timeout
-                                          :user-agent resolved-user-agent
-                                          :respect-rate-limit nil))
+          (let* ((response (%web-fetch-via-pseudopod normalized-url
+                                                     resolved-timeout
+                                                     resolved-user-agent))
                  (status (or (getf response :status) 0))
                  (body (or (getf response :body) ""))
                  (effective-url (or (getf response :effective-url)
                                     (getf response :url)
                                     normalized-url))
                  (content-type (or (getf response :content-type) ""))
+                 (fetch-engine (or (getf response :engine) :unknown))
+                 (fetched-at (or (getf response :fetched-at) 0))
                  (base-markdown (%web-document->markdown normalized-url effective-url body))
                  (auth-warning (%web-authentication-warning normalized-url effective-url body status))
                  (host-changed (%web-host-changed-p normalized-url effective-url)))
@@ -733,6 +752,8 @@
                             :effective-url effective-url
                             :status status
                             :content-type content-type
+                            :fetch-engine fetch-engine
+                            :fetched-at fetched-at
                             :host-changed host-changed
                             :authentication-warning auth-warning
                             :truncated-p truncated-p

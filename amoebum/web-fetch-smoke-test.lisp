@@ -226,6 +226,10 @@
                        (article-markdown (getf article-result :markdown)))
                   (assert-true (not (getf article-result :cached))
                                "Expected first fetch to be uncached.")
+                  (assert-true (eq :pseudopod (getf article-result :fetch-engine))
+                               "Expected fetch orchestration to report pseudopod engine.")
+                  (assert-true (integerp (getf article-result :fetched-at))
+                               "Expected normalized fetched-at timestamp from pseudopod fetch response.")
                   (assert-true (contains-substring-p "# Example Article Title" article-markdown)
                                "Expected extracted markdown title, got ~S."
                                article-markdown)

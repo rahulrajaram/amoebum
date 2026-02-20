@@ -17,6 +17,7 @@
    (:file "src/tooling/write-file")
    (:file "src/tooling/string-replace")
    (:file "src/tooling/run-command")
+   (:file "src/tooling/fetch-backend")
    (:file "src/tooling/search-backend")
    (:file "src/tooling/fetch-engine")
    (:file "src/client")
