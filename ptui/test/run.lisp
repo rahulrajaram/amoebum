@@ -1581,6 +1581,236 @@
                             (glob-relative-paths result)))))
       (delete-directory-tree-safe root))))
 
+(deftest search-engine-file-ranking-priority
+  (let* ((results (ptui.search.engine:rank-file-matches
+                   "search"
+                   '("search"
+                     "search-core.lisp"
+                     "src/tool-search-ui.md"
+                     "docs/notes.txt")))
+         (paths (mapcar #'ptui.search.engine:search-file-match-path results))
+         (kinds (mapcar #'ptui.search.engine:search-file-match-kind results))
+         (scores (mapcar #'ptui.search.engine:search-file-match-score results)))
+    (assert-true (= (length results) 3)
+                 "expected three ranked file matches, got ~D (~S)" (length results) paths)
+    (assert-true (equal paths
+                        '("search" "search-core.lisp" "src/tool-search-ui.md"))
+                 "unexpected file ranking order: ~S" paths)
+    (assert-true (equal kinds '(:exact :prefix :substring))
+                 "unexpected ranking kinds: ~S" kinds)
+    (assert-true (>= (first scores) (second scores) (third scores))
+                 "expected monotonic descending scores, got ~S" scores)))
+
+(deftest search-engine-file-no-results
+  (let ((results (ptui.search.engine:rank-file-matches
+                  "does-not-exist"
+                  '("src/main.lisp" "README.md"))))
+    (assert-true (null results)
+                 "expected empty file result set, got ~S" results)))
+
+(deftest search-engine-content-context-and-ranking
+  (let* ((documents
+           (list
+            (ptui.search.engine:make-search-document
+             :path "logs/old.txt"
+             :content (format nil "alpha~%target needle~%omega~%"))
+            (ptui.search.engine:make-search-document
+             :path "logs/new.txt"
+             :content (format nil "needle needle~%"))))
+         (matches (ptui.search.engine:search-content-matches
+                   "needle"
+                   documents
+                   :regex-mode nil
+                   :before-context 1
+                   :after-context 1))
+         (first-match (first matches)))
+    (assert-true (= (length matches) 3)
+                 "expected three content matches, got ~D" (length matches))
+    (assert-true (string= (ptui.search.engine:search-content-match-path first-match)
+                          "logs/new.txt")
+                 "expected top-ranked match in newest/high-density line, got ~S"
+                 (ptui.search.engine:search-content-match-path first-match))
+    (let ((context-match
+            (find "logs/old.txt"
+                  matches
+                  :test #'string=
+                  :key #'ptui.search.engine:search-content-match-path)))
+      (assert-true context-match
+                   "expected match entry for logs/old.txt")
+      (assert-true (= (ptui.search.engine:search-content-match-line context-match) 2)
+                   "expected logs/old.txt match on line 2")
+      (assert-true (equal (ptui.search.engine:search-content-match-context-before context-match)
+                          '((:line 1 :text "alpha")))
+                   "expected one context-before line for logs/old.txt")
+      (assert-true (equal (ptui.search.engine:search-content-match-context-after context-match)
+                          '((:line 3 :text "omega")))
+                   "expected one context-after line for logs/old.txt"))))
+
+(deftest search-engine-content-multiline-toggle
+  (let* ((documents
+           (list
+            (ptui.search.engine:make-search-document
+             :path "src/example.txt"
+             :content (format nil "alpha~%beta~%"))))
+         (line-mode (ptui.search.engine:search-content-matches
+                     "alpha\\s+beta"
+                     documents
+                     :regex-mode t
+                     :multiline-mode nil))
+         (multiline-mode (ptui.search.engine:search-content-matches
+                          "alpha\\s+beta"
+                          documents
+                          :regex-mode t
+                          :multiline-mode t)))
+    (assert-true (null line-mode)
+                 "expected no line-mode matches for newline-spanning pattern")
+    (assert-true (= (length multiline-mode) 1)
+                 "expected one multiline match, got ~D" (length multiline-mode))))
+
+(deftest search-engine-content-no-results
+  (let* ((documents
+           (list
+            (ptui.search.engine:make-search-document
+             :path "src/example.lisp"
+             :content (format nil "(defun hello ())~%"))))
+         (matches (ptui.search.engine:search-content-matches
+                   "not-found"
+                   documents
+                   :regex-mode nil)))
+    (assert-true (null matches)
+                 "expected empty content match list, got ~S" matches)))
+
+(deftest widgets-search-widget-api-boundary
+  (multiple-value-bind (widgets-sym widgets-status)
+      (find-symbol "MAKE-SEARCH-WIDGET" :ptui.widgets.core)
+    (assert-true (null widgets-sym)
+                 "search-widget constructor must not exist in ptui.widgets.core, got ~S/~S"
+                 widgets-sym widgets-status))
+  (multiple-value-bind (components-sym components-status)
+      (find-symbol "MAKE-SEARCH-WIDGET" :ptui.components.search-widget)
+    (assert-true (and components-sym (eql components-status :external))
+                 "search-widget constructor should be exported by ptui.components.search-widget, got ~S/~S"
+                 components-sym components-status)
+    (assert-true (fboundp components-sym)
+                 "search-widget constructor symbol should be fboundp: ~S"
+                 components-sym)))
+
+(deftest widgets-search-widget-file-results-and-events
+  (let* ((selected nil)
+         (state (ptui.components.search-widget:make-search-widget-state
+                 :mode :files
+                 :query "src/"
+                 :file-candidates '("README.md" "src/main.lisp" "src/search.lisp")
+                 :visible-count 4
+                 :limit 10
+                 :on-select (lambda (result _state)
+                              (declare (ignore _state))
+                              (setf selected
+                                    (ptui.search.engine:search-file-match-path result)))))
+         (runtime (ptui.ui.runtime:make-runtime)))
+    (assert-true (equal (mapcar #'ptui.search.engine:search-file-match-path
+                                (ptui.components.search-widget:search-widget-results state))
+                        '("src/main.lisp" "src/search.lisp"))
+                 "unexpected initial file-search ordering: ~S"
+                 (mapcar #'ptui.search.engine:search-file-match-path
+                         (ptui.components.search-widget:search-widget-results state)))
+    (let* ((widget (ptui.components.search-widget:make-search-widget
+                    state
+                    :id :search-root
+                    :input-id :search-input))
+           (root (ptui.widgets.core:make-stack-widget (list widget) :id :root))
+           (size (ptui.widgets.core:widget-measure widget)))
+      (ptui.ui.runtime:update-runtime runtime root)
+      (assert-true (> (ptui.layout:layout-size-width size) 0)
+                   "search-widget composed width should be > 0")
+      (assert-true (> (ptui.layout:layout-size-height size) 0)
+                   "search-widget composed height should be > 0")
+      (ptui.widgets.core:dispatch-widget-event
+       root
+       (list :target :search-input
+             :event (ptui.core.events:make-key-event :down)))
+      (assert-true (= (ptui.components.search-widget:search-widget-selected-index state) 1)
+                   "expected :down event to move selection to second result")
+      (ptui.widgets.core:dispatch-widget-event
+       root
+       (list :target :search-input
+             :event (ptui.core.events:make-key-event :enter)))
+      (assert-true (string= selected "src/search.lisp")
+                   "expected enter event to select highlighted path, got ~S"
+                   selected)
+      (ptui.widgets.core:dispatch-widget-event
+       root
+       (list :target :search-input
+             :event (ptui.core.events:make-key-event :text :text? "x")))
+      (assert-true (string= (ptui.components.search-widget:search-widget-query state)
+                            "src/x")
+                   "expected text event to mutate query, got ~S"
+                   (ptui.components.search-widget:search-widget-query state))
+      (assert-true (eq (ptui.components.search-widget:search-widget-status state) :empty)
+                   "expected :empty status after no-match query, got ~S"
+                   (ptui.components.search-widget:search-widget-status state))
+      (ptui.widgets.core:dispatch-widget-event
+       root
+       (list :target :search-input
+             :event (ptui.core.events:make-key-event :backspace)))
+      (assert-true (string= (ptui.components.search-widget:search-widget-query state)
+                            "src/")
+                   "expected backspace to restore query, got ~S"
+                   (ptui.components.search-widget:search-widget-query state))
+      (assert-true (eq (ptui.components.search-widget:search-widget-status state) :ready)
+                   "expected :ready status after restoring query, got ~S"
+                   (ptui.components.search-widget:search-widget-status state)))))
+
+(deftest widgets-search-widget-content-results-and-refresh
+  (let* ((documents
+           (list
+            (ptui.search.engine:make-search-document
+             :path "logs/old.txt"
+             :content (format nil "alpha~%needle one~%omega~%"))
+            (ptui.search.engine:make-search-document
+             :path "logs/new.txt"
+             :content (format nil "needle two~%needle three~%"))))
+         (state
+           (ptui.components.search-widget:make-search-widget-state
+            :mode :content
+            :query "needle"
+            :documents documents
+            :regex-mode nil
+            :before-context 1
+            :after-context 0
+            :visible-count 1
+            :limit 10)))
+    (assert-true (= (length (ptui.components.search-widget:search-widget-results state)) 3)
+                 "expected three content matches, got ~D"
+                 (length (ptui.components.search-widget:search-widget-results state)))
+    (assert-true (string= (ptui.search.engine:search-content-match-path
+                           (first (ptui.components.search-widget:search-widget-results state)))
+                          "logs/new.txt")
+                 "expected highest ranked content match from logs/new.txt")
+    (setf (ptui.components.search-widget:search-widget-selected-index state) 1)
+    (let* ((all (ptui.components.search-widget:search-widget-results state))
+           (visible (ptui.components.search-widget:search-widget-visible-results state)))
+      (assert-true (= (length visible) 1)
+                   "expected visible window size 1, got ~D" (length visible))
+      (assert-true (eq (first visible) (second all))
+                   "expected visible window to track selected index"))
+    (ptui.components.search-widget:search-widget-set-documents
+     state
+     (list (ptui.search.engine:make-search-document
+            :path "logs/single.txt"
+            :content (format nil "needle once~%"))))
+    (assert-true (= (length (ptui.components.search-widget:search-widget-results state)) 1)
+                 "expected one match after corpus refresh, got ~D"
+                 (length (ptui.components.search-widget:search-widget-results state)))
+    (setf (ptui.components.search-widget:search-widget-query state) "missing")
+    (assert-true (eq (ptui.components.search-widget:search-widget-status state) :empty)
+                 "expected :empty status for missing query, got ~S"
+                 (ptui.components.search-widget:search-widget-status state))
+    (setf (ptui.components.search-widget:search-widget-query state) "needle")
+    (assert-true (eq (ptui.components.search-widget:search-widget-status state) :ready)
+                 "expected :ready status after restoring query, got ~S"
+                 (ptui.components.search-widget:search-widget-status state))))
+
 ;; Script entry
 (multiple-value-bind (passed failed) (run-all-tests)
   (declare (ignore passed))
