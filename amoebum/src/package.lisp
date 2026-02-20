@@ -835,6 +835,8 @@
            #:lsp-open-document
            #:lsp-send-notification
            #:lsp-send-request
+           #:lsp-request-document-symbols
+           #:lsp-request-workspace-symbols
            #:lsp-drain-notifications
            #:lsp-client-stop
            #:context-overflow-error

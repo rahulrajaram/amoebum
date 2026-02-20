@@ -111,6 +111,13 @@
     (error "~A must be a positive real, got ~S." label value))
   (float value 1.0d0))
 
+(defun %normalize-lsp-query (query)
+  (let ((normalized (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                 (princ-to-string query))))
+    (unless (> (length normalized) 0)
+      (error "LSP workspace query must not be empty."))
+    normalized))
+
 (defun make-lsp-server-spec (&key name language-id command (args nil) (file-extensions nil))
   (let ((normalized-command (%normalize-lsp-name command "LSP COMMAND")))
     (%make-lsp-server-spec
@@ -317,6 +324,13 @@
           (gethash "languageId" text-document) (lsp-document-state-language-id document)
           (gethash "version" text-document) (lsp-document-state-version document)
           (gethash "text" text-document) (lsp-document-state-text document)
+          (gethash "textDocument" params) text-document)
+    params))
+
+(defun %lsp-text-document-uri-params (file-path)
+  (let ((params (make-hash-table :test #'equal))
+        (text-document (make-hash-table :test #'equal)))
+    (setf (gethash "uri" text-document) (%file-uri file-path)
           (gethash "textDocument" params) text-document)
     params))
 
@@ -574,6 +588,34 @@
               method
               :timeout-seconds (or timeout-seconds
                                    (lsp-client-request-timeout-seconds client)))))))))
+
+(defun lsp-request-document-symbols (client file-path
+                                     &key language-id timeout-seconds)
+  (unless file-path
+    (error "FILE-PATH is required for textDocument/documentSymbol requests."))
+  (lsp-send-request
+   client
+   file-path
+   "textDocument/documentSymbol"
+   :params (%lsp-text-document-uri-params file-path)
+   :language-id language-id
+   :timeout-seconds timeout-seconds
+   :open-document-p t))
+
+(defun lsp-request-workspace-symbols (client file-path query
+                                      &key language-id timeout-seconds)
+  (unless file-path
+    (error "FILE-PATH is required for workspace/symbol requests."))
+  (lsp-send-request
+   client
+   file-path
+   "workspace/symbol"
+   :params (let ((params (make-hash-table :test #'equal)))
+             (setf (gethash "query" params) (%normalize-lsp-query query))
+             params)
+   :language-id language-id
+   :timeout-seconds timeout-seconds
+   :open-document-p nil))
 
 (defun lsp-drain-notifications (client language-id)
   (unless (lsp-client-p client)

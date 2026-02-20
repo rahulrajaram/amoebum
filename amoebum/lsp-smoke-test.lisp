@@ -129,6 +129,7 @@
               "import sys"
               ""
               "log_path = sys.argv[1]"
+              "last_open_uri = None"
               ""
               "def log(event, payload=None):"
               "    with open(log_path, \"a\", encoding=\"utf-8\") as handle:"
@@ -199,6 +200,7 @@
               "        uri = text_document.get(\"uri\")"
               "        log(\"didOpen\", uri)"
               "        if uri:"
+              "            last_open_uri = uri"
               "            send_publish_diagnostics(uri)"
               "        continue"
               ""
@@ -225,6 +227,53 @@
               "                    {\"uri\": uri, \"range\": {\"start\": {\"line\": 3, \"character\": 8}, \"end\": {\"line\": 3, \"character\": 14}}}"
               "                ]"
               "            })"
+              "        continue"
+              ""
+              "    if method == \"textDocument/documentSymbol\":"
+              "        if request_id is not None:"
+              "            uri = (params.get(\"textDocument\") or {}).get(\"uri\")"
+              "            send_message({"
+              "                \"jsonrpc\": \"2.0\","
+              "                \"id\": request_id,"
+              "                \"result\": ["
+              "                    {"
+              "                        \"name\": \"answer\","
+              "                        \"kind\": 12,"
+              "                        \"detail\": \"answer() -> int\","
+              "                        \"selectionRange\": {\"start\": {\"line\": 0, \"character\": 4}, \"end\": {\"line\": 0, \"character\": 10}},"
+              "                        \"range\": {\"start\": {\"line\": 0, \"character\": 0}, \"end\": {\"line\": 1, \"character\": 13}}"
+              "                    },"
+              "                    {"
+              "                        \"name\": \"value\","
+              "                        \"kind\": 13,"
+              "                        \"selectionRange\": {\"start\": {\"line\": 3, \"character\": 0}, \"end\": {\"line\": 3, \"character\": 5}},"
+              "                        \"range\": {\"start\": {\"line\": 3, \"character\": 0}, \"end\": {\"line\": 3, \"character\": 16}},"
+              "                        \"uri\": uri"
+              "                    }"
+              "                ]"
+              "            })"
+              "        continue"
+              ""
+              "    if method == \"workspace/symbol\":"
+              "        if request_id is not None:"
+              "            query = (params.get(\"query\") or \"\").lower()"
+              "            symbols = ["
+              "                {"
+              "                    \"name\": \"answer\","
+              "                    \"kind\": 12,"
+              "                    \"containerName\": \"sample\","
+              "                    \"location\": {\"uri\": last_open_uri, \"range\": {\"start\": {\"line\": 0, \"character\": 4}, \"end\": {\"line\": 0, \"character\": 10}}}"
+              "                },"
+              "                {"
+              "                    \"name\": \"value\","
+              "                    \"kind\": 13,"
+              "                    \"containerName\": \"sample\","
+              "                    \"location\": {\"uri\": last_open_uri, \"range\": {\"start\": {\"line\": 3, \"character\": 0}, \"end\": {\"line\": 3, \"character\": 5}}}"
+              "                }"
+              "            ]"
+              "            if query:"
+              "                symbols = [entry for entry in symbols if query in (entry.get(\"name\") or \"\").lower()]"
+              "            send_message({\"jsonrpc\": \"2.0\", \"id\": request_id, \"result\": symbols})"
               "        continue"
               ""
               "    if method == \"textDocument/hover\":"
@@ -472,6 +521,34 @@
                  (assert-true (>= (length references) 2)
                               "Expected at least two references, got ~S."
                               references))
+
+               (let* ((document-symbols-result (invoke-tool "lsp-document-symbols"
+                                                            "path" (namestring source-path)))
+                      (symbols (getf document-symbols-result :symbols))
+                      (first-symbol (first symbols)))
+                 (assert-true (>= (length symbols) 2)
+                              "Expected at least two document symbols, got ~S."
+                              symbols)
+                 (assert-true (string= (getf first-symbol :name) "answer")
+                              "Expected first document symbol to be answer, got ~S."
+                              first-symbol)
+                 (assert-true (eq (getf first-symbol :kind) :function)
+                              "Expected first document symbol kind :function, got ~S."
+                              first-symbol))
+
+               (let* ((workspace-symbols-result (invoke-tool "lsp-workspace-symbols"
+                                                             "path" (namestring source-path)
+                                                             "query" "answer"))
+                      (symbols (getf workspace-symbols-result :symbols))
+                      (answer-entry (find "answer" symbols
+                                          :test #'string=
+                                          :key (lambda (entry) (getf entry :name)))))
+                 (assert-true (>= (length symbols) 1)
+                              "Expected at least one workspace symbol, got ~S."
+                              symbols)
+                 (assert-true answer-entry
+                              "Expected workspace symbol query to include answer, got ~S."
+                              symbols))
 
                (let* ((hover-result (invoke-tool "lsp-hover"
                                                  "path" (namestring source-path)

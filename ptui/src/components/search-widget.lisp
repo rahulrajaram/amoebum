@@ -183,13 +183,6 @@
     (search-widget-rerun state))
   state)
 
-(defun search-widget-set-documents (state documents &key (rerun t))
-  (check-type state search-widget-state)
-  (setf (search-widget-state-documents state) (%normalize-documents documents))
-  (when rerun
-    (search-widget-rerun state))
-  state)
-
 (defun search-widget-results (state)
   (ecase (search-widget-state-mode state)
     (:files (search-widget-state-file-results state))

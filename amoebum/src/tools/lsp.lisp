@@ -196,6 +196,84 @@
     (remove nil
             (mapcar #'%lsp-tool-normalize-location entries))))
 
+(defun %lsp-tool-symbol-kind (value)
+  (case value
+    (1 :file)
+    (2 :module)
+    (3 :namespace)
+    (4 :package)
+    (5 :class)
+    (6 :method)
+    (7 :property)
+    (8 :field)
+    (9 :constructor)
+    (10 :enum)
+    (11 :interface)
+    (12 :function)
+    (13 :variable)
+    (14 :constant)
+    (15 :string)
+    (16 :number)
+    (17 :boolean)
+    (18 :array)
+    (19 :object)
+    (20 :key)
+    (21 :null)
+    (22 :enum-member)
+    (23 :struct)
+    (24 :event)
+    (25 :operator)
+    (26 :type-parameter)
+    (otherwise :unknown)))
+
+(defun %lsp-tool-normalize-symbol-entry (entry &key default-uri container-name)
+  (when (hash-table-p entry)
+    (let* ((location (and (hash-table-p (gethash "location" entry))
+                          (gethash "location" entry)))
+           (uri (or (and location (gethash "uri" location))
+                    (gethash "uri" entry)
+                    default-uri))
+           (range (or (and location (gethash "range" location))
+                      (gethash "selectionRange" entry)
+                      (gethash "range" entry)))
+           (name (gethash "name" entry))
+           (kind-code (gethash "kind" entry)))
+      (append
+       (list :name (if name (princ-to-string name) "")
+             :kind (%lsp-tool-symbol-kind kind-code)
+             :kind-code kind-code
+             :container (or (gethash "containerName" entry) container-name)
+             :detail (gethash "detail" entry)
+             :deprecated (gethash "deprecated" entry)
+             :uri uri
+             :path (%lsp-tool-uri->path uri))
+       (%lsp-tool-range-plist range)))))
+
+(defun %lsp-tool-collect-symbol-entries (entries &key default-uri container-name)
+  (loop for entry in (%lsp-tool-sequence-list entries)
+        append
+        (if (hash-table-p entry)
+            (let* ((normalized (%lsp-tool-normalize-symbol-entry
+                                entry
+                                :default-uri default-uri
+                                :container-name container-name))
+                   (child-container (let ((name (gethash "name" entry)))
+                                      (if name
+                                          (princ-to-string name)
+                                          container-name)))
+                   (children (%lsp-tool-collect-symbol-entries
+                              (gethash "children" entry)
+                              :default-uri (or (and normalized (getf normalized :uri))
+                                               default-uri)
+                              :container-name child-container)))
+              (if normalized
+                  (cons normalized children)
+                  children))
+            nil)))
+
+(defun %lsp-tool-normalize-symbols (result &key default-uri)
+  (%lsp-tool-collect-symbol-entries result :default-uri default-uri))
+
 (defun %lsp-tool-hover-content-string (contents)
   (cond
     ((null contents) "")
@@ -394,6 +472,40 @@
           :column column
           :hover hover
           :contents (getf hover :contents))))
+
+(deftool lsp-document-symbols ((path pathname :description "Absolute path to source file." :required t))
+  "List document symbols for PATH."
+  (:permission :auto)
+  (:dangerous nil)
+  (:category :lsp)
+  (:timeout 20)
+  (let* ((canonical-path (%lsp-tool-ensure-file-path path))
+         (client (%lsp-tool-ensure-client :path canonical-path))
+         (response (lsp-request-document-symbols client canonical-path))
+         (symbols (%lsp-tool-normalize-symbols
+                   (%lsp-tool-response-result response "textDocument/documentSymbol")
+                   :default-uri (%lsp-tool-file-uri canonical-path))))
+    (list :path (%lsp-tool-canonical-file canonical-path)
+          :symbols symbols
+          :count (length symbols))))
+
+(deftool lsp-workspace-symbols ((path pathname :description "Absolute path to source file (used to select LSP server)." :required t)
+                                (query string :description "Workspace symbol query string." :required t))
+  "Search workspace symbols by QUERY using the server inferred from PATH."
+  (:permission :auto)
+  (:dangerous nil)
+  (:category :lsp)
+  (:timeout 20)
+  (let* ((canonical-path (%lsp-tool-ensure-file-path path))
+         (client (%lsp-tool-ensure-client :path canonical-path))
+         (response (lsp-request-workspace-symbols client canonical-path query))
+         (symbols (%lsp-tool-normalize-symbols
+                   (%lsp-tool-response-result response "workspace/symbol")
+                   :default-uri (%lsp-tool-file-uri canonical-path))))
+    (list :path (%lsp-tool-canonical-file canonical-path)
+          :query query
+          :symbols symbols
+          :count (length symbols))))
 
 (deftool lsp-diagnostics ((path (or null pathname)
                               :description "Absolute path to file. NIL returns cached project diagnostics."
