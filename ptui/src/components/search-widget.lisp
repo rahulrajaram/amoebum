@@ -400,13 +400,6 @@
          (end (min count (+ start visible))))
     (values (subseq results start end) start)))
 
-(defun search-widget-visible-results (state)
-  (check-type state search-widget-state)
-  (multiple-value-bind (visible _start)
-      (%visible-window state)
-    (declare (ignore _start))
-    visible))
-
 (defun make-search-widget (state &key id key (input-id :search-input) (borderp t) (padding 0))
   "Build a composable PTUI element tree for search interaction."
   (check-type state search-widget-state)
