@@ -73,6 +73,7 @@
       (subseq string 0 (1- (length string)))
       string))
 
+<<<<<<< ours
 (defun %join-path-segments (segments)
   (if segments
       (format nil "~{~A~^/~}" segments)
@@ -164,8 +165,97 @@
                   (concatenate 'string normalized "/")
                   normalized))))))))
 
-(defun %normalize-path (path &key (preserve-trailing-slash-p nil))
-  (normalize-permission-path path :preserve-trailing-slash-p preserve-trailing-slash-p))
+(defun %trim-path-whitespace (string)
+  (string-trim '(#\Space #\Tab #\Newline #\Return) string))
+
+(defun %windows-drive-path-p (path)
+  (and (stringp path)
+       (>= (length path) 3)
+       (alpha-char-p (char path 0))
+       (char= (char path 1) #\:)
+       (char= (char path 2) #\/)))
+
+(defun %absolute-path-p (path)
+  (or (uiop:string-prefix-p "/" path)
+      (%windows-drive-path-p path)))
+
+(defun %cwd-path ()
+  (%trim-trailing-slash (%normalize-slashes (namestring (uiop:getcwd)))))
+
+(defun %ensure-absolute-path (path)
+  (if (%absolute-path-p path)
+      path
+      (let ((cwd (%cwd-path)))
+        (if (string= cwd "/")
+            (concatenate 'string "/" path)
+            (concatenate 'string cwd "/" path)))))
+
+(defun %split-path-prefix (path)
+  (cond
+    ((uiop:string-prefix-p "/" path)
+     (values "/" (subseq path 1)))
+    ((%windows-drive-path-p path)
+     (values (subseq path 0 2) (subseq path 3)))
+    (t
+     (values "" path))))
+
+(defun %collapse-dot-segments (path)
+  (multiple-value-bind (prefix remainder)
+      (%split-path-prefix path)
+    (let ((segments nil))
+      (dolist (segment (uiop:split-string remainder :separator "/"))
+        (cond
+          ((or (string= segment "")
+               (string= segment "."))
+           nil)
+          ((string= segment "..")
+           (when segments
+             (pop segments)))
+          (t
+           (push segment segments))))
+      (let ((ordered (nreverse segments)))
+        (cond
+          ((string= prefix "/")
+           (if ordered
+               (concatenate 'string "/" (format nil "~{~A~^/~}" ordered))
+               "/"))
+          ((%windows-drive-path-p (concatenate 'string prefix "/"))
+           (if ordered
+               (format nil "~A/~{~A~^/~}" prefix ordered)
+               (format nil "~A/" prefix)))
+          (ordered
+           (format nil "~{~A~^/~}" ordered))
+          (t
+           prefix))))))
+
+(defun %normalize-path (path &key (resolve-symlinks-p t))
+  (let ((raw (%path-string path)))
+    (when raw
+      (let* ((trimmed (%trim-path-whitespace raw)))
+        (when (> (length trimmed) 0)
+          (let* ((slash-normalized (%normalize-slashes trimmed))
+                 (absolute (%ensure-absolute-path slash-normalized))
+                 (collapsed (%collapse-dot-segments absolute))
+                 (resolved (and resolve-symlinks-p
+                                (or (ignore-errors
+                                      (truename (pathname collapsed)))
+                                    (probe-file collapsed))))
+                 (canonical (if resolved
+                                (%normalize-slashes (namestring resolved))
+                                collapsed)))
+            (%trim-trailing-slash canonical)))))))
+
+(defun %normalize-pattern-path (pattern)
+  (let ((raw (%path-string pattern)))
+    (when raw
+      (let* ((trimmed (%trim-path-whitespace raw)))
+        (when (> (length trimmed) 0)
+          (let ((slash-normalized (%normalize-slashes trimmed)))
+            (if (%contains-glob-char-p slash-normalized)
+                (%trim-trailing-slash
+                 (%collapse-dot-segments
+                  (%ensure-absolute-path slash-normalized)))
+                (%normalize-path slash-normalized))))))))
 
 (defun %contains-glob-char-p (string)
   (and string
@@ -174,7 +264,8 @@
 
 (defun %path-kind (pattern)
   (let* ((raw (%path-string pattern))
-         (normalized (%normalize-path raw :preserve-trailing-slash-p t)))
+         (normalized (and raw
+                          (%normalize-slashes (%trim-path-whitespace raw)))))
     (cond
       ((or (null normalized)
            (string= normalized "")
@@ -193,7 +284,7 @@
   (write-char char stream))
 
 (defun %glob->regex (pattern)
-  (let* ((source (or (%normalize-path pattern :preserve-trailing-slash-p t) ""))
+  (let* ((source (or (%normalize-pattern-path pattern) ""))
          (len (length source)))
     (with-output-to-string (stream)
       (write-char #\^ stream)
@@ -245,14 +336,13 @@
 
 (defun %path-under-directory-p (path directory-pattern)
   (let* ((path* (%normalize-path path))
-         (dir* (%normalize-path directory-pattern :preserve-trailing-slash-p t))
-         (dir-root (and dir* (%trim-trailing-slash dir*)))
-         (prefix (if (string= dir-root "/")
+         (dir* (%trim-trailing-slash (%normalize-pattern-path directory-pattern)))
+         (prefix (if (string= dir* "/")
                      "/"
-                     (concatenate 'string dir-root "/"))))
+                     (concatenate 'string dir* "/"))))
     (and path*
-         dir-root
-         (or (string= path* dir-root)
+         dir*
+         (or (string= path* dir*)
              (uiop:string-prefix-p prefix path*)))))
 
 (defun %path-matches-pattern-p (path pattern &key (path-normalized-p nil))
@@ -263,7 +353,7 @@
     (and candidate
          (case kind
            (:wildcard t)
-           (:exact (string= candidate (%normalize-path pattern)))
+           (:exact (string= candidate (%normalize-pattern-path pattern)))
            (:directory (%path-under-directory-p candidate pattern))
            (:glob (cl-ppcre:scan (%glob->regex pattern) candidate))
            (otherwise nil)))))
