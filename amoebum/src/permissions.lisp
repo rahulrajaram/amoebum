@@ -84,16 +84,14 @@
     (pathname (namestring command))
     (t (prin1-to-string command))))
 
-(defun %trim-command-whitespace (string)
-  (string-trim '(#\Space #\Tab #\Newline #\Return) string))
-
 (defun %command-list-string (command)
   (when (and (listp command) command)
     (%trim-command-whitespace
      (format nil "~{~A~^ ~}"
              (loop for item in command
-                   for value = (%command-string item)
-                   when value
+                   for value = (%trim-command-whitespace (%command-string item))
+                   when (and (stringp value)
+                            (plusp (length value)))
                      collect value)))))
 
 (defun %command-raw-text (command)
@@ -395,11 +393,11 @@
     (when raw
       (let* ((tokens (if (listp command)
                          (loop for item in command
-                               for value = (%command-string item)
-                               when (and value (> (length value) 0))
+                               for value = (%trim-command-whitespace (%command-string item))
+                               when (and (stringp value) (plusp (length value)))
                                  collect (cons :word value))
                          (%tokenize-shell-command raw)))
-             (normalized (%canonicalize-shell-tokens tokens)))
+            (normalized (%canonicalize-shell-tokens tokens)))
         (multiple-value-bind (commands operators)
             (%tokens->command-segments tokens)
           (let* ((primary-argv (copy-list (or (first commands) '())))

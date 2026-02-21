@@ -1,8 +1,8 @@
 (defpackage :ptui.core.events
   (:use :cl)
   (:export
-   #:key-event #:make-key-event #:key-event-key #:key-event-ctrlp #:key-event-altp
-   #:key-event-shiftp #:key-event-text?
+   #:key-event #:key-event-p #:make-key-event #:key-event-key #:key-event-ctrlp
+   #:key-event-altp #:key-event-shiftp #:key-event-text?
    #:mouse-event #:make-mouse-event #:mouse-event-kind #:mouse-event-x #:mouse-event-y
    #:mouse-event-button
    #:paste-event #:make-paste-event #:paste-event-text))

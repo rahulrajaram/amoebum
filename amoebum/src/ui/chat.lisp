@@ -609,23 +609,51 @@
                            :started-p nil
                            :arguments-complete-p nil
                            :executed-p nil
-                           :execution-error nil
-                           :result nil
-                           :malformed-p nil)))
+                          :execution-error nil
+                          :result nil
+                          :malformed-p nil)))
           (setf (gethash key table) fresh)
           fresh))))
+
+(defun %normalize-stream-tool-name (tool-name)
+  (let ((value (if (symbolp tool-name)
+                   (symbol-name tool-name)
+                   tool-name)))
+    (and (stringp value)
+         (let* ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                      (string-downcase value)))
+                (normalized (if (find #\_ trimmed) (substitute #\- #\_ trimmed)
+                              trimmed)))
+           (and (plusp (length normalized))
+                normalized)))))
+
+(defun %normalize-stream-tool-call (tool-call)
+  (if (pseudopod:tool-call-p tool-call)
+      (let ((normalized-name (%normalize-stream-tool-name
+                             (pseudopod:tool-call-name tool-call)))
+            (name (pseudopod:tool-call-name tool-call)))
+        (if (and (stringp normalized-name)
+                 (not (string= name normalized-name)))
+            (pseudopod:make-tool-call
+             :id (pseudopod:tool-call-id tool-call)
+             :name normalized-name
+             :arguments (pseudopod:tool-call-arguments tool-call)
+             :extras (pseudopod:tool-call-extras tool-call))
+            tool-call))
+      nil))
 
 (defun %stream-tool-call-from-event (event)
   (let ((tool-call (getf event :tool-call)))
     (if (pseudopod:tool-call-p tool-call)
-        tool-call
+        (%normalize-stream-tool-call tool-call)
         (let* ((tool-name (getf event :tool-name))
+               (normalized-name (%normalize-stream-tool-name tool-name))
                (arguments (getf event :arguments))
                (tool-call-id (getf event :tool-call-id)))
-          (when (and (stringp tool-name) (plusp (length tool-name)))
+          (when (and (stringp normalized-name) (plusp (length normalized-name)))
             (pseudopod:make-tool-call
              :id (and (stringp tool-call-id) tool-call-id)
-             :name tool-name
+             :name normalized-name
              :arguments (and (stringp arguments) arguments)))))))
 
 (defun %stream-tool-call-preview-signature (chat-state)
@@ -874,12 +902,17 @@
     (when (and (integerp target-index)
                (>= target-index 0)
                (< target-index (length messages)))
-      (%replace-message-at-index!
-       messages
-       target-index
-       (make-chat-message "assistant"
-                          (or text "")
-                          :partial partialp))
+      (let* ((existing (nth target-index messages))
+             (assistant-message (make-chat-message "assistant"
+                                                  (or text "")
+                                                  :partial partialp))
+             (existing-tool-calls (and existing
+                                      (typep existing 'pseudopod:message)
+                                      (pseudopod:message-tool-calls existing))))
+        (when existing-tool-calls
+          (setf (pseudopod:message-tool-calls assistant-message)
+                existing-tool-calls))
+        (%replace-message-at-index! messages target-index assistant-message))
       (when (or (not (token-stream-active-p (chat-ui-state-stream-state chat-state)))
                 (chat-ui-state-stream-scroll-follow-p chat-state))
         (setf (chat-ui-state-message-scrollback-lines chat-state) 0))

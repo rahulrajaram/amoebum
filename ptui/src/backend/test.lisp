@@ -17,7 +17,7 @@
   (let ((backend (make-instance 'test-backend
                                 :cols cols
                                 :rows rows
-                                :caps (ptui.term.caps:detect-capabilities))))
+                                :caps (ptui.term.caps:probe-terminal-caps))))
     (setf (test-backend-buffer backend)
           (ptui.render.buffer:make-buffer cols rows))
     backend))

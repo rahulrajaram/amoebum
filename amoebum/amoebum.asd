@@ -3,7 +3,7 @@
   :author "amoebum"
   :license "MIT"
   :version "0.1.0"
-  :depends-on ("pseudopod" "ptui" "ptui/components" "sw4rm-sdk" "uiop" "cl-ppcre" "bordeaux-threads" "named-readtables")
+  :depends-on ("pseudopod" "ptui" "ptui/components" "sw4rm-sdk" "uiop" "cl-ppcre" "bordeaux-threads")
   :serial t
   :components
   ((:file "src/package")

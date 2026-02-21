@@ -1,0 +1,165 @@
+```mermaid
+flowchart TB
+  classDef core fill:#ECFDF5,stroke:#16A34A,stroke-width:2px,color:#14532D;
+  classDef llm fill:#DBEAFE,stroke:#2563EB,stroke-width:2px,color:#1E3A8A;
+  classDef coord fill:#EEF2FF,stroke:#6366F1,stroke-width:2px,color:#312E81;
+  classDef runtime fill:#FFF7ED,stroke:#EA580C,stroke-width:2px,color:#7C2D12;
+  classDef external fill:#F1F5F9,stroke:#64748B,stroke-width:2px,stroke-dasharray:4 4,color:#334155;
+
+  U1[User]
+
+  subgraph A[KernelModules]
+    K1[EngineLoop]
+    K2[RuntimeScheduler]
+    K3[RenderDiff]
+    K4[TerminalBackend]
+    K5[TermTTY]
+    K6[TermSignals]
+    K7[InputParser]
+    K8[EventBus]
+  end
+
+  subgraph B[AppCore]
+    A1[BootstrapMain]
+    A2[ConversationState]
+    A3[ConfigKernel]
+    A4[MemoryKernel]
+    A5[PermissionKernel]
+    A6[ToolPipeline]
+    A7[EventFilters]
+    A8[HookRouter]
+    A9[NotificationKernel]
+    A10[CheckpointRestore]
+  end
+
+  subgraph C[LLMAndTools]
+    L1[ProviderModel]
+    L2[ProviderRouter]
+    L3[KimiProvider]
+    L4[ConversationOrchestrator]
+    L5[MessageModel]
+    L6[ToolRegistry]
+    L7[ToolInvoke]
+  end
+
+  subgraph D[Coordination]
+    C1[StateMachine]
+    C2[LocalRouter]
+    C3[WorkflowEngine]
+    C4[BudgetAndPolicy]
+    C5[ActivityBuffer]
+    C6[Interceptors]
+    C7[HITL]
+    C8[AgentClients]
+  end
+
+  subgraph E[ToolPlane]
+    T1[FileTools]
+    T2[SearchTools]
+    T3[WebTools]
+    T4[ShellTool]
+    T5[GitTool]
+    T6[LSPTool]
+    T7[SafetyLayers]
+    T8[OSSandbox]
+    T9[EditValidation]
+  end
+
+  subgraph F[UIAndState]
+    U2[ChatUI]
+    U3[StreamingView]
+    U4[StatusBar]
+    U5[FuzzyPicker]
+    U6[TreeBrowser]
+    U7[NotificationSink]
+  end
+
+  subgraph G[Peripherals]
+    P1[SBCLRuntime]
+    P2[QuicklispAndASDF]
+    P3[TTYSignals]
+    P4[KimiAPI]
+    P5[ShellHost]
+    P6[Filesystem]
+    P7[GitHost]
+    P8[LSPHost]
+    P9[WebHost]
+    P10[HaakeCLI]
+  end
+
+  U1 --> A1
+  A1 --> A2
+  A1 --> A3
+  A1 --> A4
+  A1 --> K1
+  A2 --> K8
+  A6 --> U3
+  A9 --> K1
+  K8 --> K1
+  K1 --> U2
+  K1 --> K8
+  K1 --> K2
+  K1 --> U3
+  K2 --> K1
+  K3 --> U3
+  K4 --> K1
+  K5 --> K1
+  K6 --> K1
+  K7 --> K1
+
+  A6 --> L1
+  L1 --> L2
+  L2 --> L3
+  L1 --> L4
+  L3 --> P4
+  L4 --> L6
+  L6 --> L7
+  L7 --> T1
+  L7 --> T2
+  L7 --> T3
+  L7 --> T4
+  L7 --> T5
+  L7 --> T6
+
+  A6 --> C1
+  C1 --> C2
+  C2 --> C3
+  C3 --> C4
+  C4 --> C5
+  C5 --> C6
+  C6 --> C7
+  C7 --> C8
+
+  T1 --> T7
+  T2 --> T7
+  T3 --> T7
+  T4 --> T7
+  T5 --> T7
+  T6 --> T7
+  T7 --> A5
+  T8 --> A5
+  T9 --> A5
+  T7 --> K8
+  T9 --> K8
+
+  U2 --> U4
+  U2 --> U5
+  U2 --> U6
+  U2 --> U7
+
+  U2 --> F
+  K1 --> F
+
+  A4 --> P10
+  A3 --> P10
+  P10 --> P6
+  U1 --> G
+
+  class K1,K2,K3,K4,K5,K6,K7,K8 core
+  class A1,A2,A3,A4,A5,A6,A7,A8,A9,A10 runtime
+  class L1,L2,L3,L4,L5,L6,L7 llm
+  class C1,C2,C3,C4,C5,C6,C7,C8 coord
+  class T1,T2,T3,T4,T5,T6,T7,T8,T9 runtime
+  class U2,U3,U4,U5,U6,U7 runtime
+  class P1,P2,P3,P4,P5,P6,P7,P8,P9,P10 external
+```
