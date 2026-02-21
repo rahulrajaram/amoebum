@@ -1,4 +1,4 @@
-.PHONY: build test test-ptui test-amoebum check clean
+.PHONY: build test test-ptui test-amoebum check check-dist-ignore clean
 
 REPO_ROOT := $(CURDIR)
 QUICKLISP_SETUP ?= $(HOME)/quicklisp/setup.lisp
@@ -10,7 +10,8 @@ build:
 	bash bin/build-binary.sh
 
 test:
-	$(MAKE) check
+	$(MAKE) test-ptui
+	$(MAKE) test-amoebum
 
 test-ptui:
 	sbcl --noinform --non-interactive \
@@ -30,9 +31,13 @@ test-amoebum:
 	  --eval "(asdf:load-asd (truename \"$(REPO_ROOT)/amoebum/amoebum.asd\"))" \
 	  --eval "(asdf:test-system :amoebum/test)"
 
+check-dist-ignore:
+	bash ./bin/check-dist-ignore.sh
+
 check:
-	$(MAKE) test-ptui
-	$(MAKE) test-amoebum
+	$(MAKE) check-dist-ignore
+	$(MAKE) test
+	$(MAKE) build
 
 clean:
 	rm -rf dist/

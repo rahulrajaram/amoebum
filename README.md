@@ -54,6 +54,19 @@ Post-run memory sync:
 2. Haake write path is controlled by `yarli.toml` (`[memory.haake] enabled`, `command`, `project_dir`).
 3. If Haake is disabled or unavailable, entries are appended to `.agent/memory-log.md`.
 
+## Local Build and Check Commands
+
+1. `make test-ptui` runs PTUI tests through ASDF.
+2. `make test-amoebum` runs Amoebum tests through ASDF.
+3. `make test` runs `test-ptui` then `test-amoebum`.
+4. `make check-dist-ignore` verifies `dist/` is ignored and still gitignored.
+5. `make check` runs `make check-dist-ignore`, then `make test`, then `make build`.
+6. `make build` uses `bin/build-binary.sh` and resolves `QUICKLISP_SETUP` with fallback.
+
+Guard script:
+
+- `./bin/check-dist-ignore.sh` checks `.gitignore` for `dist/` and validates `git check-ignore -q dist`.
+
 Payload contract (`yarli_postrun_memory_v1`):
 
 1. Required fields: `timestamp_utc`, `project_id`, `run_id`, `objective`, `outcome`, `run_state`.

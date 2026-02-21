@@ -3,14 +3,20 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${REPO_ROOT}/dist"
-QUICKLISP_SETUP="${QUICKLISP_SETUP:-${REPO_ROOT}/ptui/.tools/quicklisp/setup.lisp}"
+REPO_QUICKLISP_SETUP="${REPO_ROOT}/ptui/.tools/quicklisp/setup.lisp"
+QUICKLISP_SETUP="${QUICKLISP_SETUP:-${REPO_QUICKLISP_SETUP}}"
+QUICKLISP_SETUP_CANDIDATES=("${QUICKLISP_SETUP}" "${REPO_QUICKLISP_SETUP}" "${HOME}/quicklisp/setup.lisp")
+
+if [[ ! -f "${QUICKLISP_SETUP}" ]]; then
+  QUICKLISP_SETUP="${REPO_QUICKLISP_SETUP}"
+fi
 
 if [[ ! -f "${QUICKLISP_SETUP}" ]]; then
   QUICKLISP_SETUP="${HOME}/quicklisp/setup.lisp"
 fi
 
 if [[ ! -f "${QUICKLISP_SETUP}" ]]; then
-  echo "Quicklisp setup not found. Set QUICKLISP_SETUP to a valid path." >&2
+  echo "Quicklisp setup not found. Tried: ${QUICKLISP_SETUP_CANDIDATES[*]}" >&2
   exit 1
 fi
 
