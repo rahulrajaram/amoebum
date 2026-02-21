@@ -61,6 +61,19 @@
           :stderr (or stderr "")
           :exit-code (or exit-code 0))))
 
+(defun %git-publish-lifecycle-event (event-type payload &key (severity :info))
+  (handler-case
+      (let ((bus (current-event-bus)))
+        (when (event-bus-p bus)
+          (publish bus
+                   event-type
+                   :source :amoebum
+                   :severity severity
+                   :payload payload)))
+    (error ()
+      nil))
+  payload)
+
 (defun %git-run-command-or-error (root args)
   (let ((result (%git-run-command root args)))
     (when (not (zerop (getf result :exit-code)))
@@ -171,6 +184,12 @@
   (let* ((root (%git-ensure-work-tree (%git-project-root project-root)))
          (result (%git-run-command-or-error root '("status" "--porcelain=2" "--branch")))
          (parsed (%git-parse-status-porcelain (%git-lines (getf result :stdout)))))
+    (%git-publish-lifecycle-event
+     +event-type-git-branch+
+     (make-branch-event :old-branch nil
+                        :new-branch (getf parsed :branch)
+                        :action :status)
+     :severity :debug)
     (append (list :project-root (%path-text root)) parsed)))
 
 (defun %git-normalize-stage-file (file root)
@@ -408,6 +427,11 @@ Staged diff:~%~A"
 (defun %git-current-branch (root)
   (%git-trim-whitespace
    (getf (%git-run-command-or-error root '("rev-parse" "--abbrev-ref" "HEAD")) :stdout)))
+
+(defun %git-head-author (root)
+  (%git-trim-whitespace
+   (getf (%git-run-command-or-error root '("show" "-s" "--format=%an <%ae>" "HEAD"))
+         :stdout)))
 
 (defun %git-revision-exists-p (root revision)
   (let ((result (%git-run-command root
@@ -721,6 +745,12 @@ Commits:~%~A"
          (diff* (if truncated-p
                     (subseq diff 0 *git-max-branch-diff-chars*)
                     diff)))
+    (%git-publish-lifecycle-event
+     +event-type-git-branch+
+     (make-branch-event :old-branch resolved-base
+                        :new-branch branch
+                        :action :diff)
+     :severity :debug)
     (list :project-root (%path-text root)
           :branch branch
           :base-branch resolved-base
@@ -789,13 +819,29 @@ Commits:~%~A"
              (generated-message (getf message-data :message))
              (commit-message (%git-append-co-author generated-message co-author)))
         (%git-commit-via-heredoc! root commit-message amend)
-        (list :sha (%git-commit-sha root)
-              :branch (%git-current-branch root)
-              :files-changed staged-paths
-              :message commit-message
-              :message-summary (car (%git-lines commit-message))
-              :message-source (getf message-data :source)
-              :fallback-reason (getf message-data :fallback-reason))))))
+        (let* ((sha (%git-commit-sha root))
+               (branch (%git-current-branch root))
+               (result (list :sha sha
+                             :branch branch
+                             :files-changed staged-paths
+                             :message commit-message
+                             :message-summary (car (%git-lines commit-message))
+                             :message-source (getf message-data :source)
+                             :fallback-reason (getf message-data :fallback-reason))))
+          (run-hooks :on-commit sha commit-message staged-paths)
+          (%git-publish-lifecycle-event
+           +event-type-git-commit+
+           (make-commit-event :hash sha
+                              :message commit-message
+                              :author (%git-head-author root)
+                              :files-changed staged-paths))
+          (%git-publish-lifecycle-event
+           +event-type-git-branch+
+           (make-branch-event :old-branch branch
+                              :new-branch branch
+                              :action :commit)
+           :severity :debug)
+          result)))))
 
 (deftool create-pr ((base-branch (or null string)
                         :description "Optional base branch override (defaults to main/master detection)."
@@ -837,6 +883,11 @@ Commits:~%~A"
                 branch
                 (getf description :title)
                 (getf description :body))))
+        (%git-publish-lifecycle-event
+         +event-type-git-branch+
+         (make-branch-event :old-branch resolved-base
+                            :new-branch branch
+                            :action :create-pr))
         (list :url (getf pr-result :url)
               :branch branch
               :base-branch resolved-base

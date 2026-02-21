@@ -89,14 +89,16 @@
 
 (defun %symbol-documentation (symbol kind)
   "Get documentation string for SYMBOL."
-  (handler-case
-      (let ((doc-type (case kind
-                        ((:function :generic-function :macro) 'function)
-                        (:variable 'variable)
-                        (:class 'type)
-                        (otherwise t))))
-        (or (documentation symbol doc-type) ""))
-    (error () "")))
+  (let ((doc-type (case kind
+                    ((:function :generic-function :macro) 'function)
+                    (:variable 'variable)
+                    (:class 'type)
+                    (otherwise nil))))
+    (if doc-type
+        (handler-case
+            (or (documentation symbol doc-type) "")
+          (error () ""))
+        "")))
 
 (defun index-package-symbols (index package-designator &key (external-only t))
   "Index all symbols in PACKAGE-DESIGNATOR into INDEX."

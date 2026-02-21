@@ -10,6 +10,7 @@
 (defparameter +event-type-tool-redefined+ (%event-type-keyword "tool:redefined"))
 (defparameter +event-type-config-changed+ (%event-type-keyword "config:changed"))
 (defparameter +event-type-permission-prompted+ (%event-type-keyword "permission:prompted"))
+(defparameter +event-type-permission-blocked+ (%event-type-keyword "permission:blocked"))
 (defparameter +event-type-memory-updated+ (%event-type-keyword "memory:updated"))
 (defparameter +event-type-memory-backend-selected+
   (%event-type-keyword "memory:backend-selected"))
@@ -20,6 +21,7 @@
 (defparameter +event-type-keymap-overlay-exit+ (%event-type-keyword "keymap-overlay-exit"))
 (defparameter +event-type-extension-loaded+ (%event-type-keyword "extension:loaded"))
 (defparameter +event-type-extension-error+ (%event-type-keyword "extension:error"))
+(defparameter +event-type-llm-stream-chunk+ (%event-type-keyword "llm:stream-chunk"))
 (defparameter +event-type-stream-budget-warning+ (%event-type-keyword "stream:budget-warning"))
 (defparameter +event-type-conversation-forked+ (%event-type-keyword "conversation:forked"))
 (defparameter +event-type-tool-call-started+ (%event-type-keyword "tool-call:started"))
@@ -27,6 +29,7 @@
   (%event-type-keyword "tool-call:argument-complete"))
 (defparameter +event-type-session-checkpointed+ (%event-type-keyword "session:checkpointed"))
 (defparameter +event-type-session-restored+ (%event-type-keyword "session:restored"))
+(defparameter +event-type-plan-step-status+ (%event-type-keyword "plan:step-status"))
 
 (defparameter +core-event-types+
   (list +event-type-tool-invoked+
@@ -35,6 +38,7 @@
         +event-type-tool-redefined+
         +event-type-config-changed+
         +event-type-permission-prompted+
+        +event-type-permission-blocked+
         +event-type-memory-updated+
         +event-type-memory-backend-selected+
         +event-type-context-compressed+
@@ -44,12 +48,14 @@
         +event-type-keymap-overlay-exit+
         +event-type-extension-loaded+
         +event-type-extension-error+
+        +event-type-llm-stream-chunk+
         +event-type-stream-budget-warning+
         +event-type-conversation-forked+
         +event-type-tool-call-started+
         +event-type-tool-call-argument-complete+
         +event-type-session-checkpointed+
-        +event-type-session-restored+))
+        +event-type-session-restored+
+        +event-type-plan-step-status+))
 
 (defparameter *event-bus* nil)
 
@@ -88,10 +94,12 @@
 
 (defstruct (tool-error-payload
             (:constructor make-tool-error-payload
-                (&key tool-name args condition elapsed-ms request-id)))
+                (&key tool-name args condition condition-reason-code
+                       elapsed-ms request-id)))
   tool-name
   args
   condition
+  (condition-reason-code nil :type (or null keyword))
   elapsed-ms
   request-id)
 
@@ -112,12 +120,24 @@
 
 (defstruct (permission-prompted-payload
             (:constructor make-permission-prompted-payload
-                (&key tool-name path command reason permission-mode)))
+                (&key tool-name path command reason permission-mode reason-code)))
   tool-name
   path
   command
   reason
-  permission-mode)
+  permission-mode
+  reason-code)
+
+(defstruct (permission-blocked-payload
+            (:constructor make-permission-blocked-payload
+                (&key tool-name path command reason actionable-reason permission-mode reason-code)))
+  tool-name
+  path
+  command
+  reason
+  actionable-reason
+  permission-mode
+  reason-code)
 
 (defstruct (memory-updated-payload
             (:constructor make-memory-updated-payload
@@ -179,6 +199,14 @@
   path
   scope
   condition)
+
+(defstruct (llm-stream-chunk-payload
+            (:constructor make-llm-stream-chunk-payload
+                (&key token chunk-index token-index total-tokens)))
+  token
+  chunk-index
+  token-index
+  total-tokens)
 
 (defstruct (stream-budget-warning-payload
             (:constructor make-stream-budget-warning-payload
@@ -243,6 +271,18 @@
   (extension-count 0 :type integer)
   (tool-count 0 :type integer)
   (memory-count 0 :type integer))
+
+(defstruct (plan-step-status-payload
+            (:constructor make-plan-step-status-payload
+                (&key
+                   run-id
+                   step-index
+                   (status :pending)
+                   description)))
+  run-id
+  step-index
+  (status :pending)
+  description)
 
 (defstruct (event-subscription
             (:constructor %make-event-subscription
@@ -405,18 +445,16 @@
     (error "BUS must be an EVENT-BUS, got ~S." bus))
   (unless (functionp handler)
     (error "HANDLER must be a function, got ~S." handler))
-  (when filter
-    (unless (functionp filter)
-      (error "FILTER must be a function or NIL, got ~S." filter)))
   (unless (integerp priority)
     (error "PRIORITY must be an integer, got ~S." priority))
-  (let* ((normalized-type (%normalize-subscription-event-type event-type))
+  (let* ((compiled-filter (ptui.runtime.event-filters:coerce-filter-function filter))
+         (normalized-type (%normalize-subscription-event-type event-type))
          (id (%next-subscription-id bus))
          (subscription (%make-event-subscription
                         :id id
                         :event-type normalized-type
                         :handler handler
-                        :filter filter
+                        :filter compiled-filter
                         :priority priority
                         :created-at id)))
     (push subscription (gethash normalized-type (event-bus-subscriptions bus)))
@@ -461,7 +499,8 @@
                         :elapsed-ms elapsed-ms
                         :request-id request-id)))
 
-(defun make-tool-error-event (&key tool-name args condition elapsed-ms request-id)
+(defun make-tool-error-event (&key tool-name args condition elapsed-ms request-id
+                               condition-reason-code)
   (make-event :type +event-type-tool-error+
               :source :amoebum
               :severity :error
@@ -469,6 +508,7 @@
                         :tool-name tool-name
                         :args args
                         :condition condition
+                        :condition-reason-code condition-reason-code
                         :elapsed-ms elapsed-ms
                         :request-id request-id)))
 
@@ -491,7 +531,8 @@
                         :old-value old-value
                         :new-value new-value)))
 
-(defun make-permission-prompted-event (&key tool-name path command reason permission-mode)
+(defun make-permission-prompted-event (&key tool-name path command reason permission-mode
+                                         reason-code)
   (make-event :type +event-type-permission-prompted+
               :source :amoebum
               :severity :warning
@@ -500,6 +541,21 @@
                         :path path
                         :command command
                         :reason reason
+                        :reason-code reason-code
+                        :permission-mode permission-mode)))
+
+(defun make-permission-blocked-event (&key tool-name path command reason actionable-reason
+                                           permission-mode reason-code)
+  (make-event :type +event-type-permission-blocked+
+              :source :amoebum
+              :severity :warning
+              :payload (make-permission-blocked-payload
+                        :tool-name tool-name
+                        :path path
+                        :command command
+                        :reason reason
+                        :actionable-reason actionable-reason
+                        :reason-code reason-code
                         :permission-mode permission-mode)))
 
 (defun make-memory-updated-event (&key backend operation key value)
@@ -582,6 +638,16 @@
                         :path path
                         :scope scope
                         :condition condition)))
+
+(defun make-llm-stream-chunk-event (&key token chunk-index token-index total-tokens)
+  (make-event :type +event-type-llm-stream-chunk+
+              :source :amoebum
+              :severity :debug
+              :payload (make-llm-stream-chunk-payload
+                        :token token
+                        :chunk-index chunk-index
+                        :token-index token-index
+                        :total-tokens total-tokens)))
 
 (defun make-stream-budget-warning-event (&key
                                            used-tokens
@@ -666,3 +732,31 @@
                         :extension-count extension-count
                         :tool-count tool-count
                         :memory-count memory-count)))
+
+(defun %normalize-plan-step-status (value)
+  (let ((status (%normalize-keyword value "PLAN-STEP-STATUS")))
+    (if (member status '(:pending :running :blocked :done) :test #'eq)
+        status
+        :pending)))
+
+(defun %plan-step-status-severity (status)
+  (case (%normalize-plan-step-status status)
+    (:running :info)
+    (:done :info)
+    (:blocked :warning)
+    (otherwise :debug)))
+
+(defun make-plan-step-status-event (&key
+                                      run-id
+                                      step-index
+                                      (status :pending)
+                                      description)
+  (let ((normalized-status (%normalize-plan-step-status status)))
+    (make-event :type +event-type-plan-step-status+
+                :source :amoebum
+                :severity (%plan-step-status-severity normalized-status)
+                :payload (make-plan-step-status-payload
+                          :run-id run-id
+                          :step-index (and (integerp step-index) step-index)
+                          :status normalized-status
+                          :description description))))

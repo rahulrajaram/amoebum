@@ -16,6 +16,7 @@
          (load-asd-fn (symbol-function load-asd-sym))
          (load-system-fn (symbol-function load-system-sym)))
     (funcall load-asd-fn (merge-pathnames #P"pseudopod/pseudopod.asd" repo-root))
+    (funcall load-asd-fn (merge-pathnames #P"sw4rm-sdk/sw4rm-sdk.asd" repo-root))
     (funcall load-asd-fn (merge-pathnames #P"ptui/ptui.asd" repo-root))
     (funcall load-asd-fn (merge-pathnames #P"amoebum/amoebum.asd" repo-root))
     (funcall load-system-fn "amoebum"))
@@ -64,8 +65,10 @@
         (handler-bind
             ((warning
                (lambda (condition)
-                 (when (contains-text-p (princ-to-string condition)
-                                        "Required parameter is missing :description")
+                 (when (or (contains-text-p (princ-to-string condition)
+                                            "missing a description")
+                           (contains-text-p (princ-to-string condition)
+                                            "Required parameter is missing :description"))
                    (setf deftool-warning-seen t))
                  (let ((restart (find-restart 'muffle-warning condition)))
                    (when restart

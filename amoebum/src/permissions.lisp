@@ -1,6 +1,17 @@
 (in-package :amoebum)
 
 (defparameter *permission-rules* nil)
+(defparameter *permission-rules-version* 0)
+(defparameter *permission-evaluation-cache* (make-hash-table :test #'equal))
+(defparameter *permission-cache-hits* 0)
+(defparameter *permission-cache-misses* 0)
+(defparameter *permission-cache-invalidations* 0)
+(defparameter *permission-cache-invalidation-events* '())
+(defparameter *permission-cache-invalidation-events-limit* 128)
+(defparameter *permission-decision-history* '())
+(defparameter *permission-decision-history-limit* 256)
+(defparameter *permission-decision-sequence* 0)
+(defparameter *last-permission-decision-trace* nil)
 (defparameter *path-approval-memory* '())
 (defparameter *path-approval-memory-limit* 256)
 (defparameter *path-approval-persistence-relative-path* #P".amoebum/permissions.lisp")
@@ -32,9 +43,13 @@
 (defparameter *plan-mode-blocked-tool-names*
   '("write-file" "edit-file"))
 
+(defparameter *plan-mode-readonly-allowed-tool-names*
+  '("read-file" "glob-files" "grep-content" "search-project"))
+
 (defstruct (permission-rule
             (:constructor make-permission-rule
-                (&key effect path command tool (source :project))))
+                (&key id effect path command tool (source :project))))
+  id
   effect
   path
   command
@@ -52,7 +67,8 @@
 
 (defstruct (command-canonical-form
             (:constructor make-command-canonical-form
-                (&key raw normalized policy-key executable argv operators wrappers commands)))
+                (&key raw normalized policy-key executable argv operators wrappers commands
+                      ast operator-metadata canonical-signature dangerous-reason-codes)))
   raw
   normalized
   policy-key
@@ -60,7 +76,13 @@
   argv
   operators
   wrappers
-  commands)
+  commands
+  ast
+  operator-metadata
+  canonical-signature
+  dangerous-reason-codes)
+
+(defparameter *last-command-canonicalization-trace* nil)
 
 (defun %tool-name (tool)
   (cond
@@ -224,6 +246,10 @@
   (member operator '("|" "||" "&&" ";" "&")
           :test #'string=))
 
+(defun %redirection-operator-p (operator)
+  (member operator '(">" ">>" "<" "<<" "2>" "2>>" "&>")
+          :test #'string=))
+
 (defun %canonicalize-shell-tokens (tokens)
   (when tokens
     (with-output-to-string (stream)
@@ -256,6 +282,37 @@
                (flush-segment))))))
       (flush-segment))
     (values (nreverse segments) (nreverse operators))))
+
+(defun %tokens->ast (tokens)
+  (let ((ast '())
+        (current-argv '())
+        (current-redirections '())
+        (command-index 0))
+    (labels ((flush-command ()
+               (when (or current-argv current-redirections)
+                 (push (list :type :command
+                             :index command-index
+                             :argv (nreverse current-argv)
+                             :redirections (nreverse current-redirections))
+                       ast)
+                 (incf command-index)
+                 (setf current-argv '()
+                       current-redirections '()))))
+      (dolist (token tokens)
+        (ecase (car token)
+          (:word
+           (push (cdr token) current-argv))
+          (:operator
+           (let ((operator (cdr token)))
+             (if (%separator-operator-p operator)
+                 (progn
+                   (flush-command)
+                   (push (list :type :operator
+                               :value operator)
+                         ast))
+                 (push operator current-redirections))))))
+      (flush-command)
+      (nreverse ast))))
 
 (defun %command-env-assignment-p (value)
   (and (stringp value)
@@ -388,6 +445,94 @@
                    (or base "")))
           nil))))
 
+(defun %operator-metadata (operators)
+  (list :operators operators
+        :contains-pipeline (member "|" operators :test #'string=)
+        :contains-logical-and (member "&&" operators :test #'string=)
+        :contains-logical-or (member "||" operators :test #'string=)
+        :contains-separator (member ";" operators :test #'string=)
+        :contains-background (member "&" operators :test #'string=)
+        :contains-redirection
+        (loop for operator in operators
+              thereis (%redirection-operator-p operator))))
+
+(defun %wrapper-signature (wrappers)
+  (when wrappers
+    (format nil "~{~A~^|~}"
+            (loop for wrapper in wrappers
+                  collect (case (getf wrapper :type)
+                            (:env
+                             (format nil "env[~{~A~^,~}]"
+                                     (or (getf wrapper :assignments) '())))
+                            (:shell
+                             (format nil "shell[~A]"
+                                     (or (getf wrapper :program) "")))
+                            (otherwise
+                             (format nil "wrapper[~A]"
+                                     (or (getf wrapper :type) ""))))))))
+
+(defun %command-canonical-signature (argv wrappers operators)
+  (let* ((argv* (%canonical-argv-string argv))
+         (wrapper* (%wrapper-signature wrappers))
+         (operators* (and operators
+                          (format nil "~{~A~^,~}" operators))))
+    (format nil "argv=~A|wrappers=~A|operators=~A"
+            (or argv* "")
+            (or wrapper* "")
+            (or operators* ""))))
+
+(defparameter *interactive-command-programs*
+  '("vim" "vi" "nvim" "nano" "emacs" "less" "more" "man" "top" "htop" "watch" "tailf"))
+
+(defun %segment->executable (segment)
+  (loop for token in segment
+        unless (%command-env-assignment-p token)
+          do (return (string-downcase token))
+        finally (return nil)))
+
+(defun %segment-has-argv-flag-p (segment flag)
+  (member flag segment :test #'string=))
+
+(defun %command-danger-reason-codes (canonical &optional (patterns *dangerous-command-patterns*))
+  (let* ((canonical* (if (typep canonical 'command-canonical-form)
+                         canonical
+                         (canonicalize-permission-command canonical)))
+         (normalized (and canonical* (command-canonical-form-normalized canonical*)))
+         (wrappers (and canonical* (command-canonical-form-wrappers canonical*)))
+         (commands (and canonical* (command-canonical-form-commands canonical*)))
+         (reasons '()))
+    (when (and normalized
+               (loop for pattern in patterns
+                     thereis (cl-ppcre:scan pattern normalized)))
+      (push :dangerous-pattern-match reasons))
+    (dolist (command commands)
+      (let ((executable (%segment->executable command)))
+        (when (and executable
+                   (member executable *interactive-command-programs* :test #'string=))
+          (push :interactive-command-class reasons))
+        (when (and executable
+                   (string= executable "ssh")
+                   (not (%segment-has-argv-flag-p command "-T")))
+          (push :interactive-ssh-session reasons))))
+    (when wrappers
+      (dolist (wrapper wrappers)
+        (when (eq (getf wrapper :type) :shell)
+          (let* ((normalized-script (getf wrapper :normalized-script))
+                 (nested (and normalized-script
+                              (canonicalize-permission-command normalized-script)))
+                 (nested-reasons (and nested
+                                      (%command-danger-reason-codes nested patterns))))
+            (when nested-reasons
+              (dolist (reason nested-reasons)
+                (push reason reasons))
+              (push :shell-wrapper-expanded reasons)))))
+      (when (and reasons
+                 (find :env wrappers
+                       :key (lambda (wrapper) (getf wrapper :type))
+                       :test #'eq))
+        (push :env-wrapper-expanded reasons)))
+    (nreverse (remove-duplicates reasons :test #'eq))))
+
 (defun canonicalize-permission-command (command)
   (let ((raw (%command-raw-text command)))
     (when raw
@@ -418,16 +563,47 @@
                         (push shell-wrapper wrappers)))
                     (unless changed-p
                       (return))))
-            (let ((normalized-wrappers (nreverse wrappers)))
-              (make-command-canonical-form
-               :raw raw
-               :normalized normalized
-               :policy-key (%command-policy-key primary-argv normalized-wrappers)
-               :executable (first primary-argv)
-               :argv primary-argv
-               :operators operators
-               :wrappers normalized-wrappers
-               :commands commands))))))))
+            (let* ((normalized-wrappers (nreverse wrappers))
+                   (operator-metadata (%operator-metadata operators))
+                   (canonical-signature (%command-canonical-signature primary-argv
+                                                                      normalized-wrappers
+                                                                      operators))
+                   (canonical
+                     (make-command-canonical-form
+                      :raw raw
+                      :normalized normalized
+                      :policy-key (%command-policy-key primary-argv normalized-wrappers)
+                      :executable (first primary-argv)
+                      :argv primary-argv
+                      :operators operators
+                      :wrappers normalized-wrappers
+                      :commands commands
+                      :ast (%tokens->ast tokens)
+                      :operator-metadata operator-metadata
+                      :canonical-signature canonical-signature)))
+              (setf (command-canonical-form-dangerous-reason-codes canonical)
+                    (%command-danger-reason-codes canonical))
+              (setf *last-command-canonicalization-trace*
+                    (list :raw (command-canonical-form-raw canonical)
+                          :normalized (command-canonical-form-normalized canonical)
+                          :policy-key (command-canonical-form-policy-key canonical)
+                          :canonical-signature canonical-signature
+                          :operator-metadata operator-metadata
+                          :wrappers (command-canonical-form-wrappers canonical)
+                          :operators (command-canonical-form-operators canonical)
+                          :dangerous-reason-codes
+                          (command-canonical-form-dangerous-reason-codes canonical)))
+              canonical)))))))
+
+(defun command-canonicalization-trace ()
+  *last-command-canonicalization-trace*)
+
+(defun %permission-command-cache-key (tool canonical)
+  (list :tool (%tool-name tool)
+        :canonical-signature (and canonical
+                                  (command-canonical-form-canonical-signature canonical))
+        :operator-metadata (and canonical
+                                (command-canonical-form-operator-metadata canonical))))
 
 (defun %normalize-slashes (string)
   (cl-ppcre:regex-replace-all "/+" (substitute #\/ #\\ string) "/"))
@@ -598,10 +774,19 @@
           (t
            prefix))))))
 
+(defun %normalize-drive-letter (path-text)
+  (if (and (stringp path-text)
+           (>= (length path-text) 2)
+           (alpha-char-p (char path-text 0))
+           (char= (char path-text 1) #\:))
+      (concatenate 'string (string (char-downcase (char path-text 0)))
+                   (subseq path-text 1))
+      path-text))
+
 (defun %normalize-path (path &key (resolve-symlinks-p t))
   (let ((raw (%path-string path)))
     (when raw
-      (let* ((trimmed (%trim-path-whitespace raw)))
+      (let* ((trimmed (%normalize-drive-letter (%trim-path-whitespace raw))))
         (when (> (length trimmed) 0)
           (let* ((slash-normalized (%normalize-slashes trimmed))
                  (absolute (%ensure-absolute-path slash-normalized))
@@ -618,7 +803,7 @@
 (defun %normalize-pattern-path (pattern)
   (let ((raw (%path-string pattern)))
     (when raw
-      (let* ((trimmed (%trim-path-whitespace raw)))
+      (let* ((trimmed (%normalize-drive-letter (%trim-path-whitespace raw))))
         (when (> (length trimmed) 0)
           (let ((slash-normalized (%normalize-slashes trimmed)))
             (if (%contains-glob-char-p slash-normalized)
@@ -861,7 +1046,7 @@
       (string-trim '(#\Space #\Tab #\Newline #\Return) value)
       ""))
 
-(defun %normalize-command (command)
+(defun %normalize-permission-command (command)
   (let* ((raw (%command-string command))
          (trimmed (%trim-command-whitespace raw)))
     (when (> (length trimmed) 0)
@@ -882,7 +1067,7 @@
     (t nil)))
 
 (defun %command-pattern-kind (pattern)
-  (let* ((normalized (%normalize-command pattern))
+  (let* ((normalized (%normalize-permission-command pattern))
          (regex-body (and normalized (%command-regex-body normalized)))
          (length* (and normalized (length normalized))))
     (cond
@@ -980,7 +1165,7 @@
       (write-char #\$ stream))))
 
 (defun %command-glob->regex (pattern)
-  (let* ((source (or (%normalize-command pattern) ""))
+  (let* ((source (or (%normalize-permission-command pattern) ""))
          (len (length source)))
     (with-output-to-string (stream)
       (write-char #\^ stream)
@@ -1043,8 +1228,8 @@
 (defun %command-matches-pattern-p (command pattern &key (command-normalized-p nil))
   (let* ((candidate (if command-normalized-p
                         command
-                        (%normalize-command command)))
-         (normalized-pattern (%normalize-command pattern))
+                        (%normalize-permission-command command)))
+         (normalized-pattern (%normalize-permission-command pattern))
          (kind (%command-pattern-kind normalized-pattern)))
     (and candidate
          (case kind
@@ -1121,11 +1306,58 @@
      t)
     (t nil)))
 
+(defun %permission-rule-id (rule)
+  (or (permission-rule-id rule)
+      (setf (permission-rule-id rule)
+            (format nil "~A-~8,'0X"
+                    (string-downcase
+                     (symbol-name (or (permission-rule-source rule) :unknown)))
+                    (ldb (byte 32 0)
+                         (sxhash
+                          (list (permission-rule-effect rule)
+                                (permission-rule-path rule)
+                                (permission-rule-command rule)
+                                (permission-rule-tool rule)
+                                (permission-rule-source rule))))))))
+
+(defun %permission-cache-note-invalidation (reason)
+  (incf *permission-cache-invalidations*)
+  (push (list :timestamp (get-universal-time)
+              :reason reason
+              :rules-version *permission-rules-version*)
+        *permission-cache-invalidation-events*)
+  (when (> (length *permission-cache-invalidation-events*)
+           *permission-cache-invalidation-events-limit*)
+    (setf *permission-cache-invalidation-events*
+          (subseq *permission-cache-invalidation-events*
+                  0
+                  *permission-cache-invalidation-events-limit*))))
+
+(defun clear-permission-cache (&key (reason :manual))
+  (clrhash *permission-evaluation-cache*)
+  (%permission-cache-note-invalidation reason)
+  t)
+
+(defun permission-cache-metrics ()
+  (list :hits *permission-cache-hits*
+        :misses *permission-cache-misses*
+        :invalidations *permission-cache-invalidations*
+        :rules-version *permission-rules-version*
+        :entries (hash-table-count *permission-evaluation-cache*)))
+
+(defun permission-cache-invalidation-events (&key (limit 20))
+  (subseq *permission-cache-invalidation-events*
+          0
+          (min (max 0 limit)
+               (length *permission-cache-invalidation-events*))))
+
 (defun clear-permission-rules ()
-  (setf *permission-rules* nil))
+  (setf *permission-rules* nil)
+  (incf *permission-rules-version*)
+  (clear-permission-cache :reason :rules-cleared))
 
 (defun %validate-command-pattern (command-pattern)
-  (let ((normalized (%normalize-command command-pattern)))
+  (let ((normalized (%normalize-permission-command command-pattern)))
     (when normalized
       (let ((kind (%command-pattern-kind normalized)))
         (when (eq kind :regex)
@@ -1150,39 +1382,85 @@
                                     :command (%validate-command-pattern command)
                                     :tool tool
                                     :source source)))
+    (%permission-rule-id rule)
     (push rule *permission-rules*)
+    (incf *permission-rules-version*)
+    (clear-permission-cache :reason :rule-added)
     rule))
 
-(defun evaluate-path-permission (&key tool path (rules *permission-rules*))
-  (let ((best nil)
-        (normalized-path (%normalize-path path)))
-    (when normalized-path
-      (dolist (rule rules)
-        (when (%rule-matches-p rule tool normalized-path nil)
-          (when (%better-rule-p rule best)
-            (setf best rule)))))
-    (and best (permission-rule-effect best))))
+(defun %permission-cache-key (phase tool path command rules)
+  (when (eq rules *permission-rules*)
+    (list :phase phase
+          :tool (%tool-name tool)
+          :path path
+          :command command
+          :rules-version *permission-rules-version*)))
 
-(defun evaluate-command-permission (&key tool command path (rules *permission-rules*))
-  (let ((best nil)
-        (normalized-command (%normalize-command command))
+(defun %rule-trace-entry (phase rule)
+  (when rule
+    (list :phase phase
+          :matched-rule-id (%permission-rule-id rule)
+          :specificity (%specificity-score rule)
+          :effect (permission-rule-effect rule)
+          :source (permission-rule-source rule)
+          :tool (%tool-name (permission-rule-tool rule))
+          :path (permission-rule-path rule)
+          :command (permission-rule-command rule))))
+
+(defun %evaluate-rule-phase (phase tool path command rules)
+  (let* ((cache-key (%permission-cache-key phase tool path command rules))
+         (cached (and cache-key
+                      (multiple-value-list
+                       (gethash cache-key *permission-evaluation-cache*)))))
+    (when (and cached (second cached))
+      (incf *permission-cache-hits*)
+      (let* ((entry (first cached))
+             (rule (getf entry :rule))
+             (trace (append (getf entry :trace)
+                            (list :cache :hit))))
+        (return-from %evaluate-rule-phase
+          (values (and rule (permission-rule-effect rule))
+                  trace
+                  rule
+                  :hit))))
+    (incf *permission-cache-misses*)
+    (let ((best nil))
+      (when (or path command)
+        (dolist (rule rules)
+          (when (%rule-matches-p rule tool path command)
+            (when (%better-rule-p rule best)
+              (setf best rule)))))
+      (let ((trace (append (%rule-trace-entry phase best)
+                           (list :cache :miss))))
+        (when cache-key
+          (setf (gethash cache-key *permission-evaluation-cache*)
+                (list :rule best :trace (%rule-trace-entry phase best))))
+        (values (and best (permission-rule-effect best))
+                trace
+                best
+                :miss)))))
+
+(defun evaluate-path-permission (&key tool path (rules *permission-rules*) (with-trace-p nil))
+  (let ((normalized-path (%normalize-path path)))
+    (multiple-value-bind (decision trace)
+        (%evaluate-rule-phase :path tool normalized-path nil rules)
+      (if with-trace-p
+          (values decision trace)
+          decision))))
+
+(defun evaluate-command-permission (&key tool command path (rules *permission-rules*)
+                                      (with-trace-p nil))
+  (let ((normalized-command (%normalize-permission-command command))
         (normalized-path (and path (%normalize-path path))))
-    (when normalized-command
-      (dolist (rule rules)
-        (when (%rule-matches-p rule tool normalized-path normalized-command)
-          (when (%better-rule-p rule best)
-            (setf best rule)))))
-    (and best (permission-rule-effect best))))
+    (multiple-value-bind (decision trace)
+        (%evaluate-rule-phase :command tool normalized-path normalized-command rules)
+      (if with-trace-p
+          (values decision trace)
+          decision))))
 
 (defun dangerous-command-p (command &optional (patterns *dangerous-command-patterns*))
-  (let* ((canonical (if (typep command 'command-canonical-form)
-                        command
-                        (canonicalize-permission-command command)))
-         (command-string (or (and canonical (command-canonical-form-normalized canonical))
-                             (%command-string command))))
-    (and command-string
-         (loop for pattern in patterns
-               thereis (cl-ppcre:scan pattern command-string)))))
+  (let ((reasons (%command-danger-reason-codes command patterns)))
+    (and reasons (plusp (length reasons)))))
 
 (defun %normalize-approval-policy (value)
   (let ((normalized
@@ -1330,48 +1608,193 @@
 (defun %plan-mode-enabled-p ()
   (not (null (ignore-errors (config-value :plan-mode (current-config))))))
 
+(defun plan-mode-mutating-tools-blocked-p (&optional
+                                             (config (ignore-errors (current-config)))
+                                             plan-mode-enabled-override)
+  (let ((plan-mode-enabled-p
+          (if (null plan-mode-enabled-override)
+              (and (config-p config)
+                   (not (null (config-value :plan-mode config))))
+              (not (null plan-mode-enabled-override)))))
+    (and plan-mode-enabled-p
+         (not (null *plan-mode-blocked-tool-names*))
+         (not (null *shell-tool-names*)))))
+
 (defun %plan-mode-blocked-p (tool command)
   (let ((tool-name (%tool-name tool)))
-    (and (%plan-mode-enabled-p)
+    (and (plan-mode-mutating-tools-blocked-p)
          (or (%shell-tool-p tool command)
              (member tool-name *plan-mode-blocked-tool-names* :test #'string=)))))
 
+(defun %plan-mode-readonly-allowed-p (tool)
+  (let ((tool-name (%tool-name tool)))
+    (and (%plan-mode-enabled-p)
+         (member tool-name
+                 *plan-mode-readonly-allowed-tool-names*
+                 :test #'string=))))
+
+(defun %plan-mode-actionable-reason ()
+  "Plan mode is read-only. Review the captured plan, approve allowed steps with /plan approve, then run /execute to re-enable mutating tools.")
+
+(defun %plan-mode-block-reason (tool-name command)
+  (let ((normalized-tool (or tool-name "unknown-tool")))
+    (if (and (stringp command) (> (length command) 0))
+        (format nil "Plan mode blocked mutating tool ~A for command ~S."
+                normalized-tool
+                command)
+        (format nil "Plan mode blocked mutating tool ~A."
+                normalized-tool))))
+
+(defun clear-permission-decision-history ()
+  (setf *permission-decision-history* '()
+        *permission-decision-sequence* 0
+        *last-permission-decision-trace* nil)
+  t)
+
+(defun permission-decision-history (&key (limit 20))
+  (subseq *permission-decision-history*
+          0
+          (min (max 0 limit) (length *permission-decision-history*))))
+
+(defun %next-permission-decision-id ()
+  (incf *permission-decision-sequence*)
+  (format nil "perm-~D" *permission-decision-sequence*))
+
+(defun %record-permission-decision (trace)
+  (setf *last-permission-decision-trace* trace
+        *permission-decision-history* (cons trace *permission-decision-history*))
+  (when (> (length *permission-decision-history*) *permission-decision-history-limit*)
+    (setf *permission-decision-history*
+          (subseq *permission-decision-history* 0 *permission-decision-history-limit*)))
+  trace)
+
+(defun last-permission-decision-trace ()
+  *last-permission-decision-trace*)
+
 (defun check-permission (&key tool path command dangerous-p permission-mode approval-policy
-                           (rules *permission-rules*))
+                           (rules *permission-rules*)
+                           (record-history-p t))
   (let* ((tool-name (%tool-name tool))
          (mode (%effective-permission-mode permission-mode approval-policy))
          (normalized-path (%normalize-path path))
          (canonical-command (canonicalize-permission-command command))
+         (command-cache-key (%permission-command-cache-key tool canonical-command))
          (policy-command-text
-           (or (and canonical-command (command-canonical-form-policy-key canonical-command))
-               (and canonical-command (command-canonical-form-normalized canonical-command))
-               (%command-string command)))
+           (let* ((policy-key (and canonical-command
+                                   (command-canonical-form-policy-key canonical-command)))
+                  (normalized (and canonical-command
+                                   (command-canonical-form-normalized canonical-command)))
+                  (separator-p (and normalized
+                                    (or (search "|" normalized)
+                                        (search ";" normalized)
+                                        (search "&&" normalized)))))
+             (cond
+               (separator-p normalized)
+               (policy-key policy-key)
+               (normalized normalized)
+               (t (%command-string command)))))
          (mcp-server-name (%mcp-tool-server-name tool-name))
          (mcp-decision (and mcp-server-name
                             (or (%mcp-server-config-decision mcp-server-name)
                                 :prompt)))
-         (path-decision (and normalized-path
-                             (evaluate-path-permission :tool tool
-                                                       :path normalized-path
-                                                       :rules rules)))
-         (command-decision (and policy-command-text
-                                (evaluate-command-permission :tool tool
-                                                             :path normalized-path
-                                                             :command policy-command-text
-                                                             :rules rules)))
-         (decision (cond
-                     ((%plan-mode-blocked-p tool policy-command-text) :deny)
+         (path-decision nil)
+         (path-trace nil)
+         (command-decision nil)
+         (command-trace nil)
+         (plan-mode-blocked-p (%plan-mode-blocked-p tool policy-command-text))
+         (decision-source nil)
+         (decision-reason nil)
+         (actionable-reason nil)
+         (decision-reason-code nil)
+         (decision nil))
+    (multiple-value-setq (path-decision path-trace)
+      (if normalized-path
+          (evaluate-path-permission :tool tool
+                                    :path normalized-path
+                                    :rules rules
+                                    :with-trace-p t)
+          (values nil nil)))
+    (multiple-value-setq (command-decision command-trace)
+      (if policy-command-text
+          (evaluate-command-permission :tool tool
+                                       :path normalized-path
+                                       :command policy-command-text
+                                       :rules rules
+                                       :with-trace-p t)
+          (values nil nil)))
+    (setf decision
+          (cond
+                     (plan-mode-blocked-p :deny)
                      ((or (eq path-decision :deny)
                           (eq command-decision :deny))
                       :deny)
+                     ((%plan-mode-readonly-allowed-p tool) :allow)
                      ((and path (%path-memory-allows-p tool path)) :allow)
                      ((eq command-decision :allow) :allow)
                      ((eq path-decision :allow) :allow)
                      (mcp-decision mcp-decision)
-                     (t (%mode-default-decision mode tool normalized-path policy-command-text)))))
-    (if (and (eq decision :allow)
-             (not (eq mode :yolo))
-             (or dangerous-p
-                 (dangerous-command-p canonical-command)))
-        :prompt
-        decision)))
+                     (t (%mode-default-decision mode tool normalized-path policy-command-text))))
+    (when plan-mode-blocked-p
+      (setf decision-source :plan-mode
+            decision-reason-code :plan-mode-mutating-command-blocked
+            decision-reason (%plan-mode-block-reason tool-name policy-command-text)
+            actionable-reason (%plan-mode-actionable-reason)))
+    (when *last-command-canonicalization-trace*
+      (setf *last-command-canonicalization-trace*
+            (append *last-command-canonicalization-trace*
+                    (list :command-cache-key command-cache-key))))
+    (let* ((dangerous-reasons (or (and dangerous-p '(:explicit-dangerous-flag))
+                                  (and canonical-command
+                                       (%command-danger-reason-codes canonical-command))))
+           (dangerous-escalation-p (and (eq decision :allow)
+                                        (not (eq mode :yolo))
+                                        dangerous-reasons))
+           (final-decision (if dangerous-escalation-p :prompt decision))
+           (trace
+             (list :decision-id (%next-permission-decision-id)
+                   :timestamp (get-universal-time)
+                   :tool tool-name
+                   :path normalized-path
+                   :command policy-command-text
+                   :permission-mode mode
+                   :decision final-decision
+                   :pre-escalation-decision decision
+                   :decision-source decision-source
+                   :reason-code decision-reason-code
+                   :reason decision-reason
+                   :actionable-reason actionable-reason
+                   :dangerous-escalation-p dangerous-escalation-p
+                   :dangerous-reason-codes dangerous-reasons
+                   :path-decision path-decision
+                   :command-decision command-decision
+                   :mcp-decision mcp-decision
+                   :evaluation-trace (remove nil (list path-trace command-trace)))))
+      (setf *last-permission-decision-trace* trace)
+      (when record-history-p
+        (%record-permission-decision trace))
+      final-decision)))
+
+(defun explain-permission-decision (&key decision-id (rules *permission-rules*))
+  (let* ((historical
+           (cond
+             ((null decision-id) (first *permission-decision-history*))
+             ((string-equal decision-id "latest") (first *permission-decision-history*))
+             (t (find decision-id
+                      *permission-decision-history*
+                      :key (lambda (entry) (getf entry :decision-id))
+                      :test #'string=)))))
+    (unless historical
+      (return-from explain-permission-decision nil))
+    (let* ((replay-decision
+             (check-permission :tool (getf historical :tool)
+                               :path (getf historical :path)
+                               :command (getf historical :command)
+                               :permission-mode (getf historical :permission-mode)
+                               :rules rules
+                               :record-history-p nil))
+           (replay-trace *last-permission-decision-trace*))
+      (list :decision-id (getf historical :decision-id)
+            :historical historical
+            :replay (and replay-trace
+                         (append replay-trace
+                                 (list :decision replay-decision)))))))

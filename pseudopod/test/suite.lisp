@@ -127,14 +127,16 @@
 
 ;;; ---- Stub macro for safe function rebinding ----
 
-(defmacro with-stub-dex ((&key post get delete) &body body)
+(defmacro with-stub-dex ((&key post get delete request) &body body)
   "Safely rebind dexador functions for testing, restoring originals on exit."
   (let ((orig-post (gensym "ORIG-POST"))
         (orig-get (gensym "ORIG-GET"))
-        (orig-delete (gensym "ORIG-DELETE")))
+        (orig-delete (gensym "ORIG-DELETE"))
+        (orig-request (gensym "ORIG-REQUEST")))
     `(let ((,orig-post (symbol-function 'dex:post))
            (,orig-get (symbol-function 'dex:get))
-           (,orig-delete (symbol-function 'dex:delete)))
+           (,orig-delete (symbol-function 'dex:delete))
+           (,orig-request (symbol-function 'dex:request)))
        (unwind-protect
            (progn
              ,@(when post
@@ -143,10 +145,13 @@
                  `((setf (symbol-function 'dex:get) ,get)))
              ,@(when delete
                  `((setf (symbol-function 'dex:delete) ,delete)))
+             ,@(when request
+                 `((setf (symbol-function 'dex:request) ,request)))
              ,@body)
          (setf (symbol-function 'dex:post) ,orig-post)
          (setf (symbol-function 'dex:get) ,orig-get)
-         (setf (symbol-function 'dex:delete) ,orig-delete)))))
+         (setf (symbol-function 'dex:delete) ,orig-delete)
+         (setf (symbol-function 'dex:request) ,orig-request)))))
 
 ;;; ---- I14 Tests: Auth and Error Handling ----
 
@@ -317,6 +322,57 @@
         (is-true (pseudopod:step-result-max-steps-reached result))
         (is (= 2 (pseudopod:step-result-steps result)))
         (is-false (pseudopod:step-result-final-message result))))))
+
+(test step-loop-on-tool-call-can-handle-dispatch
+  (with-stub-dex
+      (:post (lambda (url &rest args &key content want-stream &allow-other-keys)
+               (declare (ignore url args content want-stream))
+               (let ((choice (make-hash-table :test #'equal))
+                     (assistant (make-hash-table :test #'equal))
+                     (response (make-hash-table :test #'equal))
+                     (tool-call (make-hash-table :test #'equal))
+                     (function-body (make-hash-table :test #'equal)))
+                 (setf (gethash "role" assistant) "assistant")
+                 (setf (gethash "content" assistant) "")
+                 (setf (gethash "id" tool-call) "call-handled")
+                 (setf (gethash "type" tool-call) "function")
+                 (setf (gethash "name" function-body) "get-current-time")
+                 (setf (gethash "arguments" function-body) "{}")
+                 (setf (gethash "function" tool-call) function-body)
+                 (setf (gethash "tool_calls" assistant) (vector tool-call))
+                 (setf (gethash "message" choice) assistant)
+                 (setf (gethash "choices" response) (vector choice))
+                 (setf (gethash "id" response) "resp-on-tool-call-handled")
+                 (values (jonathan:to-json response) 200))))
+    (let* ((client (pseudopod:make-client :api-key "stub"))
+           (toolset (pseudopod:make-toolset))
+           (registry-call-count 0)
+           (callback-call-count 0))
+      (pseudopod:register-tool-function
+       toolset
+       :name "get-current-time"
+       :description "Registry function should not run for handled callbacks."
+       :parameters (make-tool-schema)
+       :fn (lambda (arguments tool-call)
+             (declare (ignore arguments tool-call))
+             (incf registry-call-count)
+             "registry-output"))
+      (let* ((result (pseudopod:step
+                      client
+                      :user-prompt "Invoke tool via callback handling."
+                      :toolset toolset
+                      :max-steps 1
+                      :on-tool-call
+                      (lambda (tool-call)
+                        (declare (ignore tool-call))
+                        (incf callback-call-count)
+                        (values t "callback-output"))))
+             (tool-results (pseudopod:step-result-tool-results result)))
+        (is (= callback-call-count 1))
+        (is (= registry-call-count 0))
+        (is (= 1 (length tool-results)))
+        (is (string= "callback-output"
+                     (or (getf (first tool-results) :output) "")))))))
 
 ;;; ---- I17 Tests: Streaming Tool Call Support ----
 

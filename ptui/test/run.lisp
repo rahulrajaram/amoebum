@@ -229,6 +229,43 @@
    :rss-kb rss-kb
    :command command))
 
+(defclass engine-loop-test-backend (ptui.backend.protocol:terminal-backend)
+  ((cols :initarg :cols :reader engine-loop-test-backend-cols)
+   (rows :initarg :rows :reader engine-loop-test-backend-rows)
+   (pending-events :initform '() :accessor engine-loop-test-backend-pending-events)))
+
+(defun make-engine-loop-test-backend (&key (cols 20) (rows 5))
+  (make-instance 'engine-loop-test-backend
+                 :cols cols
+                 :rows rows
+                 :caps (ptui.term.caps:probe-terminal-caps)))
+
+(defun engine-loop-test-backend-inject-events (backend events)
+  (setf (engine-loop-test-backend-pending-events backend)
+        (append (engine-loop-test-backend-pending-events backend)
+                (if (listp events) events (list events)))))
+
+(defmethod ptui.backend.protocol:backend-init ((backend engine-loop-test-backend))
+  (declare (ignore backend))
+  nil)
+
+(defmethod ptui.backend.protocol:backend-shutdown ((backend engine-loop-test-backend))
+  (declare (ignore backend))
+  nil)
+
+(defmethod ptui.backend.protocol:backend-poll-events ((backend engine-loop-test-backend))
+  (let ((events (engine-loop-test-backend-pending-events backend)))
+    (setf (engine-loop-test-backend-pending-events backend) '())
+    events))
+
+(defmethod ptui.backend.protocol:backend-size ((backend engine-loop-test-backend))
+  (ptui.core.types:make-size (engine-loop-test-backend-cols backend)
+                             (engine-loop-test-backend-rows backend)))
+
+(defmethod ptui.backend.protocol:backend-commit ((backend engine-loop-test-backend) draw-ops)
+  (declare (ignore backend))
+  (length draw-ops))
+
 (defun run-all-tests ()
   (let ((passed 0)
         (failed 0))
@@ -835,6 +872,547 @@
     (assert-true (= (ptui.layout:layout-size-height size) 4)
                  "prompt-box height should be max-rows+border, got ~D"
                  (ptui.layout:layout-size-height size))))
+
+(deftest widgets-terminal-pane-api-boundary
+  (multiple-value-bind (widgets-sym widgets-status)
+      (find-symbol "MAKE-TERMINAL-PANE-WIDGET" :ptui.widgets.core)
+    (assert-true (null widgets-sym)
+                 "terminal-pane constructor must not exist in ptui.widgets.core, got ~S/~S"
+                 widgets-sym widgets-status))
+  (multiple-value-bind (components-sym components-status)
+      (find-symbol "MAKE-TERMINAL-PANE-WIDGET" :ptui.components.terminal-pane)
+    (assert-true (and components-sym (eql components-status :external))
+                 "terminal-pane constructor should be exported by ptui.components.terminal-pane, got ~S/~S"
+                 components-sym components-status)
+    (assert-true (fboundp components-sym)
+                 "terminal-pane constructor symbol should be fboundp: ~S"
+                 components-sym)))
+
+(deftest widgets-plan-presentation-api-boundary
+  (multiple-value-bind (widgets-sym widgets-status)
+      (find-symbol "MAKE-PLAN-MODE-PRESENTATION-WIDGET" :ptui.widgets.core)
+    (assert-true (null widgets-sym)
+                 "plan-presentation constructor must not exist in ptui.widgets.core, got ~S/~S"
+                 widgets-sym widgets-status))
+  (multiple-value-bind (components-sym components-status)
+      (find-symbol "MAKE-PLAN-MODE-PRESENTATION-WIDGET" :ptui.components.plan-presentation)
+    (assert-true (and components-sym (eql components-status :external))
+                 "plan-presentation constructor should be exported by ptui.components.plan-presentation, got ~S/~S"
+                 components-sym components-status)
+    (assert-true (fboundp components-sym)
+                 "plan-presentation constructor symbol should be fboundp: ~S"
+                 components-sym)))
+
+(deftest widgets-plan-presentation-widget-composition
+  (let* ((widget
+           (ptui.components.plan-presentation:make-plan-mode-presentation-widget
+            :steps (list
+                    (ptui.components.plan-presentation:make-plan-presentation-step
+                     :index 1
+                     :description "Inspect chat layout."
+                     :approved-p nil
+                     :file-paths '("amoebum/src/ui/chat.lisp")
+                     :rationale-snippet "Inspect current chat composition and event flow."
+                     :risk :medium
+                     :status :pending)
+                    (ptui.components.plan-presentation:make-plan-presentation-step
+                     :index 2
+                     :description "Validate terminal pane."
+                     :approved-p t
+                     :file-paths '("ptui/src/components/terminal-pane.lisp")
+                     :rationale-snippet "Validate terminal pane output layout."
+                     :risk :high
+                     :status :approved))
+            :selected-step-index 2
+            :output-line-entries
+            '((:text "Plan mode active.")
+              (:text "LIVE> [step 2 blocked] timeout exited with code 124."
+               :severity :error
+               :style :error
+               :step-index 2
+               :recovery-actions
+               ("Retry step 2 from /execute after fixing command inputs."
+                "Review dependencies for step 2 in /plan review.")))
+            :context-lines '("Referenced files: amoebum/src/ui/chat.lisp")))
+         (size (ptui.widgets.core:widget-measure widget)))
+    (assert-true (> (ptui.layout:layout-size-width size) 0)
+                 "plan-presentation widget width should be > 0")
+    (assert-true (> (ptui.layout:layout-size-height size) 0)
+                 "plan-presentation widget height should be > 0")
+    (labels ((collect-text-lines (element)
+               (let ((children (ptui.ui.elements:ui-element-children element)))
+                 (append
+                  (if (eq (ptui.ui.elements:ui-element-type element) :text)
+                      (list (getf (ptui.ui.elements:ui-element-props element) :text ""))
+                      '())
+                  (loop for child in children
+                        append (collect-text-lines child)))))
+             (find-node-by-id (element target-id)
+               (when element
+                 (if (equal (or (ptui.ui.elements:ui-element-id element)
+                                (ptui.ui.elements:ui-element-key element))
+                            target-id)
+                     element
+                     (loop for child in (ptui.ui.elements:ui-element-children element)
+                           for match = (find-node-by-id child target-id)
+                           when match do (return match))))))
+      (let* ((split-view (find-node-by-id widget '(:plan-presentation :split-view)))
+             (split-props (and split-view (ptui.ui.elements:ui-element-props split-view)))
+             (right-column (find-node-by-id widget '(:plan-presentation :right-column)))
+             (right-props (and right-column (ptui.ui.elements:ui-element-props right-column))))
+        (assert-true split-view
+                     "expected split-view container to be present in plan-presentation widget")
+        (assert-true (eq (getf split-props :direction) :row)
+                     "expected split-view direction :row, got ~S"
+                     (getf split-props :direction))
+        (assert-true right-column
+                     "expected right-column container to be present in plan-presentation widget")
+        (assert-true (eq (getf right-props :direction) :column)
+                     "expected right-column direction :column, got ~S"
+                     (getf right-props :direction)))
+      (let ((lines (collect-text-lines widget)))
+        (assert-true (member "Plan Mode Workspace" lines :test #'string=)
+                     "expected root plan presentation heading, got ~S"
+                     lines)
+        (assert-true (member "Plan Steps" lines :test #'string=)
+                     "expected plan steps panel heading, got ~S"
+                     lines)
+        (assert-true (some (lambda (line)
+                             (search "Plan Output" line :test #'char-equal))
+                           lines)
+                     "expected terminal panel heading, got ~S"
+                     lines)
+        (assert-true (member "Context Inspector" lines :test #'string=)
+                     "expected context panel heading, got ~S"
+                     lines)
+        (assert-true (member "Selected step: 2" lines :test #'string=)
+                     "expected selected-step header in context panel, got ~S"
+                     lines)
+        (assert-true (member "Rationale snippet: Validate terminal pane output layout."
+                             lines
+                             :test #'string=)
+                     "expected selected-step rationale snippet in context panel, got ~S"
+                     lines)
+        (assert-true (member "  - ptui/src/components/terminal-pane.lisp"
+                             lines
+                             :test #'string=)
+                     "expected selected-step file reference in context panel, got ~S"
+                     lines)
+        (assert-true (some (lambda (line)
+                             (search "Inspect chat layout." line :test #'char-equal))
+                           lines)
+                     "expected rendered step description in plan steps panel, got ~S"
+                     lines)
+        (assert-true (member "Failure drill-down: step 2" lines :test #'string=)
+                     "expected failure drill-down heading in context panel, got ~S"
+                     lines)
+        (assert-true (some (lambda (line)
+                             (search "Originating step: 2." line :test #'char-equal))
+                           lines)
+                     "expected failure drill-down to map back to step 2, got ~S"
+                     lines)
+        (assert-true (member "Suggested recovery actions:" lines :test #'string=)
+                     "expected failure drill-down to render suggested recovery actions, got ~S"
+                     lines)))))
+
+(deftest widgets-terminal-pane-buffering-and-scroll-contract
+  (let* ((state (ptui.components.terminal-pane:make-terminal-pane-state
+                 :title "build log"
+                 :max-lines 3)))
+    (ptui.components.terminal-pane:terminal-pane-append-output
+     state
+     (concatenate 'string "one" (string #\Newline)
+                  "two" (string #\Newline)
+                  "partial"))
+    (assert-true (equal (ptui.components.terminal-pane:terminal-pane-lines state)
+                        '("one" "two"))
+                 "expected completed lines after first append, got ~S"
+                 (ptui.components.terminal-pane:terminal-pane-lines state))
+    (assert-true (string= (ptui.components.terminal-pane:terminal-pane-pending-output state)
+                          "partial")
+                 "expected trailing partial output to be retained")
+    (ptui.components.terminal-pane:terminal-pane-append-output
+     state
+     (concatenate 'string "-line" (string #\Newline)
+                  "three" (string #\Newline)
+                  "four" (string #\Newline)))
+    (assert-true (equal (ptui.components.terminal-pane:terminal-pane-lines state)
+                        '("partial-line" "three" "four"))
+                 "expected max-lines trim to keep newest entries, got ~S"
+                 (ptui.components.terminal-pane:terminal-pane-lines state))
+    (assert-true (string= (ptui.components.terminal-pane:terminal-pane-pending-output state) "")
+                 "expected no pending partial output after newline-terminated append")
+    (assert-true (equal (ptui.components.terminal-pane:terminal-pane-visible-lines
+                         state
+                         :viewport-height 2)
+                        '("three" "four"))
+                 "expected viewport tail when scroll-offset=0")
+    (ptui.components.terminal-pane:terminal-pane-handle-event
+     state
+     (ptui.core.events:make-key-event :up)
+     :viewport-height 2)
+    (assert-true (= (ptui.components.terminal-pane:terminal-pane-scroll-offset state) 1)
+                 "expected :up event to move one row into scrollback")
+    (assert-true (equal (ptui.components.terminal-pane:terminal-pane-visible-lines
+                         state
+                         :viewport-height 2)
+                        '("partial-line" "three"))
+                 "expected scrollback window after one upward scroll")
+    (ptui.components.terminal-pane:terminal-pane-handle-event
+     state
+     (ptui.core.events:make-key-event :end)
+     :viewport-height 2)
+    (assert-true (= (ptui.components.terminal-pane:terminal-pane-scroll-offset state) 0)
+                 "expected :end event to jump back to live tail")))
+
+(deftest widgets-terminal-pane-widget-composition
+  (let* ((state (ptui.components.terminal-pane:make-terminal-pane-state
+                 :title "terminal"
+                 :lines '("alpha" "beta")
+                 :pending-output "gamma"))
+         (widget (ptui.components.terminal-pane:make-terminal-pane-widget
+                  state
+                  :id :terminal-pane
+                  :viewport-height 3))
+         (size (ptui.widgets.core:widget-measure widget)))
+    (assert-true (> (ptui.layout:layout-size-width size) 0)
+                 "terminal-pane widget width should be > 0")
+    (assert-true (>= (ptui.layout:layout-size-height size) 3)
+                 "terminal-pane widget height should include status + viewport rows")))
+
+(deftest widgets-terminal-pane-banner-lock-persistence
+  (let* ((state (ptui.components.terminal-pane:make-terminal-pane-state
+                 :title "terminal"
+                 :banner-text "PLAN MODE -- read-only"
+                 :lock-indicator-p t)))
+    (ptui.components.terminal-pane:terminal-pane-append-output
+     state
+     (concatenate 'string "alpha" (string #\Newline)))
+    (let* ((widget (ptui.components.terminal-pane:make-terminal-pane-widget
+                    state
+                    :id :terminal-pane
+                    :viewport-height 2))
+           (content (first (ptui.ui.elements:ui-element-children widget)))
+           (rows (ptui.ui.elements:ui-element-children content))
+           (status-row (first rows))
+           (status-text (getf (ptui.ui.elements:ui-element-props status-row) :text "")))
+      (assert-true (search "PLAN MODE -- read-only" status-text :test #'char=)
+                   "expected status row to preserve banner text, got ~S"
+                   status-text)
+      (assert-true (search "[LOCK]" status-text :test #'char=)
+                   "expected status row to include lock indicator, got ~S"
+                   status-text))
+    (ptui.components.terminal-pane:terminal-pane-set-banner
+     state
+     :text nil
+     :lock-indicator-p nil)
+    (let* ((widget (ptui.components.terminal-pane:make-terminal-pane-widget
+                    state
+                    :id :terminal-pane
+                    :viewport-height 2))
+           (content (first (ptui.ui.elements:ui-element-children widget)))
+           (rows (ptui.ui.elements:ui-element-children content))
+           (status-row (first rows))
+           (status-text (getf (ptui.ui.elements:ui-element-props status-row) :text "")))
+      (assert-true (null (search "[LOCK]" status-text :test #'char=))
+                   "expected status row lock indicator to clear, got ~S"
+                   status-text))))
+
+(deftest widgets-terminal-pane-ansi-search-and-copy
+  (let* ((esc (string (code-char 27)))
+         (state (ptui.components.terminal-pane:make-terminal-pane-state
+                 :title "terminal"
+                 :max-lines 16)))
+    (ptui.components.terminal-pane:terminal-pane-append-output
+     state
+     (format nil "~A[31mERR~A[0m ok~%plain~%foo bar foo~%"
+             esc
+             esc))
+    (assert-true (equal (ptui.components.terminal-pane:terminal-pane-lines state)
+                        '("ERR ok" "plain" "foo bar foo"))
+                 "expected ANSI escapes to render into plain lines, got ~S"
+                 (ptui.components.terminal-pane:terminal-pane-lines state))
+    (let* ((styled (ptui.components.terminal-pane:terminal-pane-visible-styled-lines
+                    state
+                    :viewport-height 3))
+           (first-line (first styled))
+           (first-segment (first first-line))
+           (first-cell (second first-segment)))
+      (assert-true (= (length first-line) 2)
+                   "expected styled split for ANSI reset, got ~S"
+                   first-line)
+      (assert-true (string= (first first-segment) "ERR")
+                   "expected first styled segment text ERR, got ~S"
+                   first-segment)
+      (assert-true (typep (ptui.core.types:cell-fg first-cell)
+                          'ptui.core.color:color-rgb)
+                   "expected ANSI fg color to materialize as color-rgb, got ~S"
+                   (ptui.core.types:cell-fg first-cell)))
+    (ptui.components.terminal-pane:terminal-pane-set-search-query state "foo")
+    (assert-true (= (length (ptui.components.terminal-pane:terminal-pane-search-results state)) 2)
+                 "expected two search matches for foo")
+    (ptui.components.terminal-pane:terminal-pane-search-next state)
+    (assert-true (= (ptui.components.terminal-pane:terminal-pane-search-selected-index state) 1)
+                 "expected search-next to advance selection index")
+    (assert-true (string= (ptui.components.terminal-pane:terminal-pane-copy-visible
+                           state
+                           :viewport-height 2)
+                          "plain
+foo bar foo")
+                 "copy-visible should copy viewport rows")
+    (assert-true (string= (ptui.components.terminal-pane:terminal-pane-copy-search-result state)
+                          "foo bar foo")
+                 "copy-search-result should copy selected match line")
+    (let ((action
+            (ptui.components.terminal-pane:terminal-pane-handle-event
+             state
+             (ptui.core.events:make-key-event :copy-visible)
+             :viewport-height 2)))
+      (assert-true (eq (getf action :action) :copied-visible)
+                   "expected copy event action, got ~S"
+                   action))))
+
+(deftest widgets-terminal-pane-widget-exposes-ansi-segments
+  (let* ((esc (string (code-char 27)))
+         (state (ptui.components.terminal-pane:make-terminal-pane-state
+                 :title "terminal"))
+         (_ (ptui.components.terminal-pane:terminal-pane-append-output
+             state
+             (format nil "~A[33mwarn~A[0m~%" esc esc)))
+         (widget (ptui.components.terminal-pane:make-terminal-pane-widget
+                  state
+                  :id :terminal-pane
+                  :viewport-height 1))
+         (content (first (ptui.ui.elements:ui-element-children widget)))
+         (rows (ptui.ui.elements:ui-element-children content))
+         (first-output (second rows))
+         (segments (getf (ptui.ui.elements:ui-element-props first-output)
+                         :styled-segments)))
+    (declare (ignore _))
+    (assert-true (and (listp segments) segments)
+                 "expected terminal-pane output text to include :styled-segments metadata, got ~S"
+                 segments)
+    (assert-true (string= (first (first segments)) "warn")
+                 "expected styled segment text warn, got ~S"
+                 segments)))
+
+(deftest widgets-terminal-pane-output-stream-metadata
+  (let* ((state (ptui.components.terminal-pane:make-terminal-pane-state
+                 :title "terminal"
+                 :max-lines 4)))
+    (ptui.components.terminal-pane:terminal-pane-append-output
+     state
+     (concatenate 'string "ok" (string #\Newline))
+     :severity :info
+     :style :stdout)
+    (ptui.components.terminal-pane:terminal-pane-append-output
+     state
+     "warn-part"
+     :severity :warning
+     :style :stderr)
+    (ptui.components.terminal-pane:terminal-pane-append-output
+     state
+     (concatenate 'string "-done" (string #\Newline)
+                  "error!" (string #\Newline))
+     :severity :error
+     :style :stderr)
+    (assert-true (equal (ptui.components.terminal-pane:terminal-pane-lines state)
+                        '("ok" "warn-part-done" "error!"))
+                 "expected append-only lines to include merged partial rows, got ~S"
+                 (ptui.components.terminal-pane:terminal-pane-lines state))
+    (let ((metadata (ptui.components.terminal-pane:terminal-pane-line-metadata state)))
+      (assert-true (equal (mapcar (lambda (entry) (getf entry :severity)) metadata)
+                          '(:info :error :error))
+                   "expected merged severities for completed lines, got ~S"
+                   metadata)
+      (assert-true (equal (mapcar (lambda (entry) (getf entry :style)) metadata)
+                          '(:stdout :stderr :stderr))
+                   "expected per-line style metadata, got ~S"
+                   metadata))
+    (ptui.components.terminal-pane:terminal-pane-append-line
+     state
+     "debug-note"
+     :severity :debug
+     :style :system)
+    (ptui.components.terminal-pane:terminal-pane-append-line
+     state
+     "critical-stop"
+     :severity :critical
+     :style :stderr)
+    (assert-true (equal (ptui.components.terminal-pane:terminal-pane-lines state)
+                        '("warn-part-done" "error!" "debug-note" "critical-stop"))
+                 "expected max-lines trim to keep newest lines, got ~S"
+                 (ptui.components.terminal-pane:terminal-pane-lines state))
+    (let* ((visible-meta (ptui.components.terminal-pane:terminal-pane-visible-line-metadata
+                          state
+                          :viewport-height 2))
+           (severities (mapcar (lambda (entry) (getf entry :severity)) visible-meta)))
+      (assert-true (equal severities '(:debug :critical))
+                   "expected visible metadata to align with viewport rows, got ~S"
+                   visible-meta))
+    (let* ((widget (ptui.components.terminal-pane:make-terminal-pane-widget
+                    state
+                    :id :terminal-pane
+                    :viewport-height 2))
+           (content (first (ptui.ui.elements:ui-element-children widget)))
+           (rows (ptui.ui.elements:ui-element-children content))
+           (first-output (second rows))
+           (metadata (getf (ptui.ui.elements:ui-element-props first-output)
+                           :metadata)))
+      (assert-true (and (listp metadata)
+                        (eq (getf metadata :severity) :debug)
+                        (eq (getf metadata :style) :system))
+                   "expected text widget metadata for first visible output row, got ~S"
+                   metadata))))
+
+(deftest widgets-terminal-pane-stdin-capture-policy
+  (let* ((state (ptui.components.terminal-pane:make-terminal-pane-state
+                 :title "terminal"))
+         (capture-action
+           (ptui.components.terminal-pane:terminal-pane-handle-event
+            state
+            (ptui.core.events:make-key-event :text :text? "ls -la"))))
+    (assert-true (eq (getf capture-action :action) :stdin-captured)
+                 "expected text input to be captured when enabled, got ~S"
+                 capture-action)
+    (multiple-value-bind (events count)
+        (ptui.components.terminal-pane:terminal-pane-drain-stdin-events state)
+      (assert-true (= count 1)
+                   "expected one captured stdin event, got ~D"
+                   count)
+      (assert-true (eq (ptui.core.events:key-event-key (first events)) :text)
+                   "expected captured event key :text, got ~S"
+                   (first events))
+      (assert-true (string= (ptui.core.events:key-event-text? (first events)) "ls -la")
+                   "expected captured text payload, got ~S"
+                   (ptui.core.events:key-event-text? (first events))))
+    (ptui.components.terminal-pane:terminal-pane-set-stdin-capture-policy state :disabled)
+    (assert-true (not (ptui.components.terminal-pane:terminal-pane-stdin-capture-enabled-p state))
+                 "capture policy should report disabled after toggle")
+    (let ((blocked-action
+            (ptui.components.terminal-pane:terminal-pane-handle-event
+             state
+             (ptui.core.events:make-key-event :enter))))
+      (assert-true (eq (getf blocked-action :action) :stdin-blocked)
+                   "expected stdin capture to block when disabled, got ~S"
+                   blocked-action))
+    (multiple-value-bind (events count)
+        (ptui.components.terminal-pane:terminal-pane-drain-stdin-events state)
+      (assert-true (= count 0)
+                   "disabled capture should not queue stdin events, got ~D (~S)"
+                   count
+                   events))
+    (ptui.components.terminal-pane:terminal-pane-set-stdin-capture-policy state :enabled)
+    (assert-true (ptui.components.terminal-pane:terminal-pane-stdin-capture-enabled-p state)
+                 "capture policy should report enabled after re-toggle")
+    (let ((capture-tab
+            (ptui.components.terminal-pane:terminal-pane-handle-event
+             state
+             (ptui.core.events:make-key-event :tab))))
+      (assert-true (eq (getf capture-tab :action) :stdin-captured)
+                   "expected :tab to be captured after re-enable, got ~S"
+                   capture-tab))
+    (multiple-value-bind (events count)
+        (ptui.components.terminal-pane:terminal-pane-drain-stdin-events state)
+      (assert-true (= count 1)
+                   "expected one captured event after re-enable, got ~D"
+                   count)
+      (assert-true (eq (ptui.core.events:key-event-key (first events)) :tab)
+                   "expected captured key :tab, got ~S"
+                   (first events)))))
+
+(deftest widgets-terminal-pane-context-profiles
+  (assert-true (equal (ptui.components.terminal-pane:terminal-pane-supported-contexts)
+                      '(:execution :logs :test-output))
+               "unexpected terminal pane supported contexts: ~S"
+               (ptui.components.terminal-pane:terminal-pane-supported-contexts))
+  (let ((execution (ptui.components.terminal-pane:make-terminal-pane-state-for-context
+                    :execution))
+        (logs (ptui.components.terminal-pane:make-terminal-pane-state-for-context
+               :logs))
+        (tests (ptui.components.terminal-pane:make-terminal-pane-state-for-context
+                :test-output)))
+    (assert-true (string= (ptui.components.terminal-pane:terminal-pane-title execution)
+                          "execution")
+                 "expected execution profile title, got ~S"
+                 (ptui.components.terminal-pane:terminal-pane-title execution))
+    (assert-true (string= (ptui.components.terminal-pane:terminal-pane-empty-message logs)
+                          "[no logs]")
+                 "expected logs profile empty message, got ~S"
+                 (ptui.components.terminal-pane:terminal-pane-empty-message logs))
+    (assert-true (not (ptui.components.terminal-pane:terminal-pane-stdin-capture-enabled-p logs))
+                 "logs profile should disable stdin capture")
+    (assert-true (not (ptui.components.terminal-pane:terminal-pane-stdin-capture-enabled-p tests))
+                 "test-output profile should disable stdin capture"))
+  (let* ((profile (ptui.components.terminal-pane:terminal-pane-context-profile :logs))
+         (override (ptui.components.terminal-pane:make-terminal-pane-state-for-context
+                    :logs
+                    :title "ci logs"
+                    :empty-message "[none]"
+                    :stdin-capture-policy :enabled
+                    :max-lines 99)))
+    (setf (getf profile :title) "mutated")
+    (assert-true (string= (getf (ptui.components.terminal-pane:terminal-pane-context-profile :logs)
+                                :title)
+                          "logs")
+                 "context profile should return a copy, got ~S"
+                 (ptui.components.terminal-pane:terminal-pane-context-profile :logs))
+    (assert-true (string= (ptui.components.terminal-pane:terminal-pane-title override)
+                          "ci logs")
+                 "title override should win over context default")
+    (assert-true (string= (ptui.components.terminal-pane:terminal-pane-empty-message override)
+                          "[none]")
+                 "empty message override should win over context default")
+    (assert-true (ptui.components.terminal-pane:terminal-pane-stdin-capture-enabled-p override)
+                 "stdin capture override should win over context default")
+    (assert-true (= (ptui.components.terminal-pane:terminal-pane-max-lines override) 99)
+                 "max-lines override should win over context default")))
+
+(deftest widgets-terminal-pane-non-plan-context-reuse
+  (dolist (context (ptui.components.terminal-pane:terminal-pane-supported-contexts))
+    (let* ((state (ptui.components.terminal-pane:make-terminal-pane-state-for-context
+                   context
+                   :max-lines 4))
+           (label (symbol-name context)))
+      (ptui.components.terminal-pane:terminal-pane-append-output
+       state
+       (concatenate 'string
+                    "alpha" (string #\Newline)
+                    "beta" (string #\Newline))
+       :severity :info
+       :style :stdout)
+      (ptui.components.terminal-pane:terminal-pane-append-output
+       state
+       (concatenate 'string "failure" (string #\Newline))
+       :severity :error
+       :style :stderr)
+      (assert-true (eq (ptui.components.terminal-pane:terminal-pane-status state) :active)
+                   "context ~A should become :active after output"
+                   label)
+      (assert-true (equal (ptui.components.terminal-pane:terminal-pane-lines state)
+                          '("alpha" "beta" "failure"))
+                   "context ~A should preserve append-only line model, got ~S"
+                   label
+                   (ptui.components.terminal-pane:terminal-pane-lines state))
+      (let* ((metadata (ptui.components.terminal-pane:terminal-pane-visible-line-metadata
+                        state
+                        :viewport-height 3))
+             (severity-tail (getf (car (last metadata)) :severity)))
+        (assert-true (eq severity-tail :error)
+                     "context ~A should preserve per-line severity metadata, got ~S"
+                     label
+                     metadata))
+      (let* ((widget (ptui.components.terminal-pane:make-terminal-pane-widget
+                      state
+                      :id :terminal-pane
+                      :viewport-height 3))
+             (size (ptui.widgets.core:widget-measure widget)))
+        (assert-true (> (ptui.layout:layout-size-width size) 0)
+                     "context ~A widget width should be > 0"
+                     label)
+        (assert-true (>= (ptui.layout:layout-size-height size) 3)
+                     "context ~A widget height should include status + viewport rows"
+                     label)))))
 
 (deftest widgets-glob-widget-api-boundary
   (multiple-value-bind (widgets-sym widgets-status)
@@ -1811,7 +2389,107 @@
                  "expected :ready status after restoring query, got ~S"
                  (ptui.components.search-widget:search-widget-status state))))
 
+(deftest engine-loop-drains-event-bus-before-render
+  (let* ((backend (make-engine-loop-test-backend :cols 20 :rows 5))
+         (event-bus-package (or (find-package "EVENT-BUS")
+                                (make-package "EVENT-BUS" :use '(:cl))))
+         (drain-symbol (or (find-symbol "DRAIN-AND-DISPATCH" event-bus-package)
+                           (intern "DRAIN-AND-DISPATCH" event-bus-package)))
+         (had-drain-fn (fboundp drain-symbol))
+         (old-drain-fn (and had-drain-fn (symbol-function drain-symbol)))
+         (drain-calls 0)
+         (handler-calls 0)
+         (handler-thread nil)
+         (render-observed-handler-calls nil)
+         (bus (list :handlers (list (lambda ()
+                                      (incf handler-calls)
+                                      (setf handler-thread
+                                            (bordeaux-threads:current-thread)))))))
+    (engine-loop-test-backend-inject-events
+     backend
+     (list (ptui.core.events:make-key-event :ctrl-c :ctrlp t)))
+    (unwind-protect
+         (progn
+           (setf (symbol-function drain-symbol)
+                 (lambda (target-bus &key on-handler-error)
+                   (declare (ignore on-handler-error))
+                   (incf drain-calls)
+                   (dolist (handler (getf target-bus :handlers))
+                     (funcall handler))
+                   nil))
+           (ptui.engine.loop:run
+            (lambda (state size)
+              (declare (ignore state size))
+              (setf render-observed-handler-calls handler-calls)
+              (ptui.render.buffer:make-buffer 20 5))
+            :backend backend
+            :fps 200
+            :initial-state nil
+            :event-bus bus))
+      (if had-drain-fn
+          (setf (symbol-function drain-symbol) old-drain-fn)
+          (fmakunbound drain-symbol)))
+    (assert-true (= drain-calls 1)
+                 "expected exactly one drain call, got ~D"
+                 drain-calls)
+    (assert-true (= handler-calls 1)
+                 "expected exactly one handler call, got ~D"
+                 handler-calls)
+    (assert-true (= render-observed-handler-calls 1)
+                 "expected render to observe handler call in same tick, got ~S"
+                 render-observed-handler-calls)
+    (assert-true (eq handler-thread (bordeaux-threads:current-thread))
+                 "expected handler to run on engine loop thread.")))
+
+(deftest engine-loop-on-handler-error-restart-defaults-to-continue
+  (let* ((backend (make-engine-loop-test-backend :cols 20 :rows 5))
+         (event-bus-package (or (find-package "EVENT-BUS")
+                                (make-package "EVENT-BUS" :use '(:cl))))
+         (drain-symbol (or (find-symbol "DRAIN-AND-DISPATCH" event-bus-package)
+                           (intern "DRAIN-AND-DISPATCH" event-bus-package)))
+         (had-drain-fn (fboundp drain-symbol))
+         (old-drain-fn (and had-drain-fn (symbol-function drain-symbol)))
+         (render-count 0))
+    (engine-loop-test-backend-inject-events
+     backend
+     (list (ptui.core.events:make-key-event :ctrl-c :ctrlp t)))
+    (unwind-protect
+         (progn
+           (setf (symbol-function drain-symbol)
+                 (lambda (target-bus &key on-handler-error)
+                   (declare (ignore target-bus))
+                   (funcall on-handler-error (error "synthetic drain failure"))
+                   nil))
+           (ptui.engine.loop:run
+            (lambda (state size)
+              (declare (ignore state size))
+              (incf render-count)
+              (ptui.render.buffer:make-buffer 20 5))
+            :backend backend
+            :fps 200
+            :initial-state nil
+            :event-bus (list :handlers nil)))
+      (if had-drain-fn
+          (setf (symbol-function drain-symbol) old-drain-fn)
+          (fmakunbound drain-symbol)))
+    (assert-true (> render-count 0)
+                 "expected render to continue after handler error restart.")))
+
+;; Register optional FiveAM suites. Keep this resilient for environments that
+;; invoke test/run.lisp without the ptui/tests system loaded.
+(defun %run-ptui-search-suite-if-available ()
+  (unless (find-package :ptui.test.search)
+    (ignore-errors (asdf:load-system "ptui/tests")))
+  (let ((search-package (find-package :ptui.test.search))
+        (suite-run-fn nil))
+    (when search-package
+      (setf suite-run-fn (find-symbol "RUN-ALL" search-package)))
+    (if (and suite-run-fn (fboundp suite-run-fn))
+        (funcall (symbol-function suite-run-fn))
+        t)))
+
 ;; Script entry
-(multiple-value-bind (passed failed) (run-all-tests)
-  (declare (ignore passed))
-  (uiop:quit (if (zerop failed) 0 1)))
+(let ((search-ok (%run-ptui-search-suite-if-available)))
+  (multiple-value-bind (passed failed) (run-all-tests)
+    (declare (ignore passed))
+    (uiop:quit (if (and (not (eq search-ok nil)) (zerop failed)) 0 1))))

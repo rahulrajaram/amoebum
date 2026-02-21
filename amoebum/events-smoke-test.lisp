@@ -16,6 +16,7 @@
          (load-asd-fn (symbol-function load-asd-sym))
          (load-system-fn (symbol-function load-system-sym)))
     (funcall load-asd-fn (merge-pathnames #P"pseudopod/pseudopod.asd" repo-root))
+    (funcall load-asd-fn (merge-pathnames #P"sw4rm-sdk/sw4rm-sdk.asd" repo-root))
     (funcall load-asd-fn (merge-pathnames #P"ptui/ptui.asd" repo-root))
     (funcall load-asd-fn (merge-pathnames #P"amoebum/amoebum.asd" repo-root))
     (funcall load-system-fn "amoebum"))
@@ -40,6 +41,8 @@
           (funcall fn "MAKE-MCP-TOOL-INVOKED-EVENT"))
          (make-memory-backend-selected-event-fn
           (funcall fn "MAKE-MEMORY-BACKEND-SELECTED-EVENT"))
+         (make-plan-step-status-event-fn
+          (funcall fn "MAKE-PLAN-STEP-STATUS-EVENT"))
          (make-config-changed-event-fn (funcall fn "MAKE-CONFIG-CHANGED-EVENT"))
          (event-history-fn (funcall fn "EVENT-HISTORY"))
          (event-payload-fn (funcall fn "EVENT-PAYLOAD"))
@@ -58,6 +61,8 @@
           (symbol-value (funcall symbol-in "+EVENT-TYPE-MCP-TOOL-INVOKED+" amoebum-pkg)))
          (event-type-memory-backend-selected
           (symbol-value (funcall symbol-in "+EVENT-TYPE-MEMORY-BACKEND-SELECTED+" amoebum-pkg)))
+         (event-type-plan-step-status
+          (symbol-value (funcall symbol-in "+EVENT-TYPE-PLAN-STEP-STATUS+" amoebum-pkg)))
          (event-type-config-changed (symbol-value (funcall symbol-in "+EVENT-TYPE-CONFIG-CHANGED+" amoebum-pkg)))
          (core-event-types (symbol-value (funcall symbol-in "+CORE-EVENT-TYPES+" amoebum-pkg))))
     (labels ((assert-true (condition format-string &rest format-args)
@@ -73,6 +78,8 @@
                    "Expected +CORE-EVENT-TYPES+ to include mcp:tool-invoked.")
       (assert-true (member event-type-memory-backend-selected core-event-types :test #'eq)
                    "Expected +CORE-EVENT-TYPES+ to include memory:backend-selected.")
+      (assert-true (member event-type-plan-step-status core-event-types :test #'eq)
+                   "Expected +CORE-EVENT-TYPES+ to include plan:step-status.")
 
       (let ((bus (funcall make-event-bus-fn :capacity 16))
             (dispatch-order '())
@@ -151,14 +158,21 @@
                             :backend :haake-cli
                             :reason :auto-detected-haake-cli
                             :requested-backend :auto))
+          (funcall publish-fn
+                   bus
+                   (funcall make-plan-step-status-event-fn
+                            :run-id "plan-exec-smoke"
+                            :step-index 1
+                            :status :running
+                            :description "Running smoke step."))
 
           (let* ((history (funcall event-history-fn bus))
                  (latest (car (last history))))
-            (assert-true (= (length history) 5)
-                         "Expected event history to include typed + MCP + memory backend events.")
-            (assert-true (eq (funcall event-type-fn latest) event-type-memory-backend-selected)
-                         "Expected latest history event type to be memory:backend-selected.")
-            (assert-true (= (funcall event-seq-fn latest) 5)
+            (assert-true (= (length history) 6)
+                         "Expected event history to include typed + MCP + memory backend + plan-step events.")
+            (assert-true (eq (funcall event-type-fn latest) event-type-plan-step-status)
+                         "Expected latest history event type to be plan:step-status.")
+            (assert-true (= (funcall event-seq-fn latest) 6)
                          "Expected sequence number to increment monotonically.")))
 
         (setf (symbol-value event-bus-sym) bus)

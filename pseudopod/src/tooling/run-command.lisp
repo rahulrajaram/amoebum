@@ -46,6 +46,52 @@
 
 ;;; ---- Internal helpers ----
 
+(defun %strip-ansi-escapes (string)
+  "Remove ANSI escape sequences (CSI and OSC) from STRING.
+These cause invalid JSON when the output is serialized for LLM APIs."
+  (if (or (null string) (zerop (length string)))
+      string
+      (let ((out (make-string-output-stream))
+            (len (length string))
+            (i 0))
+        (loop while (< i len) do
+          (let ((ch (char string i)))
+            (cond
+              ;; ESC [ ... <letter> (CSI sequences)
+              ((and (char= ch #\Esc)
+                    (< (1+ i) len)
+                    (char= (char string (1+ i)) #\[))
+               (incf i 2) ; skip ESC [
+               (loop while (and (< i len)
+                                (let ((c (char string i)))
+                                  (or (digit-char-p c)
+                                      (char= c #\;)
+                                      (char= c #\?))))
+                     do (incf i))
+               (when (< i len) (incf i))) ; skip final byte
+              ;; ESC ] ... BEL/ST (OSC sequences)
+              ((and (char= ch #\Esc)
+                    (< (1+ i) len)
+                    (char= (char string (1+ i)) #\]))
+               (incf i 2)
+               (loop while (and (< i len)
+                                (not (char= (char string i) #\Bel))
+                                (not (and (char= (char string i) #\Esc)
+                                          (< (1+ i) len)
+                                          (char= (char string (1+ i)) #\\))))
+                     do (incf i))
+               (when (< i len)
+                 (if (char= (char string i) #\Bel)
+                     (incf i)
+                     (incf i 2)))) ; skip ESC backslash
+              ;; Bare ESC followed by other — skip ESC + next char
+              ((char= ch #\Esc)
+               (incf i (min 2 (- len i))))
+              (t
+               (write-char ch out)
+               (incf i)))))
+        (get-output-stream-string out))))
+
 (defun %read-stream-to-string (stream)
   "Read all available content from STREAM into a string.
 Returns an empty string if STREAM is NIL or unreadable."
@@ -57,10 +103,11 @@ Returns an empty string if STREAM is NIL or unreadable."
                   do (write-line line content))
             ;; Remove trailing newline added by write-line on last iteration
             (let ((result (get-output-stream-string content)))
-              (if (and (plusp (length result))
-                       (char= (char result (1- (length result))) #\Newline))
-                  (subseq result 0 (1- (length result)))
-                  result)))
+              (%strip-ansi-escapes
+               (if (and (plusp (length result))
+                        (char= (char result (1- (length result))) #\Newline))
+                   (subseq result 0 (1- (length result)))
+                   result))))
           "")
     (error () "")))
 

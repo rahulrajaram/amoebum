@@ -1,10 +1,204 @@
 (in-package :amoebum)
 
 (defparameter +tool-restart-names+
-  '(retry-tool skip-tool use-value abort-tool))
+  '(retry-with-modified-args
+    use-alternative-tool
+    skip-tool-call
+    abort-step
+    ask-user
+    retry-tool
+    skip-tool
+    use-value
+    abort-tool))
 
 (defparameter *supervised-restart-selector*
   nil)
+
+(defun %json-function (name)
+  (let* ((package (find-package :jonathan))
+         (symbol (and package (find-symbol name package))))
+    (unless (and symbol (fboundp symbol))
+      (error "Jonathan function ~A unavailable." name))
+    (symbol-function symbol)))
+
+(defun %hash-value (table candidates)
+  (when (hash-table-p table)
+    (loop for candidate in candidates do
+      (multiple-value-bind (value present-p)
+          (gethash candidate table)
+        (when present-p
+          (return value))))))
+
+(defun %canonical-restart-name (name)
+  (cond
+    ((null name) nil)
+    ((symbolp name)
+     (let ((base (string-downcase (symbol-name name))))
+       (substitute #\- #\_ base)))
+    ((stringp name)
+     (substitute #\- #\_ (string-downcase name)))
+    (t
+     (%canonical-restart-name (princ-to-string name)))))
+
+(defun %normalize-restart-name (name)
+  (let ((canonical (%canonical-restart-name name)))
+    (when (and canonical (plusp (length canonical)))
+      (intern (string-upcase canonical) (find-package :amoebum)))))
+
+(defun %normalize-restart-args (value)
+  (cond
+    ((null value) '())
+    ((listp value) value)
+    (t (list value))))
+
+(defun %extract-json-fragment (payload)
+  (let ((text (string-trim '(#\Space #\Tab #\Newline #\Return) (or payload ""))))
+    (when (plusp (length text))
+      (let ((start (position #\{ text))
+            (end (position #\} text :from-end t)))
+        (when (and start end (< start end))
+          (subseq text start (1+ end)))))))
+
+(defun parse-recovery-decision (payload)
+  "Parse LLM recovery JSON and return plist (:restart <symbol> :args <list>) or NIL."
+  (let ((fragment (%extract-json-fragment payload)))
+    (when fragment
+      (handler-case
+          (let* ((parse (or (ignore-errors (%json-function "PARSE")) nil))
+                 (decoded (and parse
+                               (handler-case
+                                   (funcall parse fragment :as :hash-table :junk-allowed t)
+                                 (error ()
+                                   (funcall parse fragment :as :hash-table)))))
+                 (restart-name
+                   (%hash-value decoded
+                                '("restart" "restart_name" "restart-name"
+                                  :restart :restart_name :restart-name)))
+                 (args
+                   (%hash-value decoded
+                                '("args" "arguments" "restart_args" "restart-args"
+                                  :args :arguments :restart_args :restart-args))))
+            (when restart-name
+              (list :restart (%normalize-restart-name restart-name)
+                    :args (%normalize-restart-args args))))
+        (error ()
+          nil)))))
+
+(defun %decision-restart-and-args (decision)
+  (cond
+    ((null decision)
+     (values nil '()))
+    ((hash-table-p decision)
+     (values (%normalize-restart-name
+              (%hash-value decision
+                           '("restart" "restart_name" "restart-name"
+                             :restart :restart_name :restart-name)))
+             (%normalize-restart-args
+              (%hash-value decision
+                           '("args" "arguments" "restart_args" "restart-args"
+                             :args :arguments :restart_args :restart-args)))))
+    ((and (listp decision) (getf decision :restart))
+     (values (%normalize-restart-name (getf decision :restart))
+             (%normalize-restart-args (or (getf decision :args)
+                                          (getf decision :arguments)))))
+    ((consp decision)
+     (values (%normalize-restart-name (first decision))
+             (rest decision)))
+    (t
+     (values (%normalize-restart-name decision) '()))))
+
+(defun %restart-choice-from-input (input restarts)
+  (let* ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return)
+                               (or input "")))
+         (index (ignore-errors (parse-integer trimmed :junk-allowed nil))))
+    (cond
+      ((and index (>= index 1) (<= index (length restarts)))
+       (restart-name (nth (1- index) restarts)))
+      ((plusp (length trimmed))
+       (%normalize-restart-name trimmed))
+      (t nil))))
+
+(defun %recovery-menu-widget (condition restarts)
+  (let* ((header (ptui.widgets.core:make-text-widget
+                  "Tool Recovery"
+                  :id :recovery-header
+                  :role :heading))
+         (message (ptui.widgets.core:make-text-widget
+                   (%condition-message condition)
+                   :id :recovery-message))
+         (options
+           (loop for restart in restarts
+                 for index from 1
+                 collect (ptui.widgets.core:make-text-widget
+                          (format nil "~D) ~A"
+                                  index
+                                  (string-downcase
+                                   (symbol-name (restart-name restart))))
+                          :id (list :recovery-option index)
+                          :metadata (list :restart (restart-name restart)))))
+         (prompt (ptui.components.prompt-box:make-prompt-box-widget
+                  ""
+                  :id :recovery-prompt
+                  :min-width 24)))
+    (ptui.widgets.core:make-box-widget
+     (ptui.widgets.core:make-stack-widget
+      (append (list header message) options (list prompt))
+      :id :recovery-stack
+      :gap 1)
+     :id :recovery-menu
+     :borderp t
+     :padding 1)))
+
+(defun %prompt-user-recovery-decision (condition restarts query-io)
+  (let* ((runtime (ptui.ui.runtime:make-runtime))
+         (widget (%recovery-menu-widget condition restarts)))
+    (ignore-errors
+      (ptui.ui.runtime:update-runtime runtime widget))
+    (cond
+      ((not (and (streamp query-io) (open-stream-p query-io)))
+       (and (find 'skip-tool restarts :key #'restart-name :test #'eq)
+            'skip-tool))
+      (t
+       (format query-io "~&Tool error: ~A~%" (%condition-message condition))
+       (loop for restart in restarts
+             for index from 1 do
+               (format query-io "  ~D) ~A~%"
+                       index
+                       (string-downcase (symbol-name (restart-name restart)))))
+       (format query-io "Choose restart [1-~D] (default skip): " (length restarts))
+       (finish-output query-io)
+       (let* ((line (handler-case (read-line query-io nil nil)
+                      (error () nil)))
+              (choice (%restart-choice-from-input line restarts)))
+         (or (and choice
+                  (find choice restarts :key #'restart-name :test #'eq)
+                  choice)
+             (and (find 'skip-tool restarts :key #'restart-name :test #'eq)
+                  'skip-tool)
+             (and restarts (restart-name (first restarts)))))))))
+
+(defun apply-user-recovery-decision (decision condition &key (query-io *query-io*))
+  "Apply DECISION for CONDITION, prompting via a PTUI widget menu when needed."
+  (let ((restarts (%tool-restarts condition)))
+    (when restarts
+      (multiple-value-bind (desired-restart desired-args)
+          (%decision-restart-and-args decision)
+        (let* ((selected
+                 (or (and desired-restart
+                          (find desired-restart restarts
+                                :key #'restart-name
+                                :test #'eq))
+                     (let ((choice (%prompt-user-recovery-decision
+                                    condition
+                                    restarts
+                                    query-io)))
+                       (and choice
+                            (find choice restarts
+                                  :key #'restart-name
+                                  :test #'eq)))))
+               (restart-name (and selected (restart-name selected))))
+          (when restart-name
+            (apply #'invoke-restart selected desired-args)))))))
 
 (define-condition amoebum-error (error)
   ((message :initarg :message
@@ -22,6 +216,9 @@
    (arguments :initarg :arguments
               :initform nil
               :reader tool-error-arguments)
+   (reason-code :initarg :reason-code
+               :initform nil
+               :reader tool-error-reason-code)
    (cause :initarg :cause
           :initform nil
           :reader tool-error-cause)
@@ -131,6 +328,12 @@
 (defgeneric condition-to-llm-context (condition)
   (:documentation "Convert CONDITION to compact context text for LLM recovery."))
 
+(defun %condition-type-name (condition)
+  (let ((name (class-name (class-of condition))))
+    (if (symbolp name)
+        (string-downcase (symbol-name name))
+        (string-downcase (princ-to-string name)))))
+
 (defun %condition-message (condition)
   (with-output-to-string (stream)
     (princ condition stream)))
@@ -151,40 +354,102 @@
                         restarts))
         "none")))
 
-(defmethod condition-to-llm-context ((condition condition))
-  (format nil "Condition ~A: ~A. Available restarts: ~A."
-          (class-name (class-of condition))
+(defun %format-llm-condition-context (condition suggested-action)
+  (format nil
+          "Condition type: ~A~%Message: ~A~%Available restarts: ~A~%Suggested action: ~A"
+          (%condition-type-name condition)
           (%condition-message condition)
-          (%restart-summary condition)))
+          (%restart-summary condition)
+          suggested-action))
+
+(defmethod condition-to-llm-context ((condition condition))
+  (%format-llm-condition-context
+   condition
+   "Inspect the error context and choose the safest available restart; ask user if uncertainty remains."))
+
+(defmethod condition-to-llm-context ((condition amoebum-error))
+  (%format-llm-condition-context
+   condition
+   "Summarize the failure and recover conservatively; prefer skip or user confirmation over risky retries."))
 
 (defmethod condition-to-llm-context ((condition tool-error))
-  (format nil "Tool '~A' failed: ~A. Available recovery options: ~A."
-          (tool-error-tool-name condition)
-          (%condition-message condition)
-          (%restart-summary condition)))
+  (%format-llm-condition-context
+   condition
+   (format nil "Review tool '~A' inputs and retry only after fixing arguments or selecting a safer alternative."
+           (tool-error-tool-name condition))))
+
+(defmethod condition-to-llm-context ((condition tool-execution-error))
+  (%format-llm-condition-context
+   condition
+   (format nil "Tool '~A' failed during execution; retry if transient, otherwise skip and continue."
+           (tool-error-tool-name condition))))
 
 (defmethod condition-to-llm-context ((condition tool-permission-denied))
-  (format nil "Tool '~A' was denied by policy: ~A. Available recovery options: ~A."
-          (tool-error-tool-name condition)
-          (%condition-message condition)
-          (%restart-summary condition)))
+  (%format-llm-condition-context
+   condition
+   (format nil "Permission denied for '~A'; request approval, adjust permission mode, or choose a non-dangerous fallback."
+           (tool-error-tool-name condition))))
 
 (defmethod condition-to-llm-context ((condition tool-not-found))
-  (format nil "Tool '~A' is not registered. Available recovery options: ~A."
-          (tool-error-tool-name condition)
-          (%restart-summary condition)))
+  (%format-llm-condition-context
+   condition
+   (format nil "Tool '~A' is unavailable; choose an alternative tool or skip this step."
+           (tool-error-tool-name condition))))
+
+(defmethod condition-to-llm-context ((condition tool-not-found-error))
+  (%format-llm-condition-context
+   condition
+   (format nil "Tool '~A' is unavailable; use an alternate capability and preserve task continuity."
+           (tool-error-tool-name condition))))
 
 (defmethod condition-to-llm-context ((condition tool-timeout))
-  (format nil "Tool '~A' timed out after ~A seconds. Available recovery options: ~A."
-          (tool-error-tool-name condition)
-          (or (tool-timeout-seconds condition) "unknown")
-          (%restart-summary condition)))
+  (%format-llm-condition-context
+   condition
+   (format nil "Tool '~A' timed out after ~A seconds; retry with smaller scope or skip to avoid blocking."
+           (tool-error-tool-name condition)
+           (or (tool-timeout-seconds condition) "unknown"))))
+
+(defmethod condition-to-llm-context ((condition tool-timeout-error))
+  (%format-llm-condition-context
+   condition
+   (format nil "Timeout from tool '~A'; prefer reduced workload retries, then fallback/skip if repeated."
+           (tool-error-tool-name condition))))
 
 (defmethod condition-to-llm-context ((condition tool-argument-error))
-  (format nil "Tool '~A' received invalid arguments: ~A. Available recovery options: ~A."
-          (tool-error-tool-name condition)
-          (%condition-message condition)
-          (%restart-summary condition)))
+  (%format-llm-condition-context
+   condition
+   (format nil "Arguments for tool '~A' are invalid; correct schema/values before retry."
+           (tool-error-tool-name condition))))
+
+(defmethod condition-to-llm-context ((condition tool-missing-argument))
+  (%format-llm-condition-context
+   condition
+   (format nil "Supply required argument(s) for tool '~A' and retry."
+           (tool-error-tool-name condition))))
+
+(defmethod condition-to-llm-context ((condition tool-type-mismatch))
+  (%format-llm-condition-context
+   condition
+   (format nil "Argument type mismatch for tool '~A'; coerce or replace values with the expected type."
+           (tool-error-tool-name condition))))
+
+(defmethod condition-to-llm-context ((condition hook-execution-error))
+  (%format-llm-condition-context
+   condition
+   (format nil "Hook ~S at ~S failed; disable or bypass the hook, then continue with guarded execution."
+           (hook-execution-error-hook-id condition)
+           (hook-execution-error-hook-point condition))))
+
+(defmethod condition-to-llm-context ((condition context-overflow-error))
+  (%format-llm-condition-context
+   condition
+   "Context window exceeded; compress context, drop low-priority messages, then retry."))
+
+(defmethod condition-to-llm-context ((condition budget-exceeded-error))
+  (%format-llm-condition-context
+   condition
+   (format nil "~A budget exceeded; reduce scope/cost and continue with smaller operations."
+           (string-downcase (symbol-name (budget-exceeded-kind condition))))))
 
 (defun %argument-as-string (arguments key)
   (let ((value (and (hash-table-p arguments)
@@ -329,37 +594,9 @@
   "Interactive selector for supervised mode; returns restart designator."
   (let* ((restarts (%tool-restarts condition))
          (query-io *query-io*))
-    (cond
-      ((null restarts)
-       nil)
-      ((not (and (streamp query-io) (open-stream-p query-io)))
-       'skip-tool)
-      (t
-       (format query-io "~&Tool error: ~A~%" (%condition-message condition))
-       (loop for restart in restarts
-             for idx from 1 do
-               (format query-io "  ~D) ~A~%"
-                       idx
-                       (string-downcase (symbol-name (restart-name restart)))))
-       (format query-io "Choose restart [1-~D] (default skip): " (length restarts))
-       (finish-output query-io)
-       (let* ((line (handler-case
-                        (read-line query-io nil nil)
-                      (error () nil)))
-              (parsed (ignore-errors
-                        (and line (parse-integer line :junk-allowed t)))))
-         (if (and parsed (>= parsed 1) (<= parsed (length restarts)))
-             (let ((chosen (nth (1- parsed) restarts)))
-               (if (eq (restart-name chosen) 'use-value)
-                   (progn
-                     (format query-io "Value for use-value restart: ")
-                     (finish-output query-io)
-                     (let ((value (handler-case
-                                      (read-line query-io nil "")
-                                    (error () ""))))
-                       (list 'use-value value)))
-                   (restart-name chosen)))
-             'skip-tool))))))
+    (if (null restarts)
+        nil
+        (%prompt-user-recovery-decision condition restarts query-io))))
 
 (unless (functionp *supervised-restart-selector*)
   (setf *supervised-restart-selector* #'default-supervised-restart-selector))

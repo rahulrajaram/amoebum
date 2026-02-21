@@ -34,6 +34,7 @@
 
 (defun %parse-cli-options (argv)
   (let ((json-mode-p nil)
+        (demo-mode-p nil)
         (command nil)
         (prompt nil)
         (resume nil)
@@ -45,6 +46,8 @@
           ((or (string= argument "--json")
                (string= argument "--non-interactive"))
            (setf json-mode-p t))
+          ((string= argument "--demo")
+           (setf demo-mode-p t))
           ((or (string= argument "--command")
                (string= argument "-c"))
            (multiple-value-bind (value consumed-index)
@@ -87,6 +90,7 @@
           ((uiop:string-prefix-p "--image=" argument)
            (push (%trim-cli-arg (subseq argument (length "--image="))) image-paths)))))
     (list :json-mode-p json-mode-p
+          :demo-mode-p demo-mode-p
           :command command
           :prompt prompt
           :resume resume
@@ -97,7 +101,8 @@
   (let ((trimmed-session-id (%trim-cli-arg session-id))
         (trimmed-resume (%trim-cli-arg resume)))
     (or (when (> (length trimmed-session-id) 0)
-          (conversation-load-session trimmed-session-id))
+          (or (conversation-load-session trimmed-session-id)
+              (make-conversation-state :session-id trimmed-session-id)))
         (when (> (length trimmed-resume) 0)
           (if (or (string= trimmed-resume "latest")
                   (string= trimmed-resume "1")
@@ -172,6 +177,63 @@
            :save-p t)
           (values t "Prompt accepted into conversation session state.")))))
 
+(defun %cli-last-assistant-message (chat-state)
+  (let ((messages (chat-ui-state-messages chat-state)))
+    (loop for message in (reverse messages)
+          when (and (pseudopod:message-p message)
+                    (string= (string-downcase (or (pseudopod:message-role message)
+                                                 "assistant"))
+                             "assistant"))
+            do (let ((text (%message-content->text message)))
+                 (when (and (stringp text) (plusp (length text)))
+                   (return text)))
+          finally (return ""))))
+
+(defun %cli-run-headless-assistant (conversation prompt image-paths)
+  (let* ((content (%build-user-message-content prompt image-paths))
+         (chat-state (make-chat-ui-state
+                      :conversation conversation
+                      :stream-client (pseudopod:make-client))))
+    (if (null content)
+        (values nil "Prompt and image attachments are empty.")
+        (progn
+          (chat-ui-add-message chat-state "user" content)
+          (%start-step-loop-assistant-response chat-state)
+        (values t (%cli-last-assistant-message chat-state))))))
+
+(defun %event-journal-enabled-p ()
+  (let ((value (uiop:getenv "AMOEBUM_EVENT_JOURNAL")))
+    (and value (plusp (length (string-trim '(#\Space #\Tab #\Newline #\Return) value)))
+         (%parse-boolean value))))
+
+(defun %event-journal-directory ()
+  (let ((value (uiop:getenv "AMOEBUM_EVENT_JOURNAL_DIR")))
+    (let ((trimmed (and value
+                        (string-trim '(#\Space #\Tab #\Newline #\Return) value))))
+      (and (and trimmed (plusp (length trimmed)))
+           (uiop:native-namestring
+            (uiop:ensure-directory-pathname trimmed))))))
+
+(defun %run-with-optional-event-journal (thunk)
+  (let ((journal nil))
+    (when (%event-journal-enabled-p)
+      (handler-case
+          (setf journal (start-event-journal
+                         :journal (make-event-journal-instance
+                                   :directory (%event-journal-directory))))
+        (error (condition)
+          (format *error-output* "[amoebum] event journal init failed: ~A~%"
+                  condition))))
+    (unwind-protect
+         (funcall thunk)
+      (when journal
+        (ignore-errors
+          (let ((paths (journal-segment-paths journal)))
+            (format *error-output*
+                    "[amoebum] event journal stopped: ~A~%"
+                    (or paths "<none>"))))
+        (ignore-errors (stop-event-journal journal))))))
+
 (defun %emit-cli-json-result (&key ok mode action output error command prompt
                                 session-id image-paths)
   (let ((payload
@@ -202,13 +264,13 @@
                (%non-empty-cli-arg-p prompt))
       (error "Use either --command or --prompt, not both."))
     (handler-case
-        (multiple-value-bind (ok output)
-            (if (%non-empty-cli-arg-p command)
-                (%cli-handle-command command conversation)
-                (%cli-handle-prompt prompt image-paths conversation))
-          (let ((active-session (conversation-state-session-id conversation)))
-            (conversation-save conversation)
-            (%emit-cli-json-result
+      (multiple-value-bind (ok output)
+          (if (%non-empty-cli-arg-p command)
+              (%cli-handle-command command conversation)
+              (%cli-run-headless-assistant conversation prompt image-paths))
+        (let ((active-session (conversation-state-session-id conversation)))
+          (conversation-save conversation)
+          (%emit-cli-json-result
              :ok ok
              :mode "json"
              :action (if (%non-empty-cli-arg-p command) "command" "prompt")
@@ -236,7 +298,20 @@
                             #+sbcl (rest sb-ext:*posix-argv*)
                             #-sbcl nil)))
     (reload-config :cli-arguments effective-argv)
+    (enable-tts-post-receive-hook)
     (let ((options (%parse-cli-options effective-argv)))
-      (if (getf options :json-mode-p)
-          (apply #'run-cli-json effective-argv)
-          (run-chat-ui :backend :auto :fps 20)))))
+      (%run-with-optional-event-journal
+       (lambda ()
+         (cond
+           ((getf options :json-mode-p)
+            (apply #'run-cli-json effective-argv))
+           ((getf options :demo-mode-p)
+            (run-chat-ui :backend :auto :fps 20
+                         :demo t))
+           (t
+            (let ((conversation (%resolve-cli-conversation
+                                 :session-id (getf options :session-id)
+                                 :resume (getf options :resume))))
+              (run-chat-ui :backend :auto :fps 20
+                           :initial-state (make-chat-ui-state
+                                           :conversation conversation))))))))))

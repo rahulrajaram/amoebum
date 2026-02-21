@@ -11,6 +11,10 @@ ptui/dist/*.so
 
 # Session artifacts from agentic loop tests
 .amoebum/session/
+.amoebum/plans/
+.amoebum/checkpoints/
+.amoebum/MEMORY.md
+amoebum/.amoebum/
 
 # Build output
 dist/

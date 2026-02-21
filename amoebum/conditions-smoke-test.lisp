@@ -16,6 +16,7 @@
          (load-asd-fn (symbol-function load-asd-sym))
          (load-system-fn (symbol-function load-system-sym)))
     (funcall load-asd-fn (merge-pathnames #P"pseudopod/pseudopod.asd" repo-root))
+    (funcall load-asd-fn (merge-pathnames #P"sw4rm-sdk/sw4rm-sdk.asd" repo-root))
     (funcall load-asd-fn (merge-pathnames #P"ptui/ptui.asd" repo-root))
     (funcall load-asd-fn (merge-pathnames #P"amoebum/amoebum.asd" repo-root))
     (funcall load-system-fn "amoebum"))
@@ -173,9 +174,14 @@
       (let ((seen-timeout nil))
         (handler-case
             (funcall execute-fn "i32-timeout" (make-args) :permission-mode :full-auto)
+          #+sbcl
+          (sb-ext:timeout (condition)
+            (declare (ignore condition))
+            (setf seen-timeout t))
           (error (condition)
             (when (or (typep condition tool-timeout-sym)
-                      (typep condition tool-error-sym))
+                      (typep condition tool-error-sym)
+                      #+sbcl (typep condition 'sb-ext:timeout))
               (setf seen-timeout t))))
         (assert-true seen-timeout
                      "Expected timeout tool to signal a typed tool condition."))

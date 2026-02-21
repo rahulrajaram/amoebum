@@ -43,6 +43,7 @@
     ("permission-command-smoke-test.lisp" "AMOEBUM_PERMISSION_COMMAND_SMOKE_OK")
     ("permission-mode-smoke-test.lisp" "AMOEBUM_PERMISSION_MODE_SMOKE_OK")
     ("permission-path-identity-smoke-test.lisp" "AMOEBUM_PERMISSION_PATH_IDENTITY_SMOKE_OK")
+    ("permission-trace-smoke-test.lisp" "AMOEBUM_PERMISSION_TRACE_SMOKE_OK")
     ("permissions-smoke-test.lisp" "AMOEBUM_PERMISSIONS_SMOKE_OK")
     ("pipeline-smoke-test.lisp" "AMOEBUM_PIPELINE_SMOKE_OK")
     ("plan-mode-smoke-test.lisp" "AMOEBUM_PLAN_MODE_SMOKE_OK")
@@ -475,6 +476,94 @@
             amoebum:*event-bus* original-event-bus
             amoebum:*permission-rules* original-rules))))
 
+(test integration-chat-step-loop-routes-tool-calls-through-execute-tool
+  (let ((original-toolset amoebum:*toolset*)
+        (original-hooks amoebum:*hook-registry*)
+        (original-event-bus amoebum:*event-bus*)
+        (original-rules amoebum:*permission-rules*)
+        (original-mode (amoebum:config-permission-mode (amoebum:current-config))))
+    (unwind-protect
+        (progn
+          (setf amoebum:*toolset* (pseudopod:make-toolset)
+                amoebum:*hook-registry* (make-hash-table :test #'equal)
+                amoebum:*event-bus* (amoebum:make-event-bus :capacity 64)
+                amoebum:*permission-rules* nil)
+          (amoebum:setconfig :permission-mode :full-auto)
+          (let ((tool-execution-count 0)
+                (pre-hook-count 0)
+                (post-hook-count 0)
+                (callback-bound-p nil)
+                (callback-handled-p nil)
+                (callback-output nil))
+            (pseudopod:register-tool-function
+             amoebum:*toolset*
+             :name "i211-chat-step-tool"
+             :description "I211 chat step loop callback test tool."
+             :parameters (let ((schema (make-hash-table :test #'equal)))
+                           (setf (gethash "type" schema) "object")
+                           schema)
+             :fn (lambda (arguments &optional tool-call)
+                   (declare (ignore arguments tool-call))
+                   (incf tool-execution-count)
+                   "i211-ok"))
+            (amoebum:register-hook :pre-tool-use
+                                   'i211-pre-hook
+                                   (lambda (_tool-name _args)
+                                     (declare (ignore _tool-name _args))
+                                     (incf pre-hook-count)
+                                     :allow))
+            (amoebum:register-hook :post-tool-use
+                                   'i211-post-hook
+                                   (lambda (_tool-name _result _elapsed-ms)
+                                     (declare (ignore _tool-name _result _elapsed-ms))
+                                     (incf post-hook-count)
+                                     :ok))
+            (let* ((client (pseudopod:make-client :api-key "stub"))
+                   (chat-state (amoebum:make-chat-ui-state
+                                :stream-runner nil
+                                :stream-client client
+                                :stream-tools amoebum:*toolset*))
+                   (user-message (amoebum:chat-ui-add-message
+                                  chat-state
+                                  "user"
+                                  "Please run the tool.")))
+              (let ((original-step-fn (symbol-function 'pseudopod:step)))
+                (unwind-protect
+                    (progn
+                      (setf (symbol-function 'pseudopod:step)
+                            (lambda (_client &rest args &key messages on-tool-call &allow-other-keys)
+                              (declare (ignore _client args))
+                              (setf callback-bound-p (functionp on-tool-call))
+                              (multiple-value-setq (callback-handled-p callback-output)
+                                (funcall on-tool-call
+                                         (pseudopod:make-tool-call
+                                          :id "i211-call"
+                                          :name "i211-chat-step-tool"
+                                          :arguments "{}")))
+                              (let ((assistant (pseudopod:make-message
+                                                :role "assistant"
+                                                :content "i211-complete")))
+                                (pseudopod::%make-step-result
+                                 :steps 1
+                                 :history (append messages (list assistant))
+                                 :final-message assistant
+                                 :last-message assistant
+                                 :max-steps-reached nil
+                                 :tool-results nil))))
+                      (amoebum::%start-streaming-assistant-response chat-state user-message))
+                  (setf (symbol-function 'pseudopod:step) original-step-fn))))
+            (is-true callback-bound-p)
+            (is (eq callback-handled-p t))
+            (is (string= "i211-ok" (or callback-output "")))
+            (is (= tool-execution-count 1))
+            (is (= pre-hook-count 1))
+            (is (= post-hook-count 1))))
+      (setf amoebum:*toolset* original-toolset
+            amoebum:*hook-registry* original-hooks
+            amoebum:*event-bus* original-event-bus
+            amoebum:*permission-rules* original-rules)
+      (amoebum:setconfig :permission-mode original-mode))))
+
 (test integration-defwidget-render-dirty-rerender-cycle
   (setf *i82-widget-render-count* 0
         (gethash :label *i82-widget-state*) "before")
@@ -658,6 +747,10 @@
          (old-project-root (amoebum:config-project-root config))
          (old-event-bus amoebum:*event-bus*)
          (old-checkpoint-override amoebum:*checkpoint-directory-override*)
+         (old-toolset amoebum:*toolset*)
+         (old-tool-metadata amoebum::*tool-metadata*)
+         (old-tool-history amoebum::*tool-history*)
+         (old-memory-backend amoebum:*memory-backend*)
          (tmp-root (%make-temp-directory "amoebum-i82-checkpoint"))
          (project-root (merge-pathnames #P"project/" tmp-root))
          (checkpoint-dir (merge-pathnames #P"checkpoints/" tmp-root))
@@ -715,7 +808,11 @@
           (is (= checkpointed-events 1))
           (is (= restored-events 1)))
       (setf amoebum:*event-bus* old-event-bus
-            amoebum:*checkpoint-directory-override* old-checkpoint-override)
+            amoebum:*checkpoint-directory-override* old-checkpoint-override
+            amoebum:*toolset* old-toolset
+            amoebum::*tool-metadata* old-tool-metadata
+            amoebum::*tool-history* old-tool-history
+            amoebum:*memory-backend* old-memory-backend)
       (amoebum:setconfig :project-root old-project-root)
       (%delete-directory-tree-safe tmp-root))))
 
@@ -764,7 +861,7 @@
                                     (pseudopod:make-kimi-provider :api-key "k"))
     (let ((status (pseudopod:router-status router)))
       (is (listp status))
-      (is (= 1 (length (cdr (assoc :providers status))))))))
+      (is (= 1 (length (getf status :providers)))))))
 
 (test phase5-indexer-structs
   "Indexer structs should be constructable and queryable."
@@ -800,7 +897,7 @@
     (amoebum:propose-modification "(defun test-fn-xyz () 42)")
     (is (= 1 (length (amoebum:modification-journal))))
     (let ((entry (first (amoebum:modification-journal))))
-      (is (eq :pending (amoebum:modification-entry-status entry))))))
+      (is (eq :proposed (amoebum:modification-entry-status entry))))))
 
 (test phase5-image-directory
   "Image directory should be resolvable."
@@ -921,7 +1018,7 @@
 
 (test phase5-slash-commands-registered
   "Phase 5 slash commands should be registered."
-  (dolist (cmd-name '("models" "index" "self-modify" "image"
+  (dolist (cmd-name '("models" "cost" "index" "self-modify" "image"
                       "extensions-asdf" "perf" "spawn" "approvals"))
     (is-true (amoebum:find-slash-command cmd-name)
              "Expected slash command /~A to be registered." cmd-name)))

@@ -16,6 +16,7 @@
          (load-asd-fn (symbol-function load-asd-sym))
          (load-system-fn (symbol-function load-system-sym)))
     (funcall load-asd-fn (merge-pathnames #P"pseudopod/pseudopod.asd" repo-root))
+    (funcall load-asd-fn (merge-pathnames #P"sw4rm-sdk/sw4rm-sdk.asd" repo-root))
     (funcall load-asd-fn (merge-pathnames #P"ptui/ptui.asd" repo-root))
     (funcall load-asd-fn (merge-pathnames #P"amoebum/amoebum.asd" repo-root))
     (funcall load-system-fn "amoebum"))
@@ -28,6 +29,9 @@
                         (error "Missing package PTUI.CORE.TYPES after load.")))
          (elements-pkg (or (find-package "PTUI.UI.ELEMENTS")
                            (error "Missing package PTUI.UI.ELEMENTS after load.")))
+         (plan-presentation-pkg
+           (or (find-package "PTUI.COMPONENTS.PLAN-PRESENTATION")
+               (error "Missing package PTUI.COMPONENTS.PLAN-PRESENTATION after load.")))
          (pseudopod-pkg (or (find-package "PSEUDOPOD")
                             (error "Missing package PSEUDOPOD after load.")))
          (symbol-in
@@ -44,6 +48,16 @@
          (chat-ui-state-input-text-fn (funcall fn-in "CHAT-UI-STATE-INPUT-TEXT" amoebum-pkg))
          (chat-ui-state-messages-fn (funcall fn-in "CHAT-UI-STATE-MESSAGES" amoebum-pkg))
          (chat-ui-state-scrollback-fn (funcall fn-in "CHAT-UI-STATE-MESSAGE-SCROLLBACK-LINES" amoebum-pkg))
+         (setconfig-fn (funcall fn-in "SETCONFIG" amoebum-pkg))
+         (current-plan-state-fn (funcall fn-in "CURRENT-PLAN-MODE-STATE" amoebum-pkg))
+         (clear-plan-steps-fn (funcall fn-in "CLEAR-PLAN-MODE-STEPS" amoebum-pkg))
+         (add-plan-step-fn (funcall fn-in "ADD-PLAN-STEP" amoebum-pkg))
+         (set-plan-step-approvals-fn (funcall fn-in "SET-PLAN-STEP-APPROVALS" amoebum-pkg))
+         (reset-plan-execution-state-fn (funcall fn-in "RESET-PLAN-EXECUTION-STATE" amoebum-pkg))
+         (initialize-plan-execution-fn (funcall fn-in "INITIALIZE-PLAN-EXECUTION" amoebum-pkg))
+         (plan-execution-append-output-fn (funcall fn-in "PLAN-EXECUTION-APPEND-OUTPUT" amoebum-pkg))
+         (plan-output-stdin-policy-fn
+           (funcall fn-in "%CHAT-PLAN-OUTPUT-STDIN-CAPTURE-POLICY" amoebum-pkg))
          (chat-role-cell-fn (funcall fn-in "CHAT-ROLE-CELL" amoebum-pkg))
          (chat-ui-set-input-fn (funcall fn-in "CHAT-UI-SET-INPUT" amoebum-pkg))
          (render-chat-ui-buffer-fn (funcall fn-in "RENDER-CHAT-UI-BUFFER" amoebum-pkg))
@@ -55,8 +69,12 @@
          (buffer-cells-fn (funcall fn-in "CELL-BUFFER-CELLS" types-pkg))
          (cell-glyph-fn (funcall fn-in "CELL-GLYPH" types-pkg))
          (cell-fg-fn (funcall fn-in "CELL-FG" types-pkg))
+         (ui-element-id-fn (funcall fn-in "UI-ELEMENT-ID" elements-pkg))
          (ui-element-type-fn (funcall fn-in "UI-ELEMENT-TYPE" elements-pkg))
          (ui-element-children-fn (funcall fn-in "UI-ELEMENT-CHILDREN" elements-pkg))
+         (ui-element-props-fn (funcall fn-in "UI-ELEMENT-PROPS" elements-pkg))
+         (make-plan-mode-presentation-widget-sym
+           (funcall symbol-in "MAKE-PLAN-MODE-PRESENTATION-WIDGET" plan-presentation-pkg))
          (message-role-fn (funcall fn-in "MESSAGE-ROLE" pseudopod-pkg))
          (message-content-fn (funcall fn-in "MESSAGE-CONTENT" pseudopod-pkg))
          (content-part-text-fn (funcall fn-in "CONTENT-PART-TEXT" pseudopod-pkg)))
@@ -68,6 +86,18 @@
                    (some (lambda (child)
                            (tree-has-type-p child type))
                          (funcall ui-element-children-fn node))))
+             (tree-has-id-p (node id)
+               (or (equal (funcall ui-element-id-fn node) id)
+                   (some (lambda (child)
+                           (tree-has-id-p child id))
+                         (funcall ui-element-children-fn node))))
+             (collect-tree-text-lines (node)
+               (append
+                (if (eq (funcall ui-element-type-fn node) :text)
+                    (list (getf (funcall ui-element-props-fn node) :text ""))
+                    '())
+                (loop for child in (funcall ui-element-children-fn node)
+                      append (collect-tree-text-lines child))))
              (buffer-cell-at (buffer col row)
                (let* ((cols (funcall buffer-cols-fn buffer))
                       (cells (funcall buffer-cells-fn buffer))
@@ -118,6 +148,134 @@
                            24)))
         (assert-true (tree-has-type-p tree :prompt-box)
                      "Expected chat UI tree to include a prompt-box widget."))
+
+      (let ((state (make-chat-state)))
+        (funcall setconfig-fn :plan-mode t)
+        (funcall clear-plan-steps-fn)
+        (funcall add-plan-step-fn
+                 "Inspect preview output with `rg -n plan`."
+                 :file-paths (list "amoebum/src/ui/chat.lisp")
+                 :state (funcall current-plan-state-fn))
+        (funcall add-plan-step-fn
+                 "Validate dry-run rendering with `timeout 60 ./ptui/bin/test.sh`."
+                 :file-paths (list "ptui/src/components/plan-presentation.lisp")
+                 :risk :high
+                 :state (funcall current-plan-state-fn))
+        (assert-true (eq (funcall plan-output-stdin-policy-fn) :disabled)
+                     "Expected plan-mode output stdin policy helper to resolve :disabled.")
+        (let* ((original-plan-widget-fn
+                 (symbol-function make-plan-mode-presentation-widget-sym))
+               (captured-output-stdin-policy :missing))
+          (unwind-protect
+              (progn
+                (setf (symbol-function make-plan-mode-presentation-widget-sym)
+                      (lambda (&rest args &key &allow-other-keys)
+                        (setf captured-output-stdin-policy
+                              (getf args :output-stdin-capture-policy :missing))
+                        (apply original-plan-widget-fn args)))
+                (let* ((tree (funcall chat-ui-build-tree-fn state 110 26))
+                       (buffer (funcall render-chat-ui-buffer-fn
+                                        state
+                                        (funcall make-size-fn 110 26)))
+                       (rows (buffer-lines buffer)))
+                  (assert-true (eq captured-output-stdin-policy :disabled)
+                               "Expected plan presentation to force :output-stdin-capture-policy :disabled, got ~S."
+                               captured-output-stdin-policy)
+                  (assert-true (tree-has-id-p tree :chat-plan-presentation)
+                               "Expected chat UI tree to include the plan-mode presentation widget.")
+                  (assert-true (rows-contain-p rows "Plan Mode Workspace")
+                               "Expected rendered chat UI to show plan-mode presentation title.")
+                  (assert-true (rows-contain-p rows "Plan Steps")
+                               "Expected rendered chat UI to show plan steps panel heading.")
+                  (assert-true (rows-contain-p rows "Plan Output")
+                               "Expected rendered chat UI to show plan output panel heading.")
+                  (assert-true (rows-contain-p rows "DRY-RUN>")
+                               "Expected plan output terminal pane to show dry-run command previews.")
+                  (assert-true (rows-contain-p rows "timeout 60 ./ptui/bin/test.sh")
+                               "Expected dry-run command preview to include proposed shell command.")
+                  (assert-true (rows-contain-p rows "Context Inspector")
+                               "Expected rendered chat UI to show context inspector heading.")
+                  (assert-true (rows-contain-p rows "Selected step: 1")
+                               "Expected initial plan-step selection to target step 1.")
+                  (assert-true (rows-contain-p rows "amoebum/src/ui/chat.lisp")
+                               "Expected selected step context to include first-step file reference.")))
+            (setf (symbol-function make-plan-mode-presentation-widget-sym)
+                  original-plan-widget-fn)))
+        (funcall reset-plan-execution-state-fn)
+        (funcall setconfig-fn :plan-mode nil)
+        (assert-true (eq (funcall plan-output-stdin-policy-fn) :enabled)
+                     "Expected non-plan output stdin policy helper to resolve :enabled.")
+        (funcall clear-plan-steps-fn))
+
+      (let ((state (make-chat-state)))
+        (funcall reset-plan-execution-state-fn)
+        (funcall clear-plan-steps-fn)
+        (let ((plan-state (funcall current-plan-state-fn)))
+          (funcall add-plan-step-fn
+                   "Keep continuity pane on execution handoff via `rg -n plan`."
+                   :file-paths (list "amoebum/src/ui/chat.lisp")
+                   :state plan-state)
+          (funcall add-plan-step-fn
+                   "Verify execution logs with `timeout 60 ./bin/yarli-run-verification.sh`."
+                   :file-paths (list "amoebum/chat-ui-smoke-test.lisp")
+                   :state plan-state)
+          (funcall set-plan-step-approvals-fn '(1 2) :state plan-state)
+          (funcall setconfig-fn :plan-mode nil)
+          (let ((execution-state (funcall initialize-plan-execution-fn :plan-state plan-state)))
+            (funcall plan-execution-append-output-fn
+                     "LIVE> [step 1 running] executing rg -n plan."
+                     :step-index 1
+                     :phase :execution
+                     :style :meta
+                     :state execution-state)
+            (funcall plan-execution-append-output-fn
+                     "LIVE> [step 1 blocked] rg -n plan exited with code 2."
+                     :step-index 1
+                     :phase :execution
+                     :severity :error
+                     :style :error
+                     :state execution-state)
+            (assert-true (eq (funcall plan-output-stdin-policy-fn) :disabled)
+                         "Expected execution continuity surface to keep output stdin policy disabled.")
+            (let* ((tree (funcall chat-ui-build-tree-fn state 110 30))
+                   (tree-lines (collect-tree-text-lines tree))
+                   (buffer (funcall render-chat-ui-buffer-fn
+                                    state
+                                    (funcall make-size-fn 110 30)))
+                   (rows (buffer-lines buffer)))
+              (assert-true (tree-has-id-p tree :chat-plan-presentation)
+                           "Expected chat UI tree to keep plan presentation widget after execution handoff.")
+              (assert-true (rows-contain-p rows "Plan Mode Workspace")
+                           "Expected execution handoff to preserve plan workspace container.")
+              (assert-true (some (lambda (line)
+                                   (search "LIVE> [step 1 running]"
+                                           line
+                                           :test #'char-equal))
+                                 tree-lines)
+                           "Expected execution workspace to include live running line, got ~S."
+                           tree-lines)
+              (assert-true (some (lambda (line)
+                                   (search "LIVE> [step 1 blocked]"
+                                           line
+                                           :test #'char-equal))
+                                 tree-lines)
+                           "Expected execution workspace to include blocked line for step 1, got ~S."
+                           tree-lines)
+              (assert-true (member "Failure drill-down: step 1" tree-lines :test #'string=)
+                           "Expected context inspector failure drill-down heading for step 1, got ~S."
+                           tree-lines)
+              (assert-true (member "Suggested recovery actions:" tree-lines :test #'string=)
+                           "Expected context inspector to include suggested recovery actions, got ~S."
+                           tree-lines)
+              (assert-true (some (lambda (line)
+                                   (rows-contain-p (list line) "Retry step 1"))
+                                 tree-lines)
+                           "Expected generated recovery action to suggest retrying step 1, got ~S."
+                           tree-lines))))
+        (funcall reset-plan-execution-state-fn)
+        (assert-true (eq (funcall plan-output-stdin-policy-fn) :enabled)
+                     "Expected output stdin policy helper to return :enabled after execution continuity reset.")
+        (funcall clear-plan-steps-fn))
 
       (let ((state (make-chat-state)))
         (funcall chat-ui-add-message-fn state :system "System primed.")

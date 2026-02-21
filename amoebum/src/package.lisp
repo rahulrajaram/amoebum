@@ -5,6 +5,13 @@
            #:defhook
            #:defkeys
            #:defskill
+           #:tool-definition-warning
+           #:unmapped-type-warning
+           #:missing-tool-description
+           #:duplicate-tool-name
+           #:dangerous-auto-permission
+           #:unknown-tool-reference
+           #:invalid-permission-mode
            #:*skill-registry*
            #:*skill-review-analyzer*
            #:skill-argument
@@ -44,6 +51,7 @@
            #:event-p
            #:make-event
            #:event-type
+           #:event-type-p
            #:event-seq
            #:event-ts-mono
            #:event-timestamp
@@ -74,6 +82,7 @@
            #:+event-type-tool-redefined+
            #:+event-type-config-changed+
            #:+event-type-permission-prompted+
+           #:+event-type-permission-blocked+
            #:+event-type-memory-updated+
            #:+event-type-memory-backend-selected+
            #:+event-type-context-compressed+
@@ -83,13 +92,57 @@
            #:+event-type-keymap-overlay-exit+
            #:+event-type-extension-loaded+
            #:+event-type-extension-error+
+           #:+event-type-llm-stream-chunk+
            #:+event-type-stream-budget-warning+
            #:+event-type-conversation-forked+
            #:+event-type-tool-call-started+
            #:+event-type-tool-call-argument-complete+
            #:+event-type-session-checkpointed+
            #:+event-type-session-restored+
+           #:+event-type-plan-step-status+
+           #:+event-type-git-commit+
+           #:+event-type-git-branch+
+           #:+event-type-agent-spawned+
+           #:+event-type-agent-completed+
+           #:+event-type-agent-error+
+           #:+lifecycle-event-types+
+           #:event-type-p
            #:+core-event-types+
+           #:commit-event
+           #:commit-event-p
+           #:make-commit-event
+           #:commit-event-hash
+           #:commit-event-message
+           #:commit-event-author
+           #:commit-event-files-changed
+           #:commit-event-event-type
+           #:branch-event
+           #:branch-event-p
+           #:make-branch-event
+           #:branch-event-old-branch
+           #:branch-event-new-branch
+           #:branch-event-action
+           #:branch-event-event-type
+           #:agent-spawned-event
+           #:agent-spawned-event-p
+           #:make-agent-spawned-event
+           #:agent-spawned-event-agent-id
+           #:agent-spawned-event-agent-type
+           #:agent-spawned-event-parent-id
+           #:agent-spawned-event-event-type
+           #:agent-completed-event
+           #:agent-completed-event-p
+           #:make-agent-completed-event
+           #:agent-completed-event-agent-id
+           #:agent-completed-event-result-status
+           #:agent-completed-event-elapsed-ms
+           #:agent-completed-event-event-type
+           #:agent-error-event
+           #:agent-error-event-p
+           #:make-agent-error-event
+           #:agent-error-event-agent-id
+           #:agent-error-event-condition
+           #:agent-error-event-event-type
            #:tool-invoked-payload
            #:tool-invoked-payload-p
            #:make-tool-invoked-payload
@@ -99,6 +152,12 @@
            #:tool-error-payload
            #:tool-error-payload-p
            #:make-tool-error-payload
+           #:tool-error-payload-tool-name
+           #:tool-error-payload-args
+           #:tool-error-payload-condition
+           #:tool-error-payload-condition-reason-code
+           #:tool-error-payload-elapsed-ms
+           #:tool-error-payload-request-id
            #:tool-redefined-payload
            #:tool-redefined-payload-p
            #:make-tool-redefined-payload
@@ -115,6 +174,22 @@
            #:permission-prompted-payload
            #:permission-prompted-payload-p
            #:make-permission-prompted-payload
+           #:permission-prompted-payload-tool-name
+           #:permission-prompted-payload-path
+           #:permission-prompted-payload-command
+           #:permission-prompted-payload-reason
+           #:permission-prompted-payload-reason-code
+           #:permission-prompted-payload-permission-mode
+           #:permission-blocked-payload
+           #:permission-blocked-payload-p
+           #:make-permission-blocked-payload
+           #:permission-blocked-payload-tool-name
+           #:permission-blocked-payload-path
+           #:permission-blocked-payload-command
+           #:permission-blocked-payload-reason
+           #:permission-blocked-payload-actionable-reason
+           #:permission-blocked-payload-reason-code
+           #:permission-blocked-payload-permission-mode
            #:memory-updated-payload
            #:memory-updated-payload-p
            #:make-memory-updated-payload
@@ -144,6 +219,13 @@
            #:extension-error-payload-path
            #:extension-error-payload-scope
            #:extension-error-payload-condition
+           #:llm-stream-chunk-payload
+           #:llm-stream-chunk-payload-p
+           #:make-llm-stream-chunk-payload
+           #:llm-stream-chunk-payload-token
+           #:llm-stream-chunk-payload-chunk-index
+           #:llm-stream-chunk-payload-token-index
+           #:llm-stream-chunk-payload-total-tokens
            #:stream-budget-warning-payload
            #:stream-budget-warning-payload-p
            #:make-stream-budget-warning-payload
@@ -186,6 +268,13 @@
            #:session-restored-payload-extension-count
            #:session-restored-payload-tool-count
            #:session-restored-payload-memory-count
+           #:plan-step-status-payload
+           #:plan-step-status-payload-p
+           #:make-plan-step-status-payload
+           #:plan-step-status-payload-run-id
+           #:plan-step-status-payload-step-index
+           #:plan-step-status-payload-status
+           #:plan-step-status-payload-description
            #:context-compressed-payload-before-tokens
            #:context-compressed-payload-after-tokens
            #:context-compressed-payload-saved-tokens
@@ -198,6 +287,7 @@
            #:make-tool-redefined-event
            #:make-config-changed-event
            #:make-permission-prompted-event
+           #:make-permission-blocked-event
            #:make-memory-updated-event
            #:make-memory-backend-selected-event
            #:make-context-compressed-event
@@ -205,11 +295,69 @@
            #:make-mcp-tool-invoked-event
            #:make-extension-loaded-event
            #:make-extension-error-event
+           #:make-llm-stream-chunk-event
            #:make-stream-budget-warning-event
            #:make-tool-call-started-event
            #:make-tool-call-argument-complete-event
            #:make-session-checkpointed-event
            #:make-session-restored-event
+           #:make-plan-step-status-event
+           #:+event-type-tool-started-event+
+           #:+event-type-tool-completed-event+
+           #:+event-type-tool-error-event+
+           #:+event-type-llm-request-event+
+           #:+event-type-llm-response-event+
+           #:+event-type-conversation-step-event+
+           #:+typed-event-types+
+           #:tool-started-event
+           #:tool-started-event-p
+           #:make-tool-started-event
+           #:tool-started-event-tool-name
+           #:tool-started-event-arguments
+           #:tool-started-event-timestamp
+           #:tool-started-event-event-type
+           #:tool-completed-event
+           #:tool-completed-event-p
+           #:make-tool-completed-event-type
+           #:tool-completed-event-tool-name
+           #:tool-completed-event-result
+           #:tool-completed-event-elapsed-ms
+           #:tool-completed-event-timestamp
+           #:tool-completed-event-event-type
+           #:tool-error-event
+           #:tool-error-event-p
+           #:make-tool-error-event-type
+           #:tool-error-event-tool-name
+           #:tool-error-event-condition
+           #:tool-error-event-restarts
+           #:tool-error-event-timestamp
+           #:tool-error-event-event-type
+           #:llm-request-event
+           #:llm-request-event-p
+           #:make-llm-request-event
+           #:llm-request-event-provider
+           #:llm-request-event-model
+           #:llm-request-event-message-count
+           #:llm-request-event-estimated-tokens
+           #:llm-request-event-timestamp
+           #:llm-request-event-event-type
+           #:llm-response-event
+           #:llm-response-event-p
+           #:make-llm-response-event
+           #:llm-response-event-provider
+           #:llm-response-event-model
+           #:llm-response-event-usage
+           #:llm-response-event-latency-ms
+           #:llm-response-event-timestamp
+           #:llm-response-event-event-type
+           #:conversation-step-event
+           #:conversation-step-event-p
+           #:make-conversation-step-event
+           #:conversation-step-event-step-number
+           #:conversation-step-event-role
+           #:conversation-step-event-content-length
+           #:conversation-step-event-timestamp
+           #:conversation-step-event-event-type
            #:sound-theme
            #:sound-theme-p
            #:make-sound-theme
@@ -241,6 +389,7 @@
            #:notification-source-event
            #:notification-timestamp
            #:notification-urgency
+           #:notification-icon-path
            #:notification-timeout-ms
            #:notification-backend
            #:backend-name
@@ -253,9 +402,27 @@
            #:desktop-backend
            #:desktop-backend-command
            #:desktop-backend-app-name
+           #:webhook-config
+           #:webhook-config-p
+           #:make-webhook-config
+           #:webhook-config-url
+           #:webhook-config-method
+           #:webhook-config-headers
+           #:webhook-config-secret
+           #:webhook-backend
+           #:webhook-backend-config
+           #:*webhook-fetch-function*
+           #:*webhook-http-request-function*
+           #:*webhook-sleep-function*
+           #:send-webhook-notification
+           #:make-webhook-backend
+           #:make-webhook-backends
            #:log-backend
            #:log-backend-path
+           #:log-backend-lock
            #:log-backend-include-event-payload-p
+           #:audit-log-write-event
+           #:audit-log-query
            #:notify-send
            #:notify-available-p
            #:notify-teardown
@@ -269,17 +436,43 @@
            #:*notification-command-prober*
            #:*notification-async-dispatch-p*
            #:*notification-manager-registry*
+           #:*desktop-notification-run-command-function*
            #:notification-command-available-p
            #:notification-run-command
+           #:desktop-notification-available-p
+           #:send-desktop-notification
            #:make-sound-backend
            #:make-desktop-backend
            #:make-log-backend
            #:preview-notification-sound
            #:dispatch-notification
+           #:dispatch-notification-manager
            #:make-notification-manager
            #:ensure-notification-manager
            #:stop-notification-manager
            #:stop-all-notification-managers
+           #:notification-dispatch-backend
+           #:notification-dispatch-backend-p
+           #:make-notification-dispatch-backend
+           #:notification-dispatch-backend-name
+           #:notification-dispatch-backend-backend
+           #:notification-dispatch-backend-enabled-p
+           #:notification-dispatch-backend-filter
+           #:notification-dispatch-backend-priority
+           #:notification-dispatcher
+           #:notification-dispatcher-p
+           #:make-notification-dispatcher
+           #:notification-dispatcher-backends
+           #:notification-dispatcher-event-bus
+           #:notification-dispatcher-subscription-id
+           #:*notification-dispatcher*
+           #:set-notification-dispatcher-backends
+           #:list-notification-dispatch-backends
+           #:find-notification-dispatch-backend
+           #:set-notification-dispatch-backend-enabled-p
+           #:ensure-notification-dispatcher
+           #:stop-notification-dispatcher
+           #:fire-notification-dispatch-test
            #:*toolset*
            #:*tool-metadata*
            #:*tool-history*
@@ -295,6 +488,7 @@
            #:tool-metadata-source-line
            #:tool-metadata-parameter-specs
            #:tool-metadata-defined-at
+           #:tool-metadata-mcp-server
            #:tool-history-entry
            #:tool-history-entry-p
            #:make-tool-history-entry
@@ -325,6 +519,8 @@
            #:config-value
            #:config-layer-source
            #:setconfig
+           #:resolve-provider
+           #:clear-resolved-provider-cache
            #:emit-config-changed
            #:*current-config*
            #:+amoebum-readtable-name+
@@ -422,18 +618,141 @@
            #:plan-mode-state-entered-at
            #:plan-mode-state-exited-at
            #:plan-mode-state-steps
+           #:plan-mode-state-approved-step-indexes
+           #:plan-mode-state-execution-pathways-enabled-p
+           #:plan-mode-state-review-pending-p
+           #:plan-mode-state-review-decision
+           #:plan-mode-state-review-notes
+           #:plan-mode-state-review-decided-at
+           #:plan-mode-state-review-last-presented-at
+           #:plan-mode-state-last-plan-markdown
            #:plan-mode-state-last-output-path
            #:plan-mode-state-last-exit-reason
            #:*plan-mode-state*
            #:current-plan-mode-state
            #:plan-mode-active-p
+           #:plan-step-indexes
            #:clear-plan-mode-steps
+           #:clear-plan-step-approvals
            #:add-plan-step
+           #:reorder-plan-step
+           #:set-plan-step-approvals
+           #:approve-plan-steps
+           #:plan-step-approved-p
+           #:set-plan-execution-pathways-enabled
+           #:plan-input-gating-snapshot
+           #:plan-input-gating-active-p
+           #:plan-input-gating-reason
+           #:plan-input-gating-terminal-stdin-enabled-p
+           #:plan-input-gating-execution-pathways-enabled-p
+           #:set-plan-review-decision
+           #:refresh-plan-review-markdown
            #:default-plan-output-path
            #:write-plan-output
            #:enter-plan-mode
            #:exit-plan-mode
            #:toggle-plan-mode
+           #:*known-plan-execution-statuses*
+           #:*plan-execution-continuity-max-lines*
+           #:*plan-execution-command-heads*
+           #:plan-execution-step
+           #:plan-execution-step-p
+           #:make-plan-execution-step
+           #:plan-execution-step-index
+           #:plan-execution-step-description
+           #:plan-execution-step-file-paths
+           #:plan-execution-step-risk
+           #:plan-execution-step-depends-on
+           #:plan-execution-step-approved-p
+           #:plan-execution-step-status
+           #:plan-execution-step-started-at
+           #:plan-execution-step-finished-at
+           #:plan-execution-output-entry
+           #:plan-execution-output-entry-p
+           #:make-plan-execution-output-entry
+           #:plan-execution-output-entry-line
+           #:plan-execution-output-entry-step-index
+           #:plan-execution-output-entry-phase
+           #:plan-execution-output-entry-severity
+           #:plan-execution-output-entry-style
+           #:plan-execution-output-entry-recovery-actions
+           #:plan-execution-output-entry-timestamp
+           #:plan-execution-state
+           #:plan-execution-state-p
+           #:plan-execution-state-run-id
+           #:plan-execution-state-status
+           #:plan-execution-state-created-at
+           #:plan-execution-state-started-at
+           #:plan-execution-state-finished-at
+           #:plan-execution-state-source-plan-exited-at
+           #:plan-execution-state-source-plan-exit-reason
+           #:plan-execution-state-steps
+           #:plan-execution-state-ordered-step-indexes
+           #:plan-execution-state-approved-step-indexes
+           #:plan-execution-state-pending-step-indexes
+           #:plan-execution-state-completed-step-indexes
+           #:plan-execution-state-continuity-output
+           #:plan-execution-state-current-step-index
+           #:plan-execution-state-failure-reason
+           #:plan-execution-state-abort-reason
+           #:plan-execution-state-rollback-baseline-stash
+           #:plan-execution-state-rollback-baseline-directory
+           #:plan-execution-state-rollback-attempted-p
+           #:plan-execution-state-rollback-succeeded-p
+           #:plan-execution-state-rollback-notes
+           #:*plan-execution-state*
+           #:*plan-execution-git-command-runner*
+           #:default-plan-execution-git-command-runner
+           #:current-plan-execution-state
+           #:reset-plan-execution-state
+           #:initialize-plan-execution
+           #:plan-execution-ready-p
+           #:start-plan-execution
+           #:pause-plan-execution
+           #:resume-plan-execution
+           #:abort-plan-execution
+           #:plan-execution-append-output
+           #:plan-execution-output-lines
+           #:prime-plan-execution-continuity
+           #:plan-execution-next-step-index
+           #:execute-next-approved-plan-step
+           #:execute-approved-plan-steps
+           #:plan-step-awaiting-approval-p
+           #:approve-next-plan-step
+           ;; Approval dialog (interactive tool approval)
+           #:pending-approval
+           #:pending-approval-p
+           #:pending-approval-tool-name
+           #:pending-approval-arguments
+           #:pending-approval-path
+           #:pending-approval-command
+           #:pending-approval-reason
+           #:pending-approval-decision-id
+           #:pending-approval-decision
+           #:pending-approval-remember-p
+           #:*pending-approval*
+           #:*pending-approval-lock*
+           #:*pending-approval-condvar*
+           #:*approval-ui-active-p*
+           #:submit-pending-approval
+           #:wait-for-pending-approval
+           #:approval-dialog-state
+           #:approval-dialog-state-p
+           #:make-approval-dialog-state
+           #:approval-dialog-state-active-p
+           #:approval-dialog-state-selected-option
+           #:approval-dialog-state-tool-name
+           #:approval-dialog-state-command
+           #:approval-dialog-state-path
+           #:approval-dialog-state-reason
+           #:approval-dialog-state-decision-id
+           #:approval-dialog-activate!
+           #:approval-dialog-deactivate!
+           #:approval-dialog-move-selection!
+           #:approval-dialog-confirm!
+           #:approval-dialog-handle-key!
+           #:approval-dialog-handle-text!
+           #:make-approval-dialog-widget
            #:+event-type-agent-spawn+
            #:+event-type-agent-complete+
            #:+event-type-agent-cancelled+
@@ -454,6 +773,20 @@
            #:agent-record-stdout
            #:agent-record-stderr
            #:agent-record-error-message
+           ;; Agent personas
+           #:persona-definition
+           #:persona-definition-p
+           #:persona-definition-name
+           #:persona-definition-description
+           #:persona-definition-capabilities
+           #:persona-definition-model
+           #:persona-definition-system-prompt
+           #:persona-definition-file-path
+           #:persona-definition-scope
+           #:parse-persona-file
+           #:discover-persona-files
+           #:find-persona-by-name
+           #:persona-manifest-lines
            #:*agent-registry*
            #:*agent-completion-queue*
            #:clear-agents
@@ -525,23 +858,55 @@
            #:make-extension-load-record
            #:extension-load-record-path
            #:extension-load-record-scope
+           #:extension-load-record-name
+           #:extension-load-record-version
+           #:extension-load-record-dependencies
+           #:extension-load-record-entry-point
+           #:extension-load-record-manifest-path
            #:extension-load-record-status
            #:extension-load-record-message
            #:extension-load-record-timestamp
+           #:extension-registry-entry
+           #:extension-registry-entry-p
+           #:make-extension-registry-entry
+           #:extension-registry-entry-name
+           #:extension-registry-entry-version
+           #:extension-registry-entry-dependencies
+           #:extension-registry-entry-entry-point
+           #:extension-registry-entry-manifest-path
+           #:extension-registry-entry-extension-root
+           #:extension-registry-entry-scope
+           #:extension-registry-entry-enabled-p
+           #:extension-registry-entry-status
+           #:extension-registry-entry-loaded-at
+           #:extension-registry-entry-last-write-date
+           #:extension-registry-entry-message
            #:*extension-load-report*
            #:*loaded-extensions*
            #:*disabled-extensions*
+           #:*extension-registry*
+           #:*extension-watch-snapshot*
+           #:*extension-hot-reload-enabled-p*
+           #:*extension-hot-reload-interval-seconds*
+           #:*extension-hot-reload-thread*
+           #:*extension-hot-reload-running-p*
            #:*extensions-global-directory-override*
            #:*extensions-project-directory-override*
            #:discover-user-extension-files
            #:extension-disabled-p
            #:list-extension-report
            #:list-loaded-extensions
+           #:list-extension-registry
            #:extension-report-summary
            #:known-user-extension-paths
+           #:known-user-extension-names
            #:disable-user-extension
+           #:enable-user-extension
            #:load-user-extensions
            #:reload-user-extensions
+           #:check-extension-hot-reload
+           #:start-extension-hot-reload
+           #:stop-extension-hot-reload
            #:session-checkpoint
            #:session-checkpoint-p
            #:make-session-checkpoint
@@ -612,6 +977,23 @@
            #:complete-slash-command-input
            #:dispatch-slash-command
            #:register-builtin-slash-commands
+           #:*tts-run-command-function*
+           #:*tts-backend*
+           #:tts-backend
+           #:kokoro-tts-backend
+           #:make-kokoro-tts-backend
+           #:kokoro-tts-voice
+           #:speak-text
+           #:stop-speaking
+           #:speaking-p
+           #:set-voice
+           #:list-voices
+           #:ensure-tts-backend
+           #:speak-with-default-backend
+           #:speak-last-assistant-response
+           #:auto-speak-enabled-p
+           #:tts-post-receive-auto-speak-hook
+           #:enable-tts-post-receive-hook
            #:+hook-point-definitions+
            #:*hook-registry*
            #:register-hook
@@ -623,6 +1005,7 @@
            #:hook-trace
            #:clear-hook-trace
            #:run-hooks
+           #:hook-chain
            #:malformed-key-binding
            #:malformed-key-binding-key-spec
            #:malformed-key-binding-reason
@@ -697,6 +1080,7 @@
            #:tool-error-arguments
            #:tool-error-cause
            #:tool-error-reason
+           #:tool-error-reason-code
            #:tool-execution-error
            #:tool-timeout
            #:tool-timeout-seconds
@@ -715,6 +1099,11 @@
            #:mcp-timeout
            #:mcp-timeout-request-id
            #:mcp-timeout-timeout-seconds
+           #:mcp-tool-bridge-error
+           #:mcp-tool-bridge-error-server-name
+           #:mcp-tool-bridge-error-mcp-tool-name
+           #:mcp-tool-bridge-error-mcp-error-code
+           #:mcp-tool-bridge-error-mcp-response-error
            #:*mcp-jsonrpc-default-timeout-seconds*
            #:mcp-jsonrpc-client
            #:mcp-jsonrpc-client-p
@@ -766,6 +1155,7 @@
            #:mcp-server-running-p
            #:mcp-server-process
            #:mcp-server-jsonrpc-client
+           #:mcp-server-server-info
            #:mcp-server-monitor-thread
            #:mcp-server-restart-count
            #:mcp-server-last-error
@@ -773,8 +1163,29 @@
            #:mcp-server-stop
            #:mcp-server-health-check
            #:mcp-server-restart
+           #:*mcp-protocol-version*
+           #:*mcp-negotiation-request-function*
+           #:mcp-server-info
+           #:mcp-server-info-p
+           #:make-mcp-server-info
+           #:mcp-server-info-protocol-version
+           #:mcp-server-info-protocol-version-match-p
+           #:mcp-server-info-capabilities
+           #:mcp-server-info-tools-capability
+           #:mcp-server-info-resources-capability
+           #:mcp-server-info-prompts-capability
+           #:mcp-server-info-logging-capability
+           #:mcp-server-info-declared-tools
+           #:mcp-server-info-discovered-tool-count
+           #:mcp-server-info-negotiated-at-unix-time
+           #:mcp-build-initialize-params
+           #:mcp-negotiate-server-capabilities
+           #:mcp-server-tool-declared-p
+           #:mcp-update-server-discovered-tool-count
+           #:mcp-server-capability-summary
            #:*mcp-tool-server-registry*
            #:*mcp-tool-binding-registry*
+           #:*mcp-tools-list-request-function*
            #:mcp-tool-binding
            #:mcp-tool-binding-p
            #:mcp-tool-binding-server-name
@@ -788,7 +1199,11 @@
            #:unregister-mcp-tool-server
            #:find-mcp-tool-server
            #:discover-mcp-server-tools
+           #:invoke-mcp-tool-bridge
            #:invoke-mcp-tool
+           #:auto-register-mcp-server-tools
+           #:mcp-tool-name-for-amoebum-tool
+           #:amoebum-tool-name-for-mcp-tool
            #:*lsp-server-initialize-timeout-seconds*
            #:*lsp-request-timeout-seconds*
            #:*lsp-server-restart-backoff-base-seconds*
@@ -853,6 +1268,8 @@
            #:+tool-restart-names+
            #:*supervised-restart-selector*
            #:default-supervised-restart-selector
+           #:parse-recovery-decision
+           #:apply-user-recovery-decision
            #:execute-tool-with-restarts
            #:tool-execution-context
            #:amoebum-context
@@ -871,6 +1288,7 @@
            #:clear-tool-metrics
            #:permission-rule
            #:permission-rule-p
+           #:permission-rule-id
            #:permission-rule-effect
            #:permission-rule-path
            #:permission-rule-command
@@ -890,6 +1308,10 @@
            #:command-canonical-form-operators
            #:command-canonical-form-wrappers
            #:command-canonical-form-commands
+           #:command-canonical-form-ast
+           #:command-canonical-form-operator-metadata
+           #:command-canonical-form-canonical-signature
+           #:command-canonical-form-dangerous-reason-codes
            #:path-approval-entry
            #:path-approval-entry-p
            #:make-path-approval-entry
@@ -904,8 +1326,12 @@
            #:*path-approval-persistence-relative-path*
            #:*dangerous-command-patterns*
            #:clear-permission-rules
+           #:clear-permission-cache
+           #:permission-cache-metrics
+           #:permission-cache-invalidation-events
            #:add-permission-rule
            #:canonicalize-permission-command
+           #:command-canonicalization-trace
            #:normalize-permission-path
            #:evaluate-path-permission
            #:evaluate-command-permission
@@ -917,7 +1343,12 @@
            #:remember-path-approval
            #:forget-path-approval
            #:dangerous-command-p
+           #:plan-mode-mutating-tools-blocked-p
            #:check-permission
+           #:last-permission-decision-trace
+           #:permission-decision-history
+           #:clear-permission-decision-history
+           #:explain-permission-decision
            #:+sandbox-max-output-size+
            #:+sandbox-max-read-size+
            #:sandbox-violation
@@ -949,6 +1380,15 @@
            #:+stream-cursor-glyph+
            #:+stream-cursor-blink-ms+
            #:+stream-budget-warning-threshold-percent+
+           #:+stream-budget-abort-threshold-percent+
+           #:stream-stats
+           #:stream-stats-p
+           #:make-stream-stats
+           #:stream-stats-tokens-received
+           #:stream-stats-chunks-processed
+           #:stream-stats-elapsed-ms
+           #:stream-stats-aborted-p
+           #:stream-stats-abort-reason
            #:token-stream-cancelled
            #:token-stream-state
            #:token-stream-state-p
@@ -963,17 +1403,23 @@
            #:token-stream-state-error-message
            #:token-stream-state-budget-warning-threshold-percent
            #:token-stream-state-budget-warning-emitted-p
+           #:token-stream-state-budget-abort-threshold-percent
+           #:token-stream-state-aborted-p
+           #:token-stream-state-abort-reason
            #:token-stream-state-worker-thread
            #:token-stream-active-p
            #:token-stream-cancel-requested-p
            #:token-stream-request-cancel
            #:token-stream-check-cancel
            #:token-stream-set-budget-warning-threshold
+           #:token-stream-set-budget-abort-threshold
+           #:token-stream-abort
            #:token-stream-maybe-budget-warning
            #:token-stream-emit-chunk
            #:token-stream-emit-tool-call-delta
            #:token-stream-emit-tool-call-started
            #:token-stream-emit-tool-call-argument-complete
+           #:token-stream-emit-tool-call-result
            #:token-stream-mark-complete
            #:token-stream-mark-cancelled
            #:token-stream-mark-failed
@@ -982,9 +1428,17 @@
            #:token-stream-elapsed-ms
            #:token-stream-tokens-per-second
            #:token-stream-progress-summary
+           #:token-stream-stats
            #:stream-cursor-visible-p
+           #:streaming-markdown-renderer
+           #:streaming-markdown-renderer-p
+           #:make-streaming-markdown-renderer
+           #:streaming-markdown-renderer-reset
+           #:streaming-markdown-renderer-append-chunk
+           #:streaming-markdown-renderer-render-lines
            #:stream-markdown-styled-lines
            #:stream-pseudopod-chat
+           #:demo-stream-runner
            #:+event-type-ui-stream-progress+
            #:status-bar-stream-payload
            #:status-bar-stream-payload-p
@@ -998,6 +1452,7 @@
            #:make-status-bar-state
            #:status-bar-state-permission-mode
            #:status-bar-state-plan-mode-active-p
+           #:status-bar-state-plan-mode-mutating-tools-blocked-p
            #:status-bar-state-branch-name
            #:status-bar-state-model-name
            #:status-bar-state-context-used-tokens
@@ -1015,6 +1470,25 @@
            #:status-bar-line
            #:status-bar-render-key
            #:make-status-bar-widget
+           #:*model-router*
+           #:provider-health-entry
+           #:provider-health-entry-p
+           #:make-provider-health-entry
+           #:provider-health-entry-name
+           #:provider-health-entry-status
+           #:provider-health-entry-request-count
+           #:provider-health-entry-error-count
+           #:provider-health-entry-error-rate
+           #:provider-health-entry-last-latency-ms
+           #:provider-health-entry-last-error-message
+           #:provider-health-monitor-reset!
+           #:provider-health-refresh!
+           #:provider-health-entries
+           #:provider-health-last-updated-at
+           #:provider-health-compact-indicator
+           #:provider-health-signature
+           #:provider-health-row-elements
+           #:provider-health-panel
            #:chat-ui-state
            #:chat-ui-state-p
            #:make-chat-ui-state
@@ -1031,6 +1505,7 @@
            #:chat-ui-state-stream-tools
            #:chat-ui-state-stream-scroll-follow-p
            #:chat-ui-state-status-bar-state
+           #:chat-ui-state-provider-dashboard-visible-p
            #:chat-ui-state-conversation
            #:chat-ui-state-context-used-tokens
            #:chat-ui-state-context-window-limit
@@ -1046,12 +1521,7 @@
            #:chat-ui-scroll-history
            #:chat-role-prefix
            #:chat-role-cell
-           #:chat-ui-build-tree
-           #:render-chat-ui-buffer
-           #:handle-chat-ui-event
            #:run-chat-ui
-           ;; Phase 5 (I94-I102)
-           #:*model-router*
            ;; Indexer (I96)
            #:symbol-entry
            #:symbol-entry-p
@@ -1137,6 +1607,25 @@
            #:clear-asdf-extensions
            #:save-asdf-extension-manifest
            #:load-asdf-extension-manifest
+           ;; Extension manifests + dependency resolver (I233)
+           #:+extension-capabilities+
+           #:extension-manifest
+           #:extension-manifest-p
+           #:make-extension-manifest
+           #:extension-manifest-name
+           #:extension-manifest-version
+           #:extension-manifest-author
+           #:extension-manifest-description
+           #:extension-manifest-license
+           #:extension-manifest-dependencies
+           #:extension-manifest-provides
+           #:extension-manifest-entry-point
+           #:extension-manifest-source-path
+           #:parse-extension-manifest-sexp
+           #:read-extension-manifest-file
+           #:compare-extension-version
+           #:version-satisfies-constraint-p
+           #:resolve-extension-manifests
            ;; Profiler (I101)
            #:metrics-entry
            #:metrics-entry-p
@@ -1163,6 +1652,24 @@
            #:profiler-stop
            #:profiler-report
            #:profiler-reset
+           ;; Profiling dashboard (I236)
+           #:profiling-report
+           #:profiling-report-p
+           #:make-profiling-report
+           #:profiling-report-top-functions
+           #:profiling-report-call-graph
+           #:profiling-report-total-samples
+           #:profiling-report-elapsed-ms
+           #:*profiling-enabled-p*
+           #:*tool-profiling-enabled-p*
+           #:*last-profiling-report*
+           #:start-profiling
+           #:stop-profiling
+           #:report-profiling
+           #:note-tool-profiling-sample
+           #:sort-profiling-top-functions
+           #:render-profiling-report-table
+           #:profiling-report-table-widget
            #:memory-statistics
            #:metrics-summary
            ;; Swarm integration (I83-I93)
@@ -1193,6 +1700,9 @@
            #:orchestrate-read
            #:orchestrate-read-via-pipeline
            #:format-read-error-for-user
+           #:+event-type-read-orchestration-cache+
+           #:clear-read-orchestration-cache
+           #:read-orchestration-cache-metrics
            #:*read-orchestration-max-line-limit*
            #:*read-orchestration-max-file-size-bytes*
            #:*read-orchestration-supported-extensions*
@@ -1246,7 +1756,186 @@
            #:shell-safety-result-matched-pattern
            #:evaluate-shell-safety-policy
            #:shell-safety-policy-hook
-           #:shell-command-safe-p))
+           #:shell-command-safe-p
+           ;; Sound backend protocol (I257)
+           #:sound-backend
+           #:sound-play
+           #:sound-stop
+           #:sound-list-themes
+           #:sound-resolve-category
+           #:sound-backend-available-p
+           #:sound-backend-kind
+           #:builtin-sound-backend
+           #:hailer-cli-sound-backend
+           #:hailer-cli-command
+           #:hailer-cli-available-cached
+           #:*hailer-cli-runner*
+           #:hailer-mcp-sound-backend
+           #:*sound-player-command*
+           #:*sound-max-concurrent*
+           #:*sound-active-count*
+           #:*sound-backend-instance*
+           #:select-sound-backend
+           #:ensure-sound-backend
+           #:reset-sound-backend
+           #:play-sound
+           ;; Worker-supervisor protocol (I258)
+           #:worker-record
+           #:worker-record-p
+           #:worker-record-id
+           #:worker-record-type
+           #:worker-record-label
+           #:worker-record-command
+           #:worker-record-status
+           #:worker-record-created-at
+           #:worker-record-started-at
+           #:worker-record-finished-at
+           #:worker-record-result
+           #:worker-record-output-buffer
+           #:worker-record-exit-code
+           #:worker-record-error-message
+           #:worker-record-retry-count
+           #:worker-record-max-retries
+           #:worker-record-backend
+           #:worker-record-inner-id
+           #:+event-type-worker-spawned+
+           #:+event-type-worker-started+
+           #:+event-type-worker-completed+
+           #:+event-type-worker-failed+
+           #:+event-type-worker-cancelled+
+           #:+event-type-worker-retry+
+           #:worker-supervisor
+           #:supervisor-spawn
+           #:supervisor-status
+           #:supervisor-result
+           #:supervisor-cancel
+           #:supervisor-list
+           #:supervisor-output
+           #:in-process-supervisor
+           #:*worker-supervisor*
+           #:ensure-worker-supervisor
+           #:spawn-worker
+           #:worker-status
+           #:worker-result
+           #:worker-cancel
+           #:worker-list
+           #:worker-output
+           #:active-worker-count
+           #:clear-workers
+           #:await-worker
+           #:await-workers
+           #:await-any-worker
+           ;; Overwatch worker backend (I259)
+           #:*overwatch-host*
+           #:*overwatch-port*
+           #:*overwatch-poll-interval-seconds*
+           #:*overwatch-connect-timeout-seconds*
+           #:*overwatch-http-request-function*
+           #:overwatch-supervisor
+           #:overwatch-fallback-supervisor
+           #:overwatch-available-p
+           #:select-worker-backend
+           ;; Event journal (I263)
+           #:*journal-directory*
+           #:*journal-max-segment-bytes*
+           #:*journal-max-segment-seconds*
+           #:*journal-max-segments*
+           #:*journal-flush-interval-events*
+           #:journal-segment
+           #:journal-segment-p
+           #:journal-segment-path
+           #:journal-segment-created-at
+           #:journal-segment-closed-at
+           #:journal-segment-event-count
+           #:journal-segment-byte-count
+           #:event-journal
+           #:event-journal-p
+           #:event-journal-directory
+           #:event-journal-running-p
+           #:event-journal-total-events
+           #:event-journal-segments
+           #:event-journal-active-segment
+           #:*event-journal*
+           #:make-event-journal-instance
+           #:start-event-journal
+           #:stop-event-journal
+           #:journal-statistics
+           #:journal-segment-paths
+           #:reset-event-journal
+           ;; Worker retry and supervision (I260)
+           #:worker-supervision-policy
+           #:worker-supervision-policy-p
+           #:make-worker-supervision-policy
+           #:worker-supervision-policy-max-retries
+           #:worker-supervision-policy-backoff-strategy
+           #:worker-supervision-policy-backoff-base-seconds
+           #:worker-supervision-policy-timeout-escalation-factor
+           #:worker-supervision-policy-transient-exit-codes
+           #:worker-supervision-policy-transient-output-patterns
+           #:worker-supervision-policy-permanent-exit-codes
+           #:*default-supervision-policy*
+           #:classify-worker-failure
+           #:worker-retry-eligible-p
+           #:schedule-worker-retry
+           #:spawn-worker-supervised
+           #:child-worker-failed
+           #:child-worker-failed-worker
+           #:child-worker-failed-classification
+           #:child-worker-failed-parent-id
+           #:supervise-child-worker
+           ;; Worker fan-out and join (I261)
+           #:worker-group
+           #:worker-group-p
+           #:worker-group-id
+           #:worker-group-worker-ids
+           #:worker-group-created-at
+           #:worker-group-timeout-seconds
+           #:worker-group-status
+           #:fan-out-workers
+           #:join-worker-group
+           #:race-worker-group
+           #:merge-worker-results
+           #:find-worker-group
+           #:worker-group-results
+           #:clear-worker-groups
+           ;; Event replay and audit (I264)
+           #:replay-journal
+           #:audit-query
+           #:audit-current-journal
+           #:replay-current-journal
+           ;; Session recording (I265)
+           #:session-metadata
+           #:session-metadata-p
+           #:session-metadata-id
+           #:session-metadata-start-time
+           #:session-metadata-end-time
+           #:session-metadata-event-count
+           #:session-metadata-tool-call-count
+           #:session-metadata-tokens-used
+           #:session-metadata-model
+           #:session-metadata-project-path
+           #:session-metadata-journal-segments
+           #:*session-directory*
+           #:*current-session-id*
+           #:start-session
+           #:stop-session
+           #:list-sessions
+           #:replay-session
+           #:export-session
+           ;; Conversation export (I266)
+           #:*conversation-export-directory*
+           #:export-conversation-markdown
+           #:export-conversation-json
+           #:export-conversation
+           ;; Worker dashboard (I262)
+           #:ensure-worker-dashboard-state
+           #:toggle-worker-dashboard
+           #:worker-dashboard-visible-p
+           #:worker-dashboard-subscribe
+           #:worker-dashboard-unsubscribe
+           #:worker-dashboard-select
+           #:worker-dashboard-selected-output
+           #:worker-status-bar-segment))
 
 (defpackage :amoebum.sandbox
   (:use)
@@ -1354,6 +2043,9 @@
            #:orchestrate-read
            #:orchestrate-read-via-pipeline
            #:format-read-error-for-user
+           #:+event-type-read-orchestration-cache+
+           #:clear-read-orchestration-cache
+           #:read-orchestration-cache-metrics
            #:*read-orchestration-max-line-limit*
            #:*read-orchestration-max-file-size-bytes*
            #:*read-orchestration-supported-extensions*))

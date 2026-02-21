@@ -1,7 +1,7 @@
 (in-package :amoebum)
 
 ;;; ---------------------------------------------------------------------------
-;;; Read Orchestration (I105)
+;;; Read Orchestration (I105, I148)
 ;;;
 ;;; Wires amoebum's read-file tool to pseudopod's read primitives with
 ;;; argument validation and user-facing errors.  Provides the orchestration
@@ -20,6 +20,206 @@
 (defparameter *read-orchestration-supported-extensions*
   '("pdf" "png" "jpg" "jpeg" "gif" "svg" "ipynb" "csv" "tsv")
   "File extensions that receive specialised read handling.")
+
+(defparameter +event-type-read-orchestration-cache+
+  (intern "READ-ORCHESTRATION:CACHE" :keyword))
+
+(defparameter *read-orchestration-cache* (make-hash-table :test #'equal)
+  "In-memory cache of read orchestration payloads.")
+
+(defparameter *read-orchestration-cache-index* (make-hash-table :test #'equal)
+  "Map canonical path key to cache keys for targeted invalidation.")
+
+(defparameter *read-orchestration-cache-signatures* (make-hash-table :test #'equal)
+  "Map canonical path key to latest known file signature.")
+
+(defparameter *read-orchestration-cache-lock*
+  (bordeaux-threads:make-lock "amoebum-read-orchestration-cache"))
+
+(defparameter *read-orchestration-cache-max-entries* 256
+  "Maximum entries retained in the read orchestration cache.")
+
+(defparameter *read-orchestration-cache-hits* 0)
+(defparameter *read-orchestration-cache-misses* 0)
+(defparameter *read-orchestration-cache-turn-id* nil)
+
+(defun %clear-read-orchestration-cache-unsafe ()
+  (clrhash *read-orchestration-cache*)
+  (clrhash *read-orchestration-cache-index*)
+  (clrhash *read-orchestration-cache-signatures*))
+
+(defun clear-read-orchestration-cache (&key (reason :manual))
+  "Clear read-orchestration cache entries and reset turn tracking."
+  (declare (ignore reason))
+  (bordeaux-threads:with-lock-held (*read-orchestration-cache-lock*)
+    (%clear-read-orchestration-cache-unsafe)
+    (setf *read-orchestration-cache-turn-id* nil))
+  t)
+
+(defun read-orchestration-cache-metrics ()
+  "Return cache hit/miss/accounting metrics for read orchestration."
+  (bordeaux-threads:with-lock-held (*read-orchestration-cache-lock*)
+    (list :hits *read-orchestration-cache-hits*
+          :misses *read-orchestration-cache-misses*
+          :entries (hash-table-count *read-orchestration-cache*)
+          :turn-id *read-orchestration-cache-turn-id*)))
+
+(defun %read-orchestration-begin-turn (turn-id)
+  (when turn-id
+    (bordeaux-threads:with-lock-held (*read-orchestration-cache-lock*)
+      (unless (equal turn-id *read-orchestration-cache-turn-id*)
+        (%clear-read-orchestration-cache-unsafe)
+        (setf *read-orchestration-cache-turn-id* turn-id)))))
+
+(defun %read-orchestration-content-hash (path)
+  (handler-case
+      (with-open-file (stream path
+                              :direction :input
+                              :element-type '(unsigned-byte 8))
+        (let* ((size (file-length stream))
+               (octets (make-array size :element-type '(unsigned-byte 8))))
+          (read-sequence octets stream)
+          (sxhash octets)))
+    (error ()
+      nil)))
+
+(defun %read-orchestration-file-signature (path)
+  (let ((resolved (or (ignore-errors (truename path))
+                      (probe-file path)
+                      path)))
+    (list :mtime (ignore-errors (file-write-date resolved))
+          :size (%file-size-bytes resolved)
+          :hash (%read-orchestration-content-hash resolved))))
+
+(defun %read-orchestration-cache-path-key (path)
+  (%path-text (or (ignore-errors (truename path))
+                  (probe-file path)
+                  path)))
+
+(defun %read-orchestration-cache-key (path-key signature offset limit pages)
+  (list path-key signature (or offset 0) limit pages))
+
+(defun %read-orchestration-invalidate-stale-unsafe (path-key signature)
+  (let ((known (gethash path-key *read-orchestration-cache-signatures*)))
+    (unless (equal known signature)
+      (dolist (cache-key (gethash path-key *read-orchestration-cache-index*))
+        (remhash cache-key *read-orchestration-cache*))
+      (setf (gethash path-key *read-orchestration-cache-index*) '()
+            (gethash path-key *read-orchestration-cache-signatures*) signature))))
+
+(defun %read-orchestration-cache-lookup (path offset limit pages)
+  (let* ((path-key (%read-orchestration-cache-path-key path))
+         (signature (%read-orchestration-file-signature path))
+         (cache-key (%read-orchestration-cache-key path-key signature offset limit pages)))
+    (bordeaux-threads:with-lock-held (*read-orchestration-cache-lock*)
+      (%read-orchestration-invalidate-stale-unsafe path-key signature)
+      (let ((cached (gethash cache-key *read-orchestration-cache*)))
+        (if cached
+            (progn
+              (incf *read-orchestration-cache-hits*)
+              (values cached :hit))
+            (progn
+              (incf *read-orchestration-cache-misses*)
+              (values nil :miss)))))))
+
+(defun %read-orchestration-cache-store (path offset limit pages content)
+  (let* ((path-key (%read-orchestration-cache-path-key path))
+         (signature (%read-orchestration-file-signature path))
+         (cache-key (%read-orchestration-cache-key path-key signature offset limit pages)))
+    (bordeaux-threads:with-lock-held (*read-orchestration-cache-lock*)
+      (%read-orchestration-invalidate-stale-unsafe path-key signature)
+      (setf (gethash cache-key *read-orchestration-cache*) content)
+      (pushnew cache-key
+               (gethash path-key *read-orchestration-cache-index*)
+               :test #'equal)
+      (when (> (hash-table-count *read-orchestration-cache*)
+               *read-orchestration-cache-max-entries*)
+        (%clear-read-orchestration-cache-unsafe))
+      content)))
+
+(defun %normalize-speculative-paths (path candidate-paths)
+  (let ((seen (make-hash-table :test #'equal))
+        (ordered '()))
+    (dolist (candidate (if candidate-paths
+                           (cons path candidate-paths)
+                           (list path)))
+      (let ((normalized (%validate-read-path candidate)))
+        (unless (gethash normalized seen)
+          (setf (gethash normalized seen) t)
+          (push normalized ordered))))
+    (nreverse ordered)))
+
+(defun %attempt-orchestrated-read (path-string offset limit pages)
+  (handler-case
+      (multiple-value-bind (_path validated-offset validated-limit validated-pages)
+          (validate-read-arguments path-string offset limit pages)
+        (declare (ignore _path))
+        (let ((pathname-value (pathname path-string)))
+          (%ensure-tool-path-allowed :read-file pathname-value)
+          (multiple-value-bind (cached cache-status)
+              (%read-orchestration-cache-lookup pathname-value
+                                                validated-offset
+                                                validated-limit
+                                                validated-pages)
+            (let ((content (or cached
+                               (%read-orchestration-cache-store
+                                pathname-value
+                                validated-offset
+                                validated-limit
+                                validated-pages
+                                (%read-file-content pathname-value
+                                                    validated-offset
+                                                    validated-limit
+                                                    validated-pages)))))
+              (list :ok t
+                    :path (%path-text pathname-value)
+                    :cache-status cache-status
+                    :content content)))))
+    (error (condition)
+      (list :ok nil
+            :path path-string
+            :error condition))))
+
+(defun %run-speculative-read-attempts (paths offset limit pages)
+  (if (= (length paths) 1)
+      (list (%attempt-orchestrated-read (first paths) offset limit pages))
+      (let* ((results (make-array (length paths) :initial-element nil))
+             (threads
+               (loop for path in paths
+                     for index from 0
+                     collect
+                     (let ((path-copy path)
+                           (index-copy index))
+                       (bordeaux-threads:make-thread
+                        (lambda ()
+                          (setf (aref results index-copy)
+                                (%attempt-orchestrated-read path-copy offset limit pages)))
+                        :name (format nil "read-orchestration-speculative-~D" index-copy))))))
+        (dolist (thread threads)
+          (bordeaux-threads:join-thread thread))
+        (loop for index from 0 below (length paths)
+              collect (aref results index)))))
+
+(defun %publish-read-orchestration-cache-event (event-bus selected-path attempts turn-id)
+  (when (and event-bus (event-bus-p event-bus))
+    (let* ((hit-count (count :hit attempts :test #'eq :key (lambda (attempt)
+                                                             (getf attempt :cache-status))))
+           (miss-count (count :miss attempts :test #'eq :key (lambda (attempt)
+                                                               (getf attempt :cache-status))))
+           (metrics (read-orchestration-cache-metrics)))
+      (publish event-bus
+               (make-event :type +event-type-read-orchestration-cache+
+                           :source :amoebum
+                           :severity :debug
+                           :payload (list :selected-path selected-path
+                                          :candidate-count (length attempts)
+                                          :speculative-p (> (length attempts) 1)
+                                          :turn-id turn-id
+                                          :cache-hit-count hit-count
+                                          :cache-miss-count miss-count
+                                          :cache-hits-total (getf metrics :hits 0)
+                                          :cache-misses-total (getf metrics :misses 0)
+                                          :cache-entries (getf metrics :entries 0)))))))
 
 ;;; --- Argument validation helpers -------------------------------------------
 
@@ -147,29 +347,36 @@ on failure.  Returns normalised (path-string offset limit pages) values."
     (%validate-file-size path-string)
     (values path-string offset limit pages)))
 
-(defun orchestrate-read (path &key offset limit pages)
+(defun orchestrate-read (path &key offset limit pages candidate-paths turn-id event-bus)
   "Orchestrate a read-file request: validate arguments, check permissions,
 invoke the read primitive, record state, and return content.
 
 This is the primary entry point for programmatic read dispatch that
 bypasses the LLM tool-call path but still applies full validation."
-  (multiple-value-bind (path-string validated-offset validated-limit validated-pages)
-      (validate-read-arguments path offset limit pages)
-    (let ((pathname-value (pathname path-string)))
-      ;; Permission check
-      (%ensure-tool-path-allowed :read-file pathname-value)
-      ;; Invoke the underlying read
-      (let ((content (%read-file-content pathname-value
-                                          validated-offset
-                                          validated-limit
-                                          validated-pages)))
-        ;; Record read state for edit-file safety
-        (%record-file-read-state pathname-value)
-        content))))
+  (%read-orchestration-begin-turn turn-id)
+  (let* ((candidate-path-list (%normalize-speculative-paths path candidate-paths))
+         (attempts (%run-speculative-read-attempts candidate-path-list offset limit pages))
+         (selected (find-if (lambda (attempt)
+                              (getf attempt :ok))
+                            attempts)))
+    (unless selected
+      (let ((first-error (getf (first attempts) :error)))
+        (if first-error
+            (error first-error)
+            (%read-orch-signal "path"
+                               (format nil "Unable to read any candidate path (~{~A~^, ~})."
+                                       candidate-path-list)
+                               :reason "all speculative reads failed"))))
+    (%record-file-read-state (pathname (getf selected :path)))
+    (%publish-read-orchestration-cache-event (or event-bus (ignore-errors (current-event-bus)))
+                                             (getf selected :path)
+                                             attempts
+                                             turn-id)
+    (getf selected :content)))
 
 (defun orchestrate-read-via-pipeline (path &key offset limit pages
-                                             (context nil)
-                                             (event-bus nil))
+                                            (context nil)
+                                            (event-bus nil))
   "Orchestrate a read through the full execute-tool CLOS pipeline.
 Creates a tool-call and dispatches it through execute-tool for full
 hook/event/permission coverage.
@@ -182,16 +389,16 @@ context is created."
                         (pathname (namestring path))
                         (t path)))
          (args-json
-           (with-output-to-string (stream)
-             (write-char #\{ stream)
-             (format stream "\"path\":\"~A\"" path-string)
-             (when offset
-               (format stream ",\"offset\":~D" offset))
-             (when limit
-               (format stream ",\"limit\":~D" limit))
-             (when pages
-               (format stream ",\"pages\":\"~A\"" pages))
-             (write-char #\} stream)))
+          (with-output-to-string (stream)
+            (write-char #\{ stream)
+            (format stream "\"path\":\"~A\"" path-string)
+            (when offset
+              (format stream ",\"offset\":~D" offset))
+            (when limit
+              (format stream ",\"limit\":~D" limit))
+            (when pages
+              (format stream ",\"pages\":\"~A\"" pages))
+            (write-char #\} stream)))
          (ctx (or context
                   (make-amoebum-context
                    :permission-mode :full-auto
@@ -210,8 +417,8 @@ context is created."
   (typecase condition
     (read-orchestration-error
      (format nil "Error: ~A" (or (amoebum-error-message condition)
-                                  (tool-error-reason condition)
-                                  "Invalid read request.")))
+                                 (tool-error-reason condition)
+                                 "Invalid read request.")))
     (tool-permission-denied
      (format nil "Permission denied: Cannot read ~A"
              (or (tool-error-reason condition) "the requested file.")))

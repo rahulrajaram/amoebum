@@ -64,7 +64,8 @@
           '())))
 
 (defun %matching-files-sorted (tool root pattern &key limit)
-  (let* ((scanner (cl-ppcre:create-scanner (%glob->regex pattern)))
+  (let* ((pattern-path (merge-pathnames (pathname pattern) root))
+         (scanner (cl-ppcre:create-scanner (%glob->regex pattern-path)))
          (seen (make-hash-table :test #'equal))
          (matches '()))
     (dolist (candidate (%glob-candidates root pattern))
@@ -74,7 +75,7 @@
                (relative (%relative-path-text resolved root)))
           (unless (gethash key seen)
             (setf (gethash key seen) t)
-            (when (cl-ppcre:scan scanner relative)
+            (when (cl-ppcre:scan scanner key)
               (%ensure-tool-path-allowed tool resolved)
               (push resolved matches))))))
     (let ((sorted (sort matches #'> :key #'%path-mtime)))

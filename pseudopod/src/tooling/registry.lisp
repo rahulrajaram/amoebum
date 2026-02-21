@@ -31,6 +31,35 @@
                table))
     copy))
 
+(defun %sanitize-type-value (value)
+  "Strip \"null\" from type arrays like [\"integer\",\"null\"] → \"integer\".
+Some providers (e.g. Kimi/Moonshot) reject nullable type arrays."
+  (if (and (listp value)
+           (every #'stringp value))
+      (let ((non-null (remove "null" value :test #'string=)))
+        (cond
+          ((null non-null) "string")        ; fallback if only "null"
+          ((= 1 (length non-null)) (first non-null))
+          (t non-null)))                     ; keep array if 2+ non-null types
+      value))
+
+(defun %deep-copy-sanitize-schema (table)
+  "Deep-copy a tool parameter schema hash-table, sanitizing nullable type arrays."
+  (cond
+    ((not (hash-table-p table)) table)
+    (t
+     (let ((copy (make-hash-table :test #'equal)))
+       (maphash (lambda (key value)
+                  (setf (gethash key copy)
+                        (cond
+                          ((string= key "type")
+                           (%sanitize-type-value value))
+                          ((hash-table-p value)
+                           (%deep-copy-sanitize-schema value))
+                          (t value))))
+                table)
+       copy))))
+
 (defun %default-tool-schema ()
   (let ((schema (make-hash-table :test #'equal)))
     (setf (gethash "type" schema) "object")
@@ -68,7 +97,7 @@
     (setf (gethash "name" function-body) (tool-definition-name tool))
     (setf (gethash "description" function-body) (tool-definition-description tool))
     (setf (gethash "parameters" function-body)
-          (%copy-hash-table-shallow (tool-definition-parameters tool)))
+          (%deep-copy-sanitize-schema (tool-definition-parameters tool)))
     (setf (gethash "function" hash) function-body)
     hash))
 

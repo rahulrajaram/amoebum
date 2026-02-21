@@ -1,0 +1,130 @@
+(in-package :amoebum/test)
+
+;;; ============================================================
+;;; I246: Streaming Conversation Step — Token Stream State
+;;; ============================================================
+
+(def-suite streaming-step-suite :in amoebum-suite)
+(in-suite streaming-step-suite)
+
+;;; --- Token stream state lifecycle ---
+
+(test token-stream-state-creation
+  "make-token-stream-state should create idle state."
+  (let ((state (amoebum:make-token-stream-state)))
+    (is (amoebum::token-stream-state-p state))
+    (is (eq :idle (amoebum::token-stream-state-status state)))
+    (is (= 0 (amoebum::token-stream-state-token-count state)))
+    (is (= 0 (amoebum::token-stream-state-chunk-count state)))
+    (is (not (amoebum:token-stream-active-p state)))))
+
+(test token-stream-reset
+  "Reset should clear all state."
+  (let ((state (amoebum:make-token-stream-state)))
+    (setf (amoebum::token-stream-state-status state) :running)
+    (amoebum::%token-stream-reset! state)
+    (is (eq :idle (amoebum::token-stream-state-status state)))
+    (is (= 0 (amoebum::token-stream-state-token-count state)))))
+
+;;; --- Cancellation ---
+
+(test token-stream-cancel-mechanism
+  "Cancellation should set flag and raise condition on check."
+  (let ((state (amoebum:make-token-stream-state)))
+    (is (not (amoebum:token-stream-cancel-requested-p state)))
+    (amoebum:token-stream-request-cancel state)
+    (is (amoebum:token-stream-cancel-requested-p state))
+    (signals amoebum::token-stream-cancelled
+      (amoebum:token-stream-check-cancel state))))
+
+;;; --- Budget warning ---
+
+(test token-stream-budget-warning-emits
+  "Budget warning should fire when usage exceeds threshold."
+  (let ((state (amoebum:make-token-stream-state)))
+    (setf (amoebum::token-stream-state-status state) :running)
+    ;; Set threshold to 50%
+    (amoebum:token-stream-set-budget-warning-threshold state 50)
+    ;; 60% usage should trigger
+    (let ((warning (amoebum:token-stream-maybe-budget-warning state 60 100)))
+      (is (not (null warning)))
+      (is (= 60 (getf warning :usage-percent))))
+    ;; Second call should not re-emit (already emitted)
+    (let ((warning2 (amoebum:token-stream-maybe-budget-warning state 70 100)))
+      (is (null warning2)))))
+
+(test token-stream-budget-warning-below-threshold
+  "Budget warning should not fire below threshold."
+  (let ((state (amoebum:make-token-stream-state)))
+    (setf (amoebum::token-stream-state-status state) :running)
+    (amoebum:token-stream-set-budget-warning-threshold state 90)
+    (let ((warning (amoebum:token-stream-maybe-budget-warning state 50 100)))
+      (is (null warning)))))
+
+;;; --- Abort ---
+
+(test token-stream-abort-sets-flags
+  "token-stream-abort should set abort flags."
+  (let ((state (amoebum:make-token-stream-state)))
+    (amoebum:token-stream-abort state "budget exceeded")
+    (is (amoebum::token-stream-state-aborted-p state))
+    (is (string= "budget exceeded" (amoebum::token-stream-state-abort-reason state)))
+    (is (amoebum:token-stream-cancel-requested-p state))))
+
+;;; --- Budget threshold validation ---
+
+(test token-stream-threshold-validation
+  "Budget thresholds must be in [1, 100]."
+  (let ((state (amoebum:make-token-stream-state)))
+    (signals error (amoebum:token-stream-set-budget-warning-threshold state 0))
+    (signals error (amoebum:token-stream-set-budget-warning-threshold state 101))
+    (finishes (amoebum:token-stream-set-budget-warning-threshold state 1))
+    (finishes (amoebum:token-stream-set-budget-warning-threshold state 100))))
+
+;;; --- Stream stats ---
+
+(test token-stream-stats-returns-struct
+  "token-stream-stats should return a stream-stats struct."
+  (let ((state (amoebum:make-token-stream-state)))
+    (let ((stats (amoebum:token-stream-stats state)))
+      (is (amoebum::stream-stats-p stats))
+      (is (= 0 (amoebum::stream-stats-tokens-received stats)))
+      (is (= 0 (amoebum::stream-stats-chunks-processed stats))))))
+
+;;; --- Progress summary ---
+
+(test token-stream-progress-summary-structure
+  "Progress summary should return a plist with expected keys."
+  (let ((state (amoebum:make-token-stream-state)))
+    (let ((summary (amoebum:token-stream-progress-summary state)))
+      (is (listp summary))
+      (is (eq :idle (getf summary :status)))
+      (is (not (getf summary :activep)))
+      (is (integerp (getf summary :tokens)))
+      (is (integerp (getf summary :chunks))))))
+
+;;; --- Emit chunk and drain ---
+
+(test token-stream-emit-and-drain
+  "Emitting chunks should be retrievable via drain."
+  (let ((state (amoebum:make-token-stream-state))
+        (events '()))
+    (setf (amoebum::token-stream-state-status state) :running)
+    (amoebum:token-stream-emit-chunk state "hello ")
+    (amoebum:token-stream-emit-chunk state "world")
+    (amoebum:token-stream-drain-events state
+      (lambda (event) (push event events)))
+    (is (= 2 (length events)))
+    ;; Token and chunk counts should be updated
+    (is (plusp (amoebum::token-stream-state-token-count state)))
+    (is (= 2 (amoebum::token-stream-state-chunk-count state)))))
+
+;;; --- Streaming markdown renderer ---
+
+(test streaming-markdown-renderer-basic
+  "Streaming markdown renderer should produce styled lines."
+  (let ((renderer (amoebum:make-streaming-markdown-renderer)))
+    (amoebum:streaming-markdown-renderer-append-chunk renderer "Hello World")
+    (let ((lines (amoebum:streaming-markdown-renderer-render-lines renderer 80)))
+      (is (listp lines))
+      (is (>= (length lines) 1)))))

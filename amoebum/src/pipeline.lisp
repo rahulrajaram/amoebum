@@ -5,14 +5,16 @@
 (defparameter *pipeline-current-tool-name* nil)
 (defparameter *pipeline-current-arguments* nil)
 (defparameter *pipeline-current-request-id* nil)
+(defvar *tool-error-llm-recovery-function* nil
+  "When non-nil, a function called with (condition tool-name arguments) to attempt LLM-driven recovery from tool errors.")
 
-(defclass tool-execution-context ()
-  ((toolset :initarg :toolset
-            :initform *toolset*
-            :accessor context-toolset)
-   (permission-mode :initarg :permission-mode
+(defclass tool-execution-context (pseudopod:tool-execution-context)
+  ((permission-mode :initarg :permission-mode
                     :initform nil
                     :accessor context-permission-mode)
+   (permission-cancel-thunk :initarg :permission-cancel-thunk
+                           :initform nil
+                           :accessor context-permission-cancel-thunk)
    (event-bus :initarg :event-bus
               :initform nil
               :accessor context-event-bus)
@@ -33,8 +35,116 @@
 (defclass amoebum-context (tool-execution-context) ()
   (:documentation "Default amoebum tool execution context."))
 
-(defgeneric execute-tool (tool-call context)
-  (:documentation "Execute TOOL-CALL in CONTEXT via method-combination pipeline."))
+(defun context-toolset (context)
+  (pseudopod:context-toolset context))
+
+(defun (setf context-toolset) (value context)
+  (setf (pseudopod:context-toolset context) value))
+
+(defun execute-tool (tool-call context)
+  (pseudopod:execute-tool tool-call context))
+
+(defun %effective-pipeline-event-bus (event-bus)
+  (or event-bus
+      (and (boundp '*event-bus*) *event-bus*)
+      (current-event-bus)))
+
+(defun %make-restart-context (toolset permission-mode)
+  (make-amoebum-context
+   :toolset toolset
+   :permission-mode permission-mode
+   :event-bus (%effective-pipeline-event-bus nil)
+   :hook-registry (and (boundp '*hook-registry*) *hook-registry*)
+   :initialize-notifications-p nil))
+
+(defun %normalize-restart-arguments (arguments)
+  (%copy-arguments-to-hash-table arguments))
+
+(defun %make-restart-tool-call (tool-name arguments)
+  (pseudopod:make-tool-call
+   :id (format nil "restart-~A-~D"
+               (%pipeline-normalize-tool-name tool-name)
+               (get-universal-time))
+   :name (%pipeline-normalize-tool-name tool-name)
+   :arguments (%encode-json-arguments (%normalize-restart-arguments arguments))))
+
+(defun %handle-tool-error-via-llm (condition tool-name arguments)
+  "Delegate tool error recovery to the LLM recovery function.
+The recovery function should inspect the condition and available restarts,
+then invoke one of: retry-with-modified-args, use-alternative-tool,
+skip-tool-call, abort-step, or ask-user."
+  (when (functionp *tool-error-llm-recovery-function*)
+    (funcall *tool-error-llm-recovery-function*
+             condition tool-name arguments)))
+
+(defun %run-on-error-hooks (context condition tool-name)
+  (let ((*hook-registry* (or (context-hook-registry context)
+                             *hook-registry*)))
+    (run-hooks :on-error condition tool-name)))
+
+(defun %execute-tool-with-restarts (tool-name arguments toolset permission-mode)
+  (let* ((normalized-tool-name (%pipeline-normalize-tool-name tool-name))
+         (normalized-arguments (%normalize-restart-arguments arguments))
+         (context (%make-restart-context toolset permission-mode))
+         (tool-call (%make-restart-tool-call normalized-tool-name normalized-arguments)))
+    (handler-bind
+        ((tool-error
+           (lambda (condition)
+             (%run-on-error-hooks context condition normalized-tool-name)
+             (cond
+               ((and (eq (%effective-permission-mode permission-mode) :supervised)
+                     (functionp *supervised-restart-selector*))
+                (let ((decision (funcall *supervised-restart-selector* condition)))
+                  (when decision
+                    (%invoke-restart-decision condition decision))))
+               ((functionp *tool-error-llm-recovery-function*)
+                (%handle-tool-error-via-llm condition
+                                            normalized-tool-name
+                                            normalized-arguments))))))
+      (restart-case
+          (restart-case
+              (execute-tool tool-call context)
+            (retry-with-modified-args (new-arguments)
+              :report "Retry this tool with modified arguments."
+              (%execute-tool-with-restarts normalized-tool-name
+                                           new-arguments
+                                           toolset
+                                           permission-mode))
+            (use-alternative-tool (alternative-tool-name alternative-arguments)
+              :report "Switch to an alternative tool for this step."
+              (%execute-tool-with-restarts alternative-tool-name
+                                           (or alternative-arguments normalized-arguments)
+                                           toolset
+                                           permission-mode))
+            (retry-tool (&optional (new-arguments normalized-arguments))
+              :report "Compatibility alias for retry-with-modified-args."
+              (invoke-restart 'retry-with-modified-args new-arguments))
+            (use-value (value)
+              :report "Compatibility alias that returns a replacement value."
+              value))
+        (skip-tool-call ()
+          :report "Skip this tool call and continue."
+          (format nil "Tool ~A skipped by recovery policy." normalized-tool-name))
+        (abort-step ()
+          :report "Abort the current step and propagate failure."
+          (error 'amoebum-error
+                 :message (format nil "Tool ~A aborted current step." normalized-tool-name)))
+        (ask-user ()
+          :report "Ask user for guidance before retrying."
+          (format nil "Tool ~A requires user guidance to continue."
+                  normalized-tool-name))
+        (skip-tool ()
+          :report "Compatibility alias for skip-tool-call."
+          (invoke-restart 'skip-tool-call))
+        (abort-tool ()
+          :report "Compatibility alias for abort-step."
+          (invoke-restart 'abort-step))))))
+
+(defun execute-tool-with-restarts (tool-name arguments
+                                     &key (toolset *toolset*)
+                                       permission-mode)
+  "Invoke TOOL-NAME through execute-tool with recovery restarts."
+  (%execute-tool-with-restarts tool-name arguments toolset permission-mode))
 
 (defun make-amoebum-context (&key
                                (toolset *toolset*)
@@ -43,12 +153,14 @@
                                hook-registry
                                metrics
                                result-cache
+                               permission-cancel-thunk
                                logger
                                (initialize-notifications-p t))
   (let ((context
           (make-instance 'amoebum-context
                          :toolset toolset
                          :permission-mode permission-mode
+                         :permission-cancel-thunk permission-cancel-thunk
                          :event-bus event-bus
                          :hook-registry hook-registry
                          :metrics (or metrics (make-hash-table :test #'equal))
@@ -265,14 +377,29 @@
 (defun %context-effective-permission-mode (context)
   (%effective-permission-mode (context-permission-mode context)))
 
-(defun %publish-permission-prompted (context tool-name arguments decision)
+(defun %publish-permission-prompted (context tool-name arguments decision
+                                   &key reason reason-code)
   (publish (%effective-event-bus context)
            (make-permission-prompted-event
             :tool-name tool-name
             :path (%coerce-path-string (%extract-path-argument arguments))
             :command (%coerce-command-string (%extract-command-argument arguments))
-            :reason (format nil "permission decision ~A" decision)
+            :reason (or reason (format nil "permission decision ~A" decision))
+            :reason-code reason-code
             :permission-mode (%context-effective-permission-mode context))))
+
+(defun %publish-permission-blocked (context tool-name arguments decision
+                                  &key reason actionable-reason reason-code)
+  (let ((resolved-reason (or reason (format nil "permission decision ~A" decision))))
+    (publish (%effective-event-bus context)
+             (make-permission-blocked-event
+              :tool-name tool-name
+              :path (%coerce-path-string (%extract-path-argument arguments))
+              :command (%coerce-command-string (%extract-command-argument arguments))
+              :reason resolved-reason
+              :actionable-reason (or actionable-reason resolved-reason)
+              :reason-code reason-code
+              :permission-mode (%context-effective-permission-mode context)))))
 
 (defun %check-permission-or-signal (tool-name arguments context)
   (let* ((effective-mode (%context-effective-permission-mode context))
@@ -284,17 +411,65 @@
                                      :command (%coerce-command-string
                                                (%extract-command-argument arguments))
                                      :dangerous-p dangerous-p
-                                     :permission-mode effective-mode)))
-    (unless (eq decision :allow)
-      (when (eq decision :prompt)
-        (%publish-permission-prompted context tool-name arguments decision))
-      (error 'tool-permission-denied
-             :tool-name tool-name
-             :arguments arguments
-             :message (format nil "Permission decision ~A for tool ~S."
-                              decision
-                              tool-name)
-             :reason (format nil "permission decision ~A" decision)))))
+                                     :permission-mode effective-mode))
+         (trace (last-permission-decision-trace))
+         (reason-code (and (listp trace) (getf trace :reason-code)))
+         (decision-reason (or (and (listp trace) (getf trace :reason))
+                              (format nil "permission decision ~A" decision)))
+         (actionable-reason (or (and (listp trace) (getf trace :actionable-reason))
+                                decision-reason)))
+    (cond
+      ((eq decision :allow) nil)  ; permitted
+      ((eq decision :prompt)
+       ;; Publish the event so the TUI can show the approval dialog,
+       ;; then block until the user resolves it.
+       (%publish-permission-prompted context
+                                     tool-name
+                                     arguments
+                                     decision
+                                     :reason decision-reason
+                                     :reason-code reason-code)
+       (let* ((pa (wait-for-pending-approval
+                   tool-name arguments
+                   :path (%coerce-path-string
+                          (%extract-path-argument arguments))
+                   :command (%coerce-command-string
+                             (%extract-command-argument arguments))
+                   :reason decision-reason
+                   :decision-id (%next-permission-decision-id)
+                   :cancel-thunk (context-permission-cancel-thunk context)))
+              (user-decision (pending-approval-decision pa)))
+         ;; Handle "remember" — add a permanent rule
+         (when (pending-approval-remember-p pa)
+           (add-permission-rule :effect user-decision
+                                :tool tool-name
+                                :source :user-approval))
+         (unless (eq user-decision :allow)
+           (error 'tool-permission-denied
+                  :tool-name tool-name
+                  :arguments arguments
+                  :reason-code reason-code
+                  :message (format nil "User denied tool ~S." tool-name)
+                  :reason "denied by user"))))
+      (t
+       ;; :deny or any other non-allow decision
+       (when (eq decision :deny)
+         (%publish-permission-blocked context
+                                      tool-name
+                                      arguments
+                                      decision
+                                      :reason decision-reason
+                                      :actionable-reason actionable-reason
+                                      :reason-code reason-code))
+       (error 'tool-permission-denied
+              :tool-name tool-name
+              :arguments arguments
+              :reason-code reason-code
+              :message (format nil "Permission decision ~A for tool ~S: ~A."
+                               decision
+                               tool-name
+                               actionable-reason)
+              :reason actionable-reason)))))
 
 (defun %pipeline-monotonic-milliseconds ()
   (truncate (* 1000
@@ -406,57 +581,90 @@
                (%copy-arguments-to-hash-table arguments))
    :extras (pseudopod:tool-call-extras call)))
 
-(defmethod execute-tool :around ((call pseudopod:tool-call)
-                                 (context tool-execution-context))
+(defun %post-tool-success (context)
+  "Record metrics, cache result, run post-hooks, and publish completed event.
+Called from :around after *pipeline-current-result* is set, because CLOS
+:after methods run before :around can assign the result variable."
+  (let* ((tool-name *pipeline-current-tool-name*)
+         (arguments *pipeline-current-arguments*)
+         (elapsed-ms (%elapsed-milliseconds)))
+    (ignore-errors
+      (note-tool-profiling-sample tool-name elapsed-ms))
+    (%record-tool-metrics context tool-name elapsed-ms :ok)
+    (%cache-tool-result context tool-name arguments *pipeline-current-result*)
+    (%run-hook-dispatch context :post-tool-use tool-name *pipeline-current-result* elapsed-ms)
+    (publish (%effective-event-bus context)
+             (make-tool-completed-event
+              :tool-name tool-name
+              :args arguments
+              :result *pipeline-current-result*
+              :elapsed-ms elapsed-ms
+              :request-id *pipeline-current-request-id*))))
+
+(defmethod pseudopod:execute-tool :around ((call pseudopod:tool-call)
+                                           (context tool-execution-context))
   (let* ((*pipeline-current-tool-name* (%tool-call-name-string call))
          (*pipeline-current-arguments* (%decode-tool-call-arguments call))
          (*pipeline-current-request-id* (%tool-call-request-id call))
          (*pipeline-start-time-ms* nil)
          (*pipeline-current-result* nil)
          (timeout-seconds (%metadata-timeout-seconds *pipeline-current-tool-name*)))
-    (restart-case
-        (handler-case
+    (flet ((%signal-tool-error (condition)
+             (let* ((tool-error
+                      (%coerce-tool-error *pipeline-current-tool-name*
+                                          *pipeline-current-arguments*
+                                          condition
+                                          timeout-seconds))
+                    (elapsed-ms (%elapsed-milliseconds)))
+               (ignore-errors
+                 (note-tool-profiling-sample *pipeline-current-tool-name* elapsed-ms))
+               (%record-tool-metrics context *pipeline-current-tool-name* elapsed-ms :error)
+               (publish (%effective-event-bus context)
+                        (make-tool-error-event
+                         :tool-name *pipeline-current-tool-name*
+                         :args *pipeline-current-arguments*
+                         :condition-reason-code (tool-error-reason-code tool-error)
+                         :condition (princ-to-string tool-error)
+                         :elapsed-ms elapsed-ms
+                         :request-id *pipeline-current-request-id*))
+               (error tool-error))))
+      (restart-case
+          (handler-case
+              (let* ((raw-result
+                       #+sbcl
+                       (if (and timeout-seconds (> timeout-seconds 0))
+                           (sb-ext:with-timeout timeout-seconds
+                             (call-next-method))
+                           (call-next-method))
+                       #-sbcl
+                       (call-next-method))
+                     (guarded-result (apply-sandbox-output-guard raw-result)))
+                (setf *pipeline-current-result* guarded-result)
+                (%post-tool-success context)
+                guarded-result)
             #+sbcl
-            (if (and timeout-seconds (> timeout-seconds 0))
-                (sb-ext:with-timeout timeout-seconds
-                  (call-next-method))
-                (call-next-method))
-            #-sbcl
-            (call-next-method)
-          (error (condition)
-            (let* ((tool-error
-                     (%coerce-tool-error *pipeline-current-tool-name*
-                                         *pipeline-current-arguments*
-                                         condition
-                                         timeout-seconds))
-                   (elapsed-ms (%elapsed-milliseconds)))
-              (%record-tool-metrics context *pipeline-current-tool-name* elapsed-ms :error)
-              (publish (%effective-event-bus context)
-                       (make-tool-error-event
-                        :tool-name *pipeline-current-tool-name*
-                        :args *pipeline-current-arguments*
-                        :condition (princ-to-string tool-error)
-                        :elapsed-ms elapsed-ms
-                        :request-id *pipeline-current-request-id*))
-              (error tool-error))))
-      (retry-tool (&optional (new-arguments *pipeline-current-arguments*))
-        :report "Retry tool execution."
-        (execute-tool (%clone-tool-call-with-arguments call new-arguments)
-                      context))
-      (skip-tool ()
-        :report "Skip this tool and continue."
-        (format nil "Tool ~A skipped by pipeline restart." *pipeline-current-tool-name*))
-      (use-value (value)
-        :report "Provide a replacement value."
-        value)
-      (abort-tool ()
-        :report "Abort tool execution and propagate failure."
-        (error 'amoebum-error
-               :message (format nil "Tool ~A aborted by pipeline restart."
-                                *pipeline-current-tool-name*))))))
+            (sb-ext:timeout (condition)
+              (%signal-tool-error condition))
+            (error (condition)
+              (%signal-tool-error condition)))
+        (retry-tool (&optional (new-arguments *pipeline-current-arguments*))
+          :report "Retry tool execution."
+          (pseudopod:execute-tool (%clone-tool-call-with-arguments call new-arguments)
+                                  context))
+        (skip-tool ()
+          :report "Skip this tool and continue."
+          (format nil "Tool ~A skipped by pipeline restart." *pipeline-current-tool-name*))
+        (use-value (value)
+          :report "Provide a replacement value."
+          value)
+        (abort-tool ()
+          :report "Abort tool execution and propagate failure."
+          (error 'amoebum-error
+                 :message (format nil "Tool ~A aborted by pipeline restart."
+                                  *pipeline-current-tool-name*)))))))
 
-(defmethod execute-tool :before ((call pseudopod:tool-call)
-                                 (context tool-execution-context))
+(defmethod pseudopod:execute-tool :before ((call pseudopod:tool-call)
+                                           (context tool-execution-context))
   (let* ((tool-name *pipeline-current-tool-name*)
          (arguments (%call-arguments call))
          (effective-mode (%context-effective-permission-mode context)))
@@ -484,29 +692,10 @@
               :permission-mode effective-mode
               :request-id *pipeline-current-request-id*))))
 
-(defmethod execute-tool ((call pseudopod:tool-call)
-                         (context tool-execution-context))
-  (let* ((toolset (context-toolset context))
-         (arguments (%call-arguments call))
-         (prepared-call (%clone-tool-call-with-arguments call arguments))
-         (result (pseudopod:invoke-tool-call toolset prepared-call)))
-    (setf result (apply-sandbox-output-guard result))
-    (setf *pipeline-current-result* result)
-    result))
-
-(defmethod execute-tool :after ((call pseudopod:tool-call)
-                                (context tool-execution-context))
-  (declare (ignore call))
-  (let* ((tool-name *pipeline-current-tool-name*)
-         (arguments *pipeline-current-arguments*)
-         (elapsed-ms (%elapsed-milliseconds)))
-    (%record-tool-metrics context tool-name elapsed-ms :ok)
-    (%cache-tool-result context tool-name arguments *pipeline-current-result*)
-    (%run-hook-dispatch context :post-tool-use tool-name *pipeline-current-result* elapsed-ms)
-    (publish (%effective-event-bus context)
-             (make-tool-completed-event
-              :tool-name tool-name
-              :args arguments
-              :result *pipeline-current-result*
-              :elapsed-ms elapsed-ms
-              :request-id *pipeline-current-request-id*))))
+(defmethod pseudopod:execute-tool :after ((call pseudopod:tool-call)
+                                          (context tool-execution-context))
+  ;; Post-success work (metrics, cache, hooks, events) moved to
+  ;; %post-tool-success called from :around, because CLOS :after runs
+  ;; inside call-next-method before :around can set *pipeline-current-result*.
+  (declare (ignore call context))
+  (values))

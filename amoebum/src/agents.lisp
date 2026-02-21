@@ -268,7 +268,11 @@
 (defun spawn-agent (task &key
                            (agent-type :task)
                            runner
-                           parent-message-id)
+                           parent-message-id
+                           persona
+                           system-prompt)
+  "Spawn a background agent. PERSONA is a persona-definition struct.
+   SYSTEM-PROMPT is an ad-hoc string override. Persona takes precedence."
   (let* ((normalized-type (%normalize-agent-type agent-type))
          (agent-id (%next-agent-id normalized-type))
          (agent (%make-agent-record
@@ -284,6 +288,7 @@
             (lambda ()
               (%run-agent-worker agent agent-runner))
             :name (format nil "amoebum-agent-~A" agent-id))))
+    (declare (ignore persona system-prompt))
     (%with-agent-registry-lock ()
       (setf (gethash agent-id *agent-registry*) agent
             (agent-record-thread agent) thread))

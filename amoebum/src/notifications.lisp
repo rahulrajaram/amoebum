@@ -11,6 +11,7 @@
                    (timestamp 0)
                    (urgency :normal)
                    (icon nil)
+                   (icon-path nil)
                    (actions '())
                    (timeout-ms 5000))))
   (title "" :type string)
@@ -21,6 +22,7 @@
   (timestamp 0 :type integer)
   (urgency :normal :type keyword)
   icon
+  icon-path
   (actions '() :type list)
   (timeout-ms 5000 :type integer))
 
@@ -72,6 +74,10 @@
     :initarg :path
     :initform nil
     :accessor log-backend-path)
+   (lock
+    :initarg :lock
+    :initform (bordeaux-threads:make-lock "amoebum-audit-log-lock")
+    :accessor log-backend-lock)
    (include-event-payload-p
     :initarg :include-event-payload-p
     :initform t
@@ -95,6 +101,10 @@
 (defparameter *notification-async-dispatch-p* t)
 (defparameter *notification-manager-registry* (make-hash-table :test #'eq))
 
+;; Implemented in src/notifications/desktop.lisp (I222).
+(declaim (ftype function send-desktop-notification))
+(declaim (ftype function desktop-notification-available-p))
+
 (defstruct (notification-manager
             (:constructor %make-notification-manager
                 (&key event-bus
@@ -111,7 +121,7 @@
                    (string-trim '(#\Space #\Tab #\Newline #\Return) value))))
     (and text (plusp (length text)) text)))
 
-(defun %shell-single-quote (text)
+(defun %notify-shell-single-quote (text)
   (format nil "'~A'"
           (with-output-to-string (out)
             (loop for char across (or text "") do
@@ -127,7 +137,7 @@
             (uiop:run-program
              (list "sh" "-lc"
                    (format nil "command -v ~A >/dev/null 2>&1"
-                           (%shell-single-quote safe-command)))
+                           (%notify-shell-single-quote safe-command)))
              :ignore-error-status t
              :output :string
              :error-output :string)
@@ -152,7 +162,7 @@
           :stdout (or stdout "")
           :stderr (or stderr ""))))
 
-(defun %normalize-command-result (result)
+(defun %notify-normalize-command-result (result)
   (if (listp result)
       (list :exit-code (or (getf result :exit-code) 1)
             :stdout (or (getf result :stdout) "")
@@ -162,13 +172,13 @@
             :stderr (princ-to-string result))))
 
 (defun notification-run-command (arguments)
-  (%normalize-command-result
+  (%notify-normalize-command-result
    (funcall (or *notification-command-runner*
                 #'default-notification-command-runner)
             arguments)))
 
 (defun %default-log-path ()
-  (merge-pathnames #P".amoebum/notifications.jsonl"
+  (merge-pathnames #P".amoebum/audit/events.jsonl"
                    (user-homedir-pathname)))
 
 (defun %notification-platform ()
@@ -181,14 +191,6 @@
           (case (%notification-platform)
             (:linux '("paplay" "aplay"))
             (:macos '("afplay"))
-            (otherwise '()))))
-    (find-if #'notification-command-available-p candidates)))
-
-(defun %detected-desktop-command ()
-  (let ((candidates
-          (case (%notification-platform)
-            (:linux '("notify-send"))
-            (:macos '("osascript"))
             (otherwise '()))))
     (find-if #'notification-command-available-p candidates)))
 
@@ -234,45 +236,6 @@
             (%json-string-or-null urgency-string)
             (%json-string-or-null payload-string))))
 
-(defun %normalize-urgency-for-desktop (urgency)
-  (case urgency
-    (:low "low")
-    (:critical "critical")
-    (otherwise "normal")))
-
-(defun %desktop-command-args (backend notification)
-  (let* ((command (or (desktop-backend-command backend)
-                      (%detected-desktop-command)))
-         (title (notification-title notification))
-         (body (notification-body notification))
-         (icon (or (notification-icon notification)
-                   (desktop-backend-default-icon backend))))
-    (cond
-      ((null command) nil)
-      ((string-equal command "notify-send")
-       (append (list "notify-send"
-                     (format nil "--app-name=~A" (desktop-backend-app-name backend))
-                     (format nil "--urgency=~A"
-                             (%normalize-urgency-for-desktop
-                              (notification-urgency notification)))
-                     (format nil "--expire-time=~D"
-                             (max 0 (notification-timeout-ms notification))))
-               (when icon
-                 (list (format nil "--icon=~A"
-                               (typecase icon
-                                 (pathname (namestring icon))
-                                 (string icon)
-                                 (t (princ-to-string icon))))))
-               (list title body)))
-      ((string-equal command "osascript")
-       (list "osascript"
-             "-e"
-             (format nil "display notification \"~A\" with title \"~A\""
-                     (%json-escape body)
-                     (%json-escape title))))
-      (t
-       (list command title body)))))
-
 (defmethod notify-available-p ((backend sound-backend))
   (let ((command (or (sound-backend-player-command backend)
                      (%detected-sound-player))))
@@ -281,11 +244,7 @@
          (notification-command-available-p command))))
 
 (defmethod notify-available-p ((backend desktop-backend))
-  (let ((command (or (desktop-backend-command backend)
-                     (%detected-desktop-command))))
-    (setf (desktop-backend-command backend) command)
-    (and command
-         (notification-command-available-p command))))
+  (desktop-notification-available-p backend))
 
 (defmethod notify-available-p ((backend log-backend))
   (handler-case
@@ -352,21 +311,7 @@
                (values nil stderr))))))))
 
 (defmethod notify-send ((backend desktop-backend) (notification notification))
-  (if (not (notify-available-p backend))
-      (values nil :backend-unavailable)
-      (let* ((arguments (%desktop-command-args backend notification))
-             (result (notification-run-command arguments))
-             (exit-code (getf result :exit-code))
-             (stderr (getf result :stderr)))
-        (if (zerop exit-code)
-            (values t nil)
-            (progn
-              (ptui.util.log:log-warn
-               "desktop backend command failed: command=~S exit=~S stderr=~S"
-               arguments
-               exit-code
-               stderr)
-              (values nil stderr))))))
+  (send-desktop-notification notification :backend backend))
 
 (defmethod notify-send ((backend log-backend) (notification notification))
   (let ((path (or (log-backend-path backend)
@@ -407,7 +352,7 @@
       (let ((raw (config-value :notification-events cfg)))
         (if raw
             (%normalize-trigger-list raw)
-            '(:task-complete :error :approval-needed)))))
+            '(:task-complete :error :approval-needed :long-running-complete)))))
 
 (defun make-sound-backend (&key config (enabled-p t) player-command sound-map theme)
   (let* ((cfg (or config (current-config)))
@@ -476,15 +421,20 @@
          (values ok detail sound-path))))))
 
 (defun %default-backends (cfg)
-  (list (make-sound-backend :config cfg)
-        (make-desktop-backend :config cfg)
-        (make-log-backend :config cfg)))
+  (let ((base-backends
+          (list (make-sound-backend :config cfg)
+                (make-desktop-backend :config cfg)
+                (make-log-backend :config cfg))))
+    (if (fboundp 'make-webhook-backends)
+        (append base-backends (funcall (symbol-function 'make-webhook-backends) :config cfg))
+        base-backends)))
 
 (defun %event-trigger (event)
   (let ((event-type (event-type event)))
     (cond
       ((eq event-type +event-type-tool-completed+) :task-complete)
       ((eq event-type +event-type-tool-error+) :error)
+      ((eq event-type +event-type-agent-completed+) :long-running-complete)
       ((eq event-type +event-type-permission-prompted+) :approval-needed)
       (t nil))))
 
@@ -513,6 +463,11 @@
                               (or (tool-error-payload-tool-name payload) "unknown")
                               (or (tool-error-payload-condition payload) "unknown error"))
                       "An error occurred.")))
+      (:long-running-complete
+       (setf title "Long-Running Task Complete"
+             severity :info
+             urgency :normal
+             body "Long-running work completed."))
       (:approval-needed
        (setf title "Approval Needed"
              severity :warning
@@ -532,7 +487,7 @@
      :urgency urgency
      :timeout-ms (if (eq trigger :approval-needed) 0 5000))))
 
-(defun dispatch-notification (manager notification)
+(defun dispatch-notification-manager (manager notification)
   (dolist (backend (notification-manager-backends manager))
     (when (backend-enabled-p backend)
       (handler-case
@@ -582,6 +537,10 @@
                        (lambda (event)
                          (%notification-event-handler manager event))
                        :priority 40)
+            (subscribe bus +event-type-agent-completed+
+                       (lambda (event)
+                         (%notification-event-handler manager event))
+                       :priority 40)
             (subscribe bus +event-type-permission-prompted+
                        (lambda (event)
                          (%notification-event-handler manager event))
@@ -599,6 +558,9 @@
                    :backends (or backends (%default-backends cfg)))))
     (%probe-backends! manager)
     (%subscribe-manager manager)
+    (when (fboundp 'ensure-notification-dispatcher)
+      (ignore-errors
+        (ensure-notification-dispatcher :manager manager :event-bus bus)))
     manager))
 
 (defun stop-notification-manager (&optional manager-or-bus)
@@ -617,6 +579,9 @@
       (dolist (backend (notification-manager-backends manager))
         (ignore-errors
           (notify-teardown backend)))
+      (when (fboundp 'stop-notification-dispatcher)
+        (ignore-errors
+          (stop-notification-dispatcher :event-bus bus)))
       (setf (notification-manager-subscription-ids manager) '())
       (when bus
         (remhash bus *notification-manager-registry*)))

@@ -105,9 +105,9 @@
       (progn
         (amoebum::profiler-start)
         (amoebum::profiler-stop)
-        (is t))
+        (is-true t))
     (error ()
-      (is t "Profiler not available, which is OK."))))
+      (is-true t "Profiler not available, which is OK."))))
 
 (test perf-sparkline
   (let ((entries (list (amoebum::make-metrics-entry :kind :test :name "a" :duration-ms 10)

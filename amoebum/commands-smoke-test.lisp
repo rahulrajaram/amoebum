@@ -16,6 +16,7 @@
          (load-asd-fn (symbol-function load-asd-sym))
          (load-system-fn (symbol-function load-system-sym)))
     (funcall load-asd-fn (merge-pathnames #P"pseudopod/pseudopod.asd" repo-root))
+    (funcall load-asd-fn (merge-pathnames #P"sw4rm-sdk/sw4rm-sdk.asd" repo-root))
     (funcall load-asd-fn (merge-pathnames #P"ptui/ptui.asd" repo-root))
     (funcall load-asd-fn (merge-pathnames #P"amoebum/amoebum.asd" repo-root))
     (funcall load-system-fn "amoebum"))
@@ -58,7 +59,7 @@
              (names (mapcar (lambda (command)
                               (symbol-downcase (funcall command-name-fn command)))
                             commands)))
-        (dolist (required '("help" "mode" "model" "config" "memory" "clear" "compact" "history" "sounds" "lint"))
+        (dolist (required '("help" "mode" "model" "config" "memory" "clear" "compact" "history" "sounds" "lint" "permissions"))
           (assert-true (member required names :test #'string=)
                        "Expected built-in slash command /~A to be registered. Names=~S"
                        required
@@ -67,6 +68,9 @@
       (let ((plan-command (funcall find-command-fn "plan")))
         (assert-true plan-command
                      "Expected built-in slash command /plan to be registered."))
+      (let ((cost-command (funcall find-command-fn "cost")))
+        (assert-true cost-command
+                     "Expected built-in slash command /cost to be registered."))
 
       (multiple-value-bind (handledp result)
           (funcall dispatch-fn "/help")
@@ -104,6 +108,15 @@
         (assert-true handledp "Expected /sounds to be handled.")
         (assert-true (contains-text-p (funcall result-output-fn result) "Sound themes")
                      "Expected /sounds output to list themes."))
+
+      (multiple-value-bind (handledp result)
+          (funcall dispatch-fn "/cost 2")
+        (assert-true handledp "Expected /cost to be handled.")
+        (assert-true (or (contains-text-p (funcall result-output-fn result) "Cost estimation")
+                         (contains-text-p (funcall result-output-fn result) "No model router")
+                         (contains-text-p (funcall result-output-fn result) "cost"))
+                     "Expected /cost output to mention cost or model router, got ~S."
+                     (funcall result-output-fn result)))
 
       (multiple-value-bind (handledp result)
           (funcall dispatch-fn "/sounds set minimal")

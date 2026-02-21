@@ -11,6 +11,7 @@
                      (defhook-definition-warning-hook-point condition)
                      (defhook-definition-warning-reason condition)))))
 
+
 (defparameter +hook-point-definitions+
   '((:pre-tool-use
      :params (tool-name args)
@@ -28,22 +29,34 @@
      :params (response)
      :blocking nil
      :description "Runs after model responses are received.")
+    (:pre-llm-send
+     :params (messages tools model)
+     :blocking t
+     :description "Runs before LLM calls; may return updated messages or :block.")
+    (:post-llm-receive
+     :params (response usage model)
+     :blocking nil
+     :description "Runs after LLM calls for logging and metrics.")
     (:on-error
-     :params (condition restarts)
+     :params (condition tool-name)
      :blocking t
      :description "Runs on conditions and may influence restart behavior.")
     (:on-idle
-     :params ()
+     :params (idle-seconds)
      :blocking nil
      :description "Runs while the assistant is idle.")
     (:on-commit
-     :params (message branch)
+     :params (commit-hash message files)
      :blocking nil
      :description "Runs after commit operations.")
     (:on-step-complete
-     :params (step-result)
+     :params (step-number messages-added tool-calls-made)
      :blocking nil
-     :description "Runs when a tranche/step completes.")))
+     :description "Runs when a tranche/step completes.")
+    (:on-stream-chunk
+     :params (chunk-text chunk-index total-tokens)
+     :blocking nil
+     :description "Runs on each streamed chunk; :block short-circuits hook-chain.")))
 
 (defparameter *hook-registry* (make-hash-table :test #'equal))
 (defparameter *hook-registration-counter* 0)
@@ -58,7 +71,7 @@
 
 (defstruct (hook-entry
             (:constructor %make-hook-entry
-                (&key hook-point hook-id handler (priority 100)
+                (&key hook-point hook-id handler (priority 0)
                  async-p source-file source-line docstring
                  (registered-at 0)
                  (max-ms +default-hook-max-ms+)
@@ -76,7 +89,7 @@
   hook-point
   hook-id
   handler
-  (priority 100 :type integer)
+  (priority 0 :type integer)
   async-p
   source-file
   source-line
@@ -216,7 +229,7 @@
              *hook-registry*)
     entries))
 
-(defun %sort-hook-entries (entries)
+(defun %sort-hook-entries-descending (entries)
   (sort entries
         (lambda (left right)
           (if (= (hook-entry-priority left)
@@ -230,8 +243,22 @@
               (> (hook-entry-priority left)
                  (hook-entry-priority right))))))
 
+(defun %sort-hook-entries-ascending (entries)
+  (sort entries
+        (lambda (left right)
+          (if (= (hook-entry-priority left)
+                 (hook-entry-priority right))
+              (if (= (hook-entry-registered-at left)
+                     (hook-entry-registered-at right))
+                  (string< (princ-to-string (hook-entry-hook-id left))
+                           (princ-to-string (hook-entry-hook-id right)))
+                  (< (hook-entry-registered-at left)
+                     (hook-entry-registered-at right)))
+              (< (hook-entry-priority left)
+                 (hook-entry-priority right))))))
+
 (defun list-hooks (&optional hook-point)
-  (%sort-hook-entries (%hook-entries hook-point)))
+  (%sort-hook-entries-descending (%hook-entries hook-point)))
 
 (defun clear-hooks (&optional hook-point)
   (if hook-point
@@ -251,7 +278,7 @@
         count)))
 
 (defun register-hook (hook-point hook-id handler
-                      &key (priority 100)
+                      &key (priority 0)
                         (async nil)
                         (max-ms +default-hook-max-ms+)
                         (on-error :log-and-continue)
@@ -462,8 +489,28 @@
               (push (cons hook-id :async-dispatched) results))
             (let ((result (%invoke-hook-entry normalized entry args)))
               (push (cons hook-id result) results)
-              (when (and blocking (eq result :deny))
-                (return (values :deny (nreverse results))))))))))
+              (when (and blocking (or (eq result :deny)
+                                      (eq result :block)))
+                (return (values result (nreverse results))))))))))
+
+(defun hook-chain (hook-point &rest args)
+  (let* ((normalized (%normalize-hook-point hook-point))
+         (results '()))
+    (dolist (entry (%sort-hook-entries-ascending (%hook-entries normalized))
+             (values :continue (nreverse results)))
+      (let ((hook-id (hook-entry-hook-id entry)))
+        (if (hook-entry-async-p entry)
+            (progn
+              (%dispatch-async
+               (lambda ()
+                 (%invoke-hook-entry normalized entry args))
+               '())
+              (%record-hook-trace normalized hook-id :async-dispatched :elapsed-ms 0 :result :async-dispatched)
+              (push (cons hook-id :async-dispatched) results))
+            (let ((result (%invoke-hook-entry normalized entry args)))
+              (push (cons hook-id result) results)
+              (when (eq result :block)
+                (return (values :block (nreverse results))))))))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %normalize-parameter-names (parameters)
@@ -487,7 +534,7 @@
 
   (defun %parse-defhook-options-and-clauses (forms)
     (let ((docstring nil)
-          (options (list :priority 100
+          (options (list :priority 0
                          :async nil
                          :max-ms +default-hook-max-ms+
                          :on-error :log-and-continue
@@ -595,7 +642,12 @@
           `(and ,@(nreverse tests))
           t)))
 
-  (defun %compile-match-predicate (pattern tool-var args-var)
+  (defun %known-deftool-reference-p (tool-name)
+    (and (boundp '*deftool-compile-time-tool-names*)
+         (hash-table-p *deftool-compile-time-tool-names*)
+         (gethash tool-name *deftool-compile-time-tool-names*)))
+
+  (defun %compile-match-predicate (pattern tool-var args-var &key hook-point)
     (cond
       ((eq pattern t)
        t)
@@ -604,7 +656,11 @@
          (loop for (key value) on pattern by #'cddr
                do (case key
                     (:tool
-                     (let ((tool-name (string-downcase (princ-to-string value))))
+                     (let ((tool-name (%tool-name-string value)))
+                       (unless (%known-deftool-reference-p tool-name)
+                         (warn 'unknown-tool-reference
+                               :hook-point hook-point
+                               :reference tool-name))
                        (push `(string= (string-downcase (princ-to-string ,tool-var))
                                        ,tool-name)
                              tests)))
@@ -647,7 +703,10 @@
              (compiled-clauses
                (mapcar (lambda (clause)
                          (destructuring-bind (pattern body) clause
-                           `(,(%compile-match-predicate pattern tool-var args-var)
+                           `(,(%compile-match-predicate pattern
+                                                        tool-var
+                                                        args-var
+                                                        :hook-point normalized-hook-point)
                              ,@body)))
                        clauses))
              (source-file (or *compile-file-truename* *load-truename*)))

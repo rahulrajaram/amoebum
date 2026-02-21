@@ -101,6 +101,108 @@
                                                  :shiftp shiftp
                                                  :text? text?)))
 
+(defun %digit-p (byte)
+  (and (<= 48 byte) (<= byte 57)))
+
+(defun %byte-digit (byte)
+  (- byte 48))
+
+(defun %map-csi-fn-key (n)
+  "Map CSI numeric code to function key. Standard xterm codes skip 16 and 22."
+  (case n
+    (3  :delete)
+    (11 :f1)
+    (12 :f2)
+    (13 :f3)
+    (14 :f4)
+    (15 :f5)
+    (17 :f6)
+    (18 :f7)
+    (19 :f8)
+    (20 :f9)
+    (21 :f10)
+    (23 :f11)
+    (24 :f12)
+    (t nil)))
+
+(defun %parse-csi-with-prefix (parser)
+  (let* ((pending (input-parser-pending parser))
+         (len (length pending))
+         (code 0)
+         (idx 2))
+    (when (< len 4)
+      (return-from %parse-csi-with-prefix 0))
+    (loop while (< idx len)
+          while (%digit-p (aref pending idx))
+          do
+            (setf code (+ (* code 10) (%byte-digit (aref pending idx))))
+            (incf idx))
+    (when (>= idx len)
+      (return-from %parse-csi-with-prefix 0))
+    ;; xterm modifier encoding: ";M" where M = 1 + bitmask
+    ;; bit 0 = Shift, bit 1 = Alt/Meta, bit 2 = Ctrl
+    (flet ((%decode-modifier (m)
+             "Return (values ctrlp altp shiftp) from xterm modifier digit."
+             (let ((bits (1- (- m 48))))
+               (values (logbitp 2 bits) (logbitp 1 bits) (logbitp 0 bits))))
+           (%modified-arrow-key (base-key ctrlp altp shiftp)
+             (declare (ignore altp shiftp))
+             ;; Emit ctrl-<dir> for backward compat when ctrl is set.
+             (if ctrlp
+                 (case base-key
+                   (:up :ctrl-up) (:down :ctrl-down)
+                   (:right :ctrl-right) (:left :ctrl-left)
+                   (otherwise base-key))
+                 base-key)))
+      (cond
+        ;; ESC [ code ; modifier <final>  — arrow/fn with modifiers
+        ((and (= (aref pending idx) 59)       ; semicolon
+              (< (+ idx 2) len)
+              (%digit-p (aref pending (1+ idx))))
+         (let ((mod-byte (aref pending (1+ idx)))
+               (final-idx (+ idx 2)))
+           (if (>= final-idx len)
+               0  ; need more data
+               (let ((final (aref pending final-idx)))
+                 (multiple-value-bind (ctrlp altp shiftp) (%decode-modifier mod-byte)
+                   (let ((base-key (case final
+                                     (65 :up) (66 :down) (67 :right) (68 :left)
+                                     (72 :home) (70 :end)
+                                     (t nil))))
+                     (cond
+                       (base-key
+                        (let ((key (%modified-arrow-key base-key ctrlp altp shiftp)))
+                          (%emit-key-event parser key :ctrlp ctrlp :altp altp :shiftp shiftp)
+                          (1+ final-idx)))
+                       ((= final 126)
+                        ;; ESC [ code ; modifier ~ — modified fn/nav key
+                        (let ((fkey (or (%map-csi-fn-key code)
+                                        (case code (1 :home) (4 :end) (5 :pgup) (6 :pgdown) (t nil)))))
+                          (if fkey
+                              (progn (%emit-key-event parser fkey :ctrlp ctrlp :altp altp :shiftp shiftp)
+                                     (1+ final-idx))
+                              (progn (%emit-key-event parser :escape) 1))))
+                       (t (%emit-key-event parser :escape) 1))))))))
+        ;; ESC [ code ~  — unmodified fn/nav key
+        ((= (aref pending idx) 126)
+         (case code
+           (1 (%emit-key-event parser :home) (1+ idx))
+           (3 (%emit-key-event parser :delete) (1+ idx))
+           (4 (%emit-key-event parser :end) (1+ idx))
+           (5 (%emit-key-event parser :pgup) (1+ idx))
+           (6 (%emit-key-event parser :pgdown) (1+ idx))
+           (otherwise
+             (let ((fkey (%map-csi-fn-key code)))
+               (if fkey
+                   (progn (%emit-key-event parser fkey) (1+ idx))
+                   (progn (%emit-key-event parser :escape) 1))))))
+        ;; Incomplete semicolon — need more data
+        ((= (aref pending idx) 59)
+         0)
+        (t
+         (%emit-key-event parser :escape)
+         1)))))
+
 (defun %parse-escape-sequence (parser)
   (let* ((pending (input-parser-pending parser))
          (len (length pending)))
@@ -112,19 +214,23 @@
       ;; Need more data to decide lone ESC vs sequence.
       ((= len 1)
        0)
-      ;; CSI arrows: ESC [ A/B/C/D
+      ;; CSI sequences: ESC [ ...
       ((= (aref pending 1) 91)
        (if (< len 3)
            0
          (case (aref pending 2)
+           ;; Arrows: ESC [ A/B/C/D
            (65 (%emit-key-event parser :up) 3)
            (66 (%emit-key-event parser :down) 3)
            (67 (%emit-key-event parser :right) 3)
            (68 (%emit-key-event parser :left) 3)
-           (otherwise
-            ;; Unknown CSI: consume ESC to avoid sticky prefix.
-            (%emit-key-event parser :escape)
-            1))))
+           ;; Home/End: ESC [ H / ESC [ F
+           (72 (%emit-key-event parser :home) 3)
+           (70 (%emit-key-event parser :end) 3)
+           ;; Numeric CSI: ESC [ <digit> ...
+           ;; Handles: ESC [ N ~ (Home=1~, End=4~, PgUp=5~, PgDn=6~)
+           ;; and:     ESC [ 1 ; 5 <letter> (Ctrl+Arrow)
+           (otherwise (%parse-csi-with-prefix parser)))))
       ;; Alt-modified byte (ESC + UTF-8 printable)
       (t
        (let ((b1 (aref pending 1)))
@@ -158,6 +264,21 @@
          1)
         ((= b0 3)
          (%emit-key-event parser :ctrl-c :ctrlp t)
+         1)
+        ((= b0 1)
+         (%emit-key-event parser :ctrl-a :ctrlp t)
+         1)
+        ((= b0 5)
+         (%emit-key-event parser :ctrl-e :ctrlp t)
+         1)
+        ((= b0 11)
+         (%emit-key-event parser :ctrl-k :ctrlp t)
+         1)
+        ((= b0 21)
+         (%emit-key-event parser :ctrl-u :ctrlp t)
+         1)
+        ((= b0 23)
+         (%emit-key-event parser :ctrl-w :ctrlp t)
          1)
         (t
          (multiple-value-bind (codepoint consumed status)

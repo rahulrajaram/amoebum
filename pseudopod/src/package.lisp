@@ -7,6 +7,7 @@
    #:*default-model*
    #:*default-api-key-file*
    #:client
+   #:client-p
    #:make-client
    #:client-api-key
    #:client-base-url
@@ -60,6 +61,7 @@
    #:message-tool-calls
    #:message-tool-call-id
    #:message-partial
+   #:message-reasoning-content
    #:message-to-hash
    #:hash-to-message
    #:model-info
@@ -99,6 +101,10 @@
    #:find-tool
    #:toolset-tools
    #:invoke-tool-call
+   #:tool-execution-context
+   #:context-toolset
+   #:context-metadata
+   #:execute-tool
    #:generate-result
    #:generate-result-p
    #:generate-result-id
@@ -182,7 +188,15 @@
    #:make-model-router
    #:model-router-strategy
    #:model-router-providers
+   #:model-router-model-costs
    #:model-router-max-retries
+   #:cost-model
+   #:cost-model-p
+   #:make-cost-model
+   #:cost-model-input-cost-per-1k-tokens
+   #:cost-model-output-cost-per-1k-tokens
+   #:cost-model-context-window
+   #:cost-estimate
    #:router-add-provider
    #:router-remove-provider
    #:router-find-provider

@@ -170,7 +170,13 @@
     (set-dispatch-macro-character #\# #\p #'%path-reader-dispatch table)
     (set-dispatch-macro-character #\# #\g #'%glob-reader-dispatch table)
     (set-dispatch-macro-character #\# #\r #'%regex-reader-dispatch table)
-    (setf *readtable* table)))
+    (setf *readtable* table)
+    (let* ((named-readtables (find-package "NAMED-READTABLES"))
+           (register-sym (and named-readtables
+                              (find-symbol "REGISTER-READTABLE" named-readtables))))
+      (when (and register-sym (fboundp register-sym))
+        (funcall (symbol-function register-sym) :amoebum-readtable table)))
+    table))
 
 (eval-when (:load-toplevel :execute)
   (when (eq *package* (find-package :amoebum))

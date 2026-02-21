@@ -8,6 +8,8 @@
   (%status-event-type-keyword "ui:stream-progress"))
 
 (defparameter +default-context-window-tokens+ +default-context-window-limit+)
+(defparameter +plan-mode-read-only-banner+ "PLAN MODE -- read-only")
+(defparameter +plan-mode-lock-badge+ "[LOCK mutating tools blocked]")
 
 (defstruct (status-bar-stream-payload
             (:constructor make-status-bar-stream-payload
@@ -26,6 +28,7 @@
                 (&key
                    permission-mode
                    (plan-mode-active-p nil)
+                   (plan-mode-mutating-tools-blocked-p nil)
                    branch-name
                    model-name
                    context-limit-override
@@ -37,6 +40,7 @@
                    (subscription-ids '()))))
   permission-mode
   (plan-mode-active-p nil :type boolean)
+  (plan-mode-mutating-tools-blocked-p nil :type boolean)
   (branch-name "-" :type string)
   (model-name "unknown" :type string)
   context-limit-override
@@ -115,8 +119,11 @@
        (setf (status-bar-state-permission-mode state)
              (config-changed-payload-new-value payload)))
       (:plan-mode
-       (setf (status-bar-state-plan-mode-active-p state)
-             (not (null (config-changed-payload-new-value payload)))))
+       (let ((active-p (not (null (config-changed-payload-new-value payload)))))
+         (setf (status-bar-state-plan-mode-active-p state) active-p
+               (status-bar-state-plan-mode-mutating-tools-blocked-p state)
+               (and active-p
+                    (plan-mode-mutating-tools-blocked-p nil active-p)))))
       (:context-window-limit
        (let ((override (config-changed-payload-new-value payload)))
          (setf (status-bar-state-context-limit-override state)
@@ -220,6 +227,9 @@
          (resolved-plan-mode-active-p
            (and (config-p config)
                 (not (null (config-value :plan-mode config)))))
+         (resolved-plan-mode-mutating-tools-blocked-p
+           (and resolved-plan-mode-active-p
+                (plan-mode-mutating-tools-blocked-p config)))
          (resolved-root
            (or project-root
                (and (config-p config) (config-project-root config))
@@ -236,6 +246,7 @@
            (%make-status-bar-state
             :permission-mode resolved-mode
             :plan-mode-active-p resolved-plan-mode-active-p
+            :plan-mode-mutating-tools-blocked-p resolved-plan-mode-mutating-tools-blocked-p
             :branch-name (%safe-string (or branch-name
                                            (%resolve-branch-name resolved-root))
                                        "-")
@@ -306,39 +317,71 @@
     (otherwise :context-red)))
 
 (defun %status-segment-specs (state)
-  (list
-   (list :text (format nil "branch ~A" (%safe-string (status-bar-state-branch-name state) "-"))
-         :role :meta)
-   (list :text (format nil "mode ~A" (%mode-string (status-bar-state-permission-mode state)))
-         :role :meta)
-   (list :text (%context-budget-segment-text state)
-         :role (%context-budget-role state))
-   (list :text (%stream-segment state)
-         :role :meta)
-   (list :text (format nil "model ~A" (%safe-string (status-bar-state-model-name state) "unknown"))
-         :role :meta)))
+  (let ((segments
+          (list
+           (list :text (format nil "branch ~A" (%safe-string (status-bar-state-branch-name state) "-"))
+                 :role :meta)
+           (list :text (format nil "mode ~A" (%mode-string (status-bar-state-permission-mode state)))
+                 :role :meta)
+           (list :text (%context-budget-segment-text state)
+                 :role (%context-budget-role state))
+           (list :text (%stream-segment state)
+                 :role :meta)
+           (list :text (format nil "model ~A" (%safe-string (status-bar-state-model-name state) "unknown"))
+                 :role :meta))))
+    (let ((provider-indicator (provider-health-compact-indicator)))
+      (if provider-indicator
+          (append segments
+                  (list (list :text (getf provider-indicator :text)
+                              :role (or (getf provider-indicator :role) :meta))))
+          segments))))
 
 (defun status-bar-segments (state)
   (check-type state status-bar-state)
   (let ((segments (mapcar (lambda (entry) (getf entry :text))
                           (%status-segment-specs state))))
-    (if (status-bar-state-plan-mode-active-p state)
-        (cons "PLAN MODE -- read-only" segments)
+    (if (and (status-bar-state-plan-mode-active-p state)
+             (status-bar-state-plan-mode-mutating-tools-blocked-p state))
+        (cons (format nil "~A ~A"
+                      +plan-mode-read-only-banner+
+                      +plan-mode-lock-badge+)
+              segments)
         segments)))
 
-(defun status-bar-styled-segments (state)
+(defun status-bar-styled-segments (state &key width)
   (check-type state status-bar-state)
   (let ((segments '())
         (segment-specs (%status-segment-specs state)))
-    (when (status-bar-state-plan-mode-active-p state)
-      (push (cons "PLAN MODE -- read-only" :system) segments)
-      (push (cons " | " :meta) segments))
+    (when (and (status-bar-state-plan-mode-active-p state)
+               (status-bar-state-plan-mode-mutating-tools-blocked-p state))
+      (push (cons (format nil "~A ~A"
+                          +plan-mode-read-only-banner+
+                          +plan-mode-lock-badge+)
+                  :system)
+            segments)
+      (push (cons " | " :status-bar) segments))
     (loop for spec in segment-specs
           for index from 0 do
             (when (> index 0)
-              (push (cons " | " :meta) segments))
-            (push (cons (getf spec :text) (or (getf spec :role) :meta)) segments))
-    (nreverse segments)))
+              (push (cons " | " :status-bar) segments))
+            (let ((role (getf spec :role)))
+              (push (cons (getf spec :text)
+                          (if (or (null role) (eq role :meta))
+                              :status-bar
+                              role))
+                    segments)))
+    (let ((result (nreverse segments)))
+      ;; Pad to full width so maroon background fills the line
+      (when (and width (> width 0))
+        (let* ((used (loop for seg in result
+                           sum (ptui.text.width:string-width (car seg))))
+               (remaining (- width used)))
+          (when (> remaining 0)
+            (setf result
+                  (append result
+                          (list (cons (make-string remaining :initial-element #\Space)
+                                      :status-bar)))))))
+      result)))
 
 (defun status-bar-line (state &key width)
   (check-type state status-bar-state)
@@ -359,6 +402,7 @@
   (check-type state status-bar-state)
   (list (status-bar-state-permission-mode state)
         (status-bar-state-plan-mode-active-p state)
+        (status-bar-state-plan-mode-mutating-tools-blocked-p state)
         (status-bar-state-branch-name state)
         (status-bar-state-model-name state)
         (status-bar-state-context-used-tokens state)
@@ -366,7 +410,8 @@
         (context-usage-level (status-bar-state-context-used-tokens state)
                              (status-bar-state-context-max-tokens state))
         (status-bar-state-stream-status state)
-        (truncate (* 100 (status-bar-state-stream-tokens-per-second state)))))
+        (truncate (* 100 (status-bar-state-stream-tokens-per-second state)))
+        (provider-health-signature)))
 
 (defun make-status-bar-widget (state &key id key width)
   (ptui.ui.elements:make-element
@@ -374,6 +419,6 @@
    :id id
    :key key
    :props (list :text (status-bar-line state :width width)
-                :role :meta
-                :styled-segments (status-bar-styled-segments state))
+                :role :status-bar
+                :styled-segments (status-bar-styled-segments state :width width))
    :children '()))

@@ -2,7 +2,10 @@
 
 (defparameter *default-config-values*
   '(:model "moonshot-v1-128k"
+    :provider-override nil
+    :api-base-url nil
     :context-window-limit nil
+    :stream-budget-abort-threshold-percent 80
     :permission-mode :supervised
     :approval-policy :on-request
     :sandbox-policy :strict
@@ -30,9 +33,14 @@
     :notification-sound-player nil
     :notification-desktop-command nil
     :notification-log-path nil
+    :notification-webhooks nil
     :notification-sound-task-complete nil
     :notification-sound-error nil
     :notification-sound-approval-needed nil
+    :tts-command "kokoro-tts"
+    :tts-python-module nil
+    :tts-voice "af_heart"
+    :tts-auto-speak nil
     :auto-checkpoint-idle-seconds 300
     :plan-mode nil))
 
@@ -128,86 +136,153 @@
   (and (stringp value)
        (> (length (%trim-string value)) 0)))
 
+(defun %parse-boolean (value)
+  (let ((trimmed (string-downcase (%trim-string value))))
+    (cond
+      ((member trimmed '("1" "true" "t" "yes" "on") :test #'string=) t)
+      ((member trimmed '("0" "false" "nil" "no" "off") :test #'string=) nil)
+      (t
+       nil))))
+
 (defun %valid-config-value-p (key value)
   (case key
     (:model (stringp value))
-    (:context-window-limit (or (null value)
-                               (and (integerp value)
-                                    (> value 0))))
-    (:permission-mode (member value *known-permission-modes* :test #'eq))
-    (:approval-policy (member (%approval-policy-keyword value)
-                              *known-approval-policies*
-                              :test #'eq))
-    (:sandbox-policy (member (%sandbox-policy-keyword value)
-                             *known-sandbox-policies*
-                             :test #'eq))
-    (:sandbox-mode (member (%sandbox-mode-keyword value)
-                           *known-sandbox-modes*
-                           :test #'eq))
-    (:swarm-delegation-mode (member (%swarm-delegation-mode-keyword value)
-                                    *known-swarm-delegation-modes*
-                                    :test #'eq))
-    (:memory-backend (member value *known-memory-backends* :test #'eq))
-    (:web-search-searxng-url (or (null value)
-                                 (and (stringp value)
-                                      (> (length (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                                               value))
-                                         0))))
-    (:web-search-duckduckgo-url (or (null value)
-                                    (and (stringp value)
-                                         (> (length (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                                                  value))
-                                            0))))
-    (:web-search-allow-domains (%string-sequence-p value))
-    (:web-search-block-domains (%string-sequence-p value))
-    (:web-search-user-agent (or (null value)
-                                (and (stringp value)
-                                     (> (length (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                                              value))
-                                        0))))
-    (:web-fetch-timeout-seconds (and (integerp value) (> value 0)))
-    (:web-fetch-cache-ttl-seconds (and (integerp value) (> value 0)))
-    (:web-fetch-max-markdown-bytes (and (integerp value) (> value 0)))
-    (:web-fetch-user-agent (or (null value)
-                               (and (stringp value)
-                                    (> (length (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                                             value))
-                                       0))))
-    (:haake-command (and (stringp value)
-                         (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-                            0)))
-    (:haake-project-id (or (null value)
-                           (and (stringp value)
-                                (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-                                   0))))
-    (:haake-agent (and (stringp value)
-                       (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-                          0)))
+    (:provider-override
+     (or (null value)
+         (and (or (stringp value)
+                  (symbolp value)
+                  (keywordp value))
+              (member (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                  (string value))
+                                     )
+                      '("anthropic-provider" "anthropic"
+                        "openai-compatible-provider" "openai-compat" "openai"
+                        "kimi-provider" "kimi")
+                      :test #'string=))))
+    (:api-base-url
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:context-window-limit
+     (or (null value)
+         (and (integerp value)
+              (> value 0))))
+    (:stream-budget-abort-threshold-percent
+     (and (integerp value)
+          (>= value 1)
+          (<= value 100)))
+    (:permission-mode
+     (member value *known-permission-modes* :test #'eq))
+    (:approval-policy
+     (member (%approval-policy-keyword value)
+             *known-approval-policies*
+             :test #'eq))
+    (:sandbox-policy
+     (member (%sandbox-policy-keyword value)
+             *known-sandbox-policies*
+             :test #'eq))
+    (:sandbox-mode
+     (member (%sandbox-mode-keyword value)
+             *known-sandbox-modes*
+             :test #'eq))
+    (:swarm-delegation-mode
+     (member (%swarm-delegation-mode-keyword value)
+             *known-swarm-delegation-modes*
+             :test #'eq))
+    (:memory-backend
+     (member value *known-memory-backends* :test #'eq))
+    (:web-search-searxng-url
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:web-search-duckduckgo-url
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:web-search-allow-domains
+     (%string-sequence-p value))
+    (:web-search-block-domains
+     (%string-sequence-p value))
+    (:web-search-user-agent
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:web-fetch-timeout-seconds
+     (and (integerp value) (> value 0)))
+    (:web-fetch-cache-ttl-seconds
+     (and (integerp value) (> value 0)))
+    (:web-fetch-max-markdown-bytes
+     (and (integerp value) (> value 0)))
+    (:web-fetch-user-agent
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:haake-command
+     (and (stringp value)
+          (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+             0)))
+    (:haake-project-id
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:haake-agent
+     (and (stringp value)
+          (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+             0)))
     (:haake-autodetect (or (eq value t) (eq value nil)))
     (:notifications-enabled (or (eq value t) (eq value nil)))
-    (:notification-events (%keyword-like-sequence-p value))
+    (:notification-events
+     (%keyword-like-sequence-p value))
     (:notification-sound-enabled (or (eq value t) (eq value nil)))
     (:notification-desktop-enabled (or (eq value t) (eq value nil)))
     (:notification-log-enabled (or (eq value t) (eq value nil)))
-    (:notification-sound-player (or (null value)
-                                    (and (stringp value)
-                                         (> (length (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                                                  value))
-                                            0))))
-    (:notification-desktop-command (or (null value)
-                                       (and (stringp value)
-                                            (> (length (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                                                     value))
-                                               0))))
-    (:notification-log-path (or (null value)
-                                (%pathname-or-string-p value)))
-    (:notification-sound-task-complete (or (null value)
-                                           (%pathname-or-string-p value)))
-    (:notification-sound-error (or (null value)
-                                   (%pathname-or-string-p value)))
-    (:notification-sound-approval-needed (or (null value)
-                                             (%pathname-or-string-p value)))
-    (:auto-checkpoint-idle-seconds (and (integerp value) (>= value 0)))
+    (:notification-sound-player
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:notification-desktop-command
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:notification-log-path
+     (or (null value)
+         (%pathname-or-string-p value)))
+    (:notification-webhooks
+     (or (null value)
+         (listp value)
+         (vectorp value)))
+    (:notification-sound-task-complete
+     (or (null value)
+         (%pathname-or-string-p value)))
+    (:notification-sound-error
+     (or (null value)
+         (%pathname-or-string-p value)))
+    (:notification-sound-approval-needed
+     (or (null value)
+         (%pathname-or-string-p value)))
+    (:tts-command
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:tts-python-module (or (eq value t) (eq value nil)))
+    (:tts-voice
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:tts-auto-speak (or (eq value t) (eq value nil)))
+    (:auto-checkpoint-idle-seconds
+     (and (integerp value)
+          (>= value 0)))
     (:plan-mode (or (eq value t) (eq value nil)))
     (:project-root (%pathname-or-string-p value))
     (t t)))
@@ -393,7 +468,11 @@
         (permission-mode (uiop:getenv "AMOEBUM_PERMISSION_MODE"))
         (approval-policy (uiop:getenv "AMOEBUM_APPROVAL_POLICY"))
         (sandbox-mode (uiop:getenv "AMOEBUM_SANDBOX_MODE"))
-        (swarm-delegation-mode (uiop:getenv "AMOEBUM_SWARM_DELEGATION_MODE")))
+        (swarm-delegation-mode (uiop:getenv "AMOEBUM_SWARM_DELEGATION_MODE"))
+        (tts-command (uiop:getenv "AMOEBUM_TTS_COMMAND"))
+        (tts-voice (uiop:getenv "AMOEBUM_TTS_VOICE"))
+        (tts-python-module (uiop:getenv "AMOEBUM_TTS_PYTHON_MODULE"))
+        (tts-auto-speak (uiop:getenv "AMOEBUM_TTS_AUTO_SPEAK")))
     (when (%non-empty-string-p model)
       (setf (gethash :model values) (%trim-string model)))
     (when (%non-empty-string-p permission-mode)
@@ -408,6 +487,16 @@
     (when (%non-empty-string-p swarm-delegation-mode)
       (setf (gethash :swarm-delegation-mode values)
             (%swarm-delegation-mode-keyword swarm-delegation-mode)))
+    (when (%non-empty-string-p tts-command)
+      (setf (gethash :tts-command values) (%trim-string tts-command)))
+    (when (%non-empty-string-p tts-voice)
+      (setf (gethash :tts-voice values) (%trim-string tts-voice)))
+    (when (%non-empty-string-p tts-python-module)
+      (setf (gethash :tts-python-module values)
+            (%parse-boolean tts-python-module)))
+    (when (%non-empty-string-p tts-auto-speak)
+      (setf (gethash :tts-auto-speak values)
+            (%parse-boolean tts-auto-speak)))
     values))
 
 (defun %starts-with-string-p (prefix string)
@@ -488,7 +577,7 @@
                       project-config-path
                       directory-root
                       directory-config-path
-                      environment-values
+                      (environment-values :not-supplied)
                       cli-values
                       cli-arguments)
   (let* ((root (%normalize-project-root project-root))
@@ -505,7 +594,7 @@
                resolved-directory-path))
          (directory-values (%load-layer effective-directory-path))
          (env-values
-           (if (null environment-values)
+           (if (eq environment-values :not-supplied)
                (%environment-config-values)
                (%coerce-layer-values environment-values)))
          (cli-layer-values
@@ -531,7 +620,7 @@
                         project-config-path
                         directory-root
                         directory-config-path
-                        environment-values
+                        (environment-values :not-supplied)
                         cli-values
                         cli-arguments)
   (setf *current-config*
@@ -542,7 +631,10 @@
                      :directory-config-path directory-config-path
                      :environment-values environment-values
                      :cli-values cli-values
-                     :cli-arguments cli-arguments)))
+                     :cli-arguments cli-arguments))
+  (when (fboundp 'clear-resolved-provider-cache)
+    (clear-resolved-provider-cache))
+  *current-config*)
 
 (defun current-config ()
   (or *current-config*
@@ -568,5 +660,7 @@
          (old-value (config-value key cfg))
          (root (config-project-root cfg)))
     (%merge-value cfg key value :runtime root)
+    (when (fboundp 'clear-resolved-provider-cache)
+      (clear-resolved-provider-cache))
     (emit-config-changed key old-value (config-value key cfg))
     (config-value key cfg)))

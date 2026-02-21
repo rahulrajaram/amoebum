@@ -177,9 +177,10 @@ Returns (values output error-output exit-code)."
       (error (c)
         (if (sandbox-os-config-fallback-to-cl-p config)
             ;; Fallback to CL-level sandbox (I78)
-            (safe-run-program command args :output output
-                                           :error-output error-output
-                                           :ignore-error-status ignore-error-status)
+            (safe-run-program (cons command args)
+                              :output output
+                              :error-output error-output
+                              :ignore-error-status ignore-error-status)
             (error c))))))
 
 ;;; --- Integration with Permission Modes ---

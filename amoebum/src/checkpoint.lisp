@@ -165,7 +165,8 @@
           :source-line (tool-metadata-source-line metadata)
           :parameter-specs (%checkpoint-encode-value
                             (tool-metadata-parameter-specs metadata))
-          :defined-at (tool-metadata-defined-at metadata))))
+          :defined-at (tool-metadata-defined-at metadata)
+          :mcp-server (tool-metadata-mcp-server metadata))))
 
 (defun %snapshot->tool-metadata (snapshot)
   (make-tool-metadata
@@ -177,7 +178,8 @@
    :source-file (%checkpoint-decode-value (getf snapshot :source-file))
    :source-line (getf snapshot :source-line)
    :parameter-specs (%checkpoint-decode-value (getf snapshot :parameter-specs))
-   :defined-at (getf snapshot :defined-at)))
+   :defined-at (getf snapshot :defined-at)
+   :mcp-server (getf snapshot :mcp-server)))
 
 (defun %tool-history-entry->snapshot (entry)
   (when (tool-history-entry-p entry)

@@ -144,12 +144,12 @@ the session working directory."
 
 (test shell-env-filter-api-key
   "Variables containing API_KEY should be filtered when filter-sensitive-p is T."
-  (let* ((env (amoebum:make-shell-environment
-               :inherit-env-p nil
-               :filter-sensitive-p t
-               :env-overrides '(("MY_API_KEY" . "secret123")
-                                ("SAFE_VAR" . "visible"))))
-         (alist (amoebum:assemble-shell-env env)))
+  (let ((env (amoebum:make-shell-environment
+              :inherit-env-p nil
+              :filter-sensitive-p t
+              :env-overrides '(("MY_API_KEY" . "secret123")
+                               ("SAFE_VAR" . "visible")))))
+    (amoebum:assemble-shell-env env)
     ;; The overrides are applied first, then filtering happens on inherited env.
     ;; But since inherit-env-p is nil, only overrides are present.
     ;; filter-sensitive-env is applied to the base env, not overrides.

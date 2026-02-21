@@ -445,60 +445,607 @@
      :output (%config-report-output cfg)
      :echo-input-p t)))
 
-(defun %plan-status-output (active-p output-path)
-  (if active-p
-      "Plan mode is ON. PLAN MODE -- read-only."
-      (if output-path
-          (format nil "Plan mode is OFF. Last plan output: ~A." (namestring output-path))
-          "Plan mode is OFF.")))
+(defun %plan-review-decision-label (decision)
+  (case decision
+    (:approved "approved")
+    (:partially-approved "partially-approved")
+    (:rejected "rejected")
+    (:modification-requested "modification-requested")
+    (:pending "pending")
+    (otherwise
+     (string-downcase (symbol-name (or decision :pending))))))
+
+(defun %format-step-index-list (step-indexes)
+  (if step-indexes
+      (format nil "~{~D~^, ~}" step-indexes)
+      "none"))
+
+(defun %split-delimited (text delimiter)
+  (let ((parts '())
+        (start 0)
+        (length (length text)))
+    (loop for index from 0 to length do
+      (when (or (= index length)
+                (char= (char text index) delimiter))
+        (push (subseq text start index) parts)
+        (setf start (1+ index))))
+    (nreverse parts)))
+
+(defun %digit-string-p (text)
+  (and (stringp text)
+       (plusp (length text))
+       (loop for char across text
+             always (digit-char-p char))))
+
+(defun %parse-step-index-fragment (fragment)
+  (let ((trimmed (%slash-trim fragment)))
+    (cond
+      ((zerop (length trimmed))
+       nil)
+      ((%digit-string-p trimmed)
+       (let ((value (parse-integer trimmed)))
+         (when (>= value 1)
+           (list value))))
+      ((find #\- trimmed)
+       (let* ((parts (%split-delimited trimmed #\-))
+              (from-text (and (= (length parts) 2)
+                              (%slash-trim (first parts))))
+              (to-text (and (= (length parts) 2)
+                            (%slash-trim (second parts)))))
+         (when (and from-text
+                    to-text
+                    (%digit-string-p from-text)
+                    (%digit-string-p to-text))
+           (let ((from (parse-integer from-text))
+                 (to (parse-integer to-text)))
+             (when (and (>= from 1)
+                        (>= to from))
+               (loop for value from from to to
+                     collect value))))))
+      (t
+       nil))))
+
+(defun %parse-step-index-token (token)
+  (let ((fragments (%split-delimited token #\,))
+        (result '()))
+    (dolist (fragment fragments)
+      (let ((parsed (%parse-step-index-fragment fragment)))
+        (unless parsed
+          (return-from %parse-step-index-token nil))
+        (setf result (append result parsed))))
+    result))
+
+(defun %parse-plan-step-approval-args (raw-args)
+  (let ((tokens (%tokenize-command-arguments (or raw-args ""))))
+    (if (null tokens)
+        (values nil nil nil)
+        (let ((indexes '())
+              (invalid-tokens '())
+              (saw-step-marker-p nil))
+          (dolist (token tokens)
+            (cond
+              ((or (string-equal token "step")
+                   (string-equal token "steps"))
+               (setf saw-step-marker-p t))
+              (t
+               (let ((parsed (%parse-step-index-token token)))
+                 (if parsed
+                     (setf indexes (append indexes parsed))
+                     (push token invalid-tokens))))))
+          (cond
+            ((and saw-step-marker-p invalid-tokens)
+             (values nil
+                     nil
+                     (format nil
+                             "Invalid step selector(s): ~{~A~^, ~}. Use step indexes like `1`, `1,3`, or `2-4`."
+                             (nreverse invalid-tokens))))
+            ((and saw-step-marker-p (null indexes))
+             (values nil
+                     nil
+                     "Expected at least one step index after `step` or `steps`."))
+            ((and indexes (null invalid-tokens))
+             (values (sort (remove-duplicates indexes :test #'=) #'<)
+                     t
+                     nil))
+            (t
+             (values nil nil nil)))))))
+
+(defun %parse-plan-step-reorder-token (token)
+  (let* ((trimmed (%slash-trim token))
+         (arrow-position (search "->" trimmed :test #'char=)))
+    (cond
+      ((zerop (length trimmed))
+       nil)
+      ((%digit-string-p trimmed)
+       (list (parse-integer trimmed)))
+      ((and arrow-position
+            (> arrow-position 0)
+            (< (+ arrow-position 2) (length trimmed)))
+       (let ((from-text (%slash-trim (subseq trimmed 0 arrow-position)))
+             (to-text (%slash-trim (subseq trimmed (+ arrow-position 2)))))
+         (when (and (%digit-string-p from-text)
+                    (%digit-string-p to-text))
+           (list (parse-integer from-text)
+                 (parse-integer to-text)))))
+      (t
+       nil))))
+
+(defun %parse-plan-step-reorder-args (raw-args)
+  (let ((tokens (%tokenize-command-arguments (or raw-args ""))))
+    (if (null tokens)
+        (values nil
+                nil
+                "Expected source and target step indexes (e.g. `/plan reorder 3 1`).")
+        (let ((indexes '())
+              (invalid-tokens '()))
+          (dolist (token tokens)
+            (if (member (string-downcase (%slash-trim token))
+                        '("step" "steps" "to" "into" "position")
+                        :test #'string=)
+                nil
+                (let ((parsed (%parse-plan-step-reorder-token token)))
+                  (if parsed
+                      (setf indexes (append indexes parsed))
+                      (push token invalid-tokens)))))
+          (cond
+            (invalid-tokens
+             (values nil
+                     nil
+                     (format nil
+                             "Invalid reorder token(s): ~{~A~^, ~}. Use `/plan reorder <from> <to>`."
+                             (nreverse invalid-tokens))))
+            ((/= (length indexes) 2)
+             (values nil
+                     nil
+                     "Expected exactly two step indexes for reorder (from and to)."))
+            ((or (< (first indexes) 1)
+                 (< (second indexes) 1))
+             (values nil
+                     nil
+                     "Step indexes must be positive integers."))
+            (t
+             (values (first indexes)
+                     (second indexes)
+                     nil)))))))
+
+(defun %plan-status-output (active-p
+                            output-path
+                            review-pending-p
+                            review-decision
+                            review-notes
+                            step-count
+                            approved-step-indexes
+                            input-gating-snapshot)
+  (labels ((input-gating-reason-label (reason)
+             (case reason
+               (:plan-mode-active "plan mode active")
+               (:review-pending "review pending")
+               (:review-not-approved "review decision not approved")
+               (:awaiting-explicit-execute "awaiting explicit execute transition")
+               (otherwise "open")))
+           (input-gating-summary ()
+             (let ((terminal-enabled-p
+                     (not (null (getf input-gating-snapshot
+                                      :terminal-stdin-enabled-p))))
+                   (execution-enabled-p
+                     (not (null (getf input-gating-snapshot
+                                      :execution-pathways-enabled-p)))))
+               (format nil
+                       " Input gating: ~:[inactive~;active~] (~A). Terminal stdin: ~:[blocked~;enabled~]. Execution pathways: ~:[blocked~;enabled~]."
+                       (not (null (getf input-gating-snapshot :active-p)))
+                       (input-gating-reason-label
+                        (getf input-gating-snapshot :reason))
+                       terminal-enabled-p
+                       execution-enabled-p))))
+  (let ((approved-count (length approved-step-indexes)))
+    (if active-p
+        (with-output-to-string (out)
+          (write-string "Plan mode is ON. PLAN MODE -- read-only [LOCK mutating tools blocked]." out)
+          (when (> step-count 0)
+            (format out " Approved steps: ~D/~D." approved-count step-count))
+          (write-string (input-gating-summary) out))
+        (with-output-to-string (out)
+          (write-string "Plan mode is OFF." out)
+          (when output-path
+            (format out " Last plan output: ~A." (namestring output-path)))
+          (when (> step-count 0)
+            (format out " Approved steps: ~D/~D (~A)."
+                    approved-count
+                    step-count
+                    (%format-step-index-list approved-step-indexes)))
+          (when review-pending-p
+            (write-string " Plan review pending. Use /plan review to inspect the latest captured plan."
+                          out))
+          (when (and (symbolp review-decision)
+                     (not (eq review-decision :pending)))
+            (format out " Last review decision: ~A."
+                    (%plan-review-decision-label review-decision)))
+          (when (and (stringp review-notes)
+                     (plusp (length (%slash-trim review-notes))))
+            (format out " Review notes: ~A." (%slash-trim review-notes)))
+          (write-string (input-gating-summary) out))))))
+
+(defun %plan-exit-output (plan-markdown output-path write-to-file-p)
+  (with-output-to-string (out)
+    (write-string "Plan mode disabled." out)
+    (if output-path
+        (format out " Plan written to ~A." (namestring output-path))
+        (when write-to-file-p
+          (write-string " Plan file output unavailable." out)))
+    (unless write-to-file-p
+      (write-string " Plan file output skipped." out))
+    (when (and (stringp plan-markdown)
+               (plusp (length (%slash-trim plan-markdown))))
+      (format out "~%~%Plan captured in conversation:~%~%```markdown~%~A~%```"
+              plan-markdown))))
+
+(defun %plan-review-output (plan-markdown
+                            review-decision
+                            review-notes
+                            approved-step-indexes
+                            step-count
+                            input-gating-snapshot)
+  (labels ((input-gating-reason-label (reason)
+             (case reason
+               (:plan-mode-active "plan mode active")
+               (:review-pending "review pending")
+               (:review-not-approved "review decision not approved")
+               (:awaiting-explicit-execute "awaiting explicit execute transition")
+               (otherwise "open"))))
+  (if (and (stringp plan-markdown)
+           (plusp (length (%slash-trim plan-markdown))))
+      (with-output-to-string (out)
+        (format out "Plan review:~%")
+        (format out "Input gating: ~:[inactive~;active~] (~A), terminal stdin ~:[blocked~;enabled~], execution pathways ~:[blocked~;enabled~].~%"
+                (not (null (getf input-gating-snapshot :active-p)))
+                (input-gating-reason-label (getf input-gating-snapshot :reason))
+                (not (null (getf input-gating-snapshot :terminal-stdin-enabled-p)))
+                (not (null (getf input-gating-snapshot :execution-pathways-enabled-p))))
+        (when (symbolp review-decision)
+          (format out "Current decision: ~A.~%"
+                  (%plan-review-decision-label review-decision)))
+        (when (and (stringp review-notes)
+                   (plusp (length (%slash-trim review-notes))))
+          (format out "Review notes: ~A~%" (%slash-trim review-notes)))
+        (when (> step-count 0)
+          (format out "Approved steps: ~D/~D (~A).~%"
+                  (length approved-step-indexes)
+                  step-count
+                  (%format-step-index-list approved-step-indexes)))
+        (format out "~%~A" plan-markdown))
+      "No captured plan is available yet. Exit plan mode first to capture one.")))
 
 (defun %plan-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
   (let* ((state (or (gethash :STATE arguments) :toggle))
+         (raw-args (%slash-trim (or (gethash :ARGS arguments) "")))
          (plan-state (current-plan-mode-state))
          (active-p (plan-mode-active-p plan-state)))
-    (case state
-      (:status
+    (labels ((captured-plan-available-p ()
+               (and (stringp (plan-mode-state-last-plan-markdown plan-state))
+                    (plusp (length (%slash-trim (plan-mode-state-last-plan-markdown plan-state))))))
+             (ensure-plan-captured-for-review (&key (reason :plan-command-exit))
+               (when active-p
+                 (multiple-value-bind (_ output-path)
+                     (exit-plan-mode :state plan-state
+                                     :reason reason
+                                     :write-output-p t)
+                   (declare (ignore _ output-path))
+                   (setconfig :plan-mode nil)
+                   (setf active-p nil)))
+               (captured-plan-available-p))
+             (input-gating-snapshot ()
+               (plan-input-gating-snapshot plan-state))
+             (invalid-usage (detail)
+               (make-slash-command-result
+                :output (format nil "~A~%Usage: /plan [on|off|status|review|approve|reorder|reject|modify|request-modifications|request-changes] [args...] (approve accepts step selectors like `1`, `1,3`, `2-4`; reorder accepts `3 1` or `3->1`)"
+                                detail)
+                :echo-input-p t))
+             (recompute-review-decision ()
+               (let* ((available-step-indexes (plan-step-indexes plan-state))
+                      (approved-step-indexes
+                        (plan-mode-state-approved-step-indexes plan-state))
+                      (step-count (length available-step-indexes))
+                      (approved-count (length approved-step-indexes)))
+                 (set-plan-review-decision
+                  (cond
+                    ((and (> step-count 0)
+                          (= approved-count step-count))
+                     :approved)
+                    ((plusp approved-count)
+                     :partially-approved)
+                    (t
+                     :pending))
+                  :state plan-state)))
+             (parse-write-to-file-p ()
+               (if (%slash-blank-p raw-args)
+                   (values t nil)
+                   (handler-case
+                       (values (%parse-boolean-token raw-args) nil)
+                     (error ()
+                       (values t "Expected optional write-to-file argument to be true/false for this action.")))))
+             (decision-result (decision summary)
+               (if (or (captured-plan-available-p)
+                       (and (eq decision :approved)
+                            (ensure-plan-captured-for-review
+                             :reason :plan-command-approved-exit)))
+                   (progn
+                     (when (eq decision :approved)
+                       (set-plan-step-approvals (plan-step-indexes plan-state)
+                                                :state plan-state))
+                     (when (member decision
+                                   '(:rejected :modification-requested :pending)
+                                   :test #'eq)
+                       (clear-plan-step-approvals plan-state))
+                     (set-plan-review-decision decision :notes raw-args :state plan-state)
+                     (refresh-plan-review-markdown plan-state)
+                     (make-slash-command-result
+                      :output (with-output-to-string (out)
+                                (write-string summary out)
+                                (unless (%slash-blank-p raw-args)
+                                  (format out " Notes recorded: ~A." raw-args)))))
+                   (make-slash-command-result
+                    :output "No captured plan is available yet. Exit plan mode first to capture one.")))
+             (approve-steps-result ()
+               (multiple-value-bind (requested-step-indexes step-request-p parse-error)
+                   (%parse-plan-step-approval-args raw-args)
+                 (cond
+                   (parse-error
+                    (invalid-usage parse-error))
+                   ((not step-request-p)
+                    (decision-result :approved "Plan approved."))
+                   ((not (or (captured-plan-available-p)
+                             (ensure-plan-captured-for-review
+                              :reason :plan-command-approved-exit)))
+                    (make-slash-command-result
+                     :output "No captured plan is available yet. Exit plan mode first to capture one."))
+                   (t
+                    (let* ((available-step-indexes (plan-step-indexes plan-state))
+                           (missing-step-indexes
+                             (remove-if (lambda (index)
+                                          (member index available-step-indexes :test #'=))
+                                        requested-step-indexes)))
+                      (cond
+                        ((null available-step-indexes)
+                         (make-slash-command-result
+                          :output "No captured plan steps are available to approve."))
+                        (missing-step-indexes
+                         (make-slash-command-result
+                          :output (format nil
+                                          "Unknown plan step index(es): ~A. Available steps: ~A."
+                                          (%format-step-index-list missing-step-indexes)
+                                          (%format-step-index-list available-step-indexes))))
+                        (t
+                         (approve-plan-steps requested-step-indexes :state plan-state)
+                         (let* ((approved-step-indexes
+                                  (plan-mode-state-approved-step-indexes plan-state))
+                                (approved-count (length approved-step-indexes))
+                                (step-count (length available-step-indexes))
+                                (all-approved-p (= approved-count step-count)))
+                           (set-plan-review-decision (if all-approved-p
+                                                         :approved
+                                                         :partially-approved)
+                                                     :state plan-state)
+                           (refresh-plan-review-markdown plan-state)
+                           (make-slash-command-result
+                            :output (with-output-to-string (out)
+                                      (format out "Approved step(s): ~A."
+                                              (%format-step-index-list requested-step-indexes))
+                                      (format out " Current approval: ~D/~D."
+                                              approved-count
+                                              step-count)
+                                      (unless all-approved-p
+                                        (let ((remaining-step-indexes
+                                                (remove-if (lambda (index)
+                                                             (member index approved-step-indexes :test #'=))
+                                                           available-step-indexes)))
+                                          (format out " Remaining steps: ~A."
+                                                  (%format-step-index-list remaining-step-indexes))))))))))))))
+             (reorder-steps-result ()
+               (multiple-value-bind (from-index to-index parse-error)
+                   (%parse-plan-step-reorder-args raw-args)
+                 (cond
+                   (parse-error
+                    (invalid-usage parse-error))
+                   ((not (captured-plan-available-p))
+                    (make-slash-command-result
+                     :output "No captured plan is available yet. Exit plan mode first to capture one."))
+                   (t
+                    (let* ((available-step-indexes (plan-step-indexes plan-state))
+                           (unknown-indexes
+                             (remove nil
+                                     (list (and (not (member from-index available-step-indexes :test #'=))
+                                                from-index)
+                                           (and (not (member to-index available-step-indexes :test #'=))
+                                                to-index)))))
+                      (cond
+                        ((null available-step-indexes)
+                         (make-slash-command-result
+                          :output "No captured plan steps are available to reorder."))
+                        (unknown-indexes
+                         (make-slash-command-result
+                          :output (format nil
+                                          "Unknown plan step index(es): ~A. Available steps: ~A."
+                                          (%format-step-index-list unknown-indexes)
+                                          (%format-step-index-list available-step-indexes))))
+                        ((= from-index to-index)
+                         (make-slash-command-result
+                          :output (format nil
+                                          "Step ~D is already at position ~D. No reorder needed."
+                                          from-index
+                                          to-index)))
+                        (t
+                         (reorder-plan-step from-index to-index :state plan-state)
+                         (recompute-review-decision)
+                         (refresh-plan-review-markdown plan-state)
+                         (let* ((approved-step-indexes
+                                  (plan-mode-state-approved-step-indexes plan-state))
+                                (step-count (length available-step-indexes))
+                                (approved-count (length approved-step-indexes)))
+                           (make-slash-command-result
+                            :output (with-output-to-string (out)
+                                      (format out "Reordered step ~D to position ~D."
+                                              from-index
+                                              to-index)
+                                      (format out " Approved steps: ~D/~D (~A)."
+                                              approved-count
+                                              step-count
+                                              (%format-step-index-list approved-step-indexes)))))))))))))
+      (case state
+        (:status
+         (if (%slash-blank-p raw-args)
+             (make-slash-command-result
+              :output (%plan-status-output active-p
+                                           (plan-mode-state-last-output-path plan-state)
+                                           (plan-mode-state-review-pending-p plan-state)
+                                           (plan-mode-state-review-decision plan-state)
+                                           (plan-mode-state-review-notes plan-state)
+                                           (length (plan-mode-state-steps plan-state))
+                                           (plan-mode-state-approved-step-indexes plan-state)
+                                           (input-gating-snapshot)))
+             (invalid-usage "The /plan status action does not accept extra arguments.")))
+        (:review
+         (if (%slash-blank-p raw-args)
+             (progn
+               (setf (plan-mode-state-review-last-presented-at plan-state) (get-universal-time))
+               (make-slash-command-result
+                :output (%plan-review-output (plan-mode-state-last-plan-markdown plan-state)
+                                             (plan-mode-state-review-decision plan-state)
+                                             (plan-mode-state-review-notes plan-state)
+                                             (plan-mode-state-approved-step-indexes plan-state)
+                                             (length (plan-mode-state-steps plan-state))
+                                             (input-gating-snapshot))))
+             (invalid-usage "The /plan review action does not accept extra arguments.")))
+        (:approve
+         (approve-steps-result))
+        (:reorder
+         (reorder-steps-result))
+        (:reject
+         (decision-result :rejected "Plan rejected."))
+        ((:modify :request-modifications :request-changes)
+         (decision-result :modification-requested
+                          "Plan modifications requested. Re-enter /plan on to update the draft."))
+        (:on
+         (if (not (%slash-blank-p raw-args))
+             (invalid-usage "The /plan on action does not accept extra arguments.")
+             (if active-p
+                 (make-slash-command-result
+                  :output "Plan mode already enabled.")
+                (progn
+                   (enter-plan-mode :state plan-state :clear-steps-p t)
+                   (setconfig :plan-mode t)
+                   (make-slash-command-result
+                    :output "Plan mode enabled. PLAN MODE -- read-only [LOCK mutating tools blocked].")))))
+        (:off
+         (multiple-value-bind (write-to-file-p parse-error)
+             (parse-write-to-file-p)
+           (if parse-error
+               (invalid-usage parse-error)
+               (if active-p
+                   (let ((rendered-plan (plan-markdown :state plan-state
+                                                       :reason :plan-command-exit)))
+                     (multiple-value-bind (_ output-path)
+                         (exit-plan-mode :state plan-state
+                                         :reason :plan-command-exit
+                                         :write-output-p write-to-file-p)
+                       (declare (ignore _))
+                       (setconfig :plan-mode nil)
+                       (make-slash-command-result
+                        :output (%plan-exit-output rendered-plan output-path write-to-file-p))))
+                   (make-slash-command-result
+                    :output "Plan mode already disabled.")))))
+        (otherwise
+         (multiple-value-bind (write-to-file-p parse-error)
+             (parse-write-to-file-p)
+           (if parse-error
+               (invalid-usage parse-error)
+               (if active-p
+                   (let ((rendered-plan (plan-markdown :state plan-state
+                                                       :reason :plan-command-toggle)))
+                     (multiple-value-bind (_ _status output-path)
+                         (toggle-plan-mode :state plan-state
+                                           :reason :plan-command-toggle
+                                           :write-output-p write-to-file-p)
+                       (declare (ignore _ _status))
+                       (setconfig :plan-mode nil)
+                       (make-slash-command-result
+                        :output (%plan-exit-output rendered-plan output-path write-to-file-p))))
+                   (progn
+                     (toggle-plan-mode :state plan-state :reason :plan-command-toggle)
+                     (setconfig :plan-mode t)
+                     (make-slash-command-result
+                      :output "Plan mode enabled. PLAN MODE -- read-only [LOCK mutating tools blocked]."))))))))))
+
+(defun %execute-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let* ((args-text (or (and (hash-table-p arguments) (gethash :ARGS arguments)) ""))
+         (interactive-p (or (search "--interactive" args-text)
+                            (search "-i" args-text)))
+         (plan-state (current-plan-mode-state))
+         (active-p (plan-mode-active-p plan-state))
+         (captured-plan (plan-mode-state-last-plan-markdown plan-state))
+         (available-step-indexes (plan-step-indexes plan-state))
+         (approved-step-indexes (or (plan-mode-state-approved-step-indexes plan-state) '()))
+         (review-decision (plan-mode-state-review-decision plan-state)))
+    (when active-p
+      (multiple-value-bind (_ output-path)
+          (exit-plan-mode :state plan-state
+                          :reason :execute-transition
+                          :write-output-p t)
+        (declare (ignore _ output-path))
+        (setconfig :plan-mode nil)
+        (setf active-p nil
+              captured-plan (plan-mode-state-last-plan-markdown plan-state)
+              available-step-indexes (plan-step-indexes plan-state)
+              approved-step-indexes (or (plan-mode-state-approved-step-indexes plan-state) '())
+              review-decision (plan-mode-state-review-decision plan-state))))
+    (cond
+      ((or active-p
+           (not (stringp captured-plan))
+           (zerop (length (%slash-trim captured-plan)))
+           (null available-step-indexes))
        (make-slash-command-result
-        :output (%plan-status-output active-p (plan-mode-state-last-output-path plan-state))))
-      (:on
-       (if active-p
-           (make-slash-command-result
-            :output "Plan mode already enabled.")
-           (progn
-             (enter-plan-mode :state plan-state :clear-steps-p t)
-             (setconfig :plan-mode t)
-             (make-slash-command-result
-              :output "Plan mode enabled. PLAN MODE -- read-only."))))
-      (:off
-       (if active-p
-           (multiple-value-bind (_ output-path)
-               (exit-plan-mode :state plan-state :reason :plan-command-exit)
-             (declare (ignore _))
-             (setconfig :plan-mode nil)
-             (make-slash-command-result
-              :output (if output-path
-                          (format nil "Plan mode disabled. Plan written to ~A."
-                                  (namestring output-path))
-                          "Plan mode disabled.")))
-           (make-slash-command-result
-            :output "Plan mode already disabled.")))
-      (otherwise
-       (if active-p
-           (multiple-value-bind (_ output-path)
-               (toggle-plan-mode :state plan-state :reason :plan-command-toggle)
-             (declare (ignore _))
-             (setconfig :plan-mode nil)
-             (make-slash-command-result
-              :output (if output-path
-                          (format nil "Plan mode disabled. Plan written to ~A."
-                                  (namestring output-path))
-                          "Plan mode disabled.")))
-           (progn
-             (toggle-plan-mode :state plan-state :reason :plan-command-toggle)
-             (setconfig :plan-mode t)
-             (make-slash-command-result
-              :output "Plan mode enabled. PLAN MODE -- read-only.")))))))
+        :output "No captured plan is available yet. Use /plan to draft a plan before /execute."))
+      ((null approved-step-indexes)
+       (make-slash-command-result
+        :output "No approved steps are available for execution. Use /plan approve first."))
+      ((not (member review-decision '(:approved :partially-approved) :test #'eq))
+       (make-slash-command-result
+        :output (format nil
+                        "Plan review decision is ~A. Approve steps with /plan approve before /execute."
+                        (%plan-review-decision-label review-decision))))
+      (t
+       ;; Explicitly disable plan-mode gating before execution handoff.
+       (setconfig :plan-mode nil)
+       (setf (plan-mode-state-review-pending-p plan-state) nil)
+       (refresh-plan-review-markdown plan-state)
+       (let* ((execution-state (initialize-plan-execution :plan-state plan-state))
+              (approved-count (length approved-step-indexes))
+              (step-count (length available-step-indexes))
+              (next-step-index (plan-execution-next-step-index execution-state))
+              (run-id (plan-execution-state-run-id execution-state)))
+         (when interactive-p
+           (setf (plan-execution-state-interactive-p execution-state) t))
+         (plan-execution-append-output
+          (format nil "LIVE> /execute accepted: run ~A with ~D approved step~:P."
+                  run-id
+                  approved-count)
+          :phase :system
+          :style :meta
+          :state execution-state)
+         (make-slash-command-result
+          :output (with-output-to-string (out)
+                    (write-string "Execution pathways re-enabled after user approval." out)
+                    (write-string " Plan mode is OFF." out)
+                    (format out " Approved steps: ~D/~D (~A)."
+                            approved-count
+                            step-count
+                            (%format-step-index-list approved-step-indexes))
+                    (format out " Execution run initialized: ~A." run-id)
+                    (when interactive-p
+                      (write-string " Interactive mode: each step requires approval." out))
+                    (when next-step-index
+                      (format out " Next approved step: ~D." next-step-index)))))))))
 
 (defun %memory-handler (_invocation arguments context)
   (declare (ignore _invocation))
@@ -534,7 +1081,7 @@
          :echo-input-p t
          :output "Confirm clear with /clear --yes."))))
 
-(defun %history-normalize-role (value)
+(defun %commands-history-normalize-role (value)
   (let ((normalized
           (string-downcase
            (cond
@@ -585,7 +1132,7 @@
                  (string-equal token "-r"))
              (let ((value (consume-option-value "role")))
                (when value
-                 (let ((normalized (%history-normalize-role value)))
+                 (let ((normalized (%commands-history-normalize-role value)))
                    (if normalized
                        (setf role normalized)
                        (push (format nil "Invalid role ~S." value) errors))))))
@@ -628,7 +1175,7 @@
                  (%history-token-key-value token)
                (cond
                  ((and key (string= key "role"))
-                  (let ((normalized (%history-normalize-role value)))
+                  (let ((normalized (%commands-history-normalize-role value)))
                     (if normalized
                         (setf role normalized)
                         (push (format nil "Invalid role ~S." value) errors))))
@@ -1072,7 +1619,7 @@
         :output (format nil "Unsupported /agent action ~S." action))))))
 
 (defun %extensions-usage ()
-  "/extensions [list|reload|disable <all|name|path>]")
+  "/extensions [list|reload|enable <all|name|path>|disable <all|name|path>]")
 
 (defun %extension-scope-label (scope)
   (case scope
@@ -1099,10 +1646,13 @@
                   (getf summary :errors 0)
                   (getf summary :disabled 0))
           (dolist (entry report)
-            (format out "- [~A/~A] ~A~@[ -- ~A~]~%"
+            (format out "- [~A/~A] ~A~@[ name=~A~]~@[ version=~A~]~@[ entry=~A~]~@[ -- ~A~]~%"
                     (%extension-status-label (extension-load-record-status entry))
                     (%extension-scope-label (extension-load-record-scope entry))
                     (extension-load-record-path entry)
+                    (extension-load-record-name entry)
+                    (extension-load-record-version entry)
+                    (extension-load-record-entry-point entry)
                     (extension-load-record-message entry)))))))
 
 (defun %extensions-join (tokens)
@@ -1121,6 +1671,7 @@
         (setf targets
               (append (mapcar #'namestring global)
                       (mapcar #'namestring project)))))
+    (setf targets (append targets (known-user-extension-names)))
     (let ((seen (make-hash-table :test #'equal))
           (result '()))
       (labels ((remember (value)
@@ -1185,6 +1736,21 @@
                       :output (format nil "Disabled ~D extension(s). Reload to apply.~%~{~A~%~}"
                                       disabled-count
                                       disabled-paths)))))))
+        ((string= action-token "enable")
+         (let ((target (%extensions-join (rest tokens))))
+           (if (%slash-blank-p target)
+               (invalid-usage "Specify extension target or 'all'.")
+               (multiple-value-bind (enabled-paths enabled-count)
+                   (enable-user-extension target)
+                 (if (zerop enabled-count)
+                     (make-slash-command-result
+                      :echo-input-p t
+                      :output (format nil "No disabled extensions matched ~S." target))
+                     (make-slash-command-result
+                      :echo-input-p t
+                      :output (format nil "Enabled ~D extension(s). Reload to apply.~%~{~A~%~}"
+                                      enabled-count
+                                      enabled-paths)))))))
         (t
          (invalid-usage (format nil "Unknown /extensions action ~S." action-token)))))))
 
@@ -1317,6 +1883,12 @@
 (defun %sounds-usage ()
   "/sounds [list] | /sounds set <theme> | /sounds preview [category]")
 
+(defun %notifications-usage ()
+  "/notifications [list] | /notifications enable <backend> | /notifications disable <backend> | /notifications test-fire [event-type]")
+
+(defun %speak-usage ()
+  "/speak [last|on|off|status|stop|voice <name>]")
+
 (defun %sound-theme-label (theme-name)
   (if theme-name
       (string-downcase (symbol-name theme-name))
@@ -1430,6 +2002,193 @@
                 :output (%preview-sound category cfg)))))
         (t
          (invalid-usage (format nil "Unknown /sounds action ~S." action-token)))))))
+
+(defun %notification-backend-label (backend-name)
+  (string-downcase (symbol-name backend-name)))
+
+(defun %notification-filter-label (filter)
+  (cond
+    ((eq filter :*)
+     "*")
+    ((listp filter)
+     (format nil "~{~A~^, ~}"
+             (mapcar (lambda (item)
+                       (string-downcase (symbol-name item)))
+                     filter)))
+    (t
+     (string-downcase (symbol-name filter)))))
+
+(defun %ensure-notification-dispatcher-for-command (context)
+  (let* ((cfg (or (slash-command-context-config context)
+                  (%current-config-safe)))
+         (bus (current-event-bus))
+         (manager (ensure-notification-manager :config cfg :event-bus bus)))
+    (or (and *notification-dispatcher*
+             (notification-dispatcher-p *notification-dispatcher*)
+             *notification-dispatcher*)
+        (ensure-notification-dispatcher :manager manager :event-bus bus))))
+
+(defun %render-notification-backend-list (dispatcher)
+  (let ((entries (list-notification-dispatch-backends dispatcher)))
+    (if (null entries)
+        "No notification dispatch backends configured."
+        (with-output-to-string (out)
+          (format out "Notification backends (~D):~%" (length entries))
+          (dolist (entry entries)
+            (format out "- ~A enabled=~A priority=~D filter=~A~%"
+                    (%notification-backend-label
+                     (notification-dispatch-backend-name entry))
+                    (if (notification-dispatch-backend-enabled-p entry)
+                        "yes"
+                        "no")
+                    (notification-dispatch-backend-priority entry)
+                    (%notification-filter-label
+                     (notification-dispatch-backend-filter entry))))))))
+
+(defun %parse-notification-event-type (token)
+  (when (and token (plusp (length (%slash-trim token))))
+    (%normalize-event-type token)))
+
+(defun %notifications-handler (_invocation arguments context)
+  (declare (ignore _invocation))
+  (let* ((raw (or (gethash :ARGS arguments) ""))
+         (tokens (%tokenize-command-arguments raw))
+         (action-token (if tokens
+                           (string-downcase (first tokens))
+                           "list"))
+         (dispatcher (%ensure-notification-dispatcher-for-command context)))
+    (labels ((invalid-usage (&optional details)
+               (make-slash-command-result
+                :echo-input-p t
+                :output (format nil "~@[~A~%~]Usage: ~A"
+                                details
+                                (%notifications-usage)))))
+      (cond
+        ((member action-token '("list" "ls") :test #'string=)
+         (if (> (length tokens) 1)
+             (invalid-usage (format nil "Unexpected argument ~S." (second tokens)))
+             (make-slash-command-result
+              :echo-input-p t
+              :output (%render-notification-backend-list dispatcher))))
+        ((member action-token '("enable" "disable") :test #'string=)
+         (let ((backend-token (second tokens))
+               (extra (third tokens)))
+           (cond
+             ((or (null backend-token) extra)
+              (invalid-usage (format nil "Usage: /notifications ~A <backend>"
+                                     action-token)))
+             (t
+              (handler-case
+                  (let* ((entry (set-notification-dispatch-backend-enabled-p
+                                 dispatcher
+                                 backend-token
+                                 (string= action-token "enable")))
+                         (status (if (notification-dispatch-backend-enabled-p entry)
+                                     "enabled"
+                                     "disabled")))
+                    (make-slash-command-result
+                     :echo-input-p t
+                     :output (format nil "Notification backend ~A is now ~A."
+                                     (%notification-backend-label
+                                      (notification-dispatch-backend-name entry))
+                                     status)))
+                (error (condition)
+                  (invalid-usage (princ-to-string condition))))))))
+        ((string= action-token "test-fire")
+         (let* ((event-type (or (%parse-notification-event-type (second tokens))
+                                +event-type-tool-error+))
+                (extra (third tokens)))
+           (if extra
+               (invalid-usage (format nil "Unexpected argument ~S." extra))
+               (multiple-value-bind (ok destination)
+                   (fire-notification-dispatch-test :dispatcher dispatcher
+                                                    :event-type event-type)
+                 (make-slash-command-result
+                  :echo-input-p t
+                  :output (if ok
+                              (format nil "Notification test dispatched via ~A for ~A."
+                                      (%notification-backend-label destination)
+                                      (string-downcase (symbol-name event-type)))
+                              (format nil "Notification test fallback exhausted (~A) for ~A."
+                                      destination
+                                      (string-downcase (symbol-name event-type)))))))))
+        (t
+         (invalid-usage (format nil "Unknown /notifications action ~S." action-token)))))))
+
+(defun %render-tts-status ()
+  (let* ((cfg (%current-config-safe))
+         (auto-p (and (config-p cfg)
+                      (eq t (config-value :tts-auto-speak cfg))))
+         (backend *tts-backend*)
+         (active-voice
+           (when (and backend (typep backend 'kokoro-tts-backend))
+             (kokoro-tts-voice backend)))
+         (configured-voice (and (config-p cfg) (config-value :tts-voice cfg)))
+         (voice (or active-voice configured-voice *tts-default-voice*)))
+    (format nil "TTS auto-speak: ~:[off~;on~], voice: ~A, speaking: ~:[no~;yes~]."
+            auto-p
+            voice
+            (and backend (speaking-p backend)))))
+
+(defun %speak-handler (_invocation arguments context)
+  (declare (ignore _invocation))
+  (let* ((raw (or (gethash :ARGS arguments) ""))
+         (tokens (%tokenize-command-arguments raw))
+         (action-token (if tokens
+                           (string-downcase (first tokens))
+                           "last"))
+         (chat-state (slash-command-context-chat-state context)))
+    (labels ((invalid-usage (&optional details)
+               (make-slash-command-result
+                :echo-input-p t
+                :output (format nil "~@[~A~%~]Usage: ~A"
+                                details
+                                (%speak-usage)))))
+      (cond
+        ((member action-token '("last" "say" "speak") :test #'string=)
+         (multiple-value-bind (ok text)
+             (speak-last-assistant-response :chat-state chat-state)
+           (if ok
+               (make-slash-command-result
+                :echo-input-p t
+                :output (format nil "Speaking last assistant response (~D chars)."
+                                (length (or text ""))))
+               (make-slash-command-result
+                :echo-input-p t
+                :output "No assistant response available to speak yet."))))
+        ((member action-token '("on" "off") :test #'string=)
+         (let ((value (string= action-token "on")))
+           (setconfig :tts-auto-speak value)
+           (make-slash-command-result
+            :echo-input-p t
+            :output (format nil "TTS auto-speak ~:[disabled~;enabled~]." value))))
+        ((member action-token '("status" "show") :test #'string=)
+         (if (> (length tokens) 1)
+             (invalid-usage (format nil "Unexpected argument ~S." (second tokens)))
+             (make-slash-command-result
+              :echo-input-p t
+              :output (%render-tts-status))))
+        ((string= action-token "stop")
+         (let ((backend (or *tts-backend* (ensure-tts-backend))))
+           (stop-speaking backend)
+           (make-slash-command-result
+            :echo-input-p t
+            :output "TTS playback stopped.")))
+        ((string= action-token "voice")
+         (let ((voice-token (second tokens))
+               (extra (third tokens)))
+           (if (or (null voice-token) extra)
+               (invalid-usage "Usage: /speak voice <name>")
+               (let* ((trimmed (%slash-trim voice-token))
+                      (backend (or *tts-backend*
+                                   (ensure-tts-backend))))
+                 (setconfig :tts-voice trimmed)
+                 (set-voice backend trimmed)
+                 (make-slash-command-result
+                  :echo-input-p t
+                  :output (format nil "TTS voice set to ~A." trimmed))))))
+        (t
+         (invalid-usage (format nil "Unknown /speak action ~S." action-token)))))))
 
 (defun %hooks-usage ()
   "/hooks [list [hook-point]] | /hooks trace [limit] [hook-point]")
@@ -1605,7 +2364,9 @@
 (defun %plan-arg-completer (_command _invocation _index fragment _prefix)
   (declare (ignore _command _invocation _index _prefix))
   (let ((prefix (%slash-trim fragment)))
-    (loop for option in '("on" "off" "status")
+    (loop for option in '("on" "off" "status" "review"
+                          "approve" "reorder" "reject" "modify"
+                          "request-modifications" "request-changes")
           when (%starts-with-ci-p prefix option)
             collect option)))
 
@@ -1728,10 +2489,10 @@
         (prefix (%slash-trim fragment)))
     (cond
       ((= index 0)
-       (loop for option in '("list" "reload" "disable")
+       (loop for option in '("list" "reload" "enable" "disable")
              when (%starts-with-ci-p prefix option)
                collect option))
-      ((and (string= head "disable") (= index 1))
+      ((and (member head '("enable" "disable") :test #'string=) (= index 1))
        (let ((targets (append '("all") (%extensions-known-targets))))
          (loop for option in targets
                when (%starts-with-ci-p prefix option)
@@ -1760,6 +2521,54 @@
                collect option))
       (t
        nil))))
+
+(defun %notifications-arg-completer (_command _invocation index fragment prefix-tokens)
+  (declare (ignore _command _invocation))
+  (let* ((head (and prefix-tokens (string-downcase (first prefix-tokens))))
+         (prefix (%slash-trim fragment))
+         (backends (mapcar (lambda (entry)
+                             (%notification-backend-label
+                              (notification-dispatch-backend-name entry)))
+                           (list-notification-dispatch-backends
+                            (or *notification-dispatcher*
+                                (ignore-errors
+                                  (%ensure-notification-dispatcher-for-command
+                                   (make-slash-command-context))))))))
+    (cond
+      ((= index 0)
+       (loop for option in '("list" "enable" "disable" "test-fire")
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      ((and (member head '("enable" "disable") :test #'string=) (= index 1))
+       (loop for option in backends
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      ((and (string= head "test-fire") (= index 1))
+       (loop for option in (mapcar (lambda (event-type)
+                                     (string-downcase (symbol-name event-type)))
+                                   +core-event-types+)
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      (t
+       nil))))
+
+(defun %speak-arg-completer (_command _invocation index fragment prefix-tokens)
+  (declare (ignore _command _invocation))
+  (let* ((prefix (%slash-trim fragment))
+         (action (and prefix-tokens (string-downcase (first prefix-tokens)))))
+    (cond
+      ((= index 0)
+       (loop for option in '("last" "on" "off" "status" "stop" "voice")
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      ((and (string= action "voice") (= index 1))
+       (let* ((backend (or *tts-backend* (ignore-errors (ensure-tts-backend))))
+              (voices (or (and backend (ignore-errors (list-voices backend)))
+                          (copy-list *tts-default-voices*))))
+         (loop for option in voices
+               when (%starts-with-ci-p prefix option)
+                 collect option)))
+      (t nil))))
 
 (defun %completion-arg-state (input)
   (let* ((trimmed (%slash-trim input))
@@ -1894,6 +2703,8 @@
 (defvar *model-router* nil
   "Global model router instance, set during configuration.")
 
+(defparameter +cost-default-interaction-count+ 5)
+
 (defun %models-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
   (let ((filter (gethash :PROVIDER arguments)))
@@ -1912,6 +2723,126 @@
                         (getf p :requests) (getf p :errors) (getf p :last-latency-ms))))))
         (make-slash-command-result
          :output "No model router configured. Set up providers in config."))))
+
+(defun %providers-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let* ((raw-action (gethash :ACTION arguments))
+         (action (and (stringp raw-action)
+                      (string-downcase (%slash-trim raw-action)))))
+    (cond
+      ((string-equal action "on")
+       (make-slash-command-result
+        :echo-input-p t
+        :action :toggle-provider-dashboard
+        :payload :on))
+      ((string-equal action "off")
+       (make-slash-command-result
+        :echo-input-p t
+        :action :toggle-provider-dashboard
+        :payload :off))
+      (t
+       (make-slash-command-result
+        :echo-input-p t
+        :action :toggle-provider-dashboard
+        :payload :toggle)))))
+
+(defun %slash-message-text (message)
+  (cond
+    ((typep message 'pseudopod:message)
+     (with-output-to-string (out)
+       (dolist (part (pseudopod:message-content message))
+         (when (and (pseudopod:content-part-p part)
+                    (stringp (pseudopod:content-part-text part)))
+           (write-string (pseudopod:content-part-text part) out)
+           (write-char #\Space out)))))
+    ((stringp message)
+     message)
+    (t
+     (princ-to-string message))))
+
+(defun %cost-recent-interactions (messages count)
+  (let ((all '())
+        (pending-user nil))
+    (dolist (message messages)
+      (when (typep message 'pseudopod:message)
+        (let ((role (string-downcase (or (pseudopod:message-role message) ""))))
+          (cond
+            ((string= role "user")
+             (setf pending-user message))
+            ((and (string= role "assistant") pending-user)
+             (push (list :user pending-user :assistant message) all)
+             (setf pending-user nil))))))
+    (let ((ordered (nreverse all)))
+      (if (<= (length ordered) count)
+          ordered
+          (subseq ordered (- (length ordered) count))))))
+
+(defun %format-usd (amount)
+  (format nil "$~,6F" (coerce amount 'double-float)))
+
+(defun %cost-handler (_invocation arguments context)
+  (declare (ignore _invocation))
+  (let* ((chat-state (slash-command-context-chat-state context))
+         (raw-count (gethash :COUNT arguments))
+         (count (max 1 (or raw-count +cost-default-interaction-count+))))
+    (cond
+      ((null *model-router*)
+       (make-slash-command-result
+        :output "No model router configured. Set up providers in config."))
+      ((not (typep chat-state 'chat-ui-state))
+       (make-slash-command-result
+        :output "Cost estimation requires an active chat session."))
+      (t
+       (let* ((messages (chat-ui-state-messages chat-state))
+              (interactions (%cost-recent-interactions messages count)))
+         (if (null interactions)
+             (make-slash-command-result
+              :output "No completed user/assistant interactions to estimate yet.")
+             (let ((rows '())
+                   (total 0.0d0)
+                   (index 0))
+               (dolist (interaction interactions)
+                 (incf index)
+                 (let* ((user-message (getf interaction :user))
+                        (assistant-message (getf interaction :assistant))
+                        (input-messages (list user-message))
+                        (provider (or (pseudopod:router-select-provider
+                                       *model-router*
+                                       :messages input-messages)
+                                      (first (pseudopod:model-router-providers *model-router*))))
+                        (assistant-tokens
+                          (if provider
+                              (max 0
+                                   (pseudopod:estimate-provider-tokens
+                                    provider
+                                    (%slash-message-text assistant-message)))
+                              0))
+                        (estimate
+                          (if provider
+                              (pseudopod:cost-estimate provider
+                                                       input-messages
+                                                       :output-tokens assistant-tokens)
+                              (list :total-cost-usd 0.0d0
+                                    :input-tokens 0
+                                    :output-tokens assistant-tokens
+                                    :provider "n/a"
+                                    :model "n/a"))))
+                   (incf total (getf estimate :total-cost-usd 0.0d0))
+                   (push (format nil "~D. ~A (~A): in ~D tok, out ~D tok -> ~A"
+                                 index
+                                 (getf estimate :provider "n/a")
+                                 (getf estimate :model "n/a")
+                                 (getf estimate :input-tokens 0)
+                                 (getf estimate :output-tokens 0)
+                                 (%format-usd (getf estimate :total-cost-usd 0.0d0)))
+                         rows)))
+               (make-slash-command-result
+                :output (with-output-to-string (out)
+                          (format out "Estimated cost for last ~D interaction~:P:~%"
+                                  (length interactions))
+                          (dolist (row (nreverse rows))
+                            (format out "~A~%" row))
+                          (format out "Total: ~A" (%format-usd total)))))))))))
 
 (defun %index-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
@@ -1938,7 +2869,7 @@
 (defun %image-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
   (let* ((args-text (or (gethash :ARGS arguments) ""))
-         (tokens (%slash-tokenize args-text))
+         (tokens (%tokenize-command-arguments args-text))
          (action (string-downcase (or (first tokens) "list"))))
     (cond
       ((string= action "save")
@@ -1957,7 +2888,7 @@
 (defun %extensions-asdf-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
   (let* ((args-text (or (gethash :ARGS arguments) ""))
-         (tokens (%slash-tokenize args-text))
+         (tokens (%tokenize-command-arguments args-text))
          (action (string-downcase (or (first tokens) "list"))))
     (cond
       ((string= action "discover")
@@ -1982,24 +2913,133 @@
         :output "ASDF extensions: /extensions-asdf list|load|unload|discover")))))
 
 (defun %perf-handler (_invocation arguments _context)
+  (%profile-handler _invocation arguments _context))
+
+(defun %profile-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
   (let* ((args-text (or (gethash :ARGS arguments) ""))
-         (tokens (%slash-tokenize args-text))
+         (tokens (%tokenize-command-arguments args-text))
          (action (string-downcase (or (first tokens) "report"))))
     (cond
       ((string= action "start")
-       (make-slash-command-result :output "Profiling started."))
-      ((string= action "stop")
-       (make-slash-command-result :output "Profiling stopped."))
-      ((string= action "gc")
+       (start-profiling)
        (make-slash-command-result
-        :output (format nil "GC telemetry:~%  Dynamic space usage: ~,2F MB"
-                        (/ (sb-kernel:dynamic-usage) 1048576.0))))
-      ((string= action "dashboard")
-       (make-slash-command-result :output "Performance dashboard widget activated."))
+        :output "Profiling started. Run /profile stop to capture a report."))
+      ((string= action "stop")
+       (let ((report (stop-profiling)))
+         (make-slash-command-result
+          :output (render-profiling-report-table :report report))))
+      ((string= action "report")
+       (make-slash-command-result
+        :output (render-profiling-report-table :report (report-profiling))))
       (t
        (make-slash-command-result
-        :output "Profiling: /perf start|stop|report|gc|dashboard")))))
+        :output "Profiling: /profile start|stop|report")))))
+
+(defun %voice-usage ()
+  "/voice [on|off|toggle|status|language <code>]")
+
+(defun %voice-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let* ((args-text (or (gethash :ARGS arguments) ""))
+         (tokens (%tokenize-command-arguments args-text))
+         (action (if tokens
+                     (string-downcase (first tokens))
+                     "toggle"))
+         (backend (ensure-asr-backend)))
+    (labels ((status-output ()
+               (format nil "Voice input ~:[disabled~;enabled~], listening=~:[no~;yes~], language=~A."
+                       (voice-input-mode-enabled-p)
+                       (listening-p backend)
+                       (whisper-asr-backend-language backend)))
+             (invalid-usage (&optional detail)
+               (make-slash-command-result
+                :echo-input-p t
+                :output (format nil "~@[~A~%~]Usage: ~A"
+                                detail
+                                (%voice-usage)))))
+      (cond
+        ((member action '("on" "enable") :test #'string=)
+         (enable-voice-input-mode :backend backend)
+         (make-slash-command-result :echo-input-p t :output (status-output)))
+        ((member action '("off" "disable") :test #'string=)
+         (disable-voice-input-mode :backend backend)
+         (make-slash-command-result :echo-input-p t :output (status-output)))
+        ((string= action "toggle")
+         (toggle-voice-input-mode :backend backend)
+         (make-slash-command-result :echo-input-p t :output (status-output)))
+        ((string= action "status")
+         (make-slash-command-result :echo-input-p t :output (status-output)))
+        ((member action '("language" "lang") :test #'string=)
+         (let ((language (second tokens)))
+           (if (or (null language)
+                   (%slash-blank-p language))
+               (invalid-usage "Missing language code.")
+               (progn
+                 (set-language backend language)
+                 (make-slash-command-result
+                  :echo-input-p t
+                  :output (status-output))))))
+        (t
+         (invalid-usage (format nil "Unknown /voice action ~S." action)))))))
+
+(defun %voice-arg-completer (_command _invocation index fragment _prefix-tokens)
+  (if (= index 0)
+      (let ((prefix (%slash-trim fragment)))
+        (loop for option in '("on" "off" "toggle" "status" "language")
+              when (%starts-with-ci-p prefix option)
+                collect option))
+      nil))
+
+(defun %mcp-status-tool-count (server-name)
+  (let ((normalized (string-downcase (%slash-trim (princ-to-string server-name))))
+        (count 0))
+    (maphash (lambda (_name binding)
+               (declare (ignore _name))
+               (when (string= (mcp-tool-binding-server-name binding) normalized)
+                 (incf count)))
+             *mcp-tool-binding-registry*)
+    count))
+
+(defun %mcp-status-handler (_invocation _arguments _context)
+  (declare (ignore _invocation _arguments _context))
+  (let ((servers '()))
+    (maphash (lambda (_name server)
+               (declare (ignore _name))
+               (push server servers))
+             *mcp-tool-server-registry*)
+    (if (null servers)
+        (make-slash-command-result
+         :echo-input-p t
+         :output "No MCP servers are currently registered.")
+        (make-slash-command-result
+         :echo-input-p t
+         :output
+         (with-output-to-string (out)
+           (format out "MCP servers: ~D~%" (length servers))
+           (dolist (server (sort (copy-list servers) #'string<
+                                 :key #'mcp-server-name))
+             (let* ((info (mcp-server-server-info server))
+                    (status (if (mcp-server-running-p server) "running" "stopped"))
+                    (protocol (or (and info (mcp-server-info-protocol-version info))
+                                  "unknown"))
+                    (match (if (and info (mcp-server-info-protocol-version-match-p info))
+                               "match"
+                               "mismatch"))
+                    (capabilities (or (mcp-server-capability-summary server) '()))
+                    (declared-count (length (or (and info (mcp-server-info-declared-tools info))
+                                                '())))
+                    (discovered-count (%mcp-status-tool-count (mcp-server-name server))))
+               (format out
+                       "- ~A (~A) protocol=~A [~A] capabilities=~:[none~;~{~A~^, ~}~] declared-tools=~D discovered-tools=~D~%"
+                       (mcp-server-name server)
+                       status
+                       protocol
+                       match
+                       capabilities
+                       capabilities
+                       declared-count
+                       discovered-count))))))))
 
 (defun %mcp-auth-usage ()
   "/mcp-auth [list|set <server|default> <allow|deny|prompt>|clear <server|all>]")
@@ -2216,7 +3256,7 @@
 (defun %approvals-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
   (let* ((args-text (or (gethash :ARGS arguments) ""))
-         (tokens (%slash-tokenize args-text))
+         (tokens (%tokenize-command-arguments args-text))
          (action (string-downcase (or (first tokens) "status")))
          (policy-token (second tokens))
          (cfg (%current-config-safe))
@@ -2245,8 +3285,108 @@
                                   "Unknown approval policy ~S. Valid values: untrusted, on-failure, on-request, never."
                                   policy-token))))))
       (t
-       (make-slash-command-result
-        :output "Approvals: /approvals status | /approvals set <policy>")))))
+      (make-slash-command-result
+       :output "Approvals: /approvals status | /approvals set <policy>")))))
+
+(defun %permissions-usage ()
+  "/permissions [stats|log [limit]|explain [decision-id|latest]]")
+
+(defun %permissions-format-trace (trace)
+  (if (null trace)
+      "No permission decision trace available."
+      (with-output-to-string (out)
+        (format out "decision-id=~A decision=~A mode=~A tool=~A~%"
+                (getf trace :decision-id)
+                (getf trace :decision)
+                (getf trace :permission-mode)
+                (getf trace :tool))
+        (when (getf trace :path)
+          (format out "  path: ~A~%" (getf trace :path)))
+        (when (getf trace :command)
+          (format out "  command: ~A~%" (getf trace :command)))
+        (dolist (phase (getf trace :evaluation-trace))
+          (format out "  phase=~A matched-rule-id=~A specificity=~A effect=~A cache=~A~%"
+                  (getf phase :phase)
+                  (or (getf phase :matched-rule-id) "none")
+                  (or (getf phase :specificity) 0)
+                  (or (getf phase :effect) :none)
+                  (or (getf phase :cache) :n/a))))))
+
+(defun %permissions-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let* ((raw (or (gethash :ARGS arguments) ""))
+         (tokens (%tokenize-command-arguments raw))
+         (action (if tokens (string-downcase (first tokens)) "stats")))
+    (labels ((invalid-usage (&optional detail)
+               (make-slash-command-result
+                :echo-input-p t
+                :output (format nil "~@[~A~%~]Usage: ~A"
+                                detail
+                                (%permissions-usage)))))
+      (cond
+        ((member action '("stats" "status") :test #'string=)
+         (let ((metrics (permission-cache-metrics)))
+           (make-slash-command-result
+            :echo-input-p t
+            :output (format nil "Permission cache: hits=~D misses=~D invalidations=~D rules-version=~D entries=~D"
+                            (or (getf metrics :hits) 0)
+                            (or (getf metrics :misses) 0)
+                            (or (getf metrics :invalidations) 0)
+                            (or (getf metrics :rules-version) 0)
+                            (or (getf metrics :entries) 0)))))
+        ((string= action "log")
+         (let* ((limit-token (second tokens))
+                (limit (if limit-token
+                           (handler-case
+                               (max 1 (parse-integer limit-token))
+                             (error () nil))
+                           5))
+                (entries (and limit (permission-decision-history :limit limit))))
+           (if (null limit)
+               (invalid-usage (format nil "Invalid log limit ~S." limit-token))
+               (make-slash-command-result
+                :echo-input-p t
+                :output (if entries
+                            (with-output-to-string (out)
+                              (format out "Permission decisions (~D):~%" (length entries))
+                              (dolist (entry entries)
+                                (format out "- ~A~%" (%permissions-format-trace entry))))
+                            "No permission decisions recorded yet.")))))
+        ((string= action "explain")
+         (let* ((decision-id (or (second tokens) "latest"))
+                (payload (explain-permission-decision :decision-id decision-id)))
+           (if payload
+               (make-slash-command-result
+                :echo-input-p t
+                :output (with-output-to-string (out)
+                          (format out "Historical:~%~A~%Replay:~%~A"
+                                  (%permissions-format-trace (getf payload :historical))
+                                  (%permissions-format-trace (getf payload :replay))))
+                :payload payload)
+               (make-slash-command-result
+                :echo-input-p t
+                :output (format nil "No decision trace found for ~A." decision-id)))))
+        (t
+         (invalid-usage (format nil "Unknown /permissions action ~S." action)))))))
+
+(defun %permissions-arg-completer (_command _invocation index fragment prefix-tokens)
+  (declare (ignore _command _invocation))
+  (let ((prefix (%slash-trim fragment))
+        (action (and prefix-tokens (string-downcase (first prefix-tokens)))))
+    (cond
+      ((= index 0)
+       (loop for option in '("stats" "log" "explain")
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      ((and (string= action "explain") (= index 1))
+       (let* ((entries (permission-decision-history :limit 20))
+              (ids (cons "latest"
+                         (remove nil
+                                 (mapcar (lambda (entry) (getf entry :decision-id)) entries)))))
+         (loop for option in ids
+               when (%starts-with-ci-p prefix option)
+                 collect option)))
+      (t nil))))
 
 (defun register-builtin-slash-commands ()
   (register-slash-command
@@ -2298,17 +3438,30 @@
   (register-slash-command
    (make-slash-command
     :name "plan"
-    :description "Toggle plan mode (read/search only) and persist plan output on exit."
-    :usage "/plan [on|off|status]"
+    :description "Toggle plan mode, review captured plan output, reorder steps, record review decisions, and approve specific steps."
+    :usage "/plan [on|off|status|review|approve|reorder|reject|modify|request-modifications|request-changes] [args...]"
     :parameters
     (list (make-slash-command-parameter
            :name "state"
            :type :keyword
            :required-p nil
-           :choices '(:on :off :status)
-           :description "Optional explicit plan mode action."))
+           :choices '(:on :off :status :review :approve :reorder :reject :modify
+                      :request-modifications :request-changes)
+           :description "Optional explicit plan mode action.")
+          (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Optional action arguments (e.g. /plan off false, /plan approve 1,3, /plan reorder 3 1, /plan modify <notes>)."))
     :handler #'%plan-handler
     :completer #'%plan-arg-completer))
+  (register-slash-command
+   (make-slash-command
+    :name "execute"
+    :description "Transition from approved plan review into execution mode."
+    :usage "/execute"
+    :handler #'%execute-handler))
   (register-slash-command
    (make-slash-command
     :name "memory"
@@ -2441,7 +3594,7 @@
   (register-slash-command
    (make-slash-command
     :name "extensions"
-    :description "List, reload, or disable user extensions."
+    :description "List, reload, enable, or disable user extensions."
     :usage (%extensions-usage)
     :parameters
     (list (make-slash-command-parameter
@@ -2482,6 +3635,12 @@
     :completer #'%hooks-arg-completer))
   (register-slash-command
    (make-slash-command
+    :name "mcp-status"
+    :description "Show MCP server negotiation state, capabilities, and discovered tool counts."
+    :usage "/mcp-status"
+    :handler #'%mcp-status-handler))
+  (register-slash-command
+   (make-slash-command
     :name "mcp-auth"
     :description "Inspect or update MCP per-server authorization decisions."
     :usage (%mcp-auth-usage)
@@ -2510,6 +3669,34 @@
     :completer #'%sounds-arg-completer))
   (register-slash-command
    (make-slash-command
+    :name "notifications"
+    :description "Inspect dispatch backends, toggle them, and fire a dispatch test event."
+    :usage (%notifications-usage)
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Optional action: list, enable <backend>, disable <backend>, test-fire [event-type]."))
+    :handler #'%notifications-handler
+    :completer #'%notifications-arg-completer))
+  (register-slash-command
+   (make-slash-command
+    :name "speak"
+    :description "Speak the latest assistant response and manage TTS auto-speak."
+    :usage (%speak-usage)
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Optional action: last, on, off, status, stop, voice <name>."))
+    :handler #'%speak-handler
+    :completer #'%speak-arg-completer))
+  (register-slash-command
+   (make-slash-command
     :name "lint"
     :description "Re-expand deftool/defhook/defwidget forms and report compile-time warnings/errors."
     :usage "/lint [path ...]"
@@ -2534,6 +3721,30 @@
            :required-p nil
            :description "Optional provider name to inspect."))
     :handler #'%models-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "providers"
+    :description "Toggle provider health dashboard visibility."
+    :usage "/providers [on|off]"
+    :parameters
+    (list (make-slash-command-parameter
+           :name "action"
+           :type :string
+           :required-p nil
+           :description "Optional on/off to explicitly set visibility."))
+    :handler #'%providers-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "cost"
+    :description "Estimate cost of the most recent chat interactions."
+    :usage "/cost [count]"
+    :parameters
+    (list (make-slash-command-parameter
+           :name "count"
+           :type :integer
+           :required-p nil
+           :description "Number of recent interactions to estimate (default 5)."))
+    :handler #'%cost-handler))
   (register-slash-command
    (make-slash-command
     :name "index"
@@ -2589,8 +3800,8 @@
   (register-slash-command
    (make-slash-command
     :name "perf"
-    :description "Show performance profiling dashboard or run a profile."
-    :usage "/perf [start|stop|report|gc|dashboard]"
+    :description "Backward-compatible alias for /profile commands."
+    :usage "/perf [start|stop|report]"
     :parameters
     (list (make-slash-command-parameter
            :name "args"
@@ -2599,6 +3810,33 @@
            :greedy-p t
            :description "Subcommand for profiling."))
     :handler #'%perf-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "profile"
+    :description "Control SBCL statistical profiling and show reports."
+    :usage "/profile [start|stop|report]"
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Subcommand for profiling."))
+    :handler #'%profile-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "voice"
+    :description "Toggle Whisper voice input and language."
+    :usage (%voice-usage)
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Optional action: on, off, toggle, status, language <code>."))
+    :handler #'%voice-handler
+    :completer #'%voice-arg-completer))
   (register-slash-command
    (make-slash-command
     :name "spawn"
@@ -2625,6 +3863,20 @@
            :greedy-p t
            :description "Optional action: status or set <policy>."))
     :handler #'%approvals-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "permissions"
+    :description "Inspect permission cache metrics and explain decision traces."
+    :usage "/permissions [stats|log [limit]|explain [decision-id|latest]]"
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Optional action: stats, log, or explain <decision-id>."))
+    :handler #'%permissions-handler
+    :completer #'%permissions-arg-completer))
   t)
 
 (register-builtin-slash-commands)

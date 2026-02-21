@@ -16,6 +16,7 @@
          (load-asd-fn (symbol-function load-asd-sym))
          (load-system-fn (symbol-function load-system-sym)))
     (funcall load-asd-fn (merge-pathnames #P"pseudopod/pseudopod.asd" repo-root))
+    (funcall load-asd-fn (merge-pathnames #P"sw4rm-sdk/sw4rm-sdk.asd" repo-root))
     (funcall load-asd-fn (merge-pathnames #P"ptui/ptui.asd" repo-root))
     (funcall load-asd-fn (merge-pathnames #P"amoebum/amoebum.asd" repo-root))
     (funcall load-system-fn "amoebum"))
@@ -42,6 +43,7 @@
          (publish-fn (funcall fn "PUBLISH"))
          (make-notification-manager-fn (funcall fn "MAKE-NOTIFICATION-MANAGER"))
          (stop-notification-manager-fn (funcall fn "STOP-NOTIFICATION-MANAGER"))
+         (stop-notification-dispatcher-fn (funcall fn "STOP-NOTIFICATION-DISPATCHER"))
          (make-tool-completed-event-fn (funcall fn "MAKE-TOOL-COMPLETED-EVENT"))
          (make-tool-error-event-fn (funcall fn "MAKE-TOOL-ERROR-EVENT"))
          (make-permission-prompted-event-fn (funcall fn "MAKE-PERMISSION-PROMPTED-EVENT"))
@@ -65,7 +67,11 @@
          (original-command-prober (symbol-value command-prober-sym))
          (original-command-runner (symbol-value command-runner-sym))
          (original-async-dispatch (symbol-value async-dispatch-sym))
-         (original-manager-registry (symbol-value manager-registry-sym)))
+         (dispatcher-sym (funcall symbol-in "*NOTIFICATION-DISPATCHER*" amoebum-pkg))
+         (original-dispatcher (symbol-value dispatcher-sym))
+         (original-manager-registry (symbol-value manager-registry-sym))
+         (desktop-run-fn-sym (funcall symbol-in "*DESKTOP-NOTIFICATION-RUN-COMMAND-FUNCTION*" amoebum-pkg))
+         (original-desktop-run-fn (symbol-value desktop-run-fn-sym)))
     (labels ((assert-true (condition format-string &rest format-args)
                (unless condition
                  (error (apply #'format nil format-string format-args))))
@@ -100,21 +106,32 @@
                    (invocations '())
                    (bus (funcall make-event-bus-fn :capacity 64)))
               (setf (symbol-value manager-registry-sym) (make-hash-table :test #'eq))
+              (setf (symbol-value dispatcher-sym) nil)
               (setf (symbol-value event-bus-sym) bus)
               (setf (symbol-value async-dispatch-sym) nil)
               (setf (symbol-value command-prober-sym)
                     (lambda (command)
-                      (member command '("fake-player" "fake-notify-send")
+                      (member command '("fake-player" "fake-notify-send" "notify-send")
                               :test #'string=)))
               (setf (symbol-value command-runner-sym)
                     (lambda (arguments)
                       (push arguments invocations)
+                      (list :exit-code 0 :stdout "" :stderr "")))
+              ;; Desktop backend uses its own run-command function, not
+              ;; *notification-command-runner*.  Override it to record invocations.
+              (setf (symbol-value desktop-run-fn-sym)
+                    (lambda (command-string)
+                      (push (list "fake-notify-send" command-string) invocations)
                       (list :exit-code 0 :stdout "" :stderr "")))
               (set-notification-config cfg)
 
               (let ((manager (funcall make-notification-manager-fn
                                       :config cfg
                                       :event-bus bus)))
+                ;; Stop the wildcard dispatcher subscription created by
+                ;; ensure-notification-dispatcher inside make-notification-manager,
+                ;; so only the manager's direct event subscriptions are active.
+                (funcall stop-notification-dispatcher-fn :event-bus bus)
                 (funcall publish-fn bus
                          (funcall make-tool-completed-event-fn
                                   :tool-name "read-file"
@@ -164,6 +181,7 @@
                    (invocations '())
                    (bus (funcall make-event-bus-fn :capacity 32)))
               (setf (symbol-value manager-registry-sym) (make-hash-table :test #'eq))
+              (setf (symbol-value dispatcher-sym) nil)
               (setf (symbol-value event-bus-sym) bus)
               (setf (symbol-value async-dispatch-sym) nil)
               (setf (symbol-value command-prober-sym) (lambda (_command) nil))
@@ -175,6 +193,7 @@
               (let ((manager (funcall make-notification-manager-fn
                                       :config cfg
                                       :event-bus bus)))
+                (funcall stop-notification-dispatcher-fn :event-bus bus)
                 (assert-true (integerp
                               (funcall publish-fn bus
                                        (funcall make-tool-completed-event-fn
@@ -191,6 +210,7 @@
             (let* ((cfg (funcall load-config-fn :project-root project-root))
                    (bus (funcall make-event-bus-fn :capacity 32)))
               (setf (symbol-value manager-registry-sym) (make-hash-table :test #'eq))
+              (setf (symbol-value dispatcher-sym) nil)
               (setf (symbol-value event-bus-sym) bus)
               (setf (symbol-value async-dispatch-sym) nil)
               (setf (symbol-value command-prober-sym)
@@ -205,6 +225,7 @@
               (let ((manager (funcall make-notification-manager-fn
                                       :config cfg
                                       :event-bus bus)))
+                (funcall stop-notification-dispatcher-fn :event-bus bus)
                 (assert-true (integerp
                               (funcall publish-fn bus
                                        (funcall make-tool-error-event-fn
@@ -220,6 +241,8 @@
               (symbol-value command-prober-sym) original-command-prober
               (symbol-value command-runner-sym) original-command-runner
               (symbol-value async-dispatch-sym) original-async-dispatch
-              (symbol-value manager-registry-sym) original-manager-registry))))
+              (symbol-value dispatcher-sym) original-dispatcher
+              (symbol-value manager-registry-sym) original-manager-registry
+              (symbol-value desktop-run-fn-sym) original-desktop-run-fn))))
 
   (format t "AMOEBUM_NOTIFICATIONS_SMOKE_OK~%"))

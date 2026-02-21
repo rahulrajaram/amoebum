@@ -6,9 +6,26 @@
 (defparameter +stream-cursor-glyph+ "█")
 (defparameter +stream-cursor-blink-ms+ 450)
 (defparameter +stream-budget-warning-threshold-percent+ 90)
+(defparameter +stream-budget-abort-threshold-percent+ 80)
+;; Bound by chat.lisp while a stream is active to observe each incoming chunk.
+(defvar *stream-chunk-hook-callback* nil)
 
 (define-condition token-stream-cancelled (condition)
   ())
+
+(defstruct (stream-stats
+            (:constructor make-stream-stats
+                (&key
+                   (tokens-received 0)
+                   (chunks-processed 0)
+                   (elapsed-ms 0)
+                   (aborted-p nil)
+                   (abort-reason nil))))
+  (tokens-received 0 :type fixnum)
+  (chunks-processed 0 :type fixnum)
+  (elapsed-ms 0 :type integer)
+  (aborted-p nil :type boolean)
+  abort-reason)
 
 (defstruct (token-stream-state
             (:constructor make-token-stream-state
@@ -24,7 +41,11 @@
                    (error-message nil)
                    (budget-warning-threshold-percent
                      +stream-budget-warning-threshold-percent+)
-                   (budget-warning-emitted-p nil))))
+                   (budget-warning-emitted-p nil)
+                   (budget-abort-threshold-percent
+                     +stream-budget-abort-threshold-percent+)
+                   (aborted-p nil)
+                   (abort-reason nil))))
   (status :idle)
   (events (ptui.runtime.queue:make-event-queue)
           :type ptui.runtime.queue:event-queue)
@@ -39,6 +60,11 @@
     +stream-budget-warning-threshold-percent+
     :type integer)
   (budget-warning-emitted-p nil :type boolean)
+  (budget-abort-threshold-percent
+    +stream-budget-abort-threshold-percent+
+    :type integer)
+  (aborted-p nil :type boolean)
+  abort-reason
   (worker-thread nil)
   (lock (bordeaux-threads:make-lock "amoebum-token-stream-lock")))
 
@@ -94,6 +120,10 @@
           (token-stream-state-cancel-requested-p stream-state) nil
           (token-stream-state-error-message stream-state) nil
           (token-stream-state-budget-warning-emitted-p stream-state) nil
+          (token-stream-state-budget-abort-threshold-percent stream-state)
+          +stream-budget-abort-threshold-percent+
+          (token-stream-state-aborted-p stream-state) nil
+          (token-stream-state-abort-reason stream-state) nil
           (token-stream-state-worker-thread stream-state) nil))
   (ptui.runtime.queue:queue-pop-all (token-stream-state-events stream-state))
   stream-state)
@@ -127,6 +157,24 @@
           threshold-percent
           (token-stream-state-budget-warning-emitted-p stream-state) nil))
   threshold-percent)
+
+(defun token-stream-set-budget-abort-threshold (stream-state threshold-percent)
+  (check-type stream-state token-stream-state)
+  (unless (%token-stream-valid-threshold-percent-p threshold-percent)
+    (error "THRESHOLD-PERCENT must be an integer in [1, 100], got ~S."
+           threshold-percent))
+  (%with-token-stream-lock (stream-state)
+    (setf (token-stream-state-budget-abort-threshold-percent stream-state)
+          threshold-percent))
+  threshold-percent)
+
+(defun token-stream-abort (stream-state abort-reason)
+  (check-type stream-state token-stream-state)
+  (%with-token-stream-lock (stream-state)
+    (setf (token-stream-state-cancel-requested-p stream-state) t
+          (token-stream-state-aborted-p stream-state) t
+          (token-stream-state-abort-reason stream-state) abort-reason))
+  t)
 
 (defun token-stream-maybe-budget-warning (stream-state used-tokens limit-tokens
                                           &key threshold-percent)
@@ -238,6 +286,25 @@
            :tool-call-id (pseudopod:tool-call-id tool-call))))
   nil)
 
+(defun token-stream-emit-tool-call-result (stream-state
+                                          &key
+                                            tool-call
+                                            preview-key
+                                            execution-key
+                                            result
+                                            execution-error)
+  "Publish a completed tool call execution result for async tool workers." 
+  (when (pseudopod:tool-call-p tool-call)
+    (ptui.runtime.queue:queue-push
+     (token-stream-state-events stream-state)
+     (list :kind :tool-call-result
+           :tool-call tool-call
+           :preview-key preview-key
+           :execution-key execution-key
+           :result result
+           :execution-error execution-error)))
+  nil)
+
 (defun token-stream-mark-complete (stream-state)
   (ptui.runtime.queue:queue-push (token-stream-state-events stream-state)
                                  (list :kind :complete))
@@ -275,7 +342,8 @@
 (defun token-stream-start (stream-state worker-fn
                            &key
                              target-message-index
-                             budget-warning-threshold-percent)
+                             budget-warning-threshold-percent
+                             budget-abort-threshold-percent)
   (check-type stream-state token-stream-state)
   (check-type worker-fn function)
   (%token-stream-reset! stream-state)
@@ -286,7 +354,13 @@
           (%token-stream-normalize-threshold-percent
            (or budget-warning-threshold-percent
                (token-stream-state-budget-warning-threshold-percent stream-state)))
+          (token-stream-state-budget-abort-threshold-percent stream-state)
+          (%token-stream-normalize-threshold-percent
+           (or budget-abort-threshold-percent
+               (token-stream-state-budget-abort-threshold-percent stream-state)))
           (token-stream-state-budget-warning-emitted-p stream-state) nil
+          (token-stream-state-aborted-p stream-state) nil
+          (token-stream-state-abort-reason stream-state) nil
           (token-stream-state-target-message-index stream-state) target-message-index))
   #+sb-thread
   (let ((thread
@@ -372,6 +446,10 @@
             (token-stream-state-budget-warning-threshold-percent stream-state))
           (budget-warning-emitted-p
             (token-stream-state-budget-warning-emitted-p stream-state))
+          (budget-abort-threshold
+            (token-stream-state-budget-abort-threshold-percent stream-state))
+          (aborted-p (token-stream-state-aborted-p stream-state))
+          (abort-reason (token-stream-state-abort-reason stream-state))
           (target-index (token-stream-state-target-message-index stream-state))
           (started (token-stream-state-started-ms stream-state))
           (ended (token-stream-state-ended-ms stream-state))
@@ -393,7 +471,20 @@
             :tokens-per-second (/ tokens elapsed-seconds)
             :budget-warning-threshold-percent budget-warning-threshold
             :budget-warning-emitted-p budget-warning-emitted-p
+            :budget-abort-threshold-percent budget-abort-threshold
+            :aborted-p aborted-p
+            :abort-reason abort-reason
             :error-message error-message))))
+
+(defun token-stream-stats (stream-state)
+  (check-type stream-state token-stream-state)
+  (let ((summary (token-stream-progress-summary stream-state)))
+    (make-stream-stats
+     :tokens-received (or (getf summary :tokens) 0)
+     :chunks-processed (or (getf summary :chunks) 0)
+     :elapsed-ms (or (getf summary :elapsed-ms) 0)
+     :aborted-p (not (null (getf summary :aborted-p)))
+     :abort-reason (getf summary :abort-reason))))
 
 (defun %stream-markdown-split-lines (text)
   (let ((value (if (stringp text)
@@ -432,6 +523,91 @@
                 :assistant-heading
                 t)
         (values line :assistant nil))))
+
+(defun %stream-markdown-default-role (segments)
+  (if (and (listp segments) segments)
+      (getf (first segments) :role :assistant)
+      :assistant))
+
+(defun %stream-markdown-fence-line-p (line)
+  (let ((trimmed (string-trim '(#\Space #\Tab) line)))
+    (and (>= (length trimmed) 3)
+         (char= (char trimmed 0) #\`)
+         (char= (char trimmed 1) #\`)
+         (char= (char trimmed 2) #\`))))
+
+(defun %stream-markdown-fence-language (line)
+  (let* ((trimmed (string-trim '(#\Space #\Tab) line))
+         (length (length trimmed)))
+    (when (> length 3)
+      (let ((language (string-trim '(#\Space #\Tab)
+                                   (subseq trimmed 3 length))))
+        (when (plusp (length language))
+          (string-downcase language))))))
+
+(defun %stream-markdown-leading-indent-length (line)
+  (let ((length (length line))
+        (index 0))
+    (loop while (and (< index length)
+                     (member (char line index) '(#\Space #\Tab) :test #'char=))
+          do (incf index))
+    index))
+
+(defun %stream-markdown-list-marker-end (line start)
+  (let ((length (length line)))
+    (cond
+      ((>= start length)
+       nil)
+      ((and (< (+ start 1) length)
+            (member (char line start) '(#\- #\+ #\*) :test #'char=)
+            (member (char line (1+ start)) '(#\Space #\Tab) :test #'char=))
+       (+ start 2))
+      (t
+       (let ((index start))
+         (loop while (and (< index length)
+                          (digit-char-p (char line index)))
+               do (incf index))
+         (when (and (> index start)
+                    (< (1+ index) length)
+                    (char= (char line index) #\.)
+                    (member (char line (1+ index)) '(#\Space #\Tab) :test #'char=))
+           (+ index 2)))))))
+
+(defun %stream-markdown-code-line-segments (line language)
+  (let ((code-role :assistant-code)
+        (keyword-role :assistant-code-keyword))
+    (if (not (and (stringp language)
+                  (or (string= language "markdown")
+                      (string= language "md"))))
+        (list (%stream-markdown-make-segment line code-role))
+        (let* ((indent-end (%stream-markdown-leading-indent-length line))
+               (length (length line))
+               (heading-prefix-length
+                 (and (< indent-end length)
+                      (%stream-markdown-heading-prefix-length
+                       (subseq line indent-end length))))
+               (marker-end
+                 (or (and heading-prefix-length
+                          (+ indent-end heading-prefix-length))
+                     (%stream-markdown-list-marker-end line indent-end))))
+          (if (and marker-end
+                   (> marker-end 0)
+                   (<= marker-end length))
+              (let* ((indent-text (subseq line 0 indent-end))
+                     (marker-text (subseq line indent-end marker-end))
+                     (body-text (subseq line marker-end length))
+                     (segments '()))
+                (when (plusp (length indent-text))
+                  (push (%stream-markdown-make-segment indent-text code-role) segments))
+                (when (plusp (length marker-text))
+                  (push (%stream-markdown-make-segment marker-text keyword-role
+                                                       :boldp t)
+                        segments))
+                (when (plusp (length body-text))
+                  (push (%stream-markdown-make-segment body-text code-role) segments))
+                (or (nreverse segments)
+                    (list (%stream-markdown-make-segment line code-role))))
+              (list (%stream-markdown-make-segment line code-role)))))))
 
 (defun %stream-markdown-style-key (segment)
   (list (getf segment :role :assistant)
@@ -518,6 +694,29 @@
              (flush-buffer)
              (setf boldp (not boldp))
              (incf index 2))
+            ((and (not codep)
+                  (char= char #\[))
+             (let* ((label-end (position #\] line :start (1+ index)))
+                    (open-paren-p (and label-end
+                                       (< (1+ label-end) length)
+                                       (char= (char line (1+ label-end)) #\()))
+                    (url-end (and open-paren-p
+                                  (position #\) line :start (+ label-end 2)))))
+               (if (and label-end open-paren-p url-end)
+                   (let ((label (subseq line (1+ index) label-end)))
+                     (flush-buffer)
+                     (setf segments-rev
+                           (%stream-markdown-push-segment
+                            segments-rev
+                            label
+                            role
+                            :boldp (or headingp boldp)
+                            :italicp italicp
+                            :underlinep t))
+                     (setf index (1+ url-end)))
+                   (progn
+                     (write-char char buffer)
+                     (incf index)))))
             ((char= char #\`)
              (flush-buffer)
              (setf codep (not codep))
@@ -537,20 +736,52 @@
                                               role
                                               :boldp headingp))))))
 
+(defun %stream-markdown-space-grapheme-p (grapheme)
+  "Return T if GRAPHEME is a single space or tab character."
+  (and (= (length grapheme) 1)
+       (let ((ch (char grapheme 0)))
+         (or (char= ch #\Space)
+             (char= ch #\Tab)))))
+
+(defun %stream-markdown-strip-trailing-spaces (segments-rev)
+  "Remove trailing space-only text from reversed segment list."
+  (loop while segments-rev
+        for text = (getf (first segments-rev) :text "")
+        while (and (plusp (length text))
+                   (every (lambda (ch) (or (char= ch #\Space) (char= ch #\Tab))) text))
+        do (pop segments-rev))
+  segments-rev)
+
 (defun %stream-markdown-wrap-segments (segments width &key (default-role :assistant))
+  "Wrap styled segments into lines respecting word boundaries where possible."
   (let ((safe-width (max 1 (if (integerp width) width 1)))
         (lines-rev '())
         (line-segments-rev '())
-        (line-width 0))
-    (labels ((emit-line ()
-               (let ((line
-                       (if line-segments-rev
-                           (nreverse line-segments-rev)
-                           (list (%stream-markdown-make-segment "" default-role)))))
-                 (push line lines-rev)
-                 (setf line-segments-rev '()
-                       line-width 0)))
-             (append-grapheme (style-segment grapheme)
+        (line-width 0)
+        ;; Snapshot of line state at last word boundary (space)
+        (break-segments-rev nil)
+        (break-width 0)
+        (break-valid-p nil)
+        ;; Graphemes accumulated since last break point
+        (word-graphemes '())  ; list of (style-segment . grapheme)
+        (word-width 0))
+    (labels ((emit-line-from (segs-rev w)
+               ;; Strip trailing spaces
+               (let ((stripped (%stream-markdown-strip-trailing-spaces segs-rev)))
+                 (push (if stripped
+                           (nreverse stripped)
+                           (list (%stream-markdown-make-segment "" default-role)))
+                       lines-rev))
+               (setf line-segments-rev '()
+                     line-width 0
+                     break-segments-rev nil
+                     break-width 0
+                     break-valid-p nil
+                     word-graphemes '()
+                     word-width 0))
+             (emit-current-line ()
+               (emit-line-from line-segments-rev line-width))
+             (push-grapheme (style-segment grapheme)
                (setf line-segments-rev
                      (%stream-markdown-push-segment
                       line-segments-rev
@@ -565,14 +796,62 @@
       (dolist (segment segments)
         (let ((segment-text (getf segment :text "")))
           (dolist (grapheme (ptui.text.grapheme:split-graphemes segment-text))
-            (let ((grapheme-width (max 0 (ptui.text.width:grapheme-width grapheme))))
-              (when (and (> line-width 0)
-                         (> (+ line-width grapheme-width) safe-width))
-                (emit-line))
-              (append-grapheme segment grapheme)
-              (incf line-width grapheme-width)))))
+            (let* ((grapheme-width (max 0 (ptui.text.width:grapheme-width grapheme)))
+                   (breakp (%stream-markdown-space-grapheme-p grapheme)))
+              (cond
+                ;; Would overflow
+                ((and (> line-width 0)
+                      (> (+ line-width grapheme-width) safe-width))
+                 (cond
+                   ;; Space overflows — emit line, skip space
+                   (breakp
+                    (emit-current-line))
+                   ;; Have a word boundary — rewind to it
+                   ((and break-valid-p
+                         (> break-width 0)
+                         (<= (+ word-width grapheme-width) safe-width))
+                    (let ((saved-word (nreverse word-graphemes)))
+                      ;; Emit the line up to the break point
+                      (emit-line-from break-segments-rev break-width)
+                      ;; Re-add saved word graphemes
+                      (dolist (pair saved-word)
+                        (push-grapheme (car pair) (cdr pair))
+                        (incf line-width (max 0 (ptui.text.width:grapheme-width (cdr pair)))))
+                      ;; Track these as current word
+                      (setf word-graphemes (mapcar #'identity saved-word)
+                            word-width (reduce #'+ saved-word
+                                               :key (lambda (p)
+                                                      (max 0 (ptui.text.width:grapheme-width (cdr p))))
+                                               :initial-value 0))
+                      ;; Add current grapheme
+                      (push-grapheme segment grapheme)
+                      (incf line-width grapheme-width)
+                      (push (cons segment grapheme) word-graphemes)
+                      (incf word-width grapheme-width)))
+                   ;; No break point — hard break
+                   (t
+                    (emit-current-line)
+                    (push-grapheme segment grapheme)
+                    (incf line-width grapheme-width)
+                    (setf word-graphemes (list (cons segment grapheme))
+                          word-width grapheme-width))))
+                ;; Normal — fits on line
+                (t
+                 (push-grapheme segment grapheme)
+                 (incf line-width grapheme-width)
+                 (if breakp
+                     ;; Save snapshot at this word boundary
+                     (setf break-segments-rev (mapcar #'copy-list line-segments-rev)
+                           break-width line-width
+                           break-valid-p t
+                           word-graphemes '()
+                           word-width 0)
+                     ;; Non-space: accumulate in current word
+                     (progn
+                       (push (cons segment grapheme) word-graphemes)
+                       (incf word-width grapheme-width)))))))))
       (when (or line-segments-rev (null lines-rev))
-        (emit-line)))
+        (emit-current-line)))
     (nreverse lines-rev)))
 
 (defun %stream-markdown-line-width (segments)
@@ -581,42 +860,160 @@
           :key (lambda (segment)
                  (ptui.text.width:string-width (getf segment :text "")))))
 
+(defun %stream-markdown-render-line-segments (raw-line in-fenced-code-p fenced-language)
+  (cond
+    ((%stream-markdown-fence-line-p raw-line)
+     (values (list (%stream-markdown-make-segment raw-line
+                                                  :assistant-code-fence
+                                                  :boldp t
+                                                  :dimp t))
+             (not in-fenced-code-p)
+             (if in-fenced-code-p
+                 nil
+                 (%stream-markdown-fence-language raw-line))))
+    (in-fenced-code-p
+     (values (%stream-markdown-code-line-segments raw-line fenced-language)
+             t
+             fenced-language))
+    (t
+     (multiple-value-bind (line-text line-role headingp)
+         (%stream-markdown-line-style raw-line)
+       (values (%stream-markdown-parse-inline line-text line-role :headingp headingp)
+               in-fenced-code-p
+               fenced-language)))))
+
+(defstruct (streaming-markdown-renderer
+            (:constructor make-streaming-markdown-renderer
+                (&key
+                  (width 0)
+                  (pending-line "")
+                  (logical-lines '())
+                  (wrapped-lines '())
+                  (in-fenced-code-p nil)
+                  (fenced-language nil))))
+  (width 0 :type integer)
+  (pending-line "" :type string)
+  (logical-lines '() :type list)
+  (wrapped-lines '() :type list)
+  (in-fenced-code-p nil :type boolean)
+  (fenced-language nil))
+
+(defun streaming-markdown-renderer-reset (renderer)
+  (check-type renderer streaming-markdown-renderer)
+  (setf (streaming-markdown-renderer-width renderer) 0
+        (streaming-markdown-renderer-pending-line renderer) ""
+        (streaming-markdown-renderer-logical-lines renderer) '()
+        (streaming-markdown-renderer-wrapped-lines renderer) '()
+        (streaming-markdown-renderer-in-fenced-code-p renderer) nil
+        (streaming-markdown-renderer-fenced-language renderer) nil)
+  renderer)
+
+(defun %stream-markdown-renderer-rewrap! (renderer width)
+  (let ((safe-width (max 1 (if (integerp width) width 1)))
+        (wrapped-lines '()))
+    (dolist (segments (streaming-markdown-renderer-logical-lines renderer))
+      (setf wrapped-lines
+            (append wrapped-lines
+                    (%stream-markdown-wrap-segments
+                     segments
+                     safe-width
+                     :default-role (%stream-markdown-default-role segments)))))
+    (setf (streaming-markdown-renderer-width renderer) safe-width
+          (streaming-markdown-renderer-wrapped-lines renderer) wrapped-lines)
+    renderer))
+
+(defun streaming-markdown-renderer-append-chunk (renderer chunk)
+  (check-type renderer streaming-markdown-renderer)
+  (let* ((chunk-text (if (stringp chunk) chunk (princ-to-string (or chunk "")))))
+    (when (plusp (length chunk-text))
+      (let* ((combined (concatenate 'string
+                                    (streaming-markdown-renderer-pending-line renderer)
+                                    chunk-text))
+             (start 0)
+             (length (length combined))
+             (safe-width (streaming-markdown-renderer-width renderer)))
+        (loop for index from 0 below length do
+          (when (char= (char combined index) #\Newline)
+            (let ((raw-line (subseq combined start index)))
+              (multiple-value-bind (segments next-fenced-p next-language)
+                  (%stream-markdown-render-line-segments
+                   raw-line
+                   (streaming-markdown-renderer-in-fenced-code-p renderer)
+                   (streaming-markdown-renderer-fenced-language renderer))
+                (setf (streaming-markdown-renderer-logical-lines renderer)
+                      (append (streaming-markdown-renderer-logical-lines renderer)
+                              (list segments))
+                      (streaming-markdown-renderer-in-fenced-code-p renderer) next-fenced-p
+                      (streaming-markdown-renderer-fenced-language renderer) next-language)
+                (when (> safe-width 0)
+                  (setf (streaming-markdown-renderer-wrapped-lines renderer)
+                        (append (streaming-markdown-renderer-wrapped-lines renderer)
+                                (%stream-markdown-wrap-segments
+                                 segments
+                                 safe-width
+                                 :default-role (%stream-markdown-default-role segments)))))))
+            (setf start (1+ index))))
+        (setf (streaming-markdown-renderer-pending-line renderer)
+              (subseq combined start length)))))
+  renderer)
+
+(defun streaming-markdown-renderer-render-lines (renderer width
+                                                 &key
+                                                   (partialp nil)
+                                                   (cursor-visible-p nil)
+                                                   (cursor-glyph +stream-cursor-glyph+))
+  (check-type renderer streaming-markdown-renderer)
+  (let* ((safe-width (max 1 (if (integerp width) width 1))))
+    (when (/= safe-width (streaming-markdown-renderer-width renderer))
+      (%stream-markdown-renderer-rewrap! renderer safe-width))
+    (let ((styled-lines
+            (mapcar #'copy-tree
+                    (streaming-markdown-renderer-wrapped-lines renderer))))
+      (let ((pending-line (streaming-markdown-renderer-pending-line renderer)))
+        (when (plusp (length pending-line))
+          (multiple-value-bind (pending-segments pending-fenced-p pending-language)
+              (%stream-markdown-render-line-segments
+               pending-line
+               (streaming-markdown-renderer-in-fenced-code-p renderer)
+               (streaming-markdown-renderer-fenced-language renderer))
+            (declare (ignore pending-fenced-p pending-language))
+            (setf styled-lines
+                  (append styled-lines
+                          (%stream-markdown-wrap-segments
+                           pending-segments
+                           safe-width
+                           :default-role (%stream-markdown-default-role pending-segments)))))))
+      (unless styled-lines
+        (setf styled-lines (list (list (%stream-markdown-make-segment "" :assistant)))))
+      (when (and partialp
+                 cursor-visible-p
+                 (stringp cursor-glyph)
+                 (plusp (length cursor-glyph)))
+        (let* ((cursor-segment (%stream-markdown-make-segment cursor-glyph :assistant
+                                                              :boldp t
+                                                              :invertp t))
+               (last-line (car (last styled-lines)))
+               (last-width (%stream-markdown-line-width last-line))
+               (cursor-width (ptui.text.width:string-width cursor-glyph)))
+          (if (and (> cursor-width 0)
+                   (> (+ last-width cursor-width) safe-width))
+              (setf styled-lines
+                    (append styled-lines (list (list cursor-segment))))
+              (setf (car (last styled-lines))
+                    (append last-line (list cursor-segment))))))
+      styled-lines)))
+
 (defun stream-markdown-styled-lines (text width
                                      &key
                                        (partialp nil)
                                        (cursor-visible-p nil)
                                        (cursor-glyph +stream-cursor-glyph+))
-  (let* ((safe-width (max 1 (if (integerp width) width 1)))
-         (raw-lines (%stream-markdown-split-lines text))
-         (styled-lines '()))
-    (dolist (raw-line raw-lines)
-      (multiple-value-bind (line-text line-role headingp)
-          (%stream-markdown-line-style raw-line)
-        (let* ((inline-segments
-                 (%stream-markdown-parse-inline line-text line-role :headingp headingp))
-               (wrapped
-                 (%stream-markdown-wrap-segments inline-segments safe-width
-                                                 :default-role line-role)))
-          (setf styled-lines (append styled-lines wrapped)))))
-    (unless styled-lines
-      (setf styled-lines (list (list (%stream-markdown-make-segment "" :assistant)))))
-    (when (and partialp
-               cursor-visible-p
-               (stringp cursor-glyph)
-               (plusp (length cursor-glyph)))
-      (let* ((cursor-segment (%stream-markdown-make-segment cursor-glyph :assistant
-                                                            :boldp t
-                                                            :invertp t))
-             (last-line (car (last styled-lines)))
-             (last-width (%stream-markdown-line-width last-line))
-             (cursor-width (ptui.text.width:string-width cursor-glyph)))
-        (if (and (> cursor-width 0)
-                 (> (+ last-width cursor-width) safe-width))
-            (setf styled-lines
-                  (append styled-lines (list (list cursor-segment))))
-            (setf (car (last styled-lines))
-                  (append last-line (list cursor-segment))))))
-    styled-lines))
+  (let ((renderer (make-streaming-markdown-renderer)))
+    (streaming-markdown-renderer-append-chunk renderer text)
+    (streaming-markdown-renderer-render-lines renderer width
+                                              :partialp partialp
+                                              :cursor-visible-p cursor-visible-p
+                                              :cursor-glyph cursor-glyph)))
 
 (defun stream-pseudopod-chat (stream-state prompt messages
                               &key
@@ -624,20 +1021,61 @@
                                 client
                                 tools)
   (let ((resolved-client (or client (pseudopod:make-client))))
-    (pseudopod:stream-chat-completion*
-     resolved-client
-     prompt
-     :system-prompt system-prompt
-     :messages messages
-     :tools tools
-     :on-content (lambda (chunk)
-                   (token-stream-emit-chunk stream-state chunk))
-     :on-reasoning (lambda (chunk)
-                     (token-stream-emit-chunk stream-state chunk))
-     :on-tool-call-delta (lambda (chunk)
-                           (token-stream-emit-tool-call-delta stream-state chunk))
-     :on-tool-call-started (lambda (tool-call)
-                             (token-stream-emit-tool-call-started stream-state tool-call))
-     :on-tool-call-argument-complete
-     (lambda (tool-call)
-       (token-stream-emit-tool-call-argument-complete stream-state tool-call)))))
+    (let* ((emit-stream-chunk
+            (lambda (chunk)
+              (when (functionp *stream-chunk-hook-callback*)
+                (funcall *stream-chunk-hook-callback* chunk))
+              (token-stream-emit-chunk stream-state chunk)))
+          (emit-fallback-tool-calls
+            (lambda (message)
+              (let ((tool-calls (and (pseudopod:message-p message)
+                                     (pseudopod:message-tool-calls message))))
+                (dolist (tool-call tool-calls)
+                  (token-stream-emit-tool-call-started stream-state tool-call)
+                  (token-stream-emit-tool-call-argument-complete stream-state
+                                                                 tool-call)))))
+          (emit-fallback-error
+            (lambda (condition)
+              (funcall emit-stream-chunk
+                       (format nil "\n[streaming error: ~A. Falling back to non-stream mode]\n"
+                               condition)))))
+    (handler-case
+        (pseudopod:stream-chat-completion*
+         resolved-client
+         prompt
+         :system-prompt system-prompt
+         :messages messages
+         :tools tools
+         :on-content (lambda (chunk)
+                       (funcall emit-stream-chunk chunk))
+         :on-reasoning (lambda (chunk)
+                         (funcall emit-stream-chunk chunk))
+         :on-tool-call-delta (lambda (chunk)
+                               (token-stream-emit-tool-call-delta stream-state chunk))
+         :on-tool-call-started
+         (lambda (tool-call)
+           (token-stream-emit-tool-call-started stream-state tool-call))
+         :on-tool-call (lambda (tool-call)
+                         ;; Fallback for providers that only emit finalized tool calls.
+                         ;; Trigger the same execution path as fully streamed call deltas.
+                         (token-stream-emit-tool-call-started stream-state tool-call)
+                         (token-stream-emit-tool-call-argument-complete stream-state
+                                                                        tool-call))
+         :on-tool-call-argument-complete
+         (lambda (tool-call)
+           (token-stream-emit-tool-call-argument-complete stream-state tool-call)))
+      (token-stream-cancelled ()
+        (error 'token-stream-cancelled))
+        (error (condition)
+        (funcall emit-fallback-error condition)
+        (token-stream-check-cancel stream-state)
+        (let* ((message (pseudopod:chat-completion* resolved-client
+                                                 prompt
+                                                 :system-prompt system-prompt
+                                                 :messages messages
+                                                 :tools tools))
+               (content (and (pseudopod:message-p message)
+                             (pseudopod:message-content message))))
+          (unless (%token-stream-blank-string-p content)
+            (funcall emit-stream-chunk content))
+          (funcall emit-fallback-tool-calls message)))))))

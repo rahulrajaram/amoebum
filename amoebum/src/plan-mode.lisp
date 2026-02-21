@@ -3,6 +3,9 @@
 (defparameter *known-plan-step-risk-levels*
   '(:low :medium :high))
 
+(defparameter *known-plan-review-decisions*
+  '(:pending :approved :partially-approved :rejected :modification-requested))
+
 (defstruct (plan-step
             (:constructor make-plan-step
                 (&key index
@@ -23,12 +26,28 @@
                    entered-at
                    exited-at
                    (steps '())
+                   (approved-step-indexes '())
+                   (execution-pathways-enabled-p t)
+                   (review-pending-p nil)
+                   (review-decision :pending)
+                   review-notes
+                   review-decided-at
+                   review-last-presented-at
+                   last-plan-markdown
                    last-output-path
                    last-exit-reason)))
   (active-p nil :type boolean)
   entered-at
   exited-at
   (steps '() :type list)
+  (approved-step-indexes '() :type list)
+  (execution-pathways-enabled-p t :type boolean)
+  (review-pending-p nil :type boolean)
+  (review-decision :pending)
+  review-notes
+  review-decided-at
+  review-last-presented-at
+  last-plan-markdown
   last-output-path
   last-exit-reason)
 
@@ -57,12 +76,156 @@
      (princ-to-string value))))
 
 (defun %normalize-plan-risk (value)
-  (let ((risk (if (symbolp value)
-                  (intern (string-upcase (symbol-name value)) :keyword)
-                  :medium)))
+  (let* ((risk-text (typecase value
+                      (symbol (symbol-name value))
+                      (string value)
+                      (t nil)))
+         (risk (if (and (stringp risk-text)
+                        (plusp (length (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                    risk-text))))
+                   (intern (string-upcase (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                       risk-text))
+                           :keyword)
+                   :medium)))
     (if (member risk *known-plan-step-risk-levels* :test #'eq)
         risk
         :medium)))
+
+(defun %normalize-plan-review-decision (value)
+  (let* ((decision-text (typecase value
+                          (symbol (symbol-name value))
+                          (string value)
+                          (t nil)))
+         (decision (if (and (stringp decision-text)
+                            (plusp (length (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                        decision-text))))
+                       (intern (string-upcase (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                           decision-text))
+                               :keyword)
+                       :pending)))
+    (if (member decision *known-plan-review-decisions* :test #'eq)
+        decision
+        :pending)))
+
+(defun %normalize-step-indexes (indexes max-index)
+  (sort (remove-duplicates
+         (loop for entry in (or indexes '())
+               when (and (integerp entry)
+                         (>= entry 1)
+                         (<= entry max-index))
+                 collect entry)
+         :test #'=)
+        #'<))
+
+(defun plan-step-indexes (&optional (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (sort (loop for step in (plan-mode-state-steps state)
+              for index = (plan-step-index step)
+              when (integerp index)
+                collect index)
+        #'<))
+
+(defun clear-plan-step-approvals (&optional (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (setf (plan-mode-state-approved-step-indexes state) '())
+  state)
+
+(defun set-plan-step-approvals (step-indexes &key (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (let* ((available-indexes (plan-step-indexes state))
+         (max-index (if available-indexes
+                        (reduce #'max available-indexes)
+                        0)))
+    (setf (plan-mode-state-approved-step-indexes state)
+          (%normalize-step-indexes step-indexes max-index)))
+  state)
+
+(defun approve-plan-steps (step-indexes &key (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (let ((merged (append (plan-mode-state-approved-step-indexes state)
+                        (or step-indexes '()))))
+    (set-plan-step-approvals merged :state state)))
+
+(defun plan-step-approved-p (step-index &optional (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (and (integerp step-index)
+       (member step-index
+               (plan-mode-state-approved-step-indexes state)
+               :test #'=)))
+
+(defun set-plan-review-decision (decision &key notes (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (let ((normalized-notes (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                       (%safe-plan-string notes "")))
+        (normalized-decision (%normalize-plan-review-decision decision)))
+    (setf (plan-mode-state-review-decision state) normalized-decision
+          (plan-mode-state-review-notes state)
+          (and (plusp (length normalized-notes)) normalized-notes)
+          (plan-mode-state-review-decided-at state) (get-universal-time)
+          (plan-mode-state-review-pending-p state)
+          (not (null (member normalized-decision
+                             '(:pending :partially-approved :modification-requested)
+                             :test #'eq)))))
+  state)
+
+(defun set-plan-execution-pathways-enabled (enabled-p &key (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (setf (plan-mode-state-execution-pathways-enabled-p state)
+        (not (null enabled-p)))
+  state)
+
+(defun %captured-plan-available-p (state)
+  (let ((plan-markdown (plan-mode-state-last-plan-markdown state)))
+    (and (stringp plan-markdown)
+         (plusp (length (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                     plan-markdown))))))
+
+(defun plan-input-gating-snapshot (&optional (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (let* ((active-plan-mode-p (not (null (plan-mode-state-active-p state))))
+         (captured-plan-p (%captured-plan-available-p state))
+         (review-pending-p (not (null (plan-mode-state-review-pending-p state))))
+         (review-decision (%normalize-plan-review-decision
+                           (plan-mode-state-review-decision state)))
+         (terminal-stdin-enabled-p (not active-plan-mode-p))
+         (execution-pathways-enabled-p
+           (and (not active-plan-mode-p)
+                (plan-mode-state-execution-pathways-enabled-p state)
+                (or (not captured-plan-p)
+                    (and (eq review-decision :approved)
+                         (not review-pending-p)))))
+         (reason
+           (cond
+             (active-plan-mode-p :plan-mode-active)
+             ((and captured-plan-p review-pending-p) :review-pending)
+             ((and captured-plan-p (not (eq review-decision :approved)))
+              :review-not-approved)
+             ((not execution-pathways-enabled-p)
+              :awaiting-explicit-execute)
+             (t
+              :open)))
+         (active-p
+           (or (not terminal-stdin-enabled-p)
+               (not execution-pathways-enabled-p))))
+    (list :active-p active-p
+          :reason reason
+          :terminal-stdin-enabled-p terminal-stdin-enabled-p
+          :execution-pathways-enabled-p execution-pathways-enabled-p
+          :captured-plan-p captured-plan-p
+          :review-pending-p review-pending-p
+          :review-decision review-decision)))
+
+(defun plan-input-gating-active-p (&optional (state (current-plan-mode-state)))
+  (not (null (getf (plan-input-gating-snapshot state) :active-p))))
+
+(defun plan-input-gating-reason (&optional (state (current-plan-mode-state)))
+  (getf (plan-input-gating-snapshot state) :reason))
+
+(defun plan-input-gating-terminal-stdin-enabled-p (&optional (state (current-plan-mode-state)))
+  (not (null (getf (plan-input-gating-snapshot state) :terminal-stdin-enabled-p))))
+
+(defun plan-input-gating-execution-pathways-enabled-p (&optional (state (current-plan-mode-state)))
+  (not (null (getf (plan-input-gating-snapshot state) :execution-pathways-enabled-p))))
 
 (defun %normalize-path-list (values)
   (loop for value in values
@@ -75,6 +238,78 @@
                   (plusp (length (string-trim '(#\Space #\Tab #\Newline #\Return) text))))
           collect text))
 
+(defun %string-contains-digits-p (value)
+  (and (stringp value)
+       (loop for char across value
+             thereis (digit-char-p char))))
+
+(defun %extract-first-integer (value)
+  (let* ((text (%safe-plan-string value ""))
+         (length (length text)))
+    (loop with start = nil
+          for index from 0 below length
+          for char = (char text index) do
+            (cond
+              ((digit-char-p char)
+               (unless start
+                 (setf start index)))
+              (start
+               (return (parse-integer text :start start :end index))))
+          finally (when start
+                    (return (parse-integer text :start start :end length))))))
+
+(defun %normalize-dependency-list (depends-on max-index)
+  (let ((result '()))
+    (dolist (entry (or depends-on '()))
+      (let ((index
+              (cond
+                ((integerp entry)
+                 entry)
+                ((and (stringp entry)
+                      (%string-contains-digits-p entry))
+                 (%extract-first-integer entry))
+                ((symbolp entry)
+                 (%extract-first-integer (symbol-name entry)))
+                (t
+                 nil))))
+        (when (and (integerp index)
+                   (>= index 1)
+                   (<= index max-index))
+          (push index result))))
+    (sort (remove-duplicates result :test #'=) #'<)))
+
+(defun %description-references-step-indexes (description max-index)
+  (let ((text (string-downcase (%safe-plan-string description "")))
+        (result '()))
+    (loop for index from 1 to max-index do
+      (let ((token (format nil "step ~D" index)))
+        (when (search token text :test #'char=)
+          (push index result))))
+    (sort (remove-duplicates result :test #'=) #'<)))
+
+(defun %description-sequential-cue-p (description)
+  (let ((text (string-downcase (%safe-plan-string description ""))))
+    (or (search " then " (format nil " ~A " text) :test #'char=)
+        (search " next " (format nil " ~A " text) :test #'char=)
+        (search " after " (format nil " ~A " text) :test #'char=)
+        (search " once " (format nil " ~A " text) :test #'char=)
+        (search " following " (format nil " ~A " text) :test #'char=))))
+
+(defun %infer-step-dependencies (description depends-on next-index)
+  (let* ((max-prior-index (1- next-index))
+         (normalized-explicit (%normalize-dependency-list depends-on max-prior-index))
+         (inferred-by-reference (%description-references-step-indexes description max-prior-index)))
+    (cond
+      (normalized-explicit
+       normalized-explicit)
+      (inferred-by-reference
+       inferred-by-reference)
+      ((and (> next-index 1)
+            (%description-sequential-cue-p description))
+       (list max-prior-index))
+      (t
+       '()))))
+
 (defun current-plan-mode-state ()
   (or *plan-mode-state*
       (setf *plan-mode-state* (%make-plan-mode-state))))
@@ -86,6 +321,7 @@
 (defun clear-plan-mode-steps (&optional (state (current-plan-mode-state)))
   (check-type state plan-mode-state)
   (setf (plan-mode-state-steps state) '())
+  (clear-plan-step-approvals state)
   state)
 
 (defun add-plan-step (description &key file-paths (risk :medium) depends-on
@@ -96,13 +332,63 @@
                           :description (%safe-plan-string description "Describe the step.")
                           :file-paths (%normalize-path-list file-paths)
                           :risk (%normalize-plan-risk risk)
-                          :depends-on (copy-list (or depends-on '())))
+                          :depends-on (%infer-step-dependencies description
+                                                                depends-on
+                                                                next-index))
           (plan-mode-state-steps state))
     (setf (plan-mode-state-steps state)
           (sort (copy-list (plan-mode-state-steps state)) #'< :key #'plan-step-index)))
   state)
 
-(defun %plan-step-markdown (step stream)
+(defun reorder-plan-step (from-index to-index &key (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (let* ((steps (sort (copy-list (plan-mode-state-steps state))
+                      #'<
+                      :key #'plan-step-index))
+         (step-count (length steps)))
+    (unless (and (integerp from-index)
+                 (integerp to-index)
+                 (<= 1 from-index step-count)
+                 (<= 1 to-index step-count))
+      (return-from reorder-plan-step nil))
+    (when (= from-index to-index)
+      (return-from reorder-plan-step state))
+    (let* ((source-position (1- from-index))
+           (target-position (1- to-index))
+           (moved-step (nth source-position steps))
+           (remaining-steps (append (subseq steps 0 source-position)
+                                    (subseq steps (1+ source-position))))
+           (reordered-steps (append (subseq remaining-steps 0 target-position)
+                                    (list moved-step)
+                                    (subseq remaining-steps target-position)))
+           (old-index->new-index (make-hash-table :test #'eql))
+           (old-dependencies-by-step (make-hash-table :test #'eq)))
+      (dolist (step reordered-steps)
+        (setf (gethash step old-dependencies-by-step)
+              (copy-list (plan-step-depends-on step))))
+      (loop for step in reordered-steps
+            for new-index from 1 do
+              (setf (gethash (plan-step-index step) old-index->new-index) new-index
+                    (plan-step-index step) new-index))
+      (dolist (step reordered-steps)
+        (let ((remapped-dependencies
+                (loop for prior-index in (gethash step old-dependencies-by-step)
+                      for mapped-index = (gethash prior-index old-index->new-index)
+                      when (integerp mapped-index)
+                        collect mapped-index)))
+          (setf (plan-step-depends-on step)
+                (sort (remove-duplicates remapped-dependencies :test #'=) #'<))))
+      (setf (plan-mode-state-steps state) reordered-steps
+            (plan-mode-state-approved-step-indexes state)
+            (%normalize-step-indexes
+             (loop for approved-index in (plan-mode-state-approved-step-indexes state)
+                   for mapped-index = (gethash approved-index old-index->new-index)
+                   when (integerp mapped-index)
+                     collect mapped-index)
+             step-count))))
+  state)
+
+(defun %plan-step-markdown (step stream approved-p)
   (format stream "~D. ~A~%"
           (or (plan-step-index step) 0)
           (%safe-plan-string (plan-step-description step) "Describe the step."))
@@ -113,11 +399,14 @@
             (%normalize-path-list (plan-step-file-paths step))))
   (when (plan-step-depends-on step)
     (format stream "   - depends_on: ~{~A~^, ~}~%"
-            (plan-step-depends-on step))))
+            (plan-step-depends-on step)))
+  (format stream "   - approved_for_execution: ~A~%"
+          (if approved-p "true" "false")))
 
 (defun %plan-markdown (state reason)
   (with-output-to-string (stream)
-    (let ((steps (plan-mode-state-steps state)))
+    (let ((steps (plan-mode-state-steps state))
+          (approved-step-indexes (plan-mode-state-approved-step-indexes state)))
       (format stream "# Amoebum Plan~%~%")
       (format stream "- generated_at: ~A~%" (%timestamp-iso8601))
       (format stream "- exit_reason: ~A~%"
@@ -125,11 +414,32 @@
                   (%safe-plan-string reason "manual-exit")
                   "manual-exit"))
       (format stream "- step_count: ~D~%~%" (length steps))
+      (format stream "- approved_step_count: ~D~%~%"
+              (length approved-step-indexes))
       (format stream "## Steps~%~%")
       (if steps
           (dolist (step steps)
-            (%plan-step-markdown step stream))
+            (%plan-step-markdown step
+                                 stream
+                                 (member (plan-step-index step)
+                                         approved-step-indexes
+                                         :test #'=)))
           (format stream "1. No explicit steps captured.~%")))))
+
+(defun plan-markdown (&key
+                        (state (current-plan-mode-state))
+                        reason)
+  (check-type state plan-mode-state)
+  (%plan-markdown state reason))
+
+(defun refresh-plan-review-markdown (&optional (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (when (stringp (plan-mode-state-last-plan-markdown state))
+    (setf (plan-mode-state-last-plan-markdown state)
+          (%plan-markdown state
+                          (or (plan-mode-state-last-exit-reason state)
+                              :review-update))))
+  state)
 
 (defun default-plan-output-path (&key project-root (timestamp (get-universal-time)))
   (let* ((root-path
@@ -168,7 +478,15 @@
     (clear-plan-mode-steps state))
   (setf (plan-mode-state-active-p state) t
         (plan-mode-state-entered-at state) (get-universal-time)
-        (plan-mode-state-exited-at state) nil)
+        (plan-mode-state-exited-at state) nil
+        (plan-mode-state-approved-step-indexes state) '()
+        (plan-mode-state-execution-pathways-enabled-p state) nil
+        (plan-mode-state-review-pending-p state) nil
+        (plan-mode-state-review-decision state) :pending
+        (plan-mode-state-review-notes state) nil
+        (plan-mode-state-review-decided-at state) nil
+        (plan-mode-state-review-last-presented-at state) nil
+        (plan-mode-state-last-plan-markdown state) nil)
   state)
 
 (defun exit-plan-mode (&key
@@ -177,12 +495,25 @@
                          (reason :user-approved-plan)
                          (write-output-p t))
   (check-type state plan-mode-state)
+  (when (plan-mode-state-active-p state)
+    (let ((captured-plan (%plan-markdown state reason)))
+      (setf (plan-mode-state-last-plan-markdown state) captured-plan
+            (plan-mode-state-approved-step-indexes state) '()
+            (plan-mode-state-execution-pathways-enabled-p state) nil
+            (plan-mode-state-review-pending-p state) t
+            (plan-mode-state-review-decision state) :pending
+            (plan-mode-state-review-notes state) nil
+            (plan-mode-state-review-decided-at state) nil)))
   (let ((written-output-path
           (and (plan-mode-state-active-p state)
                write-output-p
                (write-plan-output :state state
                                   :output-path output-path
                                   :reason reason))))
+    (when (and (plan-mode-state-active-p state)
+               (not write-output-p))
+      (setf (plan-mode-state-last-output-path state) nil
+            (plan-mode-state-last-exit-reason state) reason))
     (setf (plan-mode-state-active-p state) nil
           (plan-mode-state-exited-at state) (get-universal-time))
     (values state written-output-path)))
@@ -190,13 +521,14 @@
 (defun toggle-plan-mode (&key
                            (state (current-plan-mode-state))
                            output-path
-                           (reason :toggle))
+                           (reason :toggle)
+                           (write-output-p t))
   (check-type state plan-mode-state)
   (if (plan-mode-state-active-p state)
       (multiple-value-bind (updated-state written-output-path)
           (exit-plan-mode :state state
                           :output-path output-path
                           :reason reason
-                          :write-output-p t)
+                          :write-output-p write-output-p)
         (values updated-state :disabled written-output-path))
       (values (enter-plan-mode :state state :clear-steps-p t) :enabled nil)))

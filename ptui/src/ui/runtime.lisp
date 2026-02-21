@@ -10,6 +10,7 @@
    #:make-runtime
    #:runtime-root
    #:runtime-revision
+   #:runtime-state-version
    #:runtime-focus-order
    #:runtime-focus-id
    #:runtime-lifecycle-log
@@ -20,7 +21,15 @@
    #:runtime-state
    #:set-runtime-state
    #:advance-focus
-   #:route-event))
+   #:route-event
+   #:*current-runtime*
+   ;; Widget context (for hooks)
+   #:widget-context
+   #:widget-context-widget-name
+   #:widget-context-instance-key
+   #:widget-context-runtime
+   #:%make-widget-context
+   #:*current-widget-context*))
 
 (in-package :ptui.ui.runtime)
 
@@ -31,17 +40,33 @@
   (path '() :type list)
   (detail nil))
 
+(defvar *current-runtime* nil
+  "Bound to the active runtime during update-runtime and engine run.
+Used by hooks to access runtime without explicit parameter passing.")
+
+;;; Widget context — lives in runtime to avoid circular deps between hooks and widgets
+(defstruct (widget-context
+            (:constructor %make-widget-context (widget-name instance-key runtime)))
+  (widget-name nil :type symbol)
+  (instance-key nil)
+  (runtime nil))
+
+(defvar *current-widget-context* nil
+  "Bound during widget render to the current widget-context.
+NIL outside of widget rendering.")
+
 (defstruct (runtime
             (:constructor %make-runtime
                 (&key root revision state-table pending-effects lifecycle-log
-                      focus-order focus-id)))
+                      focus-order focus-id state-version)))
   (root nil)
   (revision 0 :type fixnum)
   (state-table (make-hash-table :test #'equal))
   (pending-effects '() :type list)
   (lifecycle-log '() :type list)
   (focus-order '() :type list)
-  (focus-id nil))
+  (focus-id nil)
+  (state-version 0 :type fixnum))
 
 (defparameter *runtime-lifecycle-log-limit* 512)
 
@@ -192,27 +217,63 @@
         current
         (setf (runtime-focus-id runtime) (first order)))))
 
+(defun %cleanup-unmounted-widget-state (runtime patch)
+  "Clean up widget-scoped state for unmounted nodes.
+The node-id from the patch is used as instance-key. If ptui.ui.hooks is loaded,
+delegate to its cleanup function; otherwise this is a no-op."
+  (let ((hooks-pkg (find-package "PTUI.UI.HOOKS")))
+    (when hooks-pkg
+      (let ((cleanup-sym (find-symbol "CLEANUP-WIDGET-STATE" hooks-pkg)))
+        (when (and cleanup-sym (fboundp cleanup-sym))
+          ;; The node-id might encode a widget instance — iterate state-table
+          ;; for entries whose second element matches the patch node-id.
+          (let ((node-id (patch-op-node-id patch))
+                (table (runtime-state-table runtime))
+                (to-remove '()))
+            (maphash (lambda (key _val)
+                       (declare (ignore _val))
+                       (when (and (listp key)
+                                  (>= (length key) 2)
+                                  (equal (second key) node-id))
+                         (push key to-remove)))
+                     table)
+            (dolist (key to-remove)
+              ;; Run cleanup for effect-cleanup entries
+              (when (and (listp key)
+                         (>= (length key) 3)
+                         (listp (third key))
+                         (eq (first (third key)) :effect-cleanup))
+                (let ((cleanup-fn (gethash key table)))
+                  (when (functionp cleanup-fn)
+                    (ignore-errors (funcall cleanup-fn)))))
+              (remhash key table))))))))
+
 (defun update-runtime (runtime new-root)
   "Apply reconciliation + commit lifecycle for a new root tree."
   (check-type runtime runtime)
   (unless (or (null new-root) (typep new-root 'ptui.ui.elements:ui-element))
     (error "NEW-ROOT must be NIL or UI-ELEMENT. Got: ~S" new-root))
-  (%log! runtime :reconcile-begin)
-  (let ((delta (reconcile-trees (runtime-root runtime) new-root)))
-    (%log! runtime :reconcile-end)
-    (setf (runtime-root runtime) new-root)
-    (incf (runtime-revision runtime))
-    (setf (runtime-focus-order runtime) (collect-focus-order new-root))
-    (%stabilize-focus! runtime)
-    (%log! runtime :commit)
-    (let ((effects (runtime-pending-effects runtime))
-          (index 0))
-      (setf (runtime-pending-effects runtime) '())
-      (dolist (effect effects)
-        (incf index)
-        (%log! runtime (list :effect index))
-        (funcall effect)))
-    delta))
+  (let ((*current-runtime* runtime))
+    (%log! runtime :reconcile-begin)
+    (let ((delta (reconcile-trees (runtime-root runtime) new-root)))
+      (%log! runtime :reconcile-end)
+      ;; Process unmount patches — clean up widget-scoped state (I271)
+      (dolist (patch delta)
+        (when (eq (patch-op-kind patch) :unmount)
+          (%cleanup-unmounted-widget-state runtime patch)))
+      (setf (runtime-root runtime) new-root)
+      (incf (runtime-revision runtime))
+      (setf (runtime-focus-order runtime) (collect-focus-order new-root))
+      (%stabilize-focus! runtime)
+      (%log! runtime :commit)
+      (let ((effects (runtime-pending-effects runtime))
+            (index 0))
+        (setf (runtime-pending-effects runtime) '())
+        (dolist (effect effects)
+          (incf index)
+          (%log! runtime (list :effect index))
+          (funcall effect)))
+      delta)))
 
 (defun enqueue-effect (runtime thunk)
   (check-type runtime runtime)
@@ -228,6 +289,7 @@
 (defun set-runtime-state (runtime key value)
   (check-type runtime runtime)
   (setf (gethash key (runtime-state-table runtime)) value)
+  (incf (runtime-state-version runtime))
   value)
 
 (defun advance-focus (runtime &key (backward nil))

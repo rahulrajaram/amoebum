@@ -67,6 +67,16 @@
               (and argv-dir
                    (uiop:native-namestring
                     (merge-pathnames +native-library-name+ argv-dir))))
+            ;; On Linux, resolve the actual binary via /proc/self/exe
+            ;; (handles wrapper scripts that exec the real binary)
+            (handler-case
+                (let ((exe (uiop:native-namestring (truename #P"/proc/self/exe"))))
+                  (and exe
+                       (uiop:native-namestring
+                        (merge-pathnames +native-library-name+
+                                         (uiop:pathname-directory-pathname
+                                          (uiop:parse-native-namestring exe))))))
+              (error () nil))
             +native-library-name+))
    :test #'string=))
 

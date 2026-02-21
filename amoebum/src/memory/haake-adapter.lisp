@@ -70,7 +70,7 @@
                                  (%trim-text agent))
                             "amoebum")))
 
-(defun %shell-single-quote (text)
+(defun %haake-shell-single-quote (text)
   (format nil "'~A'"
           (with-output-to-string (out)
             (loop for char across (or text "") do
@@ -83,7 +83,7 @@
       (uiop:run-program
        (list "sh" "-lc"
              (format nil "command -v ~A >/dev/null 2>&1"
-                     (%shell-single-quote command)))
+                     (%haake-shell-single-quote command)))
        :ignore-error-status t
        :output :string
        :error-output :string)

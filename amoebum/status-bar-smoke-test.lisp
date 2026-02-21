@@ -16,6 +16,7 @@
          (load-asd-fn (symbol-function load-asd-sym))
          (load-system-fn (symbol-function load-system-sym)))
     (funcall load-asd-fn (merge-pathnames #P"pseudopod/pseudopod.asd" repo-root))
+    (funcall load-asd-fn (merge-pathnames #P"sw4rm-sdk/sw4rm-sdk.asd" repo-root))
     (funcall load-asd-fn (merge-pathnames #P"ptui/ptui.asd" repo-root))
     (funcall load-asd-fn (merge-pathnames #P"amoebum/amoebum.asd" repo-root))
     (funcall load-system-fn "amoebum"))
@@ -94,6 +95,9 @@
         (let ((plan-line (funcall status-bar-line-fn state)))
           (assert-true (line-contains-p plan-line "PLAN MODE -- read-only")
                        "Expected plan-mode banner in status bar, got ~S."
+                       plan-line)
+          (assert-true (line-contains-p plan-line "[LOCK mutating tools blocked]")
+                       "Expected plan-mode lock badge in status bar, got ~S."
                        plan-line))
 
         (funcall publish-fn

@@ -18,6 +18,7 @@
          (load-asd-fn (symbol-function load-asd-sym))
          (load-system-fn (symbol-function load-system-sym)))
     (funcall load-asd-fn (merge-pathnames #P"pseudopod/pseudopod.asd" repo-root))
+    (funcall load-asd-fn (merge-pathnames #P"sw4rm-sdk/sw4rm-sdk.asd" repo-root))
     (funcall load-asd-fn (merge-pathnames #P"ptui/ptui.asd" repo-root))
     (funcall load-asd-fn (merge-pathnames #P"amoebum/amoebum.asd" repo-root))
     (funcall load-system-fn "amoebum"))
@@ -337,12 +338,15 @@
                          (lambda (event)
                            (declare (ignore event))
                            (incf discovered-events)))
-                (funcall subscribe-fn
-                         event-bus
-                         event-type-mcp-invoked
-                         (lambda (event)
-                           (declare (ignore event))
-                           (incf invoked-events)))
+                ;; invoke-mcp-tool-bridge publishes mcp:tool-invoked on
+                ;; (current-event-bus), not the context event-bus.
+                (let ((global-bus (funcall (funcall fn-in "CURRENT-EVENT-BUS" amoebum-pkg))))
+                  (funcall subscribe-fn
+                           global-bus
+                           event-type-mcp-invoked
+                           (lambda (event)
+                             (declare (ignore event))
+                             (incf invoked-events))))
                 (unwind-protect
                     (progn
                       (funcall setconfig-fn :mcp-server-permissions nil)

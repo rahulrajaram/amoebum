@@ -1,5 +1,111 @@
 (in-package :amoebum)
 
+(define-condition tool-definition-warning (style-warning)
+  ((tool-name :initarg :tool-name
+              :initform nil
+              :reader tool-definition-warning-tool-name)
+   (parameter :initarg :parameter
+              :initform nil
+              :reader tool-definition-warning-parameter)
+   (reason :initarg :reason
+           :initform nil
+           :reader tool-definition-warning-reason))
+  (:report
+   (lambda (condition stream)
+     (let ((tool (tool-definition-warning-tool-name condition))
+           (parameter (tool-definition-warning-parameter condition))
+           (reason (tool-definition-warning-reason condition)))
+       (cond
+         ((and tool parameter reason)
+          (format stream "Tool ~S parameter ~S: ~A." tool parameter reason))
+         ((and tool reason)
+          (format stream "Tool ~S: ~A." tool reason))
+         (reason
+          (format stream "~A." reason))
+         (t
+          (format stream "Tool definition warning.")))))))
+
+(define-condition unmapped-type-warning (tool-definition-warning)
+  ((type-spec :initarg :type-spec
+              :reader unmapped-type-warning-type-spec))
+  (:report
+   (lambda (condition stream)
+     (format stream
+             "Tool ~S parameter ~S uses type specifier ~S that does not map cleanly to JSON schema."
+             (tool-definition-warning-tool-name condition)
+             (tool-definition-warning-parameter condition)
+             (unmapped-type-warning-type-spec condition)))))
+
+(define-condition missing-tool-description (tool-definition-warning)
+  ()
+  (:report
+   (lambda (condition stream)
+     (let ((tool (tool-definition-warning-tool-name condition))
+           (parameter (tool-definition-warning-parameter condition)))
+       (if parameter
+           (format stream "Tool ~S parameter ~S is missing a description."
+                   tool
+                   parameter)
+           (format stream "Tool ~S is missing a non-empty description."
+                   tool))))))
+
+(define-condition duplicate-tool-name (tool-definition-warning)
+  ()
+  (:report
+   (lambda (condition stream)
+     (format stream
+             "Duplicate tool name ~S seen during macroexpansion."
+             (tool-definition-warning-tool-name condition)))))
+
+(define-condition dangerous-auto-permission (tool-definition-warning)
+  ()
+  (:report
+   (lambda (condition stream)
+     (format stream
+             "Tool ~S is marked dangerous but uses :permission :auto."
+             (tool-definition-warning-tool-name condition)))))
+
+(define-condition unknown-tool-reference (tool-definition-warning)
+  ((hook-point :initarg :hook-point
+               :initform nil
+               :reader unknown-tool-reference-hook-point)
+   (reference :initarg :reference
+              :initform nil
+              :reader unknown-tool-reference-reference))
+  (:report
+   (lambda (condition stream)
+     (let ((hook-point (unknown-tool-reference-hook-point condition))
+           (reference (unknown-tool-reference-reference condition)))
+       (if hook-point
+           (format stream
+                   "DEFHOOK ~S references unknown tool ~S."
+                   hook-point
+                   reference)
+           (format stream "Unknown tool reference ~S." reference))))))
+
+(define-condition invalid-permission-mode (error)
+  ((tool-name :initarg :tool-name
+              :initform nil
+              :reader invalid-permission-mode-tool-name)
+   (permission :initarg :permission
+               :reader invalid-permission-mode-permission)
+   (allowed-values :initarg :allowed-values
+                   :initform '(:auto :supervised :full-auto)
+                   :reader invalid-permission-mode-allowed-values))
+  (:report
+   (lambda (condition stream)
+     (let ((tool (invalid-permission-mode-tool-name condition)))
+       (if tool
+           (format stream
+                   "Tool ~S uses invalid permission mode ~S; expected one of ~S."
+                   tool
+                   (invalid-permission-mode-permission condition)
+                   (invalid-permission-mode-allowed-values condition))
+           (format stream
+                   "Invalid permission mode ~S; expected one of ~S."
+                   (invalid-permission-mode-permission condition)
+                   (invalid-permission-mode-allowed-values condition)))))))
+
 (defstruct (macro-lint-issue
             (:constructor make-macro-lint-issue
                 (&key severity file macro-name message)))
