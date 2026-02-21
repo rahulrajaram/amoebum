@@ -1,6 +1,7 @@
 (in-package :amoebum)
 
 (defparameter +chat-role-order+ '("system" "user" "assistant" "tool"))
+(defparameter +max-agentic-iterations+ 25)
 (defparameter +context-compression-default-keep-last-turns+ 6)
 (defparameter +context-compression-min-summarized-messages+ 2)
 (defparameter +context-compression-max-summary-points+ 4)
@@ -42,7 +43,8 @@
                       (stream-tool-calls (%make-chat-stream-tool-call-table))
                       (stream-executed-tool-call-keys (%make-chat-stream-executed-table))
                       (stream-status-publish-key nil)
-                      (frame-count 0))))
+                      (frame-count 0)
+                      (agentic-iteration-count 0))))
   runtime
   (messages '() :type list)
   (input-text "" :type string)
@@ -69,6 +71,7 @@
   (stream-executed-tool-call-keys (%make-chat-stream-executed-table))
   (stream-status-publish-key nil)
   (frame-count 0 :type fixnum)
+  (agentic-iteration-count 0 :type fixnum)
   (cached-tree-key nil)
   (cached-tree nil)
   (cached-layout nil)
@@ -518,6 +521,7 @@
   (let* ((chat-state (ensure-chat-ui-state state))
          (conversation (%ensure-chat-conversation-state chat-state))
          (input (chat-ui-state-input-text chat-state)))
+    (setf (chat-ui-state-agentic-iteration-count chat-state) 0)
     (if (or (null input) (zerop (length input)) (%blank-string-p input))
         nil
         (prog1
@@ -605,7 +609,9 @@
                            :started-p nil
                            :arguments-complete-p nil
                            :executed-p nil
-                           :execution-error nil)))
+                           :execution-error nil
+                           :result nil
+                           :malformed-p nil)))
           (setf (gethash key table) fresh)
           fresh))))
 
@@ -688,7 +694,8 @@
     chat-state))
 
 (defun %set-stream-tool-call-execution-status! (chat-state preview-key
-                                                &key executed-p execution-error)
+                                                &key executed-p execution-error
+                                                     result malformed-p)
   (let* ((table (chat-ui-state-stream-tool-calls chat-state))
          (entry (and (hash-table-p table)
                      (gethash preview-key table))))
@@ -696,7 +703,11 @@
       (when executed-p
         (setf (getf entry :executed-p) t))
       (when execution-error
-        (setf (getf entry :execution-error) execution-error)))
+        (setf (getf entry :execution-error) execution-error))
+      (when result
+        (setf (getf entry :result) result))
+      (when malformed-p
+        (setf (getf entry :malformed-p) t)))
     entry))
 
 (defun %stream-tool-call-execution-key (tool-call preview-key)
@@ -714,6 +725,12 @@
                         (or (pseudopod:tool-call-arguments tool-call) "")))
       preview-key))
 
+(defun %tool-call-has-id-p (tool-call)
+  "Return T if TOOL-CALL has a non-empty tool-call-id."
+  (and (pseudopod:tool-call-p tool-call)
+       (stringp (pseudopod:tool-call-id tool-call))
+       (plusp (length (pseudopod:tool-call-id tool-call)))))
+
 (defun %execute-stream-tool-call! (chat-state event)
   (let* ((tool-call (%stream-tool-call-from-event event))
          (preview-entry (%update-stream-tool-call-preview! chat-state event))
@@ -725,30 +742,45 @@
       (return-from %execute-stream-tool-call! nil))
     (when (gethash execution-key executed-table)
       (return-from %execute-stream-tool-call! nil))
+    ;; If tool call is missing an ID, mark as malformed and skip execution.
+    ;; The :complete handler will ask the LLM to re-issue with proper IDs.
+    (unless (%tool-call-has-id-p tool-call)
+      (setf (gethash execution-key executed-table) t)
+      (%set-stream-tool-call-execution-status!
+       chat-state preview-key :malformed-p t)
+      (return-from %execute-stream-tool-call! nil))
     (setf (gethash execution-key executed-table) t)
     (%set-stream-tool-call-execution-status! chat-state preview-key :executed-p t)
     (let* ((toolset (or (chat-ui-state-stream-tools chat-state) *toolset*))
            (config (%chat-config))
            (permission-mode (and (config-p config)
                                  (config-permission-mode config))))
+      (let ((result-text nil))
       (handler-case
           (if (pseudopod:find-tool toolset (pseudopod:tool-call-name tool-call))
-              (execute-tool tool-call
-                            (make-amoebum-context
-                             :toolset toolset
-                             :permission-mode permission-mode
-                             :event-bus (%context-event-bus chat-state)))
-              (%set-stream-tool-call-execution-status!
-               chat-state
-               preview-key
-               :execution-error (format nil "Unregistered tool ~A."
-                                        (or (pseudopod:tool-call-name tool-call)
-                                            "<unknown>"))))
+              (let ((result (execute-tool tool-call
+                                          (make-amoebum-context
+                                           :toolset toolset
+                                           :permission-mode permission-mode
+                                           :event-bus (%context-event-bus chat-state)))))
+                (setf result-text (if (stringp result)
+                                      result
+                                      (princ-to-string (or result ""))))
+                (%set-stream-tool-call-execution-status!
+                 chat-state preview-key :result result-text))
+              (let ((err-msg (format nil "Unregistered tool ~A."
+                                     (or (pseudopod:tool-call-name tool-call)
+                                         "<unknown>"))))
+                (setf result-text err-msg)
+                (%set-stream-tool-call-execution-status!
+                 chat-state preview-key
+                 :execution-error err-msg :result err-msg)))
         (error (condition)
-          (%set-stream-tool-call-execution-status!
-           chat-state
-           preview-key
-           :execution-error (princ-to-string condition)))))
+          (let ((err-msg (princ-to-string condition)))
+            (setf result-text err-msg)
+            (%set-stream-tool-call-execution-status!
+             chat-state preview-key
+             :execution-error err-msg :result err-msg))))))
     t))
 
 (defun %stream-status-summary (chat-state)
@@ -908,6 +940,107 @@
                     :threshold-percent (getf warning :threshold-percent))))
         warning))))
 
+(defun %collect-stream-tool-calls (chat-state)
+  "Collect pseudopod:tool-call structs from the stream preview table."
+  (let ((calls '()))
+    (maphash
+     (lambda (key entry)
+       (declare (ignore key))
+       (when (and (listp entry) (getf entry :executed-p))
+         (let ((tool-name (getf entry :tool-name))
+               (tool-call-id (getf entry :tool-call-id))
+               (arguments (getf entry :arguments))
+               (result (getf entry :result)))
+           (push (list :tool-call (pseudopod:make-tool-call
+                                   :id tool-call-id
+                                   :name (or tool-name "")
+                                   :arguments arguments)
+                       :result (or result ""))
+                 calls))))
+     (chat-ui-state-stream-tool-calls chat-state))
+    (nreverse calls)))
+
+(defun %collect-malformed-tool-calls (chat-state)
+  "Collect tool call names from the preview table that were marked malformed
+(missing tool_call_id)."
+  (let ((names '()))
+    (maphash
+     (lambda (key entry)
+       (declare (ignore key))
+       (when (and (listp entry) (getf entry :malformed-p))
+         (push (or (getf entry :tool-name) "<unknown>") names)))
+     (chat-ui-state-stream-tool-calls chat-state))
+    (nreverse names)))
+
+(defun %malformed-tool-call-retry-message (malformed-names)
+  "Build a user message asking the LLM to re-issue malformed tool calls."
+  (format nil "Your tool call~P for ~{~A~^, ~} ~
+               ~[~;was~:;were~] missing a tool_call_id. ~
+               Each tool call must include an id field. ~
+               Please re-issue ~[~;it~:;them~]."
+          (length malformed-names)
+          malformed-names
+          (length malformed-names)
+          (length malformed-names)))
+
+(defun %append-tool-result-messages! (chat-state tool-call-entries)
+  "Append tool-result messages to the conversation for each executed tool call."
+  (dolist (entry tool-call-entries)
+    (let* ((tc (getf entry :tool-call))
+           (result (getf entry :result))
+           (tool-call-id (and (pseudopod:tool-call-p tc)
+                              (pseudopod:tool-call-id tc)))
+           (tool-name (and (pseudopod:tool-call-p tc)
+                           (pseudopod:tool-call-name tc)))
+           (message (pseudopod:make-message
+                     :role "tool"
+                     :content (or result "")
+                     :name tool-name
+                     :tool-call-id tool-call-id)))
+      (chat-ui-append-message chat-state message))))
+
+(defun %set-assistant-message-tool-calls! (chat-state tool-call-entries)
+  "Set tool-calls on the current streaming assistant message."
+  (let* ((stream-state (chat-ui-state-stream-state chat-state))
+         (target-index (token-stream-state-target-message-index stream-state))
+         (messages (chat-ui-state-messages chat-state)))
+    (when (and (integerp target-index)
+               (>= target-index 0)
+               (< target-index (length messages)))
+      (let ((message (nth target-index messages))
+            (tool-calls (mapcar (lambda (entry) (getf entry :tool-call))
+                                tool-call-entries)))
+        (when (and (pseudopod:message-p message) tool-calls)
+          (setf (pseudopod:message-tool-calls message) tool-calls))))))
+
+(defun %start-agent-continuation-stream (chat-state)
+  "Start a new streaming response to continue the agentic tool loop.
+Like %start-streaming-assistant-response but without adding a new user message."
+  (when (token-stream-active-p (chat-ui-state-stream-state chat-state))
+    (return-from %start-agent-continuation-stream nil))
+  (let ((runner (chat-ui-state-stream-runner chat-state)))
+    (when (functionp runner)
+      (let* ((history (copy-list (chat-ui-state-messages chat-state)))
+             (target-index (length history))
+             (stream-state (chat-ui-state-stream-state chat-state))
+             (system-prompt (chat-ui-state-stream-system-prompt chat-state)))
+        (setf (chat-ui-state-stream-scroll-follow-p chat-state) t)
+        (conversation-transition! (%ensure-chat-conversation-state chat-state)
+                                  :streaming)
+        (chat-ui-add-message chat-state "assistant" "" :partial t)
+        (%clear-stream-tool-tracking! chat-state)
+        (token-stream-start
+         stream-state
+         (lambda (active-stream-state)
+           (funcall runner
+                    active-stream-state
+                    ""
+                    history
+                    :system-prompt system-prompt
+                    :client (chat-ui-state-stream-client chat-state)
+                    :tools (%resolve-chat-tools chat-state)))
+         :target-message-index target-index)))))
+
 (defun %drain-stream-events (chat-state)
   (let ((conversation (%ensure-chat-conversation-state chat-state)))
   (token-stream-drain-events
@@ -956,9 +1089,43 @@
                     :index index))
           (%execute-stream-tool-call! chat-state event)))
        (:complete
-        (%finalize-streaming-assistant-message chat-state :partialp nil)
-        (%clear-stream-tool-tracking! chat-state)
-        (conversation-transition! conversation :idle))
+        (let ((tool-call-entries (%collect-stream-tool-calls chat-state))
+              (malformed-names (%collect-malformed-tool-calls chat-state)))
+          (when tool-call-entries
+            (%set-assistant-message-tool-calls! chat-state tool-call-entries))
+          (%finalize-streaming-assistant-message chat-state :partialp nil)
+          (cond
+            ;; Malformed tool calls (missing tool_call_id) — ask LLM to retry
+            ((and malformed-names
+                  (< (chat-ui-state-agentic-iteration-count chat-state)
+                     +max-agentic-iterations+))
+             ;; Append results for any valid tool calls that did execute
+             (when tool-call-entries
+               (%append-tool-result-messages! chat-state tool-call-entries))
+             (chat-ui-add-message chat-state "user"
+                                  (%malformed-tool-call-retry-message malformed-names))
+             (%clear-stream-tool-tracking! chat-state)
+             (incf (chat-ui-state-agentic-iteration-count chat-state))
+             (%start-agent-continuation-stream chat-state))
+            ;; Normal tool call continuation
+            ((and tool-call-entries
+                  (< (chat-ui-state-agentic-iteration-count chat-state)
+                     +max-agentic-iterations+))
+             (%append-tool-result-messages! chat-state tool-call-entries)
+             (%clear-stream-tool-tracking! chat-state)
+             (incf (chat-ui-state-agentic-iteration-count chat-state))
+             (%start-agent-continuation-stream chat-state))
+            ;; Max iterations reached
+            (tool-call-entries
+             (%append-tool-result-messages! chat-state tool-call-entries)
+             (%clear-stream-tool-tracking! chat-state)
+             (chat-ui-add-message chat-state "assistant"
+                                  "[Agentic loop stopped: max iterations reached]")
+             (conversation-transition! conversation :idle))
+            ;; Normal text-only response
+            (t
+             (%clear-stream-tool-tracking! chat-state)
+             (conversation-transition! conversation :idle)))))
        (:cancelled
         (%finalize-streaming-assistant-message chat-state :partialp t)
         (%clear-stream-tool-tracking! chat-state)
@@ -996,6 +1163,14 @@
            "stream failed"))
       (otherwise
        nil))))
+
+(defun %resolve-chat-tools (chat-state)
+  "Return the tool definitions list to pass to the streaming API.
+Falls back to the global *toolset* when stream-tools is nil."
+  (or (chat-ui-state-stream-tools chat-state)
+      (and (boundp '*toolset*)
+           (pseudopod:toolset-p *toolset*)
+           (pseudopod:toolset-tools *toolset*))))
 
 (defun %resolve-chat-system-prompt (chat-state)
   (let* ((config (%chat-config))
@@ -1040,7 +1215,7 @@
                       history
                       :system-prompt system-prompt
                       :client (chat-ui-state-stream-client chat-state)
-                      :tools (chat-ui-state-stream-tools chat-state)))
+                      :tools (%resolve-chat-tools chat-state)))
            :target-message-index target-index))))))
 
 (defun %styled-segments->text (segments)

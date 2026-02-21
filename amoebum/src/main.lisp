@@ -232,8 +232,11 @@
 
 (defun main (&rest argv)
   (activate-amoebum-readtable)
-  (reload-config :cli-arguments argv)
-  (let ((options (%parse-cli-options argv)))
-    (if (getf options :json-mode-p)
-        (apply #'run-cli-json argv)
-        (run-chat-ui :backend :auto :fps 20))))
+  (let ((effective-argv (or argv
+                            #+sbcl (rest sb-ext:*posix-argv*)
+                            #-sbcl nil)))
+    (reload-config :cli-arguments effective-argv)
+    (let ((options (%parse-cli-options effective-argv)))
+      (if (getf options :json-mode-p)
+          (apply #'run-cli-json effective-argv)
+          (run-chat-ui :backend :auto :fps 20)))))
