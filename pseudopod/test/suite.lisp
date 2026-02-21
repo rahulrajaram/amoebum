@@ -127,14 +127,16 @@
 
 ;;; ---- Stub macro for safe function rebinding ----
 
-(defmacro with-stub-dex ((&key post get delete) &body body)
+(defmacro with-stub-dex ((&key post get delete request) &body body)
   "Safely rebind dexador functions for testing, restoring originals on exit."
   (let ((orig-post (gensym "ORIG-POST"))
         (orig-get (gensym "ORIG-GET"))
-        (orig-delete (gensym "ORIG-DELETE")))
+        (orig-delete (gensym "ORIG-DELETE"))
+        (orig-request (gensym "ORIG-REQUEST")))
     `(let ((,orig-post (symbol-function 'dex:post))
            (,orig-get (symbol-function 'dex:get))
-           (,orig-delete (symbol-function 'dex:delete)))
+           (,orig-delete (symbol-function 'dex:delete))
+           (,orig-request (symbol-function 'dex:request)))
        (unwind-protect
            (progn
              ,@(when post
@@ -143,10 +145,13 @@
                  `((setf (symbol-function 'dex:get) ,get)))
              ,@(when delete
                  `((setf (symbol-function 'dex:delete) ,delete)))
+             ,@(when request
+                 `((setf (symbol-function 'dex:request) ,request)))
              ,@body)
          (setf (symbol-function 'dex:post) ,orig-post)
          (setf (symbol-function 'dex:get) ,orig-get)
-         (setf (symbol-function 'dex:delete) ,orig-delete)))))
+         (setf (symbol-function 'dex:delete) ,orig-delete)
+         (setf (symbol-function 'dex:request) ,orig-request)))))
 
 ;;; ---- I14 Tests: Auth and Error Handling ----
 

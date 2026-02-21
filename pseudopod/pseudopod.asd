@@ -37,6 +37,7 @@
   :components
   ((:file "test/suite")
    (:file "test/provider-test")
+   (:file "test/anthropic-streaming-test")
    (:file "test/router-test")
    (:file "test/file-read-test")
    (:file "test/structured-read-test")
