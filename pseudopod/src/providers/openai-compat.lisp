@@ -52,6 +52,70 @@
   "Build full URL for OpenAI-compatible API."
   (format nil "~A~A" (provider-base-url provider) path))
 
+(defun %openai-compat-normalize-stream-result (role content tool-calls usage)
+  (let ((response (make-hash-table :test #'equal)))
+    (setf (gethash "role" response) (or role "assistant"))
+    (setf (gethash "content" response) (or content ""))
+    (setf (gethash "tool_calls" response) (coerce (or tool-calls '()) 'vector))
+    (when usage
+      (setf (gethash "usage" response) usage))
+    response))
+
+(defun %openai-compat-collect-stream (body-stream callback)
+  (let ((role "assistant")
+        (content-stream (make-string-output-stream))
+        (usage nil)
+        (tool-call-partials (make-hash-table :test #'eql))
+        (tool-call-states (make-hash-table :test #'eql))
+        (parse-error-count (list 0)))
+    (loop for line = (read-line body-stream nil nil)
+          while line do
+            (%consume-sse-line line
+                               nil
+                               (lambda (chunk)
+                                 (when (and callback (plusp (length chunk)))
+                                   (funcall callback chunk)))
+                               (lambda (next-role)
+                                 (setf role next-role))
+                               nil
+                               nil
+                               nil
+                               nil
+                               tool-call-partials
+                               tool-call-states
+                               content-stream
+                               parse-error-count)
+            (let* ((payload (and (plusp (length line))
+                                 (uiop:string-prefix-p "data:" line)
+                                 (string-right-trim '(#\Space #\Tab #\Return)
+                                                  (subseq line
+                                                          (if (and (>= (length line) 6)
+                                                                   (string= (subseq line 0 6) "data: "))
+                                                              6
+                                                              5)))
+                                 ))
+                   (json nil)
+                   (event-usage nil))
+              (when (and payload
+                         (plusp (length payload))
+                         (not (string= payload "[DONE]")))
+                (handler-case
+                    (progn
+                      (setf json (jonathan:parse payload :as :hash-table :junk-allowed t))
+                      (setf event-usage (and (hash-table-p json)
+                                             (gethash "usage" json)))
+                      (when (hash-table-p event-usage)
+                        (setf usage event-usage)))
+                  (error (condition)
+                    (declare (ignore condition))
+                    (when parse-error-count
+                      (incf (car parse-error-count))))))))
+    (values role
+            (get-output-stream-string content-stream)
+            (%finalize-stream-tool-call-partials tool-call-partials)
+            usage
+            (car parse-error-count))))
+
 (defun %openai-compat-coerce-message (m)
   "Coerce a message to hash-table format for OpenAI API."
   (cond
@@ -138,23 +202,43 @@
   "Streaming via fallback to non-streaming + callback for now."
   (%provider-timed-call provider
     (lambda ()
-      (let ((result (send-chat-completion provider messages
-                                          :model model
-                                          :temperature temperature
-                                          :max-tokens max-tokens
-                                          :top-p top-p
-                                          :tools tools
-                                          :tool-choice tool-choice
-                                          :system-prompt system-prompt
-                                          :extra-params extra-params)))
-        ;; Extract text from choices and call callback
-        (let* ((choices (and (hash-table-p result) (gethash "choices" result)))
-               (first-choice (and (listp choices) (first choices)))
-               (msg (and (hash-table-p first-choice) (gethash "message" first-choice)))
-               (content (and (hash-table-p msg) (gethash "content" msg))))
-          (when (and content (stringp content) (plusp (length content)))
-            (funcall callback content)))
-        result))))
+      (let* ((payload (%openai-compat-build-payload provider messages
+                                                     :model model
+                                                     :temperature temperature
+                                                     :max-tokens max-tokens
+                                                     :top-p top-p
+                                                     :tools tools
+                                                     :tool-choice tool-choice
+                                                     :system-prompt system-prompt
+                                                     :stream-p t
+                                                     :extra-params extra-params))
+             (url (%openai-compat-endpoint provider "/chat/completions"))
+             (headers (%openai-compat-headers provider))
+             (result nil))
+        (multiple-value-bind (body-stream status)
+            (dex:request url
+                         :method :post
+                         :headers headers
+                         :content payload
+                         :read-timeout (provider-timeout-seconds provider)
+                         :connect-timeout 30
+                         :want-stream t)
+          (unless (<= 200 status 299)
+            (let ((error-body (%coerce-response-body body-stream)))
+              (handler-case (close body-stream)
+                (error () nil))
+              (%signal-http-status-error status error-body :streamp t)))
+          (unwind-protect
+              (multiple-value-bind (parsed-role parsed-content tool-call-partials parsed-usage)
+                  (%openai-compat-collect-stream body-stream callback)
+                (setf result
+                      (%openai-compat-normalize-stream-result parsed-role
+                                                            parsed-content
+                                                            tool-call-partials
+                                                            parsed-usage)))
+            (handler-case (close body-stream)
+              (error () nil)))
+          result)))))
 
 (defmethod list-provider-models ((provider openai-compatible-provider))
   "List models from /models endpoint."
@@ -174,11 +258,11 @@
                                   (error () nil)))
                                (t nil)))
                    (parsed (when text (jonathan:parse text :as :hash-table)))
-                   (data (and (hash-table-p parsed) (gethash "data" parsed))))
+                  (data (and (hash-table-p parsed) (gethash "data" parsed))))
               (when (listp data)
-                (mapcar (lambda (item)
-                          (if (hash-table-p item)
-                              (hash-to-model-info item)
-                              item))
-                        data))))))
+	                     (mapcar (lambda (item)
+	                               (if (hash-table-p item)
+	                                   (hash-to-model-info item)
+	                                   item))
+	                        data))))))
     (error () nil)))

@@ -325,6 +325,8 @@
            #:config-value
            #:config-layer-source
            #:setconfig
+           #:resolve-provider
+           #:clear-resolved-provider-cache
            #:emit-config-changed
            #:*current-config*
            #:+amoebum-readtable-name+

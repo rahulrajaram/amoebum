@@ -2,6 +2,8 @@
 
 (defparameter *default-config-values*
   '(:model "moonshot-v1-128k"
+    :provider-override nil
+    :api-base-url nil
     :context-window-limit nil
     :permission-mode :supervised
     :approval-policy :on-request
@@ -131,83 +133,122 @@
 (defun %valid-config-value-p (key value)
   (case key
     (:model (stringp value))
-    (:context-window-limit (or (null value)
-                               (and (integerp value)
-                                    (> value 0))))
-    (:permission-mode (member value *known-permission-modes* :test #'eq))
-    (:approval-policy (member (%approval-policy-keyword value)
-                              *known-approval-policies*
-                              :test #'eq))
-    (:sandbox-policy (member (%sandbox-policy-keyword value)
-                             *known-sandbox-policies*
-                             :test #'eq))
-    (:sandbox-mode (member (%sandbox-mode-keyword value)
-                           *known-sandbox-modes*
-                           :test #'eq))
-    (:swarm-delegation-mode (member (%swarm-delegation-mode-keyword value)
-                                    *known-swarm-delegation-modes*
-                                    :test #'eq))
-    (:memory-backend (member value *known-memory-backends* :test #'eq))
-    (:web-search-searxng-url (or (null value)
-                                 (and (stringp value)
-                                      (> (length (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                                               value))
-                                         0))))
-    (:web-search-duckduckgo-url (or (null value)
-                                    (and (stringp value)
-                                         (> (length (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                                                  value))
-                                            0))))
-    (:web-search-allow-domains (%string-sequence-p value))
-    (:web-search-block-domains (%string-sequence-p value))
-    (:web-search-user-agent (or (null value)
-                                (and (stringp value)
-                                     (> (length (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                                              value))
-                                        0))))
-    (:web-fetch-timeout-seconds (and (integerp value) (> value 0)))
-    (:web-fetch-cache-ttl-seconds (and (integerp value) (> value 0)))
-    (:web-fetch-max-markdown-bytes (and (integerp value) (> value 0)))
-    (:web-fetch-user-agent (or (null value)
-                               (and (stringp value)
-                                    (> (length (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                                             value))
-                                       0))))
-    (:haake-command (and (stringp value)
-                         (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-                            0)))
-    (:haake-project-id (or (null value)
-                           (and (stringp value)
-                                (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-                                   0))))
-    (:haake-agent (and (stringp value)
-                       (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-                          0)))
+    (:provider-override
+     (or (null value)
+         (and (or (stringp value)
+                  (symbolp value)
+                  (keywordp value))
+              (member (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                  (string value))
+                                     )
+                      '("anthropic-provider" "anthropic"
+                        "openai-compatible-provider" "openai-compat" "openai"
+                        "kimi-provider" "kimi")
+                      :test #'string=))))
+    (:api-base-url
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:context-window-limit
+     (or (null value)
+         (and (integerp value)
+              (> value 0))))
+    (:permission-mode
+     (member value *known-permission-modes* :test #'eq))
+    (:approval-policy
+     (member (%approval-policy-keyword value)
+             *known-approval-policies*
+             :test #'eq))
+    (:sandbox-policy
+     (member (%sandbox-policy-keyword value)
+             *known-sandbox-policies*
+             :test #'eq))
+    (:sandbox-mode
+     (member (%sandbox-mode-keyword value)
+             *known-sandbox-modes*
+             :test #'eq))
+    (:swarm-delegation-mode
+     (member (%swarm-delegation-mode-keyword value)
+             *known-swarm-delegation-modes*
+             :test #'eq))
+    (:memory-backend
+     (member value *known-memory-backends* :test #'eq))
+    (:web-search-searxng-url
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:web-search-duckduckgo-url
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:web-search-allow-domains
+     (%string-sequence-p value))
+    (:web-search-block-domains
+     (%string-sequence-p value))
+    (:web-search-user-agent
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:web-fetch-timeout-seconds
+     (and (integerp value) (> value 0)))
+    (:web-fetch-cache-ttl-seconds
+     (and (integerp value) (> value 0)))
+    (:web-fetch-max-markdown-bytes
+     (and (integerp value) (> value 0)))
+    (:web-fetch-user-agent
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:haake-command
+     (and (stringp value)
+          (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+             0)))
+    (:haake-project-id
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:haake-agent
+     (and (stringp value)
+          (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+             0)))
     (:haake-autodetect (or (eq value t) (eq value nil)))
     (:notifications-enabled (or (eq value t) (eq value nil)))
-    (:notification-events (%keyword-like-sequence-p value))
+    (:notification-events
+     (%keyword-like-sequence-p value))
     (:notification-sound-enabled (or (eq value t) (eq value nil)))
     (:notification-desktop-enabled (or (eq value t) (eq value nil)))
     (:notification-log-enabled (or (eq value t) (eq value nil)))
-    (:notification-sound-player (or (null value)
-                                    (and (stringp value)
-                                         (> (length (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                                                  value))
-                                            0))))
-    (:notification-desktop-command (or (null value)
-                                       (and (stringp value)
-                                            (> (length (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                                                     value))
-                                               0))))
-    (:notification-log-path (or (null value)
-                                (%pathname-or-string-p value)))
-    (:notification-sound-task-complete (or (null value)
-                                           (%pathname-or-string-p value)))
-    (:notification-sound-error (or (null value)
-                                   (%pathname-or-string-p value)))
-    (:notification-sound-approval-needed (or (null value)
-                                             (%pathname-or-string-p value)))
-    (:auto-checkpoint-idle-seconds (and (integerp value) (>= value 0)))
+    (:notification-sound-player
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:notification-desktop-command
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:notification-log-path
+     (or (null value)
+         (%pathname-or-string-p value)))
+    (:notification-sound-task-complete
+     (or (null value)
+         (%pathname-or-string-p value)))
+    (:notification-sound-error
+     (or (null value)
+         (%pathname-or-string-p value)))
+    (:notification-sound-approval-needed
+     (or (null value)
+         (%pathname-or-string-p value)))
+    (:auto-checkpoint-idle-seconds
+     (and (integerp value)
+          (>= value 0)))
     (:plan-mode (or (eq value t) (eq value nil)))
     (:project-root (%pathname-or-string-p value))
     (t t)))
@@ -542,7 +583,9 @@
                      :directory-config-path directory-config-path
                      :environment-values environment-values
                      :cli-values cli-values
-                     :cli-arguments cli-arguments)))
+                     :cli-arguments cli-arguments))
+  (when (fboundp 'clear-resolved-provider-cache)
+    (clear-resolved-provider-cache)))
 
 (defun current-config ()
   (or *current-config*
@@ -568,5 +611,7 @@
          (old-value (config-value key cfg))
          (root (config-project-root cfg)))
     (%merge-value cfg key value :runtime root)
+    (when (fboundp 'clear-resolved-provider-cache)
+      (clear-resolved-provider-cache))
     (emit-config-changed key old-value (config-value key cfg))
     (config-value key cfg)))
