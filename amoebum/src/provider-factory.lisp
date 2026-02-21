@@ -47,11 +47,11 @@
 
 (defun %normalize-provider-override (value)
   (when value
-    (let* ((raw-name (etypecase value
+    (let* ((raw-name (typecase value
                        (symbol (symbol-name value))
                        (string value)
                        (keyword (symbol-name value))
-                       (otherwise (error "Unknown provider override type: ~S" value))))
+                       (t (error "Unknown provider override type: ~S" value))))
            (trimmed (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return)
                                                  raw-name)))
            (package-separator (position #\: trimmed :from-end t))

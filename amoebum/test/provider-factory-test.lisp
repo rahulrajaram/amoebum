@@ -99,3 +99,20 @@
       (is (eq first (amoebum:resolve-provider)))
       (amoebum:reload-config :environment-values '(:model "claude-3-5-sonnet"))
       (is (not (eq first (amoebum:resolve-provider)))))))
+
+(test provider-factory-invalidates-cache-on-setconfig
+  (with-provider-config (:model "claude-3-5-sonnet"
+                               :provider-override nil
+                               :api-base-url nil)
+    (let ((first (amoebum:resolve-provider)))
+      (is (typep first 'pseudopod:anthropic-provider))
+      (amoebum:setconfig :model "gpt-4o")
+      (is (not (eq first (amoebum:resolve-provider)))))
+    (is (typep (amoebum:resolve-provider) 'pseudopod:openai-compatible-provider))))
+
+(test provider-factory-invalid-provider-override-errors
+  (with-provider-config (:model "gpt-4o"
+                               :provider-override nil
+                               :api-base-url nil)
+    (signals error
+      (amoebum:setconfig :provider-override "definitely-invalid-provider"))))
