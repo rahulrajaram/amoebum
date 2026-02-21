@@ -233,11 +233,23 @@
   ((:file "examples/metrics-dashboard")
    (:file "examples/atop-dashboard")))
 
+(asdf:defsystem "ptui/test-support"
+  :description "PTUI snapshot testing framework"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ("ptui/backend" "ptui/render" "ptui/core")
+  :serial t
+  :components
+  ((:file "src/backend/test")
+   (:file "src/test-support/snapshot")
+   (:file "src/test-support/harness")))
+
 (asdf:defsystem "ptui/tests"
   :description "PTUI FiveAM suites"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui" "fiveam")
+  :depends-on ("ptui" "ptui/test-support" "fiveam")
   :serial t
   :components
-  ((:file "test/defwidget-test")))
+  ((:file "test/defwidget-test")
+   (:file "test/snapshot-test")))
