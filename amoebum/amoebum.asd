@@ -66,7 +66,7 @@
 
 (asdf:defsystem "amoebum/test"
   :description "FiveAM test suite for amoebum core application"
-  :depends-on ("amoebum" "fiveam")
+  :depends-on ("amoebum" "fiveam" "ptui/test-support")
   :serial t
   :components
   ((:file "test/suite")
@@ -83,7 +83,8 @@
    (:file "test/permission-command-matching-test")
    (:file "test/permission-command-canonicalization-test")
    (:file "test/shell-env-test")
-   (:file "test/shell-safety-test"))
+   (:file "test/shell-safety-test")
+   (:file "test/chat-snapshot-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (unless (uiop:symbol-call :amoebum/test :run-all)
