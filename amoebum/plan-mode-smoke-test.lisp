@@ -55,6 +55,7 @@
          (plan-output-path-fn (funcall fn-in "PLAN-MODE-STATE-LAST-OUTPUT-PATH" amoebum-pkg))
          (make-context-fn (funcall fn-in "MAKE-AMOEBUM-CONTEXT" amoebum-pkg))
          (execute-tool-fn (funcall fn-in "EXECUTE-TOOL" amoebum-pkg))
+         (assemble-system-prompt-fn (funcall fn-in "ASSEMBLE-SYSTEM-PROMPT" amoebum-pkg))
          (toolset-sym (funcall symbol-in "*TOOLSET*" amoebum-pkg))
          (permission-denied-sym (funcall symbol-in "TOOL-PERMISSION-DENIED" amoebum-pkg))
          (make-tool-call-fn (funcall fn-in "MAKE-TOOL-CALL" pseudopod-pkg))
@@ -115,6 +116,12 @@
                      "Expected :plan-mode config value to be true after /plan on.")
         (assert-true (contains-text-p (funcall status-bar-line-fn status-state) "PLAN MODE -- read-only")
                      "Expected status bar to show plan mode banner while active."))
+
+      (let ((assembled (funcall assemble-system-prompt-fn)))
+        (assert-true (contains-text-p assembled "Plan Mode Guidance")
+                     "Expected assembled system prompt to include plan mode guidance section.")
+        (assert-true (contains-text-p assembled "Explore the codebase first")
+                     "Expected plan mode guidance to instruct exploration before planning."))
 
       (let ((chat-state (funcall make-chat-ui-state-fn)))
         (funcall chat-ui-set-input-fn chat-state

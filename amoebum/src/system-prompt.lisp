@@ -10,6 +10,13 @@ Core behavior rules:
 - Never use destructive git operations without explicit user request.
 - Use available tools to inspect, edit, and verify changes before claiming completion.")
 
+(defparameter +system-prompt-plan-mode-exploration-guidance+
+  "Plan mode authoring workflow:
+- This turn is planning-only; do not make code edits while plan mode is enabled.
+- Explore the codebase first using read/search/glob/grep/index-style tools before drafting a plan.
+- Build understanding from concrete files and summarize the current architecture/behavior with file references.
+- If critical context is missing after exploration, ask a focused follow-up question before proposing execution steps.")
+
 (defparameter *system-prompt-git-command-runner* nil)
 
 (defun %system-prompt-trim (value)
@@ -364,6 +371,16 @@ Core behavior rules:
             (format stream "~A~%" line))
           (format stream "- none~%")))))
 
+(defun %system-prompt-plan-mode-enabled-p ()
+  (let ((cfg (ignore-errors (current-config))))
+    (and (config-p cfg)
+         (not (null (config-value :plan-mode cfg))))))
+
+(defun system-prompt-plan-mode-guidance ()
+  (if (%system-prompt-plan-mode-enabled-p)
+      +system-prompt-plan-mode-exploration-guidance+
+      "Plan mode guidance inactive."))
+
 (defun assemble-system-prompt (&key project-root
                                     cwd
                                     toolset
@@ -379,7 +396,8 @@ Core behavior rules:
          (dynamic-context (system-prompt-dynamic-context
                            :project-root project-root
                            :cwd cwd
-                           :toolset toolset)))
+                           :toolset toolset))
+         (plan-guidance (system-prompt-plan-mode-guidance)))
     (with-output-to-string (stream)
       (format stream "Amoebum system prompt hierarchy.~%")
       (format stream "Precedence: layer 4 overrides layer 3 overrides layer 2 overrides layer 1.~2%")
@@ -402,5 +420,7 @@ Core behavior rules:
           (if (%system-prompt-empty-p content)
               (format stream "(no content)~2%")
               (format stream "~A~2%" content))))
+      (format stream "Plan Mode Guidance~%~A~2%"
+              plan-guidance)
       (format stream "Dynamic Runtime Context~%~A"
               dynamic-context))))
