@@ -148,6 +148,14 @@
                :file-paths (list "amoebum/src/plan-mode.lisp"
                                  "amoebum/src/commands.lisp")
                :risk :low)
+      (funcall add-plan-step-fn
+               "Assess integration boundary risk."
+               :file-paths (list "amoebum/src/system-prompt.lisp")
+               :risk "HIGH")
+      (funcall add-plan-step-fn
+               "Document rollout checklist."
+               :file-paths (list "IMPLEMENTATION_PLAN.md")
+               :risk :unknown)
 
       (let* ((tmp-root
                (funcall ensure-directory-pathname-fn
@@ -219,6 +227,15 @@
                      output-text)
         (assert-true (contains-text-p output-text "Review target implementation files.")
                      "Expected plan output to include captured step, got ~S."
+                     output-text)
+        (assert-true (contains-text-p output-text "risk: low")
+                     "Expected explicit low-risk annotation in plan markdown, got ~S."
+                     output-text)
+        (assert-true (contains-text-p output-text "risk: high")
+                     "Expected string risk input to normalize to high-risk annotation, got ~S."
+                     output-text)
+        (assert-true (contains-text-p output-text "risk: medium")
+                     "Expected unknown risk input to default to medium annotation, got ~S."
                      output-text))
 
       (funcall setconfig-fn :plan-mode nil)

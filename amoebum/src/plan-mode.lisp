@@ -57,9 +57,17 @@
      (princ-to-string value))))
 
 (defun %normalize-plan-risk (value)
-  (let ((risk (if (symbolp value)
-                  (intern (string-upcase (symbol-name value)) :keyword)
-                  :medium)))
+  (let* ((risk-text (typecase value
+                      (symbol (symbol-name value))
+                      (string value)
+                      (t nil)))
+         (risk (if (and (stringp risk-text)
+                        (plusp (length (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                    risk-text))))
+                   (intern (string-upcase (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                       risk-text))
+                           :keyword)
+                   :medium)))
     (if (member risk *known-plan-step-risk-levels* :test #'eq)
         risk
         :medium)))
