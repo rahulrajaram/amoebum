@@ -1930,6 +1930,37 @@ Falls back to the global *toolset* when stream-tools is nil."
       (string-trim '(#\Space #\Tab #\Newline #\Return) text)
       ""))
 
+(defun %normalize-instruction-text (text)
+  (let ((trimmed (%chat-trim-text text)))
+    (with-output-to-string (out)
+      (loop with previous-space-p = t
+            for char across (string-downcase trimmed) do
+              (if (or (alphanumericp char) (char= char #\Space))
+                  (progn
+                    (write-char char out)
+                    (setf previous-space-p (char= char #\Space)))
+                  (unless previous-space-p
+                    (write-char #\Space out)
+                    (setf previous-space-p t)))))))
+
+(defun %plan-mode-entry-instruction-p (input)
+  (let* ((normalized (%normalize-instruction-text input))
+         (padded (format nil " ~A " normalized)))
+    (or (search " enter plan mode " padded :test #'char=)
+        (search " enable plan mode " padded :test #'char=)
+        (search " switch to plan mode " padded :test #'char=)
+        (search " go into plan mode " padded :test #'char=)
+        (search " turn on plan mode " padded :test #'char=)
+        (search " plan mode on " padded :test #'char=))))
+
+(defun %handle-plan-mode-entry-instruction (chat-state input)
+  (when (%plan-mode-entry-instruction-p input)
+    (chat-ui-add-message chat-state "user" input)
+    (when (%handle-slash-command-input chat-state "/plan on")
+      (setf (chat-ui-state-input-text chat-state) ""
+            (chat-ui-state-prompt-scroll-offset chat-state) nil)
+      t)))
+
 (defun %agent-completion-summary (completion)
   (let* ((result (getf completion :result))
          (output (%chat-trim-text (getf completion :stdout)))
@@ -2071,12 +2102,14 @@ Falls back to the global *toolset* when stream-tools is nil."
      (let ((input (chat-ui-state-input-text state)))
        (if (%handle-slash-command-input state input)
            t
-           (let ((submitted (chat-ui-submit-input state)))
-             (when submitted
-               (if (%handle-memory-candidate state submitted)
-                   (conversation-transition! (%ensure-chat-conversation-state state)
-                                             :idle)
-                   (%start-streaming-assistant-response state submitted))))))
+           (if (%handle-plan-mode-entry-instruction state input)
+               t
+               (let ((submitted (chat-ui-submit-input state)))
+                 (when submitted
+                   (if (%handle-memory-candidate state submitted)
+                       (conversation-transition! (%ensure-chat-conversation-state state)
+                                                 :idle)
+                       (%start-streaming-assistant-response state submitted)))))))
      t)
     ((eql key :backspace)
      (chat-ui-set-input state

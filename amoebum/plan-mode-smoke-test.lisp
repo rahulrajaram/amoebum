@@ -36,11 +36,18 @@
            (lambda (name package)
              (symbol-function (funcall symbol-in name package))))
          (dispatch-fn (funcall fn-in "DISPATCH-SLASH-COMMAND" amoebum-pkg))
+         (handle-input-key-fn (funcall fn-in "%HANDLE-INPUT-KEY" amoebum-pkg))
          (result-output-fn (funcall fn-in "SLASH-COMMAND-RESULT-OUTPUT" amoebum-pkg))
          (setconfig-fn (funcall fn-in "SETCONFIG" amoebum-pkg))
          (current-config-fn (funcall fn-in "CURRENT-CONFIG" amoebum-pkg))
          (config-value-fn (funcall fn-in "CONFIG-VALUE" amoebum-pkg))
          (make-status-bar-state-fn (funcall fn-in "MAKE-STATUS-BAR-STATE" amoebum-pkg))
+         (make-chat-ui-state-fn (funcall fn-in "MAKE-CHAT-UI-STATE" amoebum-pkg))
+         (chat-ui-set-input-fn (funcall fn-in "CHAT-UI-SET-INPUT" amoebum-pkg))
+         (chat-ui-state-messages-fn (funcall fn-in "CHAT-UI-STATE-MESSAGES" amoebum-pkg))
+         (message-role-fn (funcall fn-in "MESSAGE-ROLE" pseudopod-pkg))
+         (message-content-fn (funcall fn-in "MESSAGE-CONTENT" pseudopod-pkg))
+         (content-part-text-fn (funcall fn-in "CONTENT-PART-TEXT" pseudopod-pkg))
          (status-bar-line-fn (funcall fn-in "STATUS-BAR-LINE" amoebum-pkg))
          (clear-steps-fn (funcall fn-in "CLEAR-PLAN-MODE-STEPS" amoebum-pkg))
          (add-plan-step-fn (funcall fn-in "ADD-PLAN-STEP" amoebum-pkg))
@@ -57,10 +64,20 @@
     (labels ((assert-true (condition format-string &rest format-args)
                (unless condition
                  (error (apply #'format nil format-string format-args))))
-             (contains-text-p (haystack needle)
+            (contains-text-p (haystack needle)
                (and (stringp haystack)
                     (search needle haystack :test #'char-equal)))
-             (bool-true-p (value)
+            (message-text (message)
+              (let ((parts (funcall message-content-fn message)))
+                (with-output-to-string (out)
+                  (loop for part in parts
+                        for index from 0 do
+                          (when (> index 0)
+                            (write-char #\Newline out))
+                          (write-string (or (funcall content-part-text-fn part) "") out)))))
+            (message-role (message)
+              (string-downcase (or (funcall message-role-fn message) "")))
+            (bool-true-p (value)
                (not (null value))))
       (funcall setconfig-fn :plan-mode nil)
       (funcall setconfig-fn :permission-mode :full-auto)
@@ -99,6 +116,26 @@
         (assert-true (contains-text-p (funcall status-bar-line-fn status-state) "PLAN MODE -- read-only")
                      "Expected status bar to show plan mode banner while active."))
 
+      (let ((chat-state (funcall make-chat-ui-state-fn)))
+        (funcall chat-ui-set-input-fn chat-state
+                 "Please enter plan mode so we can do read-only planning first.")
+        (funcall handle-input-key-fn chat-state :enter nil)
+        (assert-true (bool-true-p (funcall config-value-fn :plan-mode (funcall current-config-fn)))
+                     "Expected natural-language user instruction to enable :plan-mode.")
+        (let* ((messages (funcall chat-ui-state-messages-fn chat-state))
+               (saw-user-instruction
+                 (loop for message in messages
+                       thereis (and (string= (message-role message) "user")
+                                    (contains-text-p (message-text message) "enter plan mode"))))
+               (saw-system-ack
+                 (loop for message in messages
+                       thereis (and (string= (message-role message) "system")
+                                    (or (contains-text-p (message-text message) "Plan mode enabled")
+                                        (contains-text-p (message-text message) "Plan mode already enabled"))))))
+          (assert-true saw-user-instruction
+                       "Expected a user message to retain natural-language plan instruction.")
+          (assert-true saw-system-ack
+                       "Expected a system acknowledgment for inferred /plan on.")))
       (funcall add-plan-step-fn
                "Review target implementation files."
                :file-paths (list "amoebum/src/plan-mode.lisp"
