@@ -43,6 +43,7 @@
     ("permission-command-smoke-test.lisp" "AMOEBUM_PERMISSION_COMMAND_SMOKE_OK")
     ("permission-mode-smoke-test.lisp" "AMOEBUM_PERMISSION_MODE_SMOKE_OK")
     ("permission-path-identity-smoke-test.lisp" "AMOEBUM_PERMISSION_PATH_IDENTITY_SMOKE_OK")
+    ("permission-trace-smoke-test.lisp" "AMOEBUM_PERMISSION_TRACE_SMOKE_OK")
     ("permissions-smoke-test.lisp" "AMOEBUM_PERMISSIONS_SMOKE_OK")
     ("pipeline-smoke-test.lisp" "AMOEBUM_PIPELINE_SMOKE_OK")
     ("plan-mode-smoke-test.lisp" "AMOEBUM_PLAN_MODE_SMOKE_OK")

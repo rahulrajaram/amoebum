@@ -886,6 +886,7 @@
            #:clear-tool-metrics
            #:permission-rule
            #:permission-rule-p
+           #:permission-rule-id
            #:permission-rule-effect
            #:permission-rule-path
            #:permission-rule-command
@@ -923,6 +924,9 @@
            #:*path-approval-persistence-relative-path*
            #:*dangerous-command-patterns*
            #:clear-permission-rules
+           #:clear-permission-cache
+           #:permission-cache-metrics
+           #:permission-cache-invalidation-events
            #:add-permission-rule
            #:canonicalize-permission-command
            #:command-canonicalization-trace
@@ -938,6 +942,10 @@
            #:forget-path-approval
            #:dangerous-command-p
            #:check-permission
+           #:last-permission-decision-trace
+           #:permission-decision-history
+           #:clear-permission-decision-history
+           #:explain-permission-decision
            #:+sandbox-max-output-size+
            #:+sandbox-max-read-size+
            #:sandbox-violation

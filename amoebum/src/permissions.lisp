@@ -1,6 +1,17 @@
 (in-package :amoebum)
 
 (defparameter *permission-rules* nil)
+(defparameter *permission-rules-version* 0)
+(defparameter *permission-evaluation-cache* (make-hash-table :test #'equal))
+(defparameter *permission-cache-hits* 0)
+(defparameter *permission-cache-misses* 0)
+(defparameter *permission-cache-invalidations* 0)
+(defparameter *permission-cache-invalidation-events* '())
+(defparameter *permission-cache-invalidation-events-limit* 128)
+(defparameter *permission-decision-history* '())
+(defparameter *permission-decision-history-limit* 256)
+(defparameter *permission-decision-sequence* 0)
+(defparameter *last-permission-decision-trace* nil)
 (defparameter *path-approval-memory* '())
 (defparameter *path-approval-memory-limit* 256)
 (defparameter *path-approval-persistence-relative-path* #P".amoebum/permissions.lisp")
@@ -34,7 +45,8 @@
 
 (defstruct (permission-rule
             (:constructor make-permission-rule
-                (&key effect path command tool (source :project))))
+                (&key id effect path command tool (source :project))))
+  id
   effect
   path
   command
@@ -1291,8 +1303,55 @@
      t)
     (t nil)))
 
+(defun %permission-rule-id (rule)
+  (or (permission-rule-id rule)
+      (setf (permission-rule-id rule)
+            (format nil "~A-~8,'0X"
+                    (string-downcase
+                     (symbol-name (or (permission-rule-source rule) :unknown)))
+                    (ldb (byte 32 0)
+                         (sxhash
+                          (list (permission-rule-effect rule)
+                                (permission-rule-path rule)
+                                (permission-rule-command rule)
+                                (permission-rule-tool rule)
+                                (permission-rule-source rule))))))))
+
+(defun %permission-cache-note-invalidation (reason)
+  (incf *permission-cache-invalidations*)
+  (push (list :timestamp (get-universal-time)
+              :reason reason
+              :rules-version *permission-rules-version*)
+        *permission-cache-invalidation-events*)
+  (when (> (length *permission-cache-invalidation-events*)
+           *permission-cache-invalidation-events-limit*)
+    (setf *permission-cache-invalidation-events*
+          (subseq *permission-cache-invalidation-events*
+                  0
+                  *permission-cache-invalidation-events-limit*))))
+
+(defun clear-permission-cache (&key (reason :manual))
+  (clrhash *permission-evaluation-cache*)
+  (%permission-cache-note-invalidation reason)
+  t)
+
+(defun permission-cache-metrics ()
+  (list :hits *permission-cache-hits*
+        :misses *permission-cache-misses*
+        :invalidations *permission-cache-invalidations*
+        :rules-version *permission-rules-version*
+        :entries (hash-table-count *permission-evaluation-cache*)))
+
+(defun permission-cache-invalidation-events (&key (limit 20))
+  (subseq *permission-cache-invalidation-events*
+          0
+          (min (max 0 limit)
+               (length *permission-cache-invalidation-events*))))
+
 (defun clear-permission-rules ()
-  (setf *permission-rules* nil))
+  (setf *permission-rules* nil)
+  (incf *permission-rules-version*)
+  (clear-permission-cache :reason :rules-cleared))
 
 (defun %validate-command-pattern (command-pattern)
   (let ((normalized (%normalize-permission-command command-pattern)))
@@ -1320,29 +1379,81 @@
                                     :command (%validate-command-pattern command)
                                     :tool tool
                                     :source source)))
+    (%permission-rule-id rule)
     (push rule *permission-rules*)
+    (incf *permission-rules-version*)
+    (clear-permission-cache :reason :rule-added)
     rule))
 
-(defun evaluate-path-permission (&key tool path (rules *permission-rules*))
-  (let ((best nil)
-        (normalized-path (%normalize-path path)))
-    (when normalized-path
-      (dolist (rule rules)
-        (when (%rule-matches-p rule tool normalized-path nil)
-          (when (%better-rule-p rule best)
-            (setf best rule)))))
-    (and best (permission-rule-effect best))))
+(defun %permission-cache-key (phase tool path command rules)
+  (when (eq rules *permission-rules*)
+    (list :phase phase
+          :tool (%tool-name tool)
+          :path path
+          :command command
+          :rules-version *permission-rules-version*)))
 
-(defun evaluate-command-permission (&key tool command path (rules *permission-rules*))
-  (let ((best nil)
-        (normalized-command (%normalize-permission-command command))
+(defun %rule-trace-entry (phase rule)
+  (when rule
+    (list :phase phase
+          :matched-rule-id (%permission-rule-id rule)
+          :specificity (%specificity-score rule)
+          :effect (permission-rule-effect rule)
+          :source (permission-rule-source rule)
+          :tool (%tool-name (permission-rule-tool rule))
+          :path (permission-rule-path rule)
+          :command (permission-rule-command rule))))
+
+(defun %evaluate-rule-phase (phase tool path command rules)
+  (let* ((cache-key (%permission-cache-key phase tool path command rules))
+         (cached (and cache-key
+                      (multiple-value-list
+                       (gethash cache-key *permission-evaluation-cache*)))))
+    (when (and cached (second cached))
+      (incf *permission-cache-hits*)
+      (let* ((entry (first cached))
+             (rule (getf entry :rule))
+             (trace (append (getf entry :trace)
+                            (list :cache :hit))))
+        (return-from %evaluate-rule-phase
+          (values (and rule (permission-rule-effect rule))
+                  trace
+                  rule
+                  :hit))))
+    (incf *permission-cache-misses*)
+    (let ((best nil))
+      (when (or path command)
+        (dolist (rule rules)
+          (when (%rule-matches-p rule tool path command)
+            (when (%better-rule-p rule best)
+              (setf best rule)))))
+      (let ((trace (append (%rule-trace-entry phase best)
+                           (list :cache :miss))))
+        (when cache-key
+          (setf (gethash cache-key *permission-evaluation-cache*)
+                (list :rule best :trace (%rule-trace-entry phase best))))
+        (values (and best (permission-rule-effect best))
+                trace
+                best
+                :miss)))))
+
+(defun evaluate-path-permission (&key tool path (rules *permission-rules*) (with-trace-p nil))
+  (let ((normalized-path (%normalize-path path)))
+    (multiple-value-bind (decision trace)
+        (%evaluate-rule-phase :path tool normalized-path nil rules)
+      (if with-trace-p
+          (values decision trace)
+          decision))))
+
+(defun evaluate-command-permission (&key tool command path (rules *permission-rules*)
+                                      (with-trace-p nil))
+  (let ((normalized-command (%normalize-permission-command command))
         (normalized-path (and path (%normalize-path path))))
-    (when normalized-command
-      (dolist (rule rules)
-        (when (%rule-matches-p rule tool normalized-path normalized-command)
-          (when (%better-rule-p rule best)
-            (setf best rule)))))
-    (and best (permission-rule-effect best))))
+    (multiple-value-bind (decision trace)
+        (%evaluate-rule-phase :command tool normalized-path normalized-command rules)
+      (if with-trace-p
+          (values decision trace)
+          decision))))
 
 (defun dangerous-command-p (command &optional (patterns *dangerous-command-patterns*))
   (let ((reasons (%command-danger-reason-codes command patterns)))
@@ -1500,8 +1611,35 @@
          (or (%shell-tool-p tool command)
              (member tool-name *plan-mode-blocked-tool-names* :test #'string=)))))
 
+(defun clear-permission-decision-history ()
+  (setf *permission-decision-history* '()
+        *permission-decision-sequence* 0
+        *last-permission-decision-trace* nil)
+  t)
+
+(defun permission-decision-history (&key (limit 20))
+  (subseq *permission-decision-history*
+          0
+          (min (max 0 limit) (length *permission-decision-history*))))
+
+(defun %next-permission-decision-id ()
+  (incf *permission-decision-sequence*)
+  (format nil "perm-~D" *permission-decision-sequence*))
+
+(defun %record-permission-decision (trace)
+  (setf *last-permission-decision-trace* trace
+        *permission-decision-history* (cons trace *permission-decision-history*))
+  (when (> (length *permission-decision-history*) *permission-decision-history-limit*)
+    (setf *permission-decision-history*
+          (subseq *permission-decision-history* 0 *permission-decision-history-limit*)))
+  trace)
+
+(defun last-permission-decision-trace ()
+  *last-permission-decision-trace*)
+
 (defun check-permission (&key tool path command dangerous-p permission-mode approval-policy
-                           (rules *permission-rules*))
+                           (rules *permission-rules*)
+                           (record-history-p t))
   (let* ((tool-name (%tool-name tool))
          (mode (%effective-permission-mode permission-mode approval-policy))
          (normalized-path (%normalize-path path))
@@ -1525,16 +1663,28 @@
          (mcp-decision (and mcp-server-name
                             (or (%mcp-server-config-decision mcp-server-name)
                                 :prompt)))
-         (path-decision (and normalized-path
-                             (evaluate-path-permission :tool tool
-                                                       :path normalized-path
-                                                       :rules rules)))
-         (command-decision (and policy-command-text
-                                (evaluate-command-permission :tool tool
-                                                             :path normalized-path
-                                                             :command policy-command-text
-                                                             :rules rules)))
-         (decision (cond
+         (path-decision nil)
+         (path-trace nil)
+         (command-decision nil)
+         (command-trace nil)
+         (decision nil))
+    (multiple-value-setq (path-decision path-trace)
+      (if normalized-path
+          (evaluate-path-permission :tool tool
+                                    :path normalized-path
+                                    :rules rules
+                                    :with-trace-p t)
+          (values nil nil)))
+    (multiple-value-setq (command-decision command-trace)
+      (if policy-command-text
+          (evaluate-command-permission :tool tool
+                                       :path normalized-path
+                                       :command policy-command-text
+                                       :rules rules
+                                       :with-trace-p t)
+          (values nil nil)))
+    (setf decision
+          (cond
                      ((%plan-mode-blocked-p tool policy-command-text) :deny)
                      ((or (eq path-decision :deny)
                           (eq command-decision :deny))
@@ -1543,14 +1693,59 @@
                      ((eq command-decision :allow) :allow)
                      ((eq path-decision :allow) :allow)
                      (mcp-decision mcp-decision)
-                     (t (%mode-default-decision mode tool normalized-path policy-command-text)))))
+                     (t (%mode-default-decision mode tool normalized-path policy-command-text))))
     (when *last-command-canonicalization-trace*
       (setf *last-command-canonicalization-trace*
             (append *last-command-canonicalization-trace*
                     (list :command-cache-key command-cache-key))))
-    (if (and (eq decision :allow)
-             (not (eq mode :yolo))
-             (or dangerous-p
-                 (dangerous-command-p canonical-command)))
-        :prompt
-        decision)))
+    (let* ((dangerous-reasons (or (and dangerous-p '(:explicit-dangerous-flag))
+                                  (and canonical-command
+                                       (%command-danger-reason-codes canonical-command))))
+           (dangerous-escalation-p (and (eq decision :allow)
+                                        (not (eq mode :yolo))
+                                        dangerous-reasons))
+           (final-decision (if dangerous-escalation-p :prompt decision))
+           (trace
+             (list :decision-id (%next-permission-decision-id)
+                   :timestamp (get-universal-time)
+                   :tool tool-name
+                   :path normalized-path
+                   :command policy-command-text
+                   :permission-mode mode
+                   :decision final-decision
+                   :pre-escalation-decision decision
+                   :dangerous-escalation-p dangerous-escalation-p
+                   :dangerous-reason-codes dangerous-reasons
+                   :path-decision path-decision
+                   :command-decision command-decision
+                   :mcp-decision mcp-decision
+                   :evaluation-trace (remove nil (list path-trace command-trace)))))
+      (setf *last-permission-decision-trace* trace)
+      (when record-history-p
+        (%record-permission-decision trace))
+      final-decision)))
+
+(defun explain-permission-decision (&key decision-id (rules *permission-rules*))
+  (let* ((historical
+           (cond
+             ((null decision-id) (first *permission-decision-history*))
+             ((string-equal decision-id "latest") (first *permission-decision-history*))
+             (t (find decision-id
+                      *permission-decision-history*
+                      :key (lambda (entry) (getf entry :decision-id))
+                      :test #'string=)))))
+    (unless historical
+      (return-from explain-permission-decision nil))
+    (let* ((replay-decision
+             (check-permission :tool (getf historical :tool)
+                               :path (getf historical :path)
+                               :command (getf historical :command)
+                               :permission-mode (getf historical :permission-mode)
+                               :rules rules
+                               :record-history-p nil))
+           (replay-trace *last-permission-decision-trace*))
+      (list :decision-id (getf historical :decision-id)
+            :historical historical
+            :replay (and replay-trace
+                         (append replay-trace
+                                 (list :decision replay-decision)))))))

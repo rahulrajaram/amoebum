@@ -2245,8 +2245,108 @@
                                   "Unknown approval policy ~S. Valid values: untrusted, on-failure, on-request, never."
                                   policy-token))))))
       (t
-       (make-slash-command-result
-        :output "Approvals: /approvals status | /approvals set <policy>")))))
+      (make-slash-command-result
+       :output "Approvals: /approvals status | /approvals set <policy>")))))
+
+(defun %permissions-usage ()
+  "/permissions [stats|log [limit]|explain [decision-id|latest]]")
+
+(defun %permissions-format-trace (trace)
+  (if (null trace)
+      "No permission decision trace available."
+      (with-output-to-string (out)
+        (format out "decision-id=~A decision=~A mode=~A tool=~A~%"
+                (getf trace :decision-id)
+                (getf trace :decision)
+                (getf trace :permission-mode)
+                (getf trace :tool))
+        (when (getf trace :path)
+          (format out "  path: ~A~%" (getf trace :path)))
+        (when (getf trace :command)
+          (format out "  command: ~A~%" (getf trace :command)))
+        (dolist (phase (getf trace :evaluation-trace))
+          (format out "  phase=~A matched-rule-id=~A specificity=~A effect=~A cache=~A~%"
+                  (getf phase :phase)
+                  (or (getf phase :matched-rule-id) "none")
+                  (or (getf phase :specificity) 0)
+                  (or (getf phase :effect) :none)
+                  (or (getf phase :cache) :n/a))))))
+
+(defun %permissions-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let* ((raw (or (gethash :ARGS arguments) ""))
+         (tokens (%tokenize-command-arguments raw))
+         (action (if tokens (string-downcase (first tokens)) "stats")))
+    (labels ((invalid-usage (&optional detail)
+               (make-slash-command-result
+                :echo-input-p t
+                :output (format nil "~@[~A~%~]Usage: ~A"
+                                detail
+                                (%permissions-usage)))))
+      (cond
+        ((member action '("stats" "status") :test #'string=)
+         (let ((metrics (permission-cache-metrics)))
+           (make-slash-command-result
+            :echo-input-p t
+            :output (format nil "Permission cache: hits=~D misses=~D invalidations=~D rules-version=~D entries=~D"
+                            (or (getf metrics :hits) 0)
+                            (or (getf metrics :misses) 0)
+                            (or (getf metrics :invalidations) 0)
+                            (or (getf metrics :rules-version) 0)
+                            (or (getf metrics :entries) 0)))))
+        ((string= action "log")
+         (let* ((limit-token (second tokens))
+                (limit (if limit-token
+                           (handler-case
+                               (max 1 (parse-integer limit-token))
+                             (error () nil))
+                           5))
+                (entries (and limit (permission-decision-history :limit limit))))
+           (if (null limit)
+               (invalid-usage (format nil "Invalid log limit ~S." limit-token))
+               (make-slash-command-result
+                :echo-input-p t
+                :output (if entries
+                            (with-output-to-string (out)
+                              (format out "Permission decisions (~D):~%" (length entries))
+                              (dolist (entry entries)
+                                (format out "- ~A~%" (%permissions-format-trace entry))))
+                            "No permission decisions recorded yet.")))))
+        ((string= action "explain")
+         (let* ((decision-id (or (second tokens) "latest"))
+                (payload (explain-permission-decision :decision-id decision-id)))
+           (if payload
+               (make-slash-command-result
+                :echo-input-p t
+                :output (with-output-to-string (out)
+                          (format out "Historical:~%~A~%Replay:~%~A"
+                                  (%permissions-format-trace (getf payload :historical))
+                                  (%permissions-format-trace (getf payload :replay))))
+                :payload payload)
+               (make-slash-command-result
+                :echo-input-p t
+                :output (format nil "No decision trace found for ~A." decision-id)))))
+        (t
+         (invalid-usage (format nil "Unknown /permissions action ~S." action)))))))
+
+(defun %permissions-arg-completer (_command _invocation index fragment prefix-tokens)
+  (declare (ignore _command _invocation))
+  (let ((prefix (%slash-trim fragment))
+        (action (and prefix-tokens (string-downcase (first prefix-tokens)))))
+    (cond
+      ((= index 0)
+       (loop for option in '("stats" "log" "explain")
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      ((and (string= action "explain") (= index 1))
+       (let* ((entries (permission-decision-history :limit 20))
+              (ids (cons "latest"
+                         (remove nil
+                                 (mapcar (lambda (entry) (getf entry :decision-id)) entries)))))
+         (loop for option in ids
+               when (%starts-with-ci-p prefix option)
+                 collect option)))
+      (t nil))))
 
 (defun register-builtin-slash-commands ()
   (register-slash-command
@@ -2625,6 +2725,20 @@
            :greedy-p t
            :description "Optional action: status or set <policy>."))
     :handler #'%approvals-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "permissions"
+    :description "Inspect permission cache metrics and explain decision traces."
+    :usage "/permissions [stats|log [limit]|explain [decision-id|latest]]"
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Optional action: stats, log, or explain <decision-id>."))
+    :handler #'%permissions-handler
+    :completer #'%permissions-arg-completer))
   t)
 
 (register-builtin-slash-commands)
