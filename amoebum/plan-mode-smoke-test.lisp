@@ -54,6 +54,7 @@
          (current-plan-state-fn (funcall fn-in "CURRENT-PLAN-MODE-STATE" amoebum-pkg))
          (plan-mode-steps-fn (funcall fn-in "PLAN-MODE-STATE-STEPS" amoebum-pkg))
          (plan-step-depends-on-fn (funcall fn-in "PLAN-STEP-DEPENDS-ON" amoebum-pkg))
+         (plan-review-pending-fn (funcall fn-in "PLAN-MODE-STATE-REVIEW-PENDING-P" amoebum-pkg))
          (plan-output-path-fn (funcall fn-in "PLAN-MODE-STATE-LAST-OUTPUT-PATH" amoebum-pkg))
          (make-context-fn (funcall fn-in "MAKE-AMOEBUM-CONTEXT" amoebum-pkg))
          (execute-tool-fn (funcall fn-in "EXECUTE-TOOL" amoebum-pkg))
@@ -254,7 +255,35 @@
                      output-text)
         (assert-true (contains-text-p output-text "depends_on: 1")
                      "Expected plan output to include inferred dependency annotation, got ~S."
-                     output-text))
+                     output-text)
+        (assert-true (bool-true-p (funcall plan-review-pending-fn plan-state))
+                     "Expected plan review pending marker after plan mode exit.")
+        (multiple-value-bind (handledp status-result)
+            (funcall dispatch-fn "/plan status")
+          (assert-true handledp "Expected /plan status to be handled.")
+          (assert-true (contains-text-p (funcall result-output-fn status-result)
+                                        "Plan review pending")
+                       "Expected /plan status output to mention review pending, got ~S."
+                       (funcall result-output-fn status-result))
+          (assert-true (contains-text-p (funcall result-output-fn status-result)
+                                        "/plan review")
+                       "Expected /plan status output to suggest /plan review, got ~S."
+                       (funcall result-output-fn status-result)))
+        (multiple-value-bind (handledp review-result)
+            (funcall dispatch-fn "/plan review")
+          (assert-true handledp "Expected /plan review to be handled.")
+          (assert-true (contains-text-p (funcall result-output-fn review-result)
+                                        "Plan review:")
+                       "Expected /plan review output heading, got ~S."
+                       (funcall result-output-fn review-result))
+          (assert-true (contains-text-p (funcall result-output-fn review-result)
+                                        "# Amoebum Plan")
+                       "Expected /plan review output to include plan markdown header, got ~S."
+                       (funcall result-output-fn review-result))
+          (assert-true (contains-text-p (funcall result-output-fn review-result)
+                                        "Review target implementation files.")
+                       "Expected /plan review output to include captured step text, got ~S."
+                       (funcall result-output-fn review-result))))
 
       (funcall setconfig-fn :plan-mode nil)
       (funcall clear-steps-fn)
@@ -271,6 +300,8 @@
                      "Expected /plan off false to disable plan mode.")
         (assert-true (null (funcall plan-output-path-fn (funcall current-plan-state-fn)))
                      "Expected /plan off false to skip plan file output path capture.")
+        (assert-true (bool-true-p (funcall plan-review-pending-fn (funcall current-plan-state-fn)))
+                     "Expected /plan off false to keep captured review pending.")
         (let* ((messages (funcall chat-ui-state-messages-fn chat-state))
                (captured
                  (loop for message in messages
@@ -282,6 +313,13 @@
                                     (contains-text-p (message-text message)
                                                      "Plan file output skipped.")))))
           (assert-true captured
-                       "Expected /plan off false system output to include captured plan markdown.")))))
+                       "Expected /plan off false system output to include captured plan markdown."))
+        (multiple-value-bind (handledp review-result)
+            (funcall dispatch-fn "/plan review")
+          (assert-true handledp "Expected /plan review to be handled after /plan off false.")
+          (assert-true (contains-text-p (funcall result-output-fn review-result)
+                                        "Persist the drafted plan in chat history.")
+                       "Expected /plan review to return latest captured plan from /plan off false, got ~S."
+                       (funcall result-output-fn review-result))))))
 
   (format t "AMOEBUM_PLAN_MODE_SMOKE_OK~%"))

@@ -23,12 +23,18 @@
                    entered-at
                    exited-at
                    (steps '())
+                   (review-pending-p nil)
+                   review-last-presented-at
+                   last-plan-markdown
                    last-output-path
                    last-exit-reason)))
   (active-p nil :type boolean)
   entered-at
   exited-at
   (steps '() :type list)
+  (review-pending-p nil :type boolean)
+  review-last-presented-at
+  last-plan-markdown
   last-output-path
   last-exit-reason)
 
@@ -256,7 +262,10 @@
     (clear-plan-mode-steps state))
   (setf (plan-mode-state-active-p state) t
         (plan-mode-state-entered-at state) (get-universal-time)
-        (plan-mode-state-exited-at state) nil)
+        (plan-mode-state-exited-at state) nil
+        (plan-mode-state-review-pending-p state) nil
+        (plan-mode-state-review-last-presented-at state) nil
+        (plan-mode-state-last-plan-markdown state) nil)
   state)
 
 (defun exit-plan-mode (&key
@@ -265,6 +274,10 @@
                          (reason :user-approved-plan)
                          (write-output-p t))
   (check-type state plan-mode-state)
+  (when (plan-mode-state-active-p state)
+    (let ((captured-plan (%plan-markdown state reason)))
+      (setf (plan-mode-state-last-plan-markdown state) captured-plan
+            (plan-mode-state-review-pending-p state) t)))
   (let ((written-output-path
           (and (plan-mode-state-active-p state)
                write-output-p

@@ -445,12 +445,16 @@
      :output (%config-report-output cfg)
      :echo-input-p t)))
 
-(defun %plan-status-output (active-p output-path)
+(defun %plan-status-output (active-p output-path review-pending-p)
   (if active-p
       "Plan mode is ON. PLAN MODE -- read-only."
-      (if output-path
-          (format nil "Plan mode is OFF. Last plan output: ~A." (namestring output-path))
-          "Plan mode is OFF.")))
+      (with-output-to-string (out)
+        (write-string "Plan mode is OFF." out)
+        (when output-path
+          (format out " Last plan output: ~A." (namestring output-path)))
+        (when review-pending-p
+          (write-string " Plan review pending. Use /plan review to inspect the latest captured plan."
+                        out)))))
 
 (defun %plan-exit-output (plan-markdown output-path write-to-file-p)
   (with-output-to-string (out)
@@ -465,6 +469,12 @@
                (plusp (length (%slash-trim plan-markdown))))
       (format out "~%~%Plan captured in conversation:~%~%~A" plan-markdown))))
 
+(defun %plan-review-output (plan-markdown)
+  (if (and (stringp plan-markdown)
+           (plusp (length (%slash-trim plan-markdown))))
+      (format nil "Plan review:~%~%~A" plan-markdown)
+      "No captured plan is available yet. Exit plan mode first to capture one."))
+
 (defun %plan-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
   (let* ((state (or (gethash :STATE arguments) :toggle))
@@ -478,7 +488,14 @@
     (case state
       (:status
        (make-slash-command-result
-        :output (%plan-status-output active-p (plan-mode-state-last-output-path plan-state))))
+        :output (%plan-status-output active-p
+                                     (plan-mode-state-last-output-path plan-state)
+                                     (plan-mode-state-review-pending-p plan-state))))
+      (:review
+       (progn
+         (setf (plan-mode-state-review-last-presented-at plan-state) (get-universal-time))
+         (make-slash-command-result
+          :output (%plan-review-output (plan-mode-state-last-plan-markdown plan-state)))))
       (:on
        (if active-p
            (make-slash-command-result
@@ -1625,7 +1642,7 @@
 (defun %plan-arg-completer (_command _invocation _index fragment _prefix)
   (declare (ignore _command _invocation _index _prefix))
   (let ((prefix (%slash-trim fragment)))
-    (loop for option in '("on" "off" "status")
+    (loop for option in '("on" "off" "status" "review")
           when (%starts-with-ci-p prefix option)
             collect option)))
 
@@ -2419,13 +2436,13 @@
    (make-slash-command
     :name "plan"
     :description "Toggle plan mode (read/search only) and persist plan output on exit."
-    :usage "/plan [on|off|status] [write-to-file]"
+    :usage "/plan [on|off|status|review] [write-to-file]"
     :parameters
     (list (make-slash-command-parameter
            :name "state"
            :type :keyword
            :required-p nil
-           :choices '(:on :off :status)
+           :choices '(:on :off :status :review)
            :description "Optional explicit plan mode action.")
           (make-slash-command-parameter
            :name "write-to-file"
