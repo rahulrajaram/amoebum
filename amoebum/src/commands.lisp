@@ -467,7 +467,8 @@
       (write-string " Plan file output skipped." out))
     (when (and (stringp plan-markdown)
                (plusp (length (%slash-trim plan-markdown))))
-      (format out "~%~%Plan captured in conversation:~%~%~A" plan-markdown))))
+      (format out "~%~%Plan captured in conversation:~%~%```markdown~%~A~%```"
+              plan-markdown))))
 
 (defun %plan-review-output (plan-markdown)
   (if (and (stringp plan-markdown)

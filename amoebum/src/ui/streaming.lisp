@@ -433,6 +433,86 @@
                 t)
         (values line :assistant nil))))
 
+(defun %stream-markdown-fence-line-p (line)
+  (let ((trimmed (string-trim '(#\Space #\Tab) line)))
+    (and (>= (length trimmed) 3)
+         (char= (char trimmed 0) #\`)
+         (char= (char trimmed 1) #\`)
+         (char= (char trimmed 2) #\`))))
+
+(defun %stream-markdown-fence-language (line)
+  (let* ((trimmed (string-trim '(#\Space #\Tab) line))
+         (length (length trimmed)))
+    (when (> length 3)
+      (let ((language (string-trim '(#\Space #\Tab)
+                                   (subseq trimmed 3 length))))
+        (when (plusp (length language))
+          (string-downcase language))))))
+
+(defun %stream-markdown-leading-indent-length (line)
+  (let ((length (length line))
+        (index 0))
+    (loop while (and (< index length)
+                     (member (char line index) '(#\Space #\Tab) :test #'char=))
+          do (incf index))
+    index))
+
+(defun %stream-markdown-list-marker-end (line start)
+  (let ((length (length line)))
+    (cond
+      ((>= start length)
+       nil)
+      ((and (< (+ start 1) length)
+            (member (char line start) '(#\- #\+ #\*) :test #'char=)
+            (member (char line (1+ start)) '(#\Space #\Tab) :test #'char=))
+       (+ start 2))
+      (t
+       (let ((index start))
+         (loop while (and (< index length)
+                          (digit-char-p (char line index)))
+               do (incf index))
+         (when (and (> index start)
+                    (< (1+ index) length)
+                    (char= (char line index) #\.)
+                    (member (char line (1+ index)) '(#\Space #\Tab) :test #'char=))
+           (+ index 2)))))))
+
+(defun %stream-markdown-code-line-segments (line language)
+  (let ((code-role :assistant-code)
+        (keyword-role :assistant-code-keyword))
+    (if (not (and (stringp language)
+                  (or (string= language "markdown")
+                      (string= language "md"))))
+        (list (%stream-markdown-make-segment line code-role))
+        (let* ((indent-end (%stream-markdown-leading-indent-length line))
+               (length (length line))
+               (heading-prefix-length
+                 (and (< indent-end length)
+                      (%stream-markdown-heading-prefix-length
+                       (subseq line indent-end length))))
+               (marker-end
+                 (or (and heading-prefix-length
+                          (+ indent-end heading-prefix-length))
+                     (%stream-markdown-list-marker-end line indent-end))))
+          (if (and marker-end
+                   (> marker-end 0)
+                   (<= marker-end length))
+              (let* ((indent-text (subseq line 0 indent-end))
+                     (marker-text (subseq line indent-end marker-end))
+                     (body-text (subseq line marker-end length))
+                     (segments '()))
+                (when (plusp (length indent-text))
+                  (push (%stream-markdown-make-segment indent-text code-role) segments))
+                (when (plusp (length marker-text))
+                  (push (%stream-markdown-make-segment marker-text keyword-role
+                                                       :boldp t)
+                        segments))
+                (when (plusp (length body-text))
+                  (push (%stream-markdown-make-segment body-text code-role) segments))
+                (or (nreverse segments)
+                    (list (%stream-markdown-make-segment line code-role))))
+              (list (%stream-markdown-make-segment line code-role)))))))
+
 (defun %stream-markdown-style-key (segment)
   (list (getf segment :role :assistant)
         (not (null (getf segment :boldp)))
@@ -588,16 +668,41 @@
                                        (cursor-glyph +stream-cursor-glyph+))
   (let* ((safe-width (max 1 (if (integerp width) width 1)))
          (raw-lines (%stream-markdown-split-lines text))
-         (styled-lines '()))
+         (styled-lines '())
+         (in-fenced-code-p nil)
+         (fenced-language nil))
     (dolist (raw-line raw-lines)
-      (multiple-value-bind (line-text line-role headingp)
-          (%stream-markdown-line-style raw-line)
-        (let* ((inline-segments
-                 (%stream-markdown-parse-inline line-text line-role :headingp headingp))
-               (wrapped
-                 (%stream-markdown-wrap-segments inline-segments safe-width
-                                                 :default-role line-role)))
-          (setf styled-lines (append styled-lines wrapped)))))
+      (cond
+        ((%stream-markdown-fence-line-p raw-line)
+         (let* ((fence-segments
+                  (list (%stream-markdown-make-segment raw-line
+                                                       :assistant-code-fence
+                                                       :boldp t
+                                                       :dimp t)))
+                (wrapped
+                  (%stream-markdown-wrap-segments fence-segments safe-width
+                                                  :default-role :assistant-code-fence)))
+           (setf styled-lines (append styled-lines wrapped)))
+         (if in-fenced-code-p
+             (setf in-fenced-code-p nil
+                   fenced-language nil)
+             (setf in-fenced-code-p t
+                   fenced-language (%stream-markdown-fence-language raw-line))))
+        (in-fenced-code-p
+         (let* ((code-segments (%stream-markdown-code-line-segments raw-line fenced-language))
+                (wrapped
+                  (%stream-markdown-wrap-segments code-segments safe-width
+                                                  :default-role :assistant-code)))
+           (setf styled-lines (append styled-lines wrapped))))
+        (t
+         (multiple-value-bind (line-text line-role headingp)
+             (%stream-markdown-line-style raw-line)
+           (let* ((inline-segments
+                    (%stream-markdown-parse-inline line-text line-role :headingp headingp))
+                  (wrapped
+                    (%stream-markdown-wrap-segments inline-segments safe-width
+                                                    :default-role line-role)))
+             (setf styled-lines (append styled-lines wrapped)))))))
     (unless styled-lines
       (setf styled-lines (list (list (%stream-markdown-make-segment "" :assistant)))))
     (when (and partialp

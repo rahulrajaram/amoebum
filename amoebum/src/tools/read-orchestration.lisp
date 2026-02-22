@@ -138,12 +138,16 @@
       content)))
 
 (defun %normalize-speculative-paths (path candidate-paths)
-  (remove-duplicates
-   (mapcar #'%validate-read-path
-           (if candidate-paths
-               (cons path candidate-paths)
-               (list path)))
-   :test #'string=))
+  (let ((seen (make-hash-table :test #'equal))
+        (ordered '()))
+    (dolist (candidate (if candidate-paths
+                           (cons path candidate-paths)
+                           (list path)))
+      (let ((normalized (%validate-read-path candidate)))
+        (unless (gethash normalized seen)
+          (setf (gethash normalized seen) t)
+          (push normalized ordered))))
+    (nreverse ordered)))
 
 (defun %attempt-orchestrated-read (path-string offset limit pages)
   (handler-case
@@ -184,11 +188,13 @@
                (loop for path in paths
                      for index from 0
                      collect
-                     (bordeaux-threads:make-thread
-                      (lambda ()
-                        (setf (aref results index)
-                              (%attempt-orchestrated-read path offset limit pages)))
-                      :name (format nil "read-orchestration-speculative-~D" index)))))
+                     (let ((path-copy path)
+                           (index-copy index))
+                       (bordeaux-threads:make-thread
+                        (lambda ()
+                          (setf (aref results index-copy)
+                                (%attempt-orchestrated-read path-copy offset limit pages)))
+                        :name (format nil "read-orchestration-speculative-~D" index-copy))))))
         (dolist (thread threads)
           (bordeaux-threads:join-thread thread))
         (loop for index from 0 below (length paths)

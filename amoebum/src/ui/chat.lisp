@@ -1551,6 +1551,12 @@ Falls back to the global *toolset* when stream-tools is nil."
              (%chat-template-cell :fg (ptui.core.color:make-color-rgb 150 235 170)))
             (:assistant-heading
              (%chat-template-cell :fg (ptui.core.color:make-color-rgb 195 235 255) :boldp t))
+            (:assistant-code
+             (%chat-template-cell :fg (ptui.core.color:make-color-rgb 175 215 255)))
+            (:assistant-code-keyword
+             (%chat-template-cell :fg (ptui.core.color:make-color-rgb 255 210 140) :boldp t))
+            (:assistant-code-fence
+             (%chat-template-cell :fg (ptui.core.color:make-color-rgb 145 165 185) :boldp t))
             (:tool
              (%chat-template-cell :fg (ptui.core.color:make-color-rgb 230 185 255)))
             (:prompt

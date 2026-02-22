@@ -56,6 +56,7 @@
          (plan-step-depends-on-fn (funcall fn-in "PLAN-STEP-DEPENDS-ON" amoebum-pkg))
          (plan-review-pending-fn (funcall fn-in "PLAN-MODE-STATE-REVIEW-PENDING-P" amoebum-pkg))
          (plan-output-path-fn (funcall fn-in "PLAN-MODE-STATE-LAST-OUTPUT-PATH" amoebum-pkg))
+         (stream-markdown-styled-lines-fn (funcall fn-in "STREAM-MARKDOWN-STYLED-LINES" amoebum-pkg))
          (make-context-fn (funcall fn-in "MAKE-AMOEBUM-CONTEXT" amoebum-pkg))
          (execute-tool-fn (funcall fn-in "EXECUTE-TOOL" amoebum-pkg))
          (assemble-system-prompt-fn (funcall fn-in "ASSEMBLE-SYSTEM-PROMPT" amoebum-pkg))
@@ -303,17 +304,37 @@
         (assert-true (bool-true-p (funcall plan-review-pending-fn (funcall current-plan-state-fn)))
                      "Expected /plan off false to keep captured review pending.")
         (let* ((messages (funcall chat-ui-state-messages-fn chat-state))
-               (captured
+               (captured-message
                  (loop for message in messages
-                       thereis (and (string= (message-role message) "system")
-                                    (contains-text-p (message-text message) "Plan captured in conversation")
-                                    (contains-text-p (message-text message) "# Amoebum Plan")
-                                    (contains-text-p (message-text message)
-                                                     "Persist the drafted plan in chat history.")
-                                    (contains-text-p (message-text message)
-                                                     "Plan file output skipped.")))))
-          (assert-true captured
-                       "Expected /plan off false system output to include captured plan markdown."))
+                       for text = (message-text message)
+                       when (and (string= (message-role message) "system")
+                                 (contains-text-p text "Plan captured in conversation")
+                                 (contains-text-p text "# Amoebum Plan")
+                                 (contains-text-p text
+                                                  "Persist the drafted plan in chat history.")
+                                 (contains-text-p text
+                                                  "Plan file output skipped."))
+                         do (return text))))
+          (assert-true captured-message
+                       "Expected /plan off false system output to include captured plan markdown.")
+          (assert-true (contains-text-p captured-message "```markdown")
+                       "Expected captured plan output to include a fenced markdown block.")
+          (let* ((styled-lines (funcall stream-markdown-styled-lines-fn
+                                        captured-message
+                                        120))
+                 (has-code-highlighting
+                   (loop for line in styled-lines
+                         thereis (loop for segment in line
+                                       for role = (and (listp segment)
+                                                       (keywordp (first segment))
+                                                       (getf segment :role))
+                                       thereis (member role
+                                                       '(:assistant-code
+                                                         :assistant-code-keyword
+                                                         :assistant-code-fence)
+                                                       :test #'eq)))))
+            (assert-true has-code-highlighting
+                         "Expected captured plan markdown to render with code syntax highlighting roles.")))
         (multiple-value-bind (handledp review-result)
             (funcall dispatch-fn "/plan review")
           (assert-true handledp "Expected /plan review to be handled after /plan off false.")
