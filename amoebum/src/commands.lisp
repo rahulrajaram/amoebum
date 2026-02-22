@@ -485,9 +485,9 @@
             :output "Plan mode already disabled.")))
       (otherwise
        (if active-p
-           (multiple-value-bind (_ output-path)
+           (multiple-value-bind (_ _status output-path)
                (toggle-plan-mode :state plan-state :reason :plan-command-toggle)
-             (declare (ignore _))
+             (declare (ignore _ _status))
              (setconfig :plan-mode nil)
              (make-slash-command-result
               :output (if output-path

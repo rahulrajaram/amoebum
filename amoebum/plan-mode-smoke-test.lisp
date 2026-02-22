@@ -66,6 +66,26 @@
       (funcall setconfig-fn :permission-mode :full-auto)
       (funcall clear-steps-fn)
 
+      (multiple-value-bind (handledp toggle-on-result)
+          (funcall dispatch-fn "/plan")
+        (assert-true handledp "Expected /plan toggle-on to be handled.")
+        (assert-true (contains-text-p (funcall result-output-fn toggle-on-result)
+                                      "Plan mode enabled")
+                     "Expected /plan toggle-on output to mention enabled state, got ~S."
+                     (funcall result-output-fn toggle-on-result)))
+      (assert-true (bool-true-p (funcall config-value-fn :plan-mode (funcall current-config-fn)))
+                   "Expected :plan-mode config value to be true after /plan toggle-on.")
+
+      (multiple-value-bind (handledp toggle-off-result)
+          (funcall dispatch-fn "/plan")
+        (assert-true handledp "Expected /plan toggle-off to be handled.")
+        (assert-true (contains-text-p (funcall result-output-fn toggle-off-result)
+                                      "Plan mode disabled")
+                     "Expected /plan toggle-off output to mention disabled state, got ~S."
+                     (funcall result-output-fn toggle-off-result)))
+      (assert-true (not (bool-true-p (funcall config-value-fn :plan-mode (funcall current-config-fn))))
+                   "Expected :plan-mode config value to be false after /plan toggle-off.")
+
       (let ((status-state (funcall make-status-bar-state-fn
                                    :config (funcall current-config-fn))))
         (multiple-value-bind (handledp plan-on-result)
