@@ -764,7 +764,7 @@
                                     (pseudopod:make-kimi-provider :api-key "k"))
     (let ((status (pseudopod:router-status router)))
       (is (listp status))
-      (is (= 1 (length (cdr (assoc :providers status))))))))
+      (is (= 1 (length (getf status :providers)))))))
 
 (test phase5-indexer-structs
   "Indexer structs should be constructable and queryable."
@@ -800,7 +800,7 @@
     (amoebum:propose-modification "(defun test-fn-xyz () 42)")
     (is (= 1 (length (amoebum:modification-journal))))
     (let ((entry (first (amoebum:modification-journal))))
-      (is (eq :pending (amoebum:modification-entry-status entry))))))
+      (is (eq :proposed (amoebum:modification-entry-status entry))))))
 
 (test phase5-image-directory
   "Image directory should be resolvable."

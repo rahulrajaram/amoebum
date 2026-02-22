@@ -118,9 +118,63 @@
           (push (cons start (1+ previous)) out))
         (nreverse out))))
 
+(defun %fuzzy-regex-escape-char (char stream)
+  (when (find char "\\.^$|()[]{}+?" :test #'char=)
+    (write-char #\\ stream))
+  (write-char char stream))
+
+(defun %fuzzy-glob->regex (pattern)
+  (let* ((source (%normalize-slashes (or pattern "")))
+         (len (length source)))
+    (with-output-to-string (stream)
+      (write-char #\^ stream)
+      (loop for i from 0 below len do
+            (let ((ch (char source i)))
+              (cond
+                ((char= ch #\*)
+                 (if (and (< (1+ i) len)
+                          (char= (char source (1+ i)) #\*))
+                     (progn
+                       (incf i)
+                       (if (and (< (1+ i) len)
+                                (char= (char source (1+ i)) #\/))
+                           (progn
+                             (incf i)
+                             (write-string "(?:[^/]+/)*" stream))
+                           (write-string ".*" stream)))
+                     (write-string "[^/]*" stream)))
+                ((char= ch #\?)
+                 (write-string "[^/]" stream))
+                ((char= ch #\[)
+                 (let ((close (position #\] source :start (1+ i))))
+                   (if close
+                       (progn
+                         (write-string (subseq source i (1+ close)) stream)
+                         (setf i close))
+                       (%fuzzy-regex-escape-char ch stream))))
+                ((char= ch #\{)
+                 (let ((close (position #\} source :start (1+ i))))
+                   (if close
+                       (let ((inner (subseq source (1+ i) close))
+                             (alternatives ()))
+                         (setf alternatives
+                               (uiop:split-string inner :separator ","))
+                         (write-string "(?:" stream)
+                         (loop for alt in alternatives
+                               for idx from 0 do
+                                 (when (> idx 0)
+                                   (write-char #\| stream))
+                                 (write-string (cl-ppcre:quote-meta-chars alt) stream))
+                         (write-char #\) stream)
+                         (setf i close))
+                       (%fuzzy-regex-escape-char ch stream))))
+                (t
+                 (%fuzzy-regex-escape-char ch stream)))))
+      (write-char #\$ stream))))
+
 (defun %fuzzy-build-scanner (pattern)
   (ignore-errors
-    (cl-ppcre:create-scanner (%glob->regex pattern))))
+    (cl-ppcre:create-scanner (%fuzzy-glob->regex pattern))))
 
 (defun %fuzzy-gitignore-pattern-scanners (pattern)
   (let* ((base (%normalize-slashes pattern))
@@ -177,7 +231,9 @@
 (defun %fuzzy-read-gitignore-rules (root)
   (let* ((gitignore-path (merge-pathnames #P".gitignore" root))
          (lines (if (probe-file gitignore-path)
-                    (%read-lines gitignore-path)
+                    (or (ignore-errors
+                          (uiop:read-file-lines gitignore-path :external-format :utf-8))
+                        '())
                     '()))
          (rules '()))
     (dolist (line lines)

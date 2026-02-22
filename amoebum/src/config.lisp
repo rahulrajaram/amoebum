@@ -529,7 +529,7 @@
                       project-config-path
                       directory-root
                       directory-config-path
-                      environment-values
+                      (environment-values :not-supplied)
                       cli-values
                       cli-arguments)
   (let* ((root (%normalize-project-root project-root))
@@ -546,7 +546,7 @@
                resolved-directory-path))
          (directory-values (%load-layer effective-directory-path))
          (env-values
-           (if (null environment-values)
+           (if (eq environment-values :not-supplied)
                (%environment-config-values)
                (%coerce-layer-values environment-values)))
          (cli-layer-values
@@ -572,7 +572,7 @@
                         project-config-path
                         directory-root
                         directory-config-path
-                        environment-values
+                        (environment-values :not-supplied)
                         cli-values
                         cli-arguments)
   (setf *current-config*
@@ -585,7 +585,8 @@
                      :cli-values cli-values
                      :cli-arguments cli-arguments))
   (when (fboundp 'clear-resolved-provider-cache)
-    (clear-resolved-provider-cache)))
+    (clear-resolved-provider-cache))
+  *current-config*)
 
 (defun current-config ()
   (or *current-config*

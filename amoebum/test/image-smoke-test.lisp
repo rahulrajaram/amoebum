@@ -59,9 +59,8 @@
         (second-called nil))
     (amoebum::register-image-post-restore-hook (lambda () (setf second-called t)))
     (amoebum::register-image-pre-save-hook (lambda () (error "hook failure")))
-    ;; Should not error
-    (amoebum::%image-pre-save-cleanup)
-    (is t)))
+    (finishes (amoebum::%image-pre-save-cleanup))
+    (is (null second-called))))
 
 (test image-hook-deduplication
   (let ((amoebum::*image-pre-save-hooks* '()))

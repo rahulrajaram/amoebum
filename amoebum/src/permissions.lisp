@@ -598,10 +598,19 @@
           (t
            prefix))))))
 
+(defun %normalize-drive-letter (path-text)
+  (if (and (stringp path-text)
+           (>= (length path-text) 2)
+           (alpha-char-p (char path-text 0))
+           (char= (char path-text 1) #\:))
+      (concatenate 'string (string (char-downcase (char path-text 0)))
+                   (subseq path-text 1))
+      path-text))
+
 (defun %normalize-path (path &key (resolve-symlinks-p t))
   (let ((raw (%path-string path)))
     (when raw
-      (let* ((trimmed (%trim-path-whitespace raw)))
+      (let* ((trimmed (%normalize-drive-letter (%trim-path-whitespace raw))))
         (when (> (length trimmed) 0)
           (let* ((slash-normalized (%normalize-slashes trimmed))
                  (absolute (%ensure-absolute-path slash-normalized))
@@ -618,7 +627,7 @@
 (defun %normalize-pattern-path (pattern)
   (let ((raw (%path-string pattern)))
     (when raw
-      (let* ((trimmed (%trim-path-whitespace raw)))
+      (let* ((trimmed (%normalize-drive-letter (%trim-path-whitespace raw))))
         (when (> (length trimmed) 0)
           (let ((slash-normalized (%normalize-slashes trimmed)))
             (if (%contains-glob-char-p slash-normalized)
@@ -861,7 +870,7 @@
       (string-trim '(#\Space #\Tab #\Newline #\Return) value)
       ""))
 
-(defun %normalize-command (command)
+(defun %normalize-permission-command (command)
   (let* ((raw (%command-string command))
          (trimmed (%trim-command-whitespace raw)))
     (when (> (length trimmed) 0)
@@ -882,7 +891,7 @@
     (t nil)))
 
 (defun %command-pattern-kind (pattern)
-  (let* ((normalized (%normalize-command pattern))
+  (let* ((normalized (%normalize-permission-command pattern))
          (regex-body (and normalized (%command-regex-body normalized)))
          (length* (and normalized (length normalized))))
     (cond
@@ -980,7 +989,7 @@
       (write-char #\$ stream))))
 
 (defun %command-glob->regex (pattern)
-  (let* ((source (or (%normalize-command pattern) ""))
+  (let* ((source (or (%normalize-permission-command pattern) ""))
          (len (length source)))
     (with-output-to-string (stream)
       (write-char #\^ stream)
@@ -1043,8 +1052,8 @@
 (defun %command-matches-pattern-p (command pattern &key (command-normalized-p nil))
   (let* ((candidate (if command-normalized-p
                         command
-                        (%normalize-command command)))
-         (normalized-pattern (%normalize-command pattern))
+                        (%normalize-permission-command command)))
+         (normalized-pattern (%normalize-permission-command pattern))
          (kind (%command-pattern-kind normalized-pattern)))
     (and candidate
          (case kind
@@ -1125,7 +1134,7 @@
   (setf *permission-rules* nil))
 
 (defun %validate-command-pattern (command-pattern)
-  (let ((normalized (%normalize-command command-pattern)))
+  (let ((normalized (%normalize-permission-command command-pattern)))
     (when normalized
       (let ((kind (%command-pattern-kind normalized)))
         (when (eq kind :regex)
@@ -1165,7 +1174,7 @@
 
 (defun evaluate-command-permission (&key tool command path (rules *permission-rules*))
   (let ((best nil)
-        (normalized-command (%normalize-command command))
+        (normalized-command (%normalize-permission-command command))
         (normalized-path (and path (%normalize-path path))))
     (when normalized-command
       (dolist (rule rules)
@@ -1343,9 +1352,19 @@
          (normalized-path (%normalize-path path))
          (canonical-command (canonicalize-permission-command command))
          (policy-command-text
-           (or (and canonical-command (command-canonical-form-policy-key canonical-command))
-               (and canonical-command (command-canonical-form-normalized canonical-command))
-               (%command-string command)))
+           (let* ((policy-key (and canonical-command
+                                   (command-canonical-form-policy-key canonical-command)))
+                  (normalized (and canonical-command
+                                   (command-canonical-form-normalized canonical-command)))
+                  (separator-p (and normalized
+                                    (or (search "|" normalized)
+                                        (search ";" normalized)
+                                        (search "&&" normalized)))))
+             (cond
+               (separator-p normalized)
+               (policy-key policy-key)
+               (normalized normalized)
+               (t (%command-string command)))))
          (mcp-server-name (%mcp-tool-server-name tool-name))
          (mcp-decision (and mcp-server-name
                             (or (%mcp-server-config-decision mcp-server-name)

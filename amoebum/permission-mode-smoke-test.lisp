@@ -97,6 +97,7 @@
                 (funcall load-config-fn
                          :project-root default-root
                          :global-config-path missing-global-config
+                         :directory-root default-root
                          :environment-values '())))
           (assert-true (eq (funcall config-permission-mode-fn default-cfg) :supervised)
                        "Expected clean-project default permission mode :supervised, got ~S."
@@ -108,6 +109,7 @@
                 (funcall load-config-fn
                          :project-root project-root
                          :global-config-path missing-global-config
+                         :directory-root project-root
                          :environment-values '())))
           (assert-true (eq (funcall config-permission-mode-fn project-cfg) :auto-edit)
                        "Expected project config override to set :auto-edit, got ~S."
@@ -118,6 +120,7 @@
                 (funcall load-config-fn
                          :project-root project-root
                          :global-config-path missing-global-config
+                         :directory-root project-root
                          :environment-values '()
                          :cli-arguments '("--permission-mode" "full-auto"))))
           (assert-true (eq (funcall config-permission-mode-fn cli-cfg) :full-auto)
@@ -131,6 +134,7 @@
         (funcall reload-config-fn
                  :project-root project-root
                  :global-config-path missing-global-config
+                 :directory-root project-root
                  :environment-values '())
         (multiple-value-bind (handledp result)
             (funcall dispatch-slash-command-fn "/mode full-auto")
