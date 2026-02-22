@@ -265,13 +265,15 @@
 (defun %context-effective-permission-mode (context)
   (%effective-permission-mode (context-permission-mode context)))
 
-(defun %publish-permission-prompted (context tool-name arguments decision)
+(defun %publish-permission-prompted (context tool-name arguments decision
+                                   &optional reason-code)
   (publish (%effective-event-bus context)
            (make-permission-prompted-event
             :tool-name tool-name
             :path (%coerce-path-string (%extract-path-argument arguments))
             :command (%coerce-command-string (%extract-command-argument arguments))
             :reason (format nil "permission decision ~A" decision)
+            :reason-code reason-code
             :permission-mode (%context-effective-permission-mode context))))
 
 (defun %check-permission-or-signal (tool-name arguments context)
@@ -414,7 +416,7 @@
          (*pipeline-start-time-ms* nil)
          (*pipeline-current-result* nil)
          (timeout-seconds (%metadata-timeout-seconds *pipeline-current-tool-name*)))
-    (restart-case
+(restart-case
         (handler-case
             #+sbcl
             (if (and timeout-seconds (> timeout-seconds 0))
@@ -431,10 +433,11 @@
                                          timeout-seconds))
                    (elapsed-ms (%elapsed-milliseconds)))
               (%record-tool-metrics context *pipeline-current-tool-name* elapsed-ms :error)
-              (publish (%effective-event-bus context)
+                     (publish (%effective-event-bus context)
                        (make-tool-error-event
                         :tool-name *pipeline-current-tool-name*
                         :args *pipeline-current-arguments*
+                        :condition-reason-code (tool-error-reason-code tool-error)
                         :condition (princ-to-string tool-error)
                         :elapsed-ms elapsed-ms
                         :request-id *pipeline-current-request-id*))

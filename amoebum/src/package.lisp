@@ -99,6 +99,12 @@
            #:tool-error-payload
            #:tool-error-payload-p
            #:make-tool-error-payload
+           #:tool-error-payload-tool-name
+           #:tool-error-payload-args
+           #:tool-error-payload-condition
+           #:tool-error-payload-condition-reason-code
+           #:tool-error-payload-elapsed-ms
+           #:tool-error-payload-request-id
            #:tool-redefined-payload
            #:tool-redefined-payload-p
            #:make-tool-redefined-payload
@@ -115,6 +121,12 @@
            #:permission-prompted-payload
            #:permission-prompted-payload-p
            #:make-permission-prompted-payload
+           #:permission-prompted-payload-tool-name
+           #:permission-prompted-payload-path
+           #:permission-prompted-payload-command
+           #:permission-prompted-payload-reason
+           #:permission-prompted-payload-reason-code
+           #:permission-prompted-payload-permission-mode
            #:memory-updated-payload
            #:memory-updated-payload-p
            #:make-memory-updated-payload
@@ -699,6 +711,7 @@
            #:tool-error-arguments
            #:tool-error-cause
            #:tool-error-reason
+           #:tool-error-reason-code
            #:tool-execution-error
            #:tool-timeout
            #:tool-timeout-seconds

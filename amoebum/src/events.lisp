@@ -88,10 +88,12 @@
 
 (defstruct (tool-error-payload
             (:constructor make-tool-error-payload
-                (&key tool-name args condition elapsed-ms request-id)))
+                (&key tool-name args condition condition-reason-code
+                       elapsed-ms request-id)))
   tool-name
   args
   condition
+  (condition-reason-code nil :type (or null keyword))
   elapsed-ms
   request-id)
 
@@ -112,12 +114,13 @@
 
 (defstruct (permission-prompted-payload
             (:constructor make-permission-prompted-payload
-                (&key tool-name path command reason permission-mode)))
+                (&key tool-name path command reason permission-mode reason-code)))
   tool-name
   path
   command
   reason
-  permission-mode)
+  permission-mode
+  reason-code)
 
 (defstruct (memory-updated-payload
             (:constructor make-memory-updated-payload
@@ -461,7 +464,8 @@
                         :elapsed-ms elapsed-ms
                         :request-id request-id)))
 
-(defun make-tool-error-event (&key tool-name args condition elapsed-ms request-id)
+(defun make-tool-error-event (&key tool-name args condition elapsed-ms request-id
+                               condition-reason-code)
   (make-event :type +event-type-tool-error+
               :source :amoebum
               :severity :error
@@ -469,6 +473,7 @@
                         :tool-name tool-name
                         :args args
                         :condition condition
+                        :condition-reason-code condition-reason-code
                         :elapsed-ms elapsed-ms
                         :request-id request-id)))
 
@@ -491,7 +496,8 @@
                         :old-value old-value
                         :new-value new-value)))
 
-(defun make-permission-prompted-event (&key tool-name path command reason permission-mode)
+(defun make-permission-prompted-event (&key tool-name path command reason permission-mode
+                                         reason-code)
   (make-event :type +event-type-permission-prompted+
               :source :amoebum
               :severity :warning
@@ -500,6 +506,7 @@
                         :path path
                         :command command
                         :reason reason
+                        :reason-code reason-code
                         :permission-mode permission-mode)))
 
 (defun make-memory-updated-event (&key backend operation key value)

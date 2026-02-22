@@ -22,6 +22,9 @@
    (arguments :initarg :arguments
               :initform nil
               :reader tool-error-arguments)
+   (reason-code :initarg :reason-code
+               :initform nil
+               :reader tool-error-reason-code)
    (cause :initarg :cause
           :initform nil
           :reader tool-error-cause)

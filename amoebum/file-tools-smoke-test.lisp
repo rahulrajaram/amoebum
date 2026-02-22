@@ -43,6 +43,7 @@
          (toolset-sym (funcall symbol-in "*TOOLSET*" amoebum-pkg))
          (pdf-text-extractor-sym (funcall symbol-in "*PDF-TEXT-EXTRACTOR*" amoebum-pkg))
          (tool-argument-error-sym (funcall symbol-in "TOOL-ARGUMENT-ERROR" amoebum-pkg))
+         (tool-error-reason-code-fn (funcall symbol-in "TOOL-ERROR-REASON-CODE" amoebum-pkg))
          (file-read-snapshots-sym (funcall symbol-in "*FILE-READ-SNAPSHOTS*" amoebum-pkg))
          (syntax-validator-runner-sym
            (funcall symbol-in "*EDIT-FILE-SYNTAX-VALIDATOR-RUNNER*" amoebum-pkg))
@@ -88,6 +89,7 @@
              (unread-edit-target (merge-pathnames #P"out/unread-edit-target.txt" tmp-root))
              (edit-target (merge-pathnames #P"out/edit-target.txt" tmp-root))
              (conflict-target (merge-pathnames #P"out/conflict-target.txt" tmp-root))
+             (stale-write-target (merge-pathnames #P"out/stale-write-target.txt" tmp-root))
              (syntax-target (merge-pathnames #P"out/syntax-target.txt" tmp-root))
              (deny-target (merge-pathnames #P"blocked/deny.txt" tmp-root)))
         (ensure-directories-exist read-source)
@@ -169,6 +171,9 @@
             (condition (condition)
               (when (typep condition tool-argument-error-sym)
                 (setf saw-read-before-edit-gate t)
+                (assert-true (eq (funcall tool-error-reason-code-fn condition)
+                                 :read-provenance-required)
+                            "Expected unread edit-file to report read-provenance-required.")
                 (assert-true
                  (contains-substring-p
                   "read-file is required before edit-file"
@@ -207,14 +212,35 @@
           (write-line "one" stream)
           (write-line "two" stream)
           (write-line "three" stream))
-        (let ((conflict-result (invoke-tool "edit-file"
-                                            "path" (namestring conflict-target)
-                                            "old-string" "two"
-                                            "new-string" "TWO")))
-          (assert-true (eq (getf conflict-result :conflict-detected) t)
-                       "Expected conflict detection when file changed between read and edit.")
+        (let ((saw-stale-edit-gate nil))
+          (handler-case
+              (invoke-tool "edit-file"
+                           "path" (namestring conflict-target)
+                           "old-string" "two"
+                           "new-string" "TWO")
+            (condition (condition)
+              (when (typep condition tool-argument-error-sym)
+                (setf saw-stale-edit-gate t)
+                (assert-true (eq (funcall tool-error-reason-code-fn condition)
+                                 :stale-content)
+                            "Expected stale-file edit failure to report stale-content.")
+                (assert-true
+                 (contains-substring-p
+                  "changed on disk after last read"
+                  (princ-to-string condition))
+                 "Expected stale-file edit failure to include stale-message."))))
+          (assert-true saw-stale-edit-gate
+                       "Expected stale-content edit to fail before applying replacement."))
+
+        (let ((forced-edit-result (invoke-tool "edit-file"
+                                              "path" (namestring conflict-target)
+                                              "old-string" "two"
+                                              "new-string" "TWO"
+                                              "force" t)))
+          (assert-true (eq (getf forced-edit-result :conflict-detected) t)
+                       "Expected edit-file force to proceed with stale-content warning.")
           (assert-true
-           (let ((warnings (getf conflict-result :warnings)))
+           (let ((warnings (getf forced-edit-result :warnings)))
              (and (listp warnings)
                   (some (lambda (warning)
                           (and (stringp warning)
@@ -222,7 +248,40 @@
                                 "changed on disk since the last read"
                                 warning)))
                         warnings)))
-           "Expected edit-file conflict result to include a warning message."))
+           "Expected forced edit result to include a stale-content warning message."))
+
+        (invoke-tool "write-file"
+                     "path" (namestring stale-write-target)
+                     "content" (format nil "one~%two~%"))
+        (invoke-tool "read-file"
+                     "path" (namestring stale-write-target))
+        (with-open-file (stream stale-write-target
+                                :direction :output
+                                :if-exists :supersede
+                                :if-does-not-exist :create
+                                :external-format :utf-8)
+          (write-line "one" stream)
+          (write-line "changed" stream))
+        (let ((saw-stale-write-gate nil))
+          (handler-case
+              (invoke-tool "write-file"
+                           "path" (namestring stale-write-target)
+                           "content" (format nil "one~%two~%three~%"))
+            (condition (condition)
+              (when (typep condition tool-argument-error-sym)
+                (setf saw-stale-write-gate t)
+                (assert-true (eq (funcall tool-error-reason-code-fn condition)
+                                 :stale-content)
+                            "Expected stale-content write failure to report stale-content."))))
+          (assert-true saw-stale-write-gate
+                       "Expected stale-content write to fail before overwrite."))
+
+        (let ((forced-write-result (invoke-tool "write-file"
+                                                "path" (namestring stale-write-target)
+                                                "content" (format nil "one~%two~%three~%")
+                                                "force" t)))
+          (assert-true (eq (getf forced-write-result :conflict-detected) t)
+                       "Expected write-file force to proceed with stale-content warning."))
 
         (let ((original-validator-runner (symbol-value syntax-validator-runner-sym))
               (captured-command nil))
@@ -326,4 +385,4 @@
                        "Expected path deny rule to block write-file execution.")))))
 
   (format t "AMOEBUM_EDIT_SAFETY_SMOKE_OK~%")
-  (format t "AMOEBUM_FILE_TOOLS_SMOKE_OK~%"))
+(format t "AMOEBUM_FILE_TOOLS_SMOKE_OK~%"))

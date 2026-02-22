@@ -43,25 +43,61 @@
       (list :write-date (ignore-errors (file-write-date existing))
             :size-bytes (%file-size-bytes existing)))))
 
-(defun %record-file-read-state (path)
+(defun %record-file-read-state (path &optional (provenance :read))
   (let ((key (%canonical-path-key path)))
     (setf (gethash key *file-read-snapshots*)
           (list :path key
                 :snapshot (%capture-file-snapshot path)
+                :provenance provenance
                 :recorded-at (get-universal-time)))
     key))
 
 (defun %file-read-state (path)
   (gethash (%canonical-path-key path) *file-read-snapshots*))
 
-(defun %ensure-file-read-before-edit (path)
-  (or (%file-read-state path)
-      (error 'tool-argument-error
-             :tool-name "edit-file"
-             :argument-name "path"
-             :message (format nil "File ~A must be read with read-file before edit-file."
-                              (%path-text path))
-             :reason "read-file is required before edit-file for file safety.")))
+(defun %require-file-read-provenance (path tool-name force)
+  (if force
+      (%file-read-state path)
+      (or (%file-read-state path)
+          (error 'tool-argument-error
+                 :tool-name tool-name
+                 :argument-name "path"
+                 :message (format nil "File ~A must be read with read-file before ~A."
+                                  (%path-text path) tool-name)
+                 :reason (format nil "read-file is required before ~A for file safety."
+                                 tool-name)
+                 :reason-code :read-provenance-required))))
+
+(defun %require-file-edit-provenance (path tool-name force)
+  (if force
+      (%file-read-state path)
+      (let ((state (%file-read-state path)))
+        (unless (and (consp state)
+                     (member (getf state :provenance) '(:read :edit) :test #'eq))
+          (error 'tool-argument-error
+                 :tool-name tool-name
+                 :argument-name "path"
+                 :message (format nil "File ~A must be read with read-file before ~A."
+                                  (%path-text path) tool-name)
+                 :reason (format nil "read-file is required before ~A for file safety."
+                                 tool-name)
+                 :reason-code :read-provenance-required))
+        state)))
+
+(defun %check-file-stale-read-provenance (path tool-name read-state force)
+  (let ((snapshot-at-read (getf read-state :snapshot))
+        (current-snapshot (%capture-file-snapshot path)))
+    (if (%file-snapshot-equal-p snapshot-at-read current-snapshot)
+        '()
+        (if force
+            (list (%edit-conflict-warning path))
+            (error 'tool-argument-error
+                   :tool-name tool-name
+                   :argument-name "path"
+                   :message (format nil "File ~A changed on disk after last read."
+                                    (%path-text path))
+                   :reason "file changed on disk after last read"
+                   :reason-code :stale-content)))))
 
 (defun %file-snapshot-equal-p (left right)
   (and (eql (getf left :write-date) (getf right :write-date))
@@ -610,51 +646,79 @@
     (%record-file-read-state path)
     content))
 
+(defun %write-file-result (path content force)
+  (let ((path-text (%path-text path)))
+    (let ((warnings '())
+          (read-state (when (probe-file path-text)
+                        (%require-file-read-provenance path-text "write-file" force))))
+      (when read-state
+        (let ((stale-warning
+               (first (%check-file-stale-read-provenance path-text
+                                                        "write-file"
+                                                        read-state
+                                                        force))))
+          (when stale-warning
+            (push stale-warning warnings))))
+      (let ((conflict-detected (and read-state (not (null warnings)))))
+        (let ((result (list :path path-text
+                            :bytes (length content)
+                            :written t
+                            :conflict-detected conflict-detected)))
+          (when warnings
+            (setf result (append result (list :warnings (nreverse warnings)))))
+          (%write-file-string path content)
+          (%record-file-read-state path :write)
+          result)))))
+
 (deftool write-file ((path pathname :description "Absolute path to write" :required t)
-                     (content string :description "Complete file content" :required t))
+                     (content string :description "Complete file content" :required t)
+                     (force boolean :description "Skip read-provenance checks" :default nil))
   "Create or overwrite a file with the provided content."
   (:permission :auto)
   (:dangerous nil)
   (:category :file-write)
   (:timeout 30)
   (%ensure-tool-path-allowed :write-file path)
-  (%write-file-string path content)
-  (list :path (%path-text path)
-        :bytes (length content)
-        :written t))
+  (%write-file-result path content force))
 
 (deftool edit-file ((path pathname :description "Absolute path to edit" :required t)
                     (old-string string :description "String to replace" :required t)
-                    (new-string string :description "Replacement string" :required t))
+                    (new-string string :description "Replacement string" :required t)
+                    (force boolean :description "Skip read-provenance checks" :default nil))
   "Edit an existing file using exact string replacement."
   (:permission :auto)
   (:dangerous nil)
   (:category :file-edit)
   (:timeout 30)
   (%ensure-tool-path-allowed :edit-file path)
-  (let* ((read-state (%ensure-file-read-before-edit path))
-         (snapshot-at-read (getf read-state :snapshot))
-         (current-snapshot (%capture-file-snapshot path))
-         (conflict-detected (not (%file-snapshot-equal-p snapshot-at-read current-snapshot)))
-         (warnings '()))
-    (when conflict-detected
-      (push (%edit-conflict-warning path) warnings))
+  (let* ((read-state (%require-file-edit-provenance (%path-text path) "edit-file" force))
+         (stale-warnings (if read-state
+                             (%check-file-stale-read-provenance (%path-text path)
+                                                              "edit-file"
+                                                              read-state
+                                                              force)
+                             '()))
+         (conflict-detected (and read-state (plusp (length stale-warnings)))))
     (let ((current (uiop:read-file-string path :external-format :utf-8)))
-    (multiple-value-bind (updated replacements)
-        (%replace-all-literal current old-string new-string)
-      (when (zerop replacements)
-        (error "EDIT-FILE found no match for OLD-STRING in ~A." (%path-text path)))
-      (%write-file-string path updated)
-      (%record-file-read-state path)
-      (multiple-value-bind (syntax-validation syntax-warning)
-          (%maybe-run-post-edit-syntax-validation path)
-        (when syntax-warning
-          (push syntax-warning warnings))
-        (let ((result (list :path (%path-text path)
-                            :replacements replacements
-                            :conflict-detected conflict-detected)))
-          (when warnings
-            (setf result (append result (list :warnings (nreverse warnings)))))
-          (when syntax-validation
-            (setf result (append result (list :syntax-validation syntax-validation))))
-          result))))))
+      (multiple-value-bind (updated replacements)
+          (%replace-all-literal current old-string new-string)
+        (when (zerop replacements)
+          (error "EDIT-FILE found no match for OLD-STRING in ~A." (%path-text path)))
+        (%write-file-string path updated)
+        (%record-file-read-state path :edit)
+        (multiple-value-bind (syntax-validation syntax-warning)
+            (%maybe-run-post-edit-syntax-validation path)
+          (when syntax-warning
+            (push syntax-warning stale-warnings))
+          (let ((result (list :path (%path-text path)
+                              :replacements replacements
+                              :conflict-detected conflict-detected)))
+            (when stale-warnings
+              (setf result
+                      (append result
+                              (list :warnings (nreverse stale-warnings)))))
+            (when syntax-validation
+              (setf result
+                      (append result
+                              (list :syntax-validation syntax-validation))))
+            result))))))
