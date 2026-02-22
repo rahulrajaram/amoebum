@@ -306,3 +306,95 @@
         (signals amoebum:read-orchestration-error
           (amoebum:validate-read-arguments (namestring path) nil "ten" nil))
       (%delete-directory-tree-safe dir))))
+
+;;; --- I148 speculative reads + cache tests ---------------------------------
+
+(test read-orch-cache-hit-miss-accounting
+  "Read orchestration emits hit/miss accounting and invalidates on turn/file changes."
+  (let* ((dir (%make-read-test-dir))
+         (path (%write-read-test-file dir "cache.txt" "first"))
+         (bus (amoebum:make-event-bus :capacity 64))
+         (original-rules amoebum:*permission-rules*))
+    (unwind-protect
+        (progn
+          (setf amoebum:*permission-rules* nil)
+          (amoebum:add-permission-rule :effect :allow
+                                       :path (namestring dir)
+                                       :tool :read-file)
+          (amoebum:clear-read-orchestration-cache)
+          ;; first read: miss
+          (let ((first (amoebum:orchestrate-read (namestring path)
+                                                 :turn-id "turn-1"
+                                                 :event-bus bus)))
+            (is (search "first" first)))
+          ;; second read same turn: hit
+          (let ((second (amoebum:orchestrate-read (namestring path)
+                                                  :turn-id "turn-1"
+                                                  :event-bus bus)))
+            (is (search "first" second)))
+          ;; file update should invalidate old signature cache and miss.
+          (%write-read-test-file dir "cache.txt" "second")
+          (let ((third (amoebum:orchestrate-read (namestring path)
+                                                 :turn-id "turn-1"
+                                                 :event-bus bus)))
+            (is (search "second" third)))
+          ;; turn change should clear per-turn cache and produce miss.
+          (let ((fourth (amoebum:orchestrate-read (namestring path)
+                                                  :turn-id "turn-2"
+                                                  :event-bus bus)))
+            (is (search "second" fourth)))
+          (let* ((events (remove-if-not
+                          (lambda (event)
+                            (eq (amoebum:event-type event)
+                                amoebum:+event-type-read-orchestration-cache+))
+                          (amoebum:event-history bus)))
+                 (last-event (car (last events)))
+                 (payload (and last-event (amoebum:event-payload last-event)))
+                 (metrics (amoebum:read-orchestration-cache-metrics)))
+            (is (= 4 (length events)))
+            (is (equal "turn-2" (getf payload :turn-id)))
+            (is (= 1 (getf payload :cache-miss-count)))
+            (is (>= (getf metrics :hits 0) 1))
+            (is (>= (getf metrics :misses 0) 3))))
+      (setf amoebum:*permission-rules* original-rules)
+      (amoebum:clear-read-orchestration-cache)
+      (%delete-directory-tree-safe dir))))
+
+(test read-orch-speculative-reads-deterministic
+  "Speculative reads choose the first successful candidate in provided order."
+  (let* ((dir (%make-read-test-dir))
+         (primary (merge-pathnames "missing.txt" dir))
+         (secondary (%write-read-test-file dir "secondary.txt" "secondary-choice"))
+         (tertiary (%write-read-test-file dir "tertiary.txt" "tertiary-choice"))
+         (bus (amoebum:make-event-bus :capacity 64))
+         (original-rules amoebum:*permission-rules*))
+    (unwind-protect
+        (progn
+          (setf amoebum:*permission-rules* nil)
+          (amoebum:add-permission-rule :effect :allow
+                                       :path (namestring dir)
+                                       :tool :read-file)
+          (amoebum:clear-read-orchestration-cache)
+          (loop repeat 3 do
+                (let ((result (amoebum:orchestrate-read (namestring primary)
+                                                        :candidate-paths (list (namestring primary)
+                                                                               (namestring secondary)
+                                                                               (namestring tertiary))
+                                                        :turn-id "spec-turn"
+                                                        :event-bus bus)))
+                  (is (search "secondary-choice" result))
+                  (is (not (search "tertiary-choice" result)))))
+          (let* ((events (remove-if-not
+                          (lambda (event)
+                            (eq (amoebum:event-type event)
+                                amoebum:+event-type-read-orchestration-cache+))
+                          (amoebum:event-history bus)))
+                 (last-event (car (last events)))
+                 (payload (and last-event (amoebum:event-payload last-event))))
+            (is (>= (length events) 1))
+            (is (getf payload :speculative-p))
+            (is (= 3 (getf payload :candidate-count)))
+            (is (search "secondary.txt" (or (getf payload :selected-path) "")))))
+      (setf amoebum:*permission-rules* original-rules)
+      (amoebum:clear-read-orchestration-cache)
+      (%delete-directory-tree-safe dir))))

@@ -1221,6 +1221,9 @@
            #:orchestrate-read
            #:orchestrate-read-via-pipeline
            #:format-read-error-for-user
+           #:+event-type-read-orchestration-cache+
+           #:clear-read-orchestration-cache
+           #:read-orchestration-cache-metrics
            #:*read-orchestration-max-line-limit*
            #:*read-orchestration-max-file-size-bytes*
            #:*read-orchestration-supported-extensions*
@@ -1382,6 +1385,9 @@
            #:orchestrate-read
            #:orchestrate-read-via-pipeline
            #:format-read-error-for-user
+           #:+event-type-read-orchestration-cache+
+           #:clear-read-orchestration-cache
+           #:read-orchestration-cache-metrics
            #:*read-orchestration-max-line-limit*
            #:*read-orchestration-max-file-size-bytes*
            #:*read-orchestration-supported-extensions*))
