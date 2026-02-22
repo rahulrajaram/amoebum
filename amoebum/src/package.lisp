@@ -905,6 +905,10 @@
            #:command-canonical-form-operators
            #:command-canonical-form-wrappers
            #:command-canonical-form-commands
+           #:command-canonical-form-ast
+           #:command-canonical-form-operator-metadata
+           #:command-canonical-form-canonical-signature
+           #:command-canonical-form-dangerous-reason-codes
            #:path-approval-entry
            #:path-approval-entry-p
            #:make-path-approval-entry
@@ -921,6 +925,7 @@
            #:clear-permission-rules
            #:add-permission-rule
            #:canonicalize-permission-command
+           #:command-canonicalization-trace
            #:normalize-permission-path
            #:evaluate-path-permission
            #:evaluate-command-permission
