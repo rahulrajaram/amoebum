@@ -554,7 +554,7 @@
          :echo-input-p t
          :output "Confirm clear with /clear --yes."))))
 
-(defun %history-normalize-role (value)
+(defun %commands-history-normalize-role (value)
   (let ((normalized
           (string-downcase
            (cond
@@ -605,7 +605,7 @@
                  (string-equal token "-r"))
              (let ((value (consume-option-value "role")))
                (when value
-                 (let ((normalized (%history-normalize-role value)))
+                 (let ((normalized (%commands-history-normalize-role value)))
                    (if normalized
                        (setf role normalized)
                        (push (format nil "Invalid role ~S." value) errors))))))
@@ -648,7 +648,7 @@
                  (%history-token-key-value token)
                (cond
                  ((and key (string= key "role"))
-                  (let ((normalized (%history-normalize-role value)))
+                  (let ((normalized (%commands-history-normalize-role value)))
                     (if normalized
                         (setf role normalized)
                         (push (format nil "Invalid role ~S." value) errors))))

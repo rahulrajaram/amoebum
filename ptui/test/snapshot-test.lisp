@@ -47,7 +47,8 @@
 ;;; --- Test backend ---
 
 (test test-backend-creation
-  (ptui.test-support.harness:with-test-terminal (:cols 40 :rows 10)
+  (ptui.test-support.harness:with-test-terminal
+      (:cols 40 :rows 10 :backend-var backend :buffer-var buffer)
     (is (not (null backend)))
     (is (not (null buffer)))
     (let ((size (ptui.backend.protocol:backend-size backend)))
@@ -55,7 +56,8 @@
       (is (= 10 (ptui.core.types:size-rows size))))))
 
 (test test-backend-event-injection
-  (ptui.test-support.harness:with-test-terminal (:cols 20 :rows 5)
+  (ptui.test-support.harness:with-test-terminal
+      (:cols 20 :rows 5 :backend-var backend :buffer-var buffer)
     (is (null (ptui.backend.protocol:backend-poll-events backend)))
     (ptui.backend.test:test-backend-inject-events
      backend

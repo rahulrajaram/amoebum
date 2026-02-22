@@ -111,7 +111,7 @@
                    (string-trim '(#\Space #\Tab #\Newline #\Return) value))))
     (and text (plusp (length text)) text)))
 
-(defun %shell-single-quote (text)
+(defun %notify-shell-single-quote (text)
   (format nil "'~A'"
           (with-output-to-string (out)
             (loop for char across (or text "") do
@@ -127,7 +127,7 @@
             (uiop:run-program
              (list "sh" "-lc"
                    (format nil "command -v ~A >/dev/null 2>&1"
-                           (%shell-single-quote safe-command)))
+                           (%notify-shell-single-quote safe-command)))
              :ignore-error-status t
              :output :string
              :error-output :string)
@@ -152,7 +152,7 @@
           :stdout (or stdout "")
           :stderr (or stderr ""))))
 
-(defun %normalize-command-result (result)
+(defun %notify-normalize-command-result (result)
   (if (listp result)
       (list :exit-code (or (getf result :exit-code) 1)
             :stdout (or (getf result :stdout) "")
@@ -162,7 +162,7 @@
             :stderr (princ-to-string result))))
 
 (defun notification-run-command (arguments)
-  (%normalize-command-result
+  (%notify-normalize-command-result
    (funcall (or *notification-command-runner*
                 #'default-notification-command-runner)
             arguments)))

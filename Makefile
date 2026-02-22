@@ -15,21 +15,27 @@ test:
 
 test-ptui:
 	sbcl --noinform --non-interactive \
-	  --eval "(load \"$(abspath $(REPO_ROOT)/$(QUICKLISP_SETUP))\")" \
-	--eval "(require :asdf)" \
-	  --eval "(asdf:load-asd (truename \"$(REPO_ROOT)/ptui/ptui.asd\"))" \
-	  --eval "(asdf:load-system :ptui/tests)" \
-	  --eval "(asdf:test-system :ptui/tests)"
+	  --eval "(require :asdf)" \
+	  --eval "(let ((*compile-verbose* nil) (*load-verbose* nil)) \
+                     (handler-bind ((warning (lambda (c) (muffle-warning c)))) \
+                       (load \"$(abspath $(REPO_ROOT)/$(QUICKLISP_SETUP))\") \
+                       (setf asdf:*compile-file-warnings-behaviour* :ignore) \
+                       (asdf:load-asd (truename \"$(REPO_ROOT)/ptui/ptui.asd\")) \
+                       (asdf:load-system :ptui/tests) \
+                       (asdf:test-system :ptui/tests)))"
 
 test-amoebum:
 	sbcl --noinform --non-interactive \
-	  --eval "(load \"$(abspath $(REPO_ROOT)/$(QUICKLISP_SETUP))\")" \
 	  --eval "(require :asdf)" \
-	  --eval "(asdf:load-asd (truename \"$(REPO_ROOT)/pseudopod/pseudopod.asd\"))" \
-	  --eval "(asdf:load-asd (truename \"$(REPO_ROOT)/sw4rm-sdk/sw4rm-sdk.asd\"))" \
-	  --eval "(asdf:load-asd (truename \"$(REPO_ROOT)/ptui/ptui.asd\"))" \
-	  --eval "(asdf:load-asd (truename \"$(REPO_ROOT)/amoebum/amoebum.asd\"))" \
-	  --eval "(asdf:test-system :amoebum/test)"
+	  --eval "(let ((*compile-verbose* nil) (*load-verbose* nil)) \
+                     (handler-bind ((warning (lambda (c) (muffle-warning c)))) \
+                       (load \"$(abspath $(REPO_ROOT)/$(QUICKLISP_SETUP))\") \
+                       (setf asdf:*compile-file-warnings-behaviour* :ignore) \
+                       (asdf:load-asd (truename \"$(REPO_ROOT)/pseudopod/pseudopod.asd\")) \
+                       (asdf:load-asd (truename \"$(REPO_ROOT)/sw4rm-sdk/sw4rm-sdk.asd\")) \
+                       (asdf:load-asd (truename \"$(REPO_ROOT)/ptui/ptui.asd\")) \
+                       (asdf:load-asd (truename \"$(REPO_ROOT)/amoebum/amoebum.asd\")) \
+                       (asdf:test-system :amoebum/test)))"
 
 check-dist-ignore:
 	bash ./bin/check-dist-ignore.sh

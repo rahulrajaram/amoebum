@@ -40,14 +40,14 @@
        (ignore-errors
         (%normalize-keyword value "PERMISSION-MODE"))))
 
-(defun %normalize-tool-name (value)
+(defun %event-normalize-tool-name (value)
   (when value
     (string-downcase
      (typecase value
        (string value)
        (symbol (symbol-name value))
        (character (string value))
-       (t (return-from %normalize-tool-name nil))))))
+       (t (return-from %event-normalize-tool-name nil))))))
 
 (defun filter-by-type (type)
   (let ((types (%normalize-filter-values type #'%normalize-event-type)))
@@ -170,11 +170,11 @@
         (%payload-permission-mode payload))))
 
 (defun filter-by-tool (tool-name)
-  (let ((expected (%normalize-tool-name tool-name)))
+  (let ((expected (%event-normalize-tool-name tool-name)))
     (if (null expected)
         +filter-reject-all+
         (lambda (event)
-          (let ((candidate (%normalize-tool-name (%event-tool-name event))))
+          (let ((candidate (%event-normalize-tool-name (%event-tool-name event))))
             (and candidate
                  (string= candidate expected)))))))
 
@@ -285,15 +285,15 @@
            `(funcall (filter-by-source ,value) ,event-sym)))
       ((eq key :tool)
        (if (constantp value env)
-           (let ((choices (%normalize-filter-values (eval value) #'%normalize-tool-name)))
+           (let ((choices (%normalize-filter-values (eval value) #'%event-normalize-tool-name)))
              (cond
                ((null choices) nil)
                ((null (cdr choices))
-                `(let ((tool-name (%normalize-tool-name (%event-tool-name ,event-sym))))
+                `(let ((tool-name (%event-normalize-tool-name (%event-tool-name ,event-sym))))
                    (and tool-name
                         (string= tool-name ,(car choices)))))
                (t
-                `(let ((tool-name (%normalize-tool-name (%event-tool-name ,event-sym))))
+                `(let ((tool-name (%event-normalize-tool-name (%event-tool-name ,event-sym))))
                    (and tool-name
                         (member tool-name ',choices :test #'string=))))))
            `(funcall (filter-by-tool ,value) ,event-sym)))

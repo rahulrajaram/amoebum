@@ -81,7 +81,7 @@
       :read-file
       :write-file))
 
-(defun %file-size-bytes (path)
+(defun %sandbox-file-size-bytes (path)
   (handler-case
       (with-open-file (stream path
                               :direction :input
@@ -106,7 +106,7 @@
 (defun %assert-max-read-size (path max-read-size)
   (let ((existing (probe-file path)))
     (when existing
-      (let ((size-bytes (%file-size-bytes existing)))
+      (let ((size-bytes (%sandbox-file-size-bytes existing)))
         (when (and (integerp size-bytes)
                    (> size-bytes max-read-size))
           (error 'sandbox-read-size-exceeded
@@ -174,7 +174,7 @@
   (and (not (sandbox-danger-full-access-p cfg))
        (not (eq (sandbox-policy cfg) :off))))
 
-(defun %argument-key-candidates (key-name)
+(defun %sandbox-argument-key-candidates (key-name)
   (let* ((raw (if (symbolp key-name)
                   (symbol-name key-name)
                   (princ-to-string key-name)))
@@ -182,9 +182,9 @@
          (upper (string-upcase raw)))
     (list lower upper raw (intern upper :keyword))))
 
-(defun %argument-value (arguments key-name)
+(defun %sandbox-argument-value (arguments key-name)
   (when (hash-table-p arguments)
-    (loop for candidate in (%argument-key-candidates key-name)
+    (loop for candidate in (%sandbox-argument-key-candidates key-name)
           do (multiple-value-bind (value present-p)
                  (gethash candidate arguments)
                (when present-p
@@ -192,15 +192,15 @@
           finally (return nil))))
 
 (defun %sandbox-path-argument (arguments)
-  (or (%argument-value arguments "path")
-      (%argument-value arguments "file")
-      (%argument-value arguments "target")))
+  (or (%sandbox-argument-value arguments "path")
+      (%sandbox-argument-value arguments "file")
+      (%sandbox-argument-value arguments "target")))
 
 (defun %sandbox-command-argument (arguments)
-  (or (%argument-value arguments "command")
-      (%argument-value arguments "cmd")))
+  (or (%sandbox-argument-value arguments "command")
+      (%sandbox-argument-value arguments "cmd")))
 
-(defun %tool-name-string (tool-name)
+(defun %sandbox-tool-name-string (tool-name)
   (string-downcase
    (string-trim '(#\Space #\Tab #\Newline #\Return)
                 (if (symbolp tool-name)
@@ -211,7 +211,7 @@
   '("read-file"))
 
 (defun %sandbox-read-only-tool-blocked-p (tool-name command-text)
-  (let ((tool (%tool-name-string tool-name)))
+  (let ((tool (%sandbox-tool-name-string tool-name)))
     (or (member tool *sandbox-read-only-write-tools* :test #'string=)
         (member tool *sandbox-shell-tools* :test #'string=)
         (and (stringp command-text)
@@ -235,7 +235,7 @@
                                     :path path-text
                                     :permission-mode permission-mode
                                     :rules *permission-rules*)
-        (when (member (%tool-name-string tool-name)
+        (when (member (%sandbox-tool-name-string tool-name)
                       *sandbox-read-guard-tools*
                       :test #'string=)
           (%assert-max-read-size path-text +sandbox-max-read-size+)))

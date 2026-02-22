@@ -83,6 +83,78 @@
                   (plusp (length (string-trim '(#\Space #\Tab #\Newline #\Return) text))))
           collect text))
 
+(defun %string-contains-digits-p (value)
+  (and (stringp value)
+       (loop for char across value
+             thereis (digit-char-p char))))
+
+(defun %extract-first-integer (value)
+  (let* ((text (%safe-plan-string value ""))
+         (length (length text)))
+    (loop with start = nil
+          for index from 0 below length
+          for char = (char text index) do
+            (cond
+              ((digit-char-p char)
+               (unless start
+                 (setf start index)))
+              (start
+               (return (parse-integer text :start start :end index))))
+          finally (when start
+                    (return (parse-integer text :start start :end length))))))
+
+(defun %normalize-dependency-list (depends-on max-index)
+  (let ((result '()))
+    (dolist (entry (or depends-on '()))
+      (let ((index
+              (cond
+                ((integerp entry)
+                 entry)
+                ((and (stringp entry)
+                      (%string-contains-digits-p entry))
+                 (%extract-first-integer entry))
+                ((symbolp entry)
+                 (%extract-first-integer (symbol-name entry)))
+                (t
+                 nil))))
+        (when (and (integerp index)
+                   (>= index 1)
+                   (<= index max-index))
+          (push index result))))
+    (sort (remove-duplicates result :test #'=) #'<)))
+
+(defun %description-references-step-indexes (description max-index)
+  (let ((text (string-downcase (%safe-plan-string description "")))
+        (result '()))
+    (loop for index from 1 to max-index do
+      (let ((token (format nil "step ~D" index)))
+        (when (search token text :test #'char=)
+          (push index result))))
+    (sort (remove-duplicates result :test #'=) #'<)))
+
+(defun %description-sequential-cue-p (description)
+  (let ((text (string-downcase (%safe-plan-string description ""))))
+    (or (search " then " (format nil " ~A " text) :test #'char=)
+        (search " next " (format nil " ~A " text) :test #'char=)
+        (search " after " (format nil " ~A " text) :test #'char=)
+        (search " once " (format nil " ~A " text) :test #'char=)
+        (search " following " (format nil " ~A " text) :test #'char=))))
+
+(defun %infer-step-dependencies (description depends-on next-index)
+  (let* ((max-prior-index (1- next-index))
+         (normalized-explicit (%normalize-dependency-list depends-on max-prior-index))
+         (inferred-by-reference (%description-references-step-indexes description max-prior-index)))
+    (cond
+      (normalized-explicit
+       normalized-explicit)
+      (inferred-by-reference
+       inferred-by-reference)
+      ((and (> next-index 1)
+            (%description-sequential-cue-p description))
+       (list max-prior-index))
+      (t
+       '()))))
+
 (defun current-plan-mode-state ()
   (or *plan-mode-state*
       (setf *plan-mode-state* (%make-plan-mode-state))))
@@ -104,7 +176,9 @@
                           :description (%safe-plan-string description "Describe the step.")
                           :file-paths (%normalize-path-list file-paths)
                           :risk (%normalize-plan-risk risk)
-                          :depends-on (copy-list (or depends-on '())))
+                          :depends-on (%infer-step-dependencies description
+                                                                depends-on
+                                                                next-index))
           (plan-mode-state-steps state))
     (setf (plan-mode-state-steps state)
           (sort (copy-list (plan-mode-state-steps state)) #'< :key #'plan-step-index)))

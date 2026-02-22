@@ -115,7 +115,7 @@
            :constraint "non-empty string"))
   value)
 
-(defun %normalize-capabilities (capabilities)
+(defun %gateway-normalize-capabilities (capabilities)
   "Normalize CAPABILITIES into a unique string list."
   (remove-duplicates
    (loop for capability in capabilities
@@ -125,8 +125,8 @@
 
 (defun %same-capabilities-p (peer-capabilities local-capabilities)
   "Return T when PEER-CAPABILITIES and LOCAL-CAPABILITIES match as sets."
-  (let* ((peer (%normalize-capabilities peer-capabilities))
-         (local (%normalize-capabilities local-capabilities)))
+  (let* ((peer (%gateway-normalize-capabilities peer-capabilities))
+         (local (%gateway-normalize-capabilities local-capabilities)))
     (and (= (length peer) (length local))
          (every (lambda (capability)
                   (member capability peer :test #'string=))
@@ -136,7 +136,7 @@
   "Coerce PEER into a gateway-peer-descriptor."
   (cond
     ((typep peer 'gateway-peer-descriptor)
-     (let ((normalized (%normalize-capabilities
+     (let ((normalized (%gateway-normalize-capabilities
                         (gateway-peer-descriptor-capabilities peer))))
        (setf (gateway-peer-descriptor-capabilities peer) normalized)
        (%require-non-empty-string
@@ -152,7 +152,7 @@
         :registration-type (%normalize-non-negative-integer
                             (getf peer :registration-type)
                             +registration-type-swarm-gateway+)
-        :capabilities (%normalize-capabilities (getf peer :capabilities)))))
+        :capabilities (%gateway-normalize-capabilities (getf peer :capabilities)))))
     (t
      (error 'validation-error
             :message "peer descriptor must be a plist or gateway-peer-descriptor"
@@ -174,7 +174,7 @@
            :constraint "non-negative integer"))
   (make-instance 'peer-selector
                  :local-agent-id local-agent-id
-                 :local-capabilities (%normalize-capabilities local-capabilities)
+                 :local-capabilities (%gateway-normalize-capabilities local-capabilities)
                  :now-ms-fn (or now-ms-fn #'%default-now-ms)
                  :peer-health-fn (or peer-health-fn (lambda (_peer) (declare (ignore _peer)) t))
                  :liveness-threshold-ms liveness-threshold-ms))
@@ -310,7 +310,7 @@
            :field "retry-after-ms"
            :constraint "non-negative integer"))
   (setf (gateway-redirect-emitter-capabilities emitter)
-        (%normalize-capabilities (gateway-redirect-emitter-capabilities emitter)))
+        (%gateway-normalize-capabilities (gateway-redirect-emitter-capabilities emitter)))
   (setf (gateway-redirect-emitter-peer-selector emitter)
         (%make-peer-selector
          :local-agent-id (gateway-redirect-emitter-agent-id emitter)

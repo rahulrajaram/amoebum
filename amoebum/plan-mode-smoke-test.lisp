@@ -52,6 +52,8 @@
          (clear-steps-fn (funcall fn-in "CLEAR-PLAN-MODE-STEPS" amoebum-pkg))
          (add-plan-step-fn (funcall fn-in "ADD-PLAN-STEP" amoebum-pkg))
          (current-plan-state-fn (funcall fn-in "CURRENT-PLAN-MODE-STATE" amoebum-pkg))
+         (plan-mode-steps-fn (funcall fn-in "PLAN-MODE-STATE-STEPS" amoebum-pkg))
+         (plan-step-depends-on-fn (funcall fn-in "PLAN-STEP-DEPENDS-ON" amoebum-pkg))
          (plan-output-path-fn (funcall fn-in "PLAN-MODE-STATE-LAST-OUTPUT-PATH" amoebum-pkg))
          (make-context-fn (funcall fn-in "MAKE-AMOEBUM-CONTEXT" amoebum-pkg))
          (execute-tool-fn (funcall fn-in "EXECUTE-TOOL" amoebum-pkg))
@@ -149,6 +151,10 @@
                                  "amoebum/src/commands.lisp")
                :risk :low)
       (funcall add-plan-step-fn
+               "Then update command parsing after step 1."
+               :file-paths (list "amoebum/src/commands.lisp")
+               :risk :medium)
+      (funcall add-plan-step-fn
                "Assess integration boundary risk."
                :file-paths (list "amoebum/src/system-prompt.lisp")
                :risk "HIGH")
@@ -156,6 +162,15 @@
                "Document rollout checklist."
                :file-paths (list "IMPLEMENTATION_PLAN.md")
                :risk :unknown)
+      (let* ((plan-state (funcall current-plan-state-fn))
+             (steps (funcall plan-mode-steps-fn plan-state))
+             (second-step (second steps)))
+        (assert-true (>= (length steps) 2)
+                     "Expected at least two captured plan steps before plan mode exit, got ~D."
+                     (length steps))
+        (assert-true (equal '(1) (funcall plan-step-depends-on-fn second-step))
+                     "Expected second step dependencies to infer '(1), got ~S."
+                     (funcall plan-step-depends-on-fn second-step)))
 
       (let* ((tmp-root
                (funcall ensure-directory-pathname-fn
@@ -236,6 +251,9 @@
                      output-text)
         (assert-true (contains-text-p output-text "risk: medium")
                      "Expected unknown risk input to default to medium annotation, got ~S."
+                     output-text)
+        (assert-true (contains-text-p output-text "depends_on: 1")
+                     "Expected plan output to include inferred dependency annotation, got ~S."
                      output-text))
 
       (funcall setconfig-fn :plan-mode nil)

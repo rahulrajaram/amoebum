@@ -22,14 +22,79 @@ fi
 
 mkdir -p "${DIST_DIR}"
 
+binary_size_bytes() {
+  local path="$1"
+  wc -c <"${path}" | tr -d '[:space:]'
+}
+
+strip_binary() {
+  local path="$1"
+  if ! command -v strip >/dev/null 2>&1; then
+    echo "WARN: strip not found; skipping symbol stripping." >&2
+    return 0
+  fi
+  if strip --strip-unneeded "${path}" >/dev/null 2>&1; then
+    return 0
+  fi
+  if strip -x "${path}" >/dev/null 2>&1; then
+    return 0
+  fi
+  if strip "${path}" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "WARN: strip failed for ${path}; leaving binary unmodified." >&2
+  return 0
+}
+
+compress_binary_upx() {
+  local path="$1"
+  if ! command -v upx >/dev/null 2>&1; then
+    echo "WARN: upx not found; skipping binary compression." >&2
+    return 0
+  fi
+  if ! upx --best --lzma "${path}" >/dev/null 2>&1; then
+    echo "WARN: upx compression failed for ${path}; leaving binary unmodified." >&2
+  fi
+}
+
+BINARY_PATH="${DIST_DIR}/amoebum"
+ENABLE_STRIP="${AMOEBUM_STRIP_BINARY:-1}"
+ENABLE_UPX="${AMOEBUM_UPX:-0}"
+
 echo "Building amoebum binary..."
 sbcl --noinform --non-interactive \
-  --eval "(load \"${QUICKLISP_SETUP}\")" \
-  --eval "(asdf:load-asd \"${REPO_ROOT}/ptui/ptui.asd\")" \
-  --eval "(asdf:load-asd \"${REPO_ROOT}/pseudopod/pseudopod.asd\")" \
-  --eval "(asdf:load-asd \"${REPO_ROOT}/sw4rm-sdk/sw4rm-sdk.asd\")" \
-  --eval "(asdf:load-asd \"${REPO_ROOT}/amoebum/amoebum.asd\")" \
-  --eval "(asdf:load-system \"amoebum\")" \
-  --eval "(amoebum:save-amoebum-image :path \"${DIST_DIR}/amoebum\")"
+  --eval "(require :asdf)" \
+  --eval "(let ((*compile-verbose* nil) (*load-verbose* nil)) \
+             (handler-bind ((warning (lambda (c) (muffle-warning c)))) \
+               (load \"${QUICKLISP_SETUP}\") \
+               (setf asdf:*compile-file-warnings-behaviour* :ignore) \
+               (asdf:load-asd \"${REPO_ROOT}/ptui/ptui.asd\") \
+               (asdf:load-asd \"${REPO_ROOT}/pseudopod/pseudopod.asd\") \
+               (asdf:load-asd \"${REPO_ROOT}/sw4rm-sdk/sw4rm-sdk.asd\") \
+               (asdf:load-asd \"${REPO_ROOT}/amoebum/amoebum.asd\") \
+               (asdf:load-system \"amoebum\") \
+               (funcall (symbol-function (find-symbol \"SAVE-AMOEBUM-IMAGE\" \"AMOEBUM\")) \
+                        :path \"${BINARY_PATH}\")))"
 
-echo "Binary saved to ${DIST_DIR}/amoebum"
+if [[ ! -f "${BINARY_PATH}" ]]; then
+  echo "ERROR: expected binary not found at ${BINARY_PATH}" >&2
+  exit 1
+fi
+
+before_size="$(binary_size_bytes "${BINARY_PATH}")"
+echo "Binary saved to ${BINARY_PATH} (${before_size} bytes)"
+
+if [[ "${ENABLE_STRIP}" == "1" ]]; then
+  strip_binary "${BINARY_PATH}"
+fi
+
+if [[ "${ENABLE_UPX}" == "1" ]]; then
+  compress_binary_upx "${BINARY_PATH}"
+fi
+
+after_size="$(binary_size_bytes "${BINARY_PATH}")"
+if [[ "${after_size}" != "${before_size}" ]]; then
+  echo "Final binary size: ${after_size} bytes (delta: $((after_size - before_size)) bytes)"
+else
+  echo "Final binary size: ${after_size} bytes"
+fi

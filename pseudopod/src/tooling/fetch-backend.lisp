@@ -36,23 +36,23 @@
   (content-type "" :type string)
   (fetched-at 0 :type integer))
 
-(defun %fetch-trim (value)
+(defun %fetch-backend-trim (value)
   (string-trim '(#\Space #\Tab #\Newline #\Return) (or value "")))
 
-(defun %fetch-empty-string-p (value)
-  (zerop (length (%fetch-trim value))))
+(defun %fetch-backend-empty-string-p (value)
+  (zerop (length (%fetch-backend-trim value))))
 
-(defun %fetch-safe-parse-integer (value &optional (default 0))
+(defun %fetch-backend-safe-parse-integer (value &optional (default 0))
   (handler-case
-      (parse-integer (%fetch-trim value))
+      (parse-integer (%fetch-backend-trim value))
     (error () default)))
 
-(defun %fetch-curl-meta-marker ()
+(defun %fetch-backend-curl-meta-marker ()
   "PSEUDOPOD_FETCH_META:")
 
-(defun %fetch-split-curl-output (text)
+(defun %fetch-backend-split-curl-output (text)
   (let* ((payload (or text ""))
-         (marker (%fetch-curl-meta-marker))
+         (marker (%fetch-backend-curl-meta-marker))
          (position (search marker payload :from-end t :test #'char=)))
     (unless position
       (error "Unable to parse curl metadata marker from output."))
@@ -60,16 +60,16 @@
            (metadata (subseq payload (+ position (length marker))))
            (parts (cl-ppcre:split "\\t" metadata))
            (status-text (or (first parts) "0"))
-           (effective-url (%fetch-trim (or (second parts) "")))
-           (content-type (%fetch-trim (or (third parts) ""))))
+           (effective-url (%fetch-backend-trim (or (second parts) "")))
+           (content-type (%fetch-backend-trim (or (third parts) ""))))
       (values body
-              (%fetch-safe-parse-integer status-text 0)
+              (%fetch-backend-safe-parse-integer status-text 0)
               effective-url
               content-type))))
 
 (defun %default-fetch-http-get (url &key timeout-seconds user-agent)
   (let* ((timeout (max 1 (or timeout-seconds *default-fetch-timeout-seconds*)))
-         (agent (if (%fetch-empty-string-p user-agent)
+         (agent (if (%fetch-backend-empty-string-p user-agent)
                     *default-fetch-user-agent*
                     user-agent))
          (command (list "curl"
@@ -80,7 +80,7 @@
                         "--user-agent" agent
                         "--write-out"
                         (format nil "~A%{http_code}~C%{url_effective}~C%{content_type}"
-                                (%fetch-curl-meta-marker)
+                                (%fetch-backend-curl-meta-marker)
                                 #\Tab
                                 #\Tab)
                         url)))
@@ -96,13 +96,13 @@
                :message (format nil "Fetch HTTP GET failed (~{~A~^ ~}) [exit=~A]: ~A"
                                 command
                                 (or exit-code 0)
-                                (%fetch-trim
-                                 (if (%fetch-empty-string-p stderr) stdout stderr)))))
+                                (%fetch-backend-trim
+                                 (if (%fetch-backend-empty-string-p stderr) stdout stderr)))))
       (multiple-value-bind (body status effective-url content-type)
-          (%fetch-split-curl-output stdout)
+          (%fetch-backend-split-curl-output stdout)
         (list :status status
               :body body
-              :effective-url (if (%fetch-empty-string-p effective-url) url effective-url)
+              :effective-url (if (%fetch-backend-empty-string-p effective-url) url effective-url)
               :content-type content-type)))))
 
 (defun fetch-backend (url &key
@@ -111,9 +111,9 @@
                             http-get-fn)
   "Fetch URL and return a normalized FETCH-RESPONSE struct."
   (check-type url string)
-  (let* ((normalized-url (%fetch-trim url))
+  (let* ((normalized-url (%fetch-backend-trim url))
          (runner (or http-get-fn #'%default-fetch-http-get)))
-    (when (%fetch-empty-string-p normalized-url)
+    (when (%fetch-backend-empty-string-p normalized-url)
       (error 'pseudopod-fetch-error
              :url normalized-url
              :status-code nil
