@@ -219,6 +219,34 @@
                      output-text)
         (assert-true (contains-text-p output-text "Review target implementation files.")
                      "Expected plan output to include captured step, got ~S."
-                     output-text))))
+                     output-text))
+
+      (funcall setconfig-fn :plan-mode nil)
+      (funcall clear-steps-fn)
+      (let ((chat-state (funcall make-chat-ui-state-fn)))
+        (funcall chat-ui-set-input-fn chat-state "/plan on")
+        (funcall handle-input-key-fn chat-state :enter nil)
+        (funcall add-plan-step-fn
+                 "Persist the drafted plan in chat history."
+                 :file-paths (list "amoebum/src/commands.lisp")
+                 :risk :low)
+        (funcall chat-ui-set-input-fn chat-state "/plan off false")
+        (funcall handle-input-key-fn chat-state :enter nil)
+        (assert-true (not (bool-true-p (funcall config-value-fn :plan-mode (funcall current-config-fn))))
+                     "Expected /plan off false to disable plan mode.")
+        (assert-true (null (funcall plan-output-path-fn (funcall current-plan-state-fn)))
+                     "Expected /plan off false to skip plan file output path capture.")
+        (let* ((messages (funcall chat-ui-state-messages-fn chat-state))
+               (captured
+                 (loop for message in messages
+                       thereis (and (string= (message-role message) "system")
+                                    (contains-text-p (message-text message) "Plan captured in conversation")
+                                    (contains-text-p (message-text message) "# Amoebum Plan")
+                                    (contains-text-p (message-text message)
+                                                     "Persist the drafted plan in chat history.")
+                                    (contains-text-p (message-text message)
+                                                     "Plan file output skipped.")))))
+          (assert-true captured
+                       "Expected /plan off false system output to include captured plan markdown.")))))
 
   (format t "AMOEBUM_PLAN_MODE_SMOKE_OK~%"))

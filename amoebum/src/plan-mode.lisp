@@ -131,6 +131,12 @@
             (%plan-step-markdown step stream))
           (format stream "1. No explicit steps captured.~%")))))
 
+(defun plan-markdown (&key
+                        (state (current-plan-mode-state))
+                        reason)
+  (check-type state plan-mode-state)
+  (%plan-markdown state reason))
+
 (defun default-plan-output-path (&key project-root (timestamp (get-universal-time)))
   (let* ((root-path
            (uiop:ensure-directory-pathname
@@ -183,6 +189,10 @@
                (write-plan-output :state state
                                   :output-path output-path
                                   :reason reason))))
+    (when (and (plan-mode-state-active-p state)
+               (not write-output-p))
+      (setf (plan-mode-state-last-output-path state) nil
+            (plan-mode-state-last-exit-reason state) reason))
     (setf (plan-mode-state-active-p state) nil
           (plan-mode-state-exited-at state) (get-universal-time))
     (values state written-output-path)))
@@ -190,13 +200,14 @@
 (defun toggle-plan-mode (&key
                            (state (current-plan-mode-state))
                            output-path
-                           (reason :toggle))
+                           (reason :toggle)
+                           (write-output-p t))
   (check-type state plan-mode-state)
   (if (plan-mode-state-active-p state)
       (multiple-value-bind (updated-state written-output-path)
           (exit-plan-mode :state state
                           :output-path output-path
                           :reason reason
-                          :write-output-p t)
+                          :write-output-p write-output-p)
         (values updated-state :disabled written-output-path))
       (values (enter-plan-mode :state state :clear-steps-p t) :enabled nil)))

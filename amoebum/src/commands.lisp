@@ -452,9 +452,27 @@
           (format nil "Plan mode is OFF. Last plan output: ~A." (namestring output-path))
           "Plan mode is OFF.")))
 
+(defun %plan-exit-output (plan-markdown output-path write-to-file-p)
+  (with-output-to-string (out)
+    (write-string "Plan mode disabled." out)
+    (if output-path
+        (format out " Plan written to ~A." (namestring output-path))
+        (when write-to-file-p
+          (write-string " Plan file output unavailable." out)))
+    (unless write-to-file-p
+      (write-string " Plan file output skipped." out))
+    (when (and (stringp plan-markdown)
+               (plusp (length (%slash-trim plan-markdown))))
+      (format out "~%~%Plan captured in conversation:~%~%~A" plan-markdown))))
+
 (defun %plan-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
   (let* ((state (or (gethash :STATE arguments) :toggle))
+         (write-to-file-p (let ((present-p nil))
+                            (multiple-value-bind (value foundp)
+                                (gethash :WRITE-TO-FILE arguments)
+                              (setf present-p foundp)
+                              (if present-p value t))))
          (plan-state (current-plan-mode-state))
          (active-p (plan-mode-active-p plan-state)))
     (case state
@@ -472,28 +490,30 @@
               :output "Plan mode enabled. PLAN MODE -- read-only."))))
       (:off
        (if active-p
-           (multiple-value-bind (_ output-path)
-               (exit-plan-mode :state plan-state :reason :plan-command-exit)
-             (declare (ignore _))
-             (setconfig :plan-mode nil)
-             (make-slash-command-result
-              :output (if output-path
-                          (format nil "Plan mode disabled. Plan written to ~A."
-                                  (namestring output-path))
-                          "Plan mode disabled.")))
+           (let ((rendered-plan (plan-markdown :state plan-state
+                                               :reason :plan-command-exit)))
+             (multiple-value-bind (_ output-path)
+               (exit-plan-mode :state plan-state
+                               :reason :plan-command-exit
+                               :write-output-p write-to-file-p)
+               (declare (ignore _))
+               (setconfig :plan-mode nil)
+               (make-slash-command-result
+                :output (%plan-exit-output rendered-plan output-path write-to-file-p))))
            (make-slash-command-result
             :output "Plan mode already disabled.")))
       (otherwise
        (if active-p
-           (multiple-value-bind (_ _status output-path)
-               (toggle-plan-mode :state plan-state :reason :plan-command-toggle)
-             (declare (ignore _ _status))
-             (setconfig :plan-mode nil)
-             (make-slash-command-result
-              :output (if output-path
-                          (format nil "Plan mode disabled. Plan written to ~A."
-                                  (namestring output-path))
-                          "Plan mode disabled.")))
+           (let ((rendered-plan (plan-markdown :state plan-state
+                                               :reason :plan-command-toggle)))
+             (multiple-value-bind (_ _status output-path)
+                 (toggle-plan-mode :state plan-state
+                                   :reason :plan-command-toggle
+                                   :write-output-p write-to-file-p)
+               (declare (ignore _ _status))
+               (setconfig :plan-mode nil)
+               (make-slash-command-result
+                :output (%plan-exit-output rendered-plan output-path write-to-file-p))))
            (progn
              (toggle-plan-mode :state plan-state :reason :plan-command-toggle)
              (setconfig :plan-mode t)
@@ -2399,14 +2419,20 @@
    (make-slash-command
     :name "plan"
     :description "Toggle plan mode (read/search only) and persist plan output on exit."
-    :usage "/plan [on|off|status]"
+    :usage "/plan [on|off|status] [write-to-file]"
     :parameters
     (list (make-slash-command-parameter
            :name "state"
            :type :keyword
            :required-p nil
            :choices '(:on :off :status)
-           :description "Optional explicit plan mode action."))
+           :description "Optional explicit plan mode action.")
+          (make-slash-command-parameter
+           :name "write-to-file"
+           :type :boolean
+           :required-p nil
+           :default t
+           :description "When exiting plan mode, write plan markdown to file (default true)."))
     :handler #'%plan-handler
     :completer #'%plan-arg-completer))
   (register-slash-command
