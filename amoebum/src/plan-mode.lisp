@@ -3,6 +3,9 @@
 (defparameter *known-plan-step-risk-levels*
   '(:low :medium :high))
 
+(defparameter *known-plan-review-decisions*
+  '(:pending :approved :rejected :modification-requested))
+
 (defstruct (plan-step
             (:constructor make-plan-step
                 (&key index
@@ -24,6 +27,9 @@
                    exited-at
                    (steps '())
                    (review-pending-p nil)
+                   (review-decision :pending)
+                   review-notes
+                   review-decided-at
                    review-last-presented-at
                    last-plan-markdown
                    last-output-path
@@ -33,6 +39,9 @@
   exited-at
   (steps '() :type list)
   (review-pending-p nil :type boolean)
+  (review-decision :pending)
+  review-notes
+  review-decided-at
   review-last-presented-at
   last-plan-markdown
   last-output-path
@@ -77,6 +86,37 @@
     (if (member risk *known-plan-step-risk-levels* :test #'eq)
         risk
         :medium)))
+
+(defun %normalize-plan-review-decision (value)
+  (let* ((decision-text (typecase value
+                          (symbol (symbol-name value))
+                          (string value)
+                          (t nil)))
+         (decision (if (and (stringp decision-text)
+                            (plusp (length (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                        decision-text))))
+                       (intern (string-upcase (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                           decision-text))
+                               :keyword)
+                       :pending)))
+    (if (member decision *known-plan-review-decisions* :test #'eq)
+        decision
+        :pending)))
+
+(defun set-plan-review-decision (decision &key notes (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (let ((normalized-notes (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                       (%safe-plan-string notes "")))
+        (normalized-decision (%normalize-plan-review-decision decision)))
+    (setf (plan-mode-state-review-decision state) normalized-decision
+          (plan-mode-state-review-notes state)
+          (and (plusp (length normalized-notes)) normalized-notes)
+          (plan-mode-state-review-decided-at state) (get-universal-time)
+          (plan-mode-state-review-pending-p state)
+          (not (null (member normalized-decision
+                             '(:pending :modification-requested)
+                             :test #'eq)))))
+  state)
 
 (defun %normalize-path-list (values)
   (loop for value in values
@@ -264,6 +304,9 @@
         (plan-mode-state-entered-at state) (get-universal-time)
         (plan-mode-state-exited-at state) nil
         (plan-mode-state-review-pending-p state) nil
+        (plan-mode-state-review-decision state) :pending
+        (plan-mode-state-review-notes state) nil
+        (plan-mode-state-review-decided-at state) nil
         (plan-mode-state-review-last-presented-at state) nil
         (plan-mode-state-last-plan-markdown state) nil)
   state)
@@ -277,7 +320,10 @@
   (when (plan-mode-state-active-p state)
     (let ((captured-plan (%plan-markdown state reason)))
       (setf (plan-mode-state-last-plan-markdown state) captured-plan
-            (plan-mode-state-review-pending-p state) t)))
+            (plan-mode-state-review-pending-p state) t
+            (plan-mode-state-review-decision state) :pending
+            (plan-mode-state-review-notes state) nil
+            (plan-mode-state-review-decided-at state) nil)))
   (let ((written-output-path
           (and (plan-mode-state-active-p state)
                write-output-p

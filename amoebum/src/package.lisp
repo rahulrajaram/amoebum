@@ -436,6 +436,12 @@
            #:plan-mode-state-entered-at
            #:plan-mode-state-exited-at
            #:plan-mode-state-steps
+           #:plan-mode-state-review-pending-p
+           #:plan-mode-state-review-decision
+           #:plan-mode-state-review-notes
+           #:plan-mode-state-review-decided-at
+           #:plan-mode-state-review-last-presented-at
+           #:plan-mode-state-last-plan-markdown
            #:plan-mode-state-last-output-path
            #:plan-mode-state-last-exit-reason
            #:*plan-mode-state*
@@ -443,6 +449,7 @@
            #:plan-mode-active-p
            #:clear-plan-mode-steps
            #:add-plan-step
+           #:set-plan-review-decision
            #:default-plan-output-path
            #:write-plan-output
            #:enter-plan-mode

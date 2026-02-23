@@ -55,6 +55,8 @@
          (plan-mode-steps-fn (funcall fn-in "PLAN-MODE-STATE-STEPS" amoebum-pkg))
          (plan-step-depends-on-fn (funcall fn-in "PLAN-STEP-DEPENDS-ON" amoebum-pkg))
          (plan-review-pending-fn (funcall fn-in "PLAN-MODE-STATE-REVIEW-PENDING-P" amoebum-pkg))
+         (plan-review-decision-fn (funcall fn-in "PLAN-MODE-STATE-REVIEW-DECISION" amoebum-pkg))
+         (plan-review-notes-fn (funcall fn-in "PLAN-MODE-STATE-REVIEW-NOTES" amoebum-pkg))
          (plan-output-path-fn (funcall fn-in "PLAN-MODE-STATE-LAST-OUTPUT-PATH" amoebum-pkg))
          (stream-markdown-styled-lines-fn (funcall fn-in "STREAM-MARKDOWN-STYLED-LINES" amoebum-pkg))
          (make-context-fn (funcall fn-in "MAKE-AMOEBUM-CONTEXT" amoebum-pkg))
@@ -284,7 +286,63 @@
           (assert-true (contains-text-p (funcall result-output-fn review-result)
                                         "Review target implementation files.")
                        "Expected /plan review output to include captured step text, got ~S."
-                       (funcall result-output-fn review-result))))
+                       (funcall result-output-fn review-result)))
+        (multiple-value-bind (handledp modify-result)
+            (funcall dispatch-fn "/plan modify Split step 2 into two explicit steps.")
+          (assert-true handledp "Expected /plan modify to be handled.")
+          (assert-true (contains-text-p (funcall result-output-fn modify-result)
+                                        "Plan modifications requested")
+                       "Expected /plan modify output to acknowledge modification request, got ~S."
+                       (funcall result-output-fn modify-result)))
+        (assert-true (bool-true-p (funcall plan-review-pending-fn plan-state))
+                     "Expected /plan modify to keep review pending.")
+        (assert-true (eq :modification-requested
+                         (funcall plan-review-decision-fn plan-state))
+                     "Expected /plan modify to set decision :modification-requested, got ~S."
+                     (funcall plan-review-decision-fn plan-state))
+        (assert-true (contains-text-p (funcall plan-review-notes-fn plan-state)
+                                      "Split step 2")
+                     "Expected /plan modify to store review notes, got ~S."
+                     (funcall plan-review-notes-fn plan-state))
+        (multiple-value-bind (handledp reject-result)
+            (funcall dispatch-fn "/plan reject Missing rollback coverage.")
+          (assert-true handledp "Expected /plan reject to be handled.")
+          (assert-true (contains-text-p (funcall result-output-fn reject-result)
+                                        "Plan rejected")
+                       "Expected /plan reject output to acknowledge rejection, got ~S."
+                       (funcall result-output-fn reject-result)))
+        (assert-true (not (bool-true-p (funcall plan-review-pending-fn plan-state)))
+                     "Expected /plan reject to clear review pending marker.")
+        (assert-true (eq :rejected (funcall plan-review-decision-fn plan-state))
+                     "Expected /plan reject to set decision :rejected, got ~S."
+                     (funcall plan-review-decision-fn plan-state))
+        (assert-true (contains-text-p (funcall plan-review-notes-fn plan-state)
+                                      "Missing rollback coverage")
+                     "Expected /plan reject to store rejection notes, got ~S."
+                     (funcall plan-review-notes-fn plan-state))
+        (multiple-value-bind (handledp approve-result)
+            (funcall dispatch-fn "/plan approve Ready for execution.")
+          (assert-true handledp "Expected /plan approve to be handled.")
+          (assert-true (contains-text-p (funcall result-output-fn approve-result)
+                                        "Plan approved")
+                       "Expected /plan approve output to acknowledge approval, got ~S."
+                       (funcall result-output-fn approve-result)))
+        (assert-true (not (bool-true-p (funcall plan-review-pending-fn plan-state)))
+                     "Expected /plan approve to keep review pending cleared.")
+        (assert-true (eq :approved (funcall plan-review-decision-fn plan-state))
+                     "Expected /plan approve to set decision :approved, got ~S."
+                     (funcall plan-review-decision-fn plan-state))
+        (assert-true (contains-text-p (funcall plan-review-notes-fn plan-state)
+                                      "Ready for execution")
+                     "Expected /plan approve to store approval notes, got ~S."
+                     (funcall plan-review-notes-fn plan-state))
+        (multiple-value-bind (handledp status-result)
+            (funcall dispatch-fn "/plan status")
+          (assert-true handledp "Expected /plan status to be handled after approval.")
+          (assert-true (contains-text-p (funcall result-output-fn status-result)
+                                        "Last review decision: approved")
+                       "Expected /plan status to mention the approved decision, got ~S."
+                       (funcall result-output-fn status-result))))
 
       (funcall setconfig-fn :plan-mode nil)
       (funcall clear-steps-fn)
@@ -303,6 +361,9 @@
                      "Expected /plan off false to skip plan file output path capture.")
         (assert-true (bool-true-p (funcall plan-review-pending-fn (funcall current-plan-state-fn)))
                      "Expected /plan off false to keep captured review pending.")
+        (assert-true (eq :pending
+                         (funcall plan-review-decision-fn (funcall current-plan-state-fn)))
+                     "Expected /plan off false to reset review decision to :pending.")
         (let* ((messages (funcall chat-ui-state-messages-fn chat-state))
                (captured-message
                  (loop for message in messages

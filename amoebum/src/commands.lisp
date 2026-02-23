@@ -445,7 +445,16 @@
      :output (%config-report-output cfg)
      :echo-input-p t)))
 
-(defun %plan-status-output (active-p output-path review-pending-p)
+(defun %plan-review-decision-label (decision)
+  (case decision
+    (:approved "approved")
+    (:rejected "rejected")
+    (:modification-requested "modification-requested")
+    (:pending "pending")
+    (otherwise
+     (string-downcase (symbol-name (or decision :pending))))))
+
+(defun %plan-status-output (active-p output-path review-pending-p review-decision review-notes)
   (if active-p
       "Plan mode is ON. PLAN MODE -- read-only."
       (with-output-to-string (out)
@@ -454,7 +463,14 @@
           (format out " Last plan output: ~A." (namestring output-path)))
         (when review-pending-p
           (write-string " Plan review pending. Use /plan review to inspect the latest captured plan."
-                        out)))))
+                        out))
+        (when (and (symbolp review-decision)
+                   (not (eq review-decision :pending)))
+          (format out " Last review decision: ~A."
+                  (%plan-review-decision-label review-decision)))
+        (when (and (stringp review-notes)
+                   (plusp (length (%slash-trim review-notes))))
+          (format out " Review notes: ~A." (%slash-trim review-notes))))))
 
 (defun %plan-exit-output (plan-markdown output-path write-to-file-p)
   (with-output-to-string (out)
@@ -470,73 +486,128 @@
       (format out "~%~%Plan captured in conversation:~%~%```markdown~%~A~%```"
               plan-markdown))))
 
-(defun %plan-review-output (plan-markdown)
+(defun %plan-review-output (plan-markdown review-decision review-notes)
   (if (and (stringp plan-markdown)
            (plusp (length (%slash-trim plan-markdown))))
-      (format nil "Plan review:~%~%~A" plan-markdown)
+      (with-output-to-string (out)
+        (format out "Plan review:~%")
+        (when (symbolp review-decision)
+          (format out "Current decision: ~A.~%"
+                  (%plan-review-decision-label review-decision)))
+        (when (and (stringp review-notes)
+                   (plusp (length (%slash-trim review-notes))))
+          (format out "Review notes: ~A~%" (%slash-trim review-notes)))
+        (format out "~%~A" plan-markdown))
       "No captured plan is available yet. Exit plan mode first to capture one."))
 
 (defun %plan-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
   (let* ((state (or (gethash :STATE arguments) :toggle))
-         (write-to-file-p (let ((present-p nil))
-                            (multiple-value-bind (value foundp)
-                                (gethash :WRITE-TO-FILE arguments)
-                              (setf present-p foundp)
-                              (if present-p value t))))
+         (raw-args (%slash-trim (or (gethash :ARGS arguments) "")))
          (plan-state (current-plan-mode-state))
          (active-p (plan-mode-active-p plan-state)))
-    (case state
-      (:status
-       (make-slash-command-result
-        :output (%plan-status-output active-p
-                                     (plan-mode-state-last-output-path plan-state)
-                                     (plan-mode-state-review-pending-p plan-state))))
-      (:review
-       (progn
-         (setf (plan-mode-state-review-last-presented-at plan-state) (get-universal-time))
-         (make-slash-command-result
-          :output (%plan-review-output (plan-mode-state-last-plan-markdown plan-state)))))
-      (:on
-       (if active-p
-           (make-slash-command-result
-            :output "Plan mode already enabled.")
-           (progn
-             (enter-plan-mode :state plan-state :clear-steps-p t)
-             (setconfig :plan-mode t)
-             (make-slash-command-result
-              :output "Plan mode enabled. PLAN MODE -- read-only."))))
-      (:off
-       (if active-p
-           (let ((rendered-plan (plan-markdown :state plan-state
-                                               :reason :plan-command-exit)))
-             (multiple-value-bind (_ output-path)
-               (exit-plan-mode :state plan-state
-                               :reason :plan-command-exit
-                               :write-output-p write-to-file-p)
-               (declare (ignore _))
-               (setconfig :plan-mode nil)
+    (labels ((captured-plan-available-p ()
+               (and (stringp (plan-mode-state-last-plan-markdown plan-state))
+                    (plusp (length (%slash-trim (plan-mode-state-last-plan-markdown plan-state))))))
+             (invalid-usage (detail)
                (make-slash-command-result
-                :output (%plan-exit-output rendered-plan output-path write-to-file-p))))
-           (make-slash-command-result
-            :output "Plan mode already disabled.")))
-      (otherwise
-       (if active-p
-           (let ((rendered-plan (plan-markdown :state plan-state
-                                               :reason :plan-command-toggle)))
-             (multiple-value-bind (_ _status output-path)
-                 (toggle-plan-mode :state plan-state
-                                   :reason :plan-command-toggle
-                                   :write-output-p write-to-file-p)
-               (declare (ignore _ _status))
-               (setconfig :plan-mode nil)
-               (make-slash-command-result
-                :output (%plan-exit-output rendered-plan output-path write-to-file-p))))
-           (progn
-             (toggle-plan-mode :state plan-state :reason :plan-command-toggle)
-             (setconfig :plan-mode t)
+                :output (format nil "~A~%Usage: /plan [on|off|status|review|approve|reject|modify] [args...]"
+                                detail)
+                :echo-input-p t))
+             (parse-write-to-file-p ()
+               (if (%slash-blank-p raw-args)
+                   (values t nil)
+                   (handler-case
+                       (values (%parse-boolean-token raw-args) nil)
+                     (error ()
+                       (values t "Expected optional write-to-file argument to be true/false for this action.")))))
+             (decision-result (decision summary)
+               (if (captured-plan-available-p)
+                   (progn
+                     (set-plan-review-decision decision :notes raw-args :state plan-state)
+                     (make-slash-command-result
+                      :output (with-output-to-string (out)
+                                (write-string summary out)
+                                (unless (%slash-blank-p raw-args)
+                                  (format out " Notes recorded: ~A." raw-args)))))
+                   (make-slash-command-result
+                    :output "No captured plan is available yet. Exit plan mode first to capture one."))))
+      (case state
+        (:status
+         (if (%slash-blank-p raw-args)
              (make-slash-command-result
-              :output "Plan mode enabled. PLAN MODE -- read-only.")))))))
+              :output (%plan-status-output active-p
+                                           (plan-mode-state-last-output-path plan-state)
+                                           (plan-mode-state-review-pending-p plan-state)
+                                           (plan-mode-state-review-decision plan-state)
+                                           (plan-mode-state-review-notes plan-state)))
+             (invalid-usage "The /plan status action does not accept extra arguments.")))
+        (:review
+         (if (%slash-blank-p raw-args)
+             (progn
+               (setf (plan-mode-state-review-last-presented-at plan-state) (get-universal-time))
+               (make-slash-command-result
+                :output (%plan-review-output (plan-mode-state-last-plan-markdown plan-state)
+                                             (plan-mode-state-review-decision plan-state)
+                                             (plan-mode-state-review-notes plan-state))))
+             (invalid-usage "The /plan review action does not accept extra arguments.")))
+        (:approve
+         (decision-result :approved "Plan approved."))
+        (:reject
+         (decision-result :rejected "Plan rejected."))
+        (:modify
+         (decision-result :modification-requested
+                          "Plan modifications requested. Re-enter /plan on to update the draft."))
+        (:on
+         (if (not (%slash-blank-p raw-args))
+             (invalid-usage "The /plan on action does not accept extra arguments.")
+             (if active-p
+                 (make-slash-command-result
+                  :output "Plan mode already enabled.")
+                 (progn
+                   (enter-plan-mode :state plan-state :clear-steps-p t)
+                   (setconfig :plan-mode t)
+                   (make-slash-command-result
+                    :output "Plan mode enabled. PLAN MODE -- read-only.")))))
+        (:off
+         (multiple-value-bind (write-to-file-p parse-error)
+             (parse-write-to-file-p)
+           (if parse-error
+               (invalid-usage parse-error)
+               (if active-p
+                   (let ((rendered-plan (plan-markdown :state plan-state
+                                                       :reason :plan-command-exit)))
+                     (multiple-value-bind (_ output-path)
+                         (exit-plan-mode :state plan-state
+                                         :reason :plan-command-exit
+                                         :write-output-p write-to-file-p)
+                       (declare (ignore _))
+                       (setconfig :plan-mode nil)
+                       (make-slash-command-result
+                        :output (%plan-exit-output rendered-plan output-path write-to-file-p))))
+                   (make-slash-command-result
+                    :output "Plan mode already disabled.")))))
+        (otherwise
+         (multiple-value-bind (write-to-file-p parse-error)
+             (parse-write-to-file-p)
+           (if parse-error
+               (invalid-usage parse-error)
+               (if active-p
+                   (let ((rendered-plan (plan-markdown :state plan-state
+                                                       :reason :plan-command-toggle)))
+                     (multiple-value-bind (_ _status output-path)
+                         (toggle-plan-mode :state plan-state
+                                           :reason :plan-command-toggle
+                                           :write-output-p write-to-file-p)
+                       (declare (ignore _ _status))
+                       (setconfig :plan-mode nil)
+                       (make-slash-command-result
+                        :output (%plan-exit-output rendered-plan output-path write-to-file-p))))
+                   (progn
+                     (toggle-plan-mode :state plan-state :reason :plan-command-toggle)
+                     (setconfig :plan-mode t)
+                     (make-slash-command-result
+                      :output "Plan mode enabled. PLAN MODE -- read-only."))))))))))
 
 (defun %memory-handler (_invocation arguments context)
   (declare (ignore _invocation))
@@ -1643,7 +1714,7 @@
 (defun %plan-arg-completer (_command _invocation _index fragment _prefix)
   (declare (ignore _command _invocation _index _prefix))
   (let ((prefix (%slash-trim fragment)))
-    (loop for option in '("on" "off" "status" "review")
+    (loop for option in '("on" "off" "status" "review" "approve" "reject" "modify")
           when (%starts-with-ci-p prefix option)
             collect option)))
 
@@ -2436,21 +2507,21 @@
   (register-slash-command
    (make-slash-command
     :name "plan"
-    :description "Toggle plan mode (read/search only) and persist plan output on exit."
-    :usage "/plan [on|off|status|review] [write-to-file]"
+    :description "Toggle plan mode, review captured plan output, and record review decisions."
+    :usage "/plan [on|off|status|review|approve|reject|modify] [args...]"
     :parameters
     (list (make-slash-command-parameter
            :name "state"
            :type :keyword
            :required-p nil
-           :choices '(:on :off :status :review)
+           :choices '(:on :off :status :review :approve :reject :modify)
            :description "Optional explicit plan mode action.")
           (make-slash-command-parameter
-           :name "write-to-file"
-           :type :boolean
+           :name "args"
+           :type :string
            :required-p nil
-           :default t
-           :description "When exiting plan mode, write plan markdown to file (default true)."))
+           :greedy-p t
+           :description "Optional action arguments (e.g. /plan off false, /plan modify <notes>)."))
     :handler #'%plan-handler
     :completer #'%plan-arg-completer))
   (register-slash-command
