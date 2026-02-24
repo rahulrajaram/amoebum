@@ -67,7 +67,12 @@
                       (continuity-output '())
                       current-step-index
                       failure-reason
-                      abort-reason)))
+                      abort-reason
+                      rollback-baseline-stash
+                      rollback-baseline-directory
+                      rollback-attempted-p
+                      rollback-succeeded-p
+                      rollback-notes)))
   run-id
   (status :idle)
   created-at
@@ -83,9 +88,15 @@
   (continuity-output '() :type list)
   current-step-index
   failure-reason
-  abort-reason)
+  abort-reason
+  rollback-baseline-stash
+  rollback-baseline-directory
+  (rollback-attempted-p nil :type boolean)
+  (rollback-succeeded-p nil :type boolean)
+  rollback-notes)
 
 (defparameter *plan-execution-state* (%make-plan-execution-state))
+(defparameter *plan-execution-git-command-runner* nil)
 
 (defun %normalize-plan-execution-status (value)
   (let* ((status-text (typecase value
@@ -435,6 +446,138 @@
           (get-universal-time)
           (get-internal-real-time)))
 
+(defun default-plan-execution-git-command-runner (directory args)
+  (handler-case
+      (multiple-value-bind (stdout stderr exit-code)
+          (uiop:run-program (append (list "git") args)
+                            :directory directory
+                            :ignore-error-status t
+                            :output :string
+                            :error-output :string)
+        (list :stdout (or stdout "")
+              :stderr (or stderr "")
+              :exit-code (or exit-code 0)))
+    (error (condition)
+      (list :stdout ""
+            :stderr (princ-to-string condition)
+            :exit-code 127))))
+
+(defun %plan-execution-run-git (directory args)
+  (let ((runner (or *plan-execution-git-command-runner*
+                    #'default-plan-execution-git-command-runner)))
+    (funcall runner directory args)))
+
+(defun %plan-execution-git-ok-p (result)
+  (and (listp result)
+       (zerop (or (getf result :exit-code) 1))))
+
+(defun %plan-execution-git-output (result)
+  (string-trim '(#\Space #\Tab #\Newline #\Return)
+               (format nil "~A~@[ ~A~]"
+                       (or (getf result :stdout) "")
+                       (let ((stderr (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                  (or (getf result :stderr) ""))))
+                         (and (plusp (length stderr))
+                              stderr)))))
+
+(defun %resolve-plan-execution-rollback-directory (rollback-directory)
+  (let* ((raw (or rollback-directory (uiop:getcwd)))
+         (resolved (ignore-errors (uiop:ensure-directory-pathname raw))))
+    (or resolved raw)))
+
+(defun %prepare-plan-execution-rollback-baseline (state rollback-directory)
+  (check-type state plan-execution-state)
+  (let* ((directory (%resolve-plan-execution-rollback-directory rollback-directory))
+         (inside-result (%plan-execution-run-git directory
+                                                 '("rev-parse" "--is-inside-work-tree"))))
+    (setf (plan-execution-state-rollback-baseline-directory state) directory
+          (plan-execution-state-rollback-baseline-stash state) nil
+          (plan-execution-state-rollback-attempted-p state) nil
+          (plan-execution-state-rollback-succeeded-p state) nil
+          (plan-execution-state-rollback-notes state) nil)
+    (unless (and (%plan-execution-git-ok-p inside-result)
+                 (string-equal "true" (%plan-execution-git-output inside-result)))
+      (setf (plan-execution-state-rollback-notes state)
+            (format nil "Rollback baseline unavailable: ~A"
+                    (%plan-execution-git-output inside-result)))
+      (return-from %prepare-plan-execution-rollback-baseline nil))
+    (let* ((before-stash (%plan-execution-run-git directory
+                                                  '("rev-parse" "--verify" "-q" "refs/stash")))
+           (before-hash (%plan-execution-git-output before-stash))
+           (message (format nil "plan-exec-baseline-~A"
+                            (%safe-plan-execution-string
+                             (plan-execution-state-run-id state)
+                             "unknown")))
+           (stash-result (%plan-execution-run-git directory
+                                                  (list "stash"
+                                                        "push"
+                                                        "--include-untracked"
+                                                        "--message"
+                                                        message)))
+           (after-stash (%plan-execution-run-git directory
+                                                 '("rev-parse" "--verify" "-q" "refs/stash")))
+           (after-hash (%plan-execution-git-output after-stash))
+           (stash-created-p (and (%plan-execution-git-ok-p stash-result)
+                                 (%plan-execution-git-ok-p after-stash)
+                                 (plusp (length after-hash))
+                                 (not (string= after-hash before-hash)))))
+      (unless (%plan-execution-git-ok-p stash-result)
+        (setf (plan-execution-state-rollback-notes state)
+              (format nil "Rollback baseline stash failed: ~A"
+                      (%plan-execution-git-output stash-result)))
+        (return-from %prepare-plan-execution-rollback-baseline nil))
+      (when stash-created-p
+        (let ((apply-result (%plan-execution-run-git directory
+                                                     (list "stash" "apply" "--index" after-hash))))
+          (unless (%plan-execution-git-ok-p apply-result)
+            (setf (plan-execution-state-rollback-notes state)
+                  (format nil "Rollback baseline apply failed: ~A"
+                          (%plan-execution-git-output apply-result)))
+            (return-from %prepare-plan-execution-rollback-baseline nil)))
+        (setf (plan-execution-state-rollback-baseline-stash state) after-hash))
+      t)))
+
+(defun %drop-plan-execution-rollback-baseline (state)
+  (check-type state plan-execution-state)
+  (let ((stash (plan-execution-state-rollback-baseline-stash state))
+        (directory (plan-execution-state-rollback-baseline-directory state)))
+    (when (and (stringp stash)
+               (plusp (length stash)))
+      (%plan-execution-run-git directory (list "stash" "drop" stash))
+      (setf (plan-execution-state-rollback-baseline-stash state) nil)))
+  state)
+
+(defun %rollback-plan-execution-via-git (state)
+  (check-type state plan-execution-state)
+  (let* ((directory (%resolve-plan-execution-rollback-directory
+                     (plan-execution-state-rollback-baseline-directory state)))
+         (stash (plan-execution-state-rollback-baseline-stash state))
+         (reset-result (%plan-execution-run-git directory '("reset" "--hard" "HEAD")))
+         (clean-result (%plan-execution-run-git directory '("clean" "-fd"))))
+    (setf (plan-execution-state-rollback-attempted-p state) t)
+    (unless (and (%plan-execution-git-ok-p reset-result)
+                 (%plan-execution-git-ok-p clean-result))
+      (setf (plan-execution-state-rollback-succeeded-p state) nil
+            (plan-execution-state-rollback-notes state)
+            (format nil "Rollback reset/clean failed: ~A | ~A"
+                    (%plan-execution-git-output reset-result)
+                    (%plan-execution-git-output clean-result)))
+      (return-from %rollback-plan-execution-via-git nil))
+    (when (and (stringp stash)
+               (plusp (length stash)))
+      (let ((apply-result (%plan-execution-run-git directory
+                                                   (list "stash" "apply" "--index" stash))))
+        (unless (%plan-execution-git-ok-p apply-result)
+          (setf (plan-execution-state-rollback-succeeded-p state) nil
+                (plan-execution-state-rollback-notes state)
+                (format nil "Rollback stash apply failed: ~A"
+                        (%plan-execution-git-output apply-result)))
+          (return-from %rollback-plan-execution-via-git nil))))
+    (%drop-plan-execution-rollback-baseline state)
+    (setf (plan-execution-state-rollback-succeeded-p state) t
+          (plan-execution-state-rollback-notes state) "Rollback restored git baseline.")
+    t))
+
 (defun current-plan-execution-state ()
   (or *plan-execution-state*
       (setf *plan-execution-state* (%make-plan-execution-state))))
@@ -456,7 +599,12 @@
         (plan-execution-state-continuity-output state) '()
         (plan-execution-state-current-step-index state) nil
         (plan-execution-state-failure-reason state) nil
-        (plan-execution-state-abort-reason state) nil)
+        (plan-execution-state-abort-reason state) nil
+        (plan-execution-state-rollback-baseline-stash state) nil
+        (plan-execution-state-rollback-baseline-directory state) nil
+        (plan-execution-state-rollback-attempted-p state) nil
+        (plan-execution-state-rollback-succeeded-p state) nil
+        (plan-execution-state-rollback-notes state) nil)
   state)
 
 (defun initialize-plan-execution (&key
@@ -495,7 +643,12 @@
           (plan-execution-state-continuity-output state) '()
           (plan-execution-state-current-step-index state) nil
           (plan-execution-state-failure-reason state) nil
-          (plan-execution-state-abort-reason state) nil)
+          (plan-execution-state-abort-reason state) nil
+          (plan-execution-state-rollback-baseline-stash state) nil
+          (plan-execution-state-rollback-baseline-directory state) nil
+          (plan-execution-state-rollback-attempted-p state) nil
+          (plan-execution-state-rollback-succeeded-p state) nil
+          (plan-execution-state-rollback-notes state) nil)
     (%publish-plan-step-status-snapshot state)
     (prime-plan-execution-continuity state)
     state))
@@ -642,16 +795,80 @@
                   result
                   (null (plan-execution-state-pending-step-indexes state))))))))
 
-(defun execute-approved-plan-steps (executor &key (state (current-plan-execution-state)))
+(defun execute-approved-plan-steps (executor &key
+                                             (state (current-plan-execution-state))
+                                             (rollback-on-failure-p t)
+                                             (signal-failure-p t)
+                                             rollback-directory)
   (check-type state plan-execution-state)
   (unless (functionp executor)
     (error "Plan execution executor must be a function."))
-  (let ((execution-results '()))
-    (loop
-      (multiple-value-bind (_ step result done-p)
-          (execute-next-approved-plan-step executor :state state)
-        (declare (ignore _))
-        (when step
-          (push (cons (plan-execution-step-index step) result) execution-results))
-        (when done-p
-          (return (values state (nreverse execution-results))))))))
+  (let ((execution-results '())
+        (failure-condition nil))
+    (when rollback-on-failure-p
+      (if (%prepare-plan-execution-rollback-baseline state rollback-directory)
+          (plan-execution-append-output
+           "LIVE> Rollback baseline captured via git."
+           :phase :system
+           :style :meta
+           :state state)
+          (plan-execution-append-output
+           (format nil "LIVE> Rollback baseline unavailable; proceeding without rollback (~A)."
+                   (%safe-plan-execution-string
+                    (plan-execution-state-rollback-notes state)
+                    "no baseline"))
+           :phase :system
+           :severity :warning
+           :style :warning
+           :state state)))
+    (handler-case
+        (loop
+          (multiple-value-bind (_ step result done-p)
+              (execute-next-approved-plan-step executor :state state)
+            (declare (ignore _))
+            (when step
+              (push (cons (plan-execution-step-index step) result) execution-results))
+            (when done-p
+              (%drop-plan-execution-rollback-baseline state)
+              (return (values state (nreverse execution-results) nil nil)))))
+      (error (condition)
+        (setf failure-condition condition
+              (plan-execution-state-status state) :failed
+              (plan-execution-state-failure-reason state) (princ-to-string condition)
+              (plan-execution-state-finished-at state) (get-universal-time))
+        (plan-execution-append-output
+         (format nil "LIVE> Execution failed: ~A"
+                 (%safe-plan-execution-string condition "unknown error"))
+         :phase :execution
+         :severity :error
+         :style :error
+         :step-index (plan-execution-state-current-step-index state)
+         :state state)
+        (let ((rollback-succeeded-p nil))
+          (when (and rollback-on-failure-p
+                     (or (plan-execution-state-rollback-baseline-stash state)
+                         (plan-execution-state-rollback-baseline-directory state)))
+            (plan-execution-append-output
+             "LIVE> Failure detected; attempting git rollback."
+             :phase :system
+             :severity :warning
+             :style :warning
+             :state state)
+            (setf rollback-succeeded-p (%rollback-plan-execution-via-git state))
+            (plan-execution-append-output
+             (if rollback-succeeded-p
+                 "LIVE> Rollback completed; git baseline restored."
+                 (format nil "LIVE> Rollback failed: ~A"
+                         (%safe-plan-execution-string
+                          (plan-execution-state-rollback-notes state)
+                          "unknown rollback failure")))
+             :phase :system
+             :severity (if rollback-succeeded-p :info :error)
+             :style (if rollback-succeeded-p :success :error)
+             :state state))
+          (if signal-failure-p
+              (error condition)
+              (values state
+                      (nreverse execution-results)
+                      failure-condition
+                      rollback-succeeded-p)))))))
