@@ -36,6 +36,9 @@
    #:terminal-pane-search-prev
    #:terminal-pane-copy-visible
    #:terminal-pane-copy-search-result
+   #:terminal-pane-supported-contexts
+   #:terminal-pane-context-profile
+   #:make-terminal-pane-state-for-context
    #:terminal-pane-handle-event
    #:make-terminal-pane-widget))
 
@@ -52,6 +55,33 @@
 
 (defparameter +terminal-pane-severity-order+
   '(:debug :info :warning :error :critical))
+
+(defparameter +terminal-pane-context-defaults+
+  '((:execution . (:title "execution"
+                   :empty-message "[no execution output]"
+                   :max-lines 2000
+                   :stdin-capture-policy :enabled))
+    (:logs . (:title "logs"
+              :empty-message "[no logs]"
+              :max-lines 5000
+              :stdin-capture-policy :disabled))
+    (:test-output . (:title "test output"
+                    :empty-message "[no test output]"
+                    :max-lines 4000
+                    :stdin-capture-policy :disabled))))
+
+(defun %normalize-terminal-pane-context (context)
+  (cond
+    ((member context '(:execution :normal-execution :run :runtime) :test #'eq)
+     :execution)
+    ((member context '(:logs :log) :test #'eq)
+     :logs)
+    ((member context '(:test-output :tests :test) :test #'eq)
+     :test-output)
+    (t
+     (error "Unsupported terminal-pane context ~S. Expected one of ~S."
+            context
+            (mapcar #'car +terminal-pane-context-defaults+)))))
 
 (defstruct (terminal-pane-style
             (:constructor %make-terminal-pane-style
@@ -353,6 +383,55 @@
                                  :stdin-capture-policy (%normalize-stdin-capture-policy
                                                         stdin-capture-policy)
                                  :stdin-events '()))))
+
+(defun terminal-pane-supported-contexts ()
+  (copy-list (mapcar #'car +terminal-pane-context-defaults+)))
+
+(defun terminal-pane-context-profile (context)
+  (copy-list
+   (cdr (assoc (%normalize-terminal-pane-context context)
+               +terminal-pane-context-defaults+
+               :test #'eq))))
+
+(defun make-terminal-pane-state-for-context
+    (context
+     &key
+       (title nil title-supplied-p)
+       (lines '())
+       (line-metadata '())
+       (pending-output "")
+       (pending-line-metadata '(:severity :info :style :plain))
+       (max-lines nil max-lines-supplied-p)
+       (scroll-offset 0)
+       (status :idle)
+       (empty-message nil empty-message-supplied-p)
+       (stdin-capture-policy nil stdin-capture-policy-supplied-p))
+  "Construct TERMINAL-PANE-STATE with defaults tuned for CONTEXT."
+  (let* ((profile (terminal-pane-context-profile context))
+         (resolved-title (if title-supplied-p
+                             title
+                             (getf profile :title "terminal")))
+         (resolved-empty-message (if empty-message-supplied-p
+                                     empty-message
+                                     (getf profile :empty-message "[no output]")))
+         (resolved-max-lines (if max-lines-supplied-p
+                                 max-lines
+                                 (getf profile :max-lines 2000)))
+         (resolved-stdin-capture-policy (if stdin-capture-policy-supplied-p
+                                            stdin-capture-policy
+                                            (getf profile :stdin-capture-policy
+                                                  :enabled))))
+    (make-terminal-pane-state
+     :title resolved-title
+     :lines lines
+     :line-metadata line-metadata
+     :pending-output pending-output
+     :pending-line-metadata pending-line-metadata
+     :max-lines resolved-max-lines
+     :scroll-offset scroll-offset
+     :status status
+     :empty-message resolved-empty-message
+     :stdin-capture-policy resolved-stdin-capture-policy)))
 
 (defun terminal-pane-title (state)
   (check-type state terminal-pane-state)

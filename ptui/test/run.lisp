@@ -1119,6 +1119,99 @@ foo bar foo")
                    "expected captured key :tab, got ~S"
                    (first events)))))
 
+(deftest widgets-terminal-pane-context-profiles
+  (assert-true (equal (ptui.components.terminal-pane:terminal-pane-supported-contexts)
+                      '(:execution :logs :test-output))
+               "unexpected terminal pane supported contexts: ~S"
+               (ptui.components.terminal-pane:terminal-pane-supported-contexts))
+  (let ((execution (ptui.components.terminal-pane:make-terminal-pane-state-for-context
+                    :execution))
+        (logs (ptui.components.terminal-pane:make-terminal-pane-state-for-context
+               :logs))
+        (tests (ptui.components.terminal-pane:make-terminal-pane-state-for-context
+                :test-output)))
+    (assert-true (string= (ptui.components.terminal-pane:terminal-pane-title execution)
+                          "execution")
+                 "expected execution profile title, got ~S"
+                 (ptui.components.terminal-pane:terminal-pane-title execution))
+    (assert-true (string= (ptui.components.terminal-pane:terminal-pane-empty-message logs)
+                          "[no logs]")
+                 "expected logs profile empty message, got ~S"
+                 (ptui.components.terminal-pane:terminal-pane-empty-message logs))
+    (assert-true (not (ptui.components.terminal-pane:terminal-pane-stdin-capture-enabled-p logs))
+                 "logs profile should disable stdin capture")
+    (assert-true (not (ptui.components.terminal-pane:terminal-pane-stdin-capture-enabled-p tests))
+                 "test-output profile should disable stdin capture"))
+  (let* ((profile (ptui.components.terminal-pane:terminal-pane-context-profile :logs))
+         (override (ptui.components.terminal-pane:make-terminal-pane-state-for-context
+                    :logs
+                    :title "ci logs"
+                    :empty-message "[none]"
+                    :stdin-capture-policy :enabled
+                    :max-lines 99)))
+    (setf (getf profile :title) "mutated")
+    (assert-true (string= (getf (ptui.components.terminal-pane:terminal-pane-context-profile :logs)
+                                :title)
+                          "logs")
+                 "context profile should return a copy, got ~S"
+                 (ptui.components.terminal-pane:terminal-pane-context-profile :logs))
+    (assert-true (string= (ptui.components.terminal-pane:terminal-pane-title override)
+                          "ci logs")
+                 "title override should win over context default")
+    (assert-true (string= (ptui.components.terminal-pane:terminal-pane-empty-message override)
+                          "[none]")
+                 "empty message override should win over context default")
+    (assert-true (ptui.components.terminal-pane:terminal-pane-stdin-capture-enabled-p override)
+                 "stdin capture override should win over context default")
+    (assert-true (= (ptui.components.terminal-pane:terminal-pane-max-lines override) 99)
+                 "max-lines override should win over context default")))
+
+(deftest widgets-terminal-pane-non-plan-context-reuse
+  (dolist (context (ptui.components.terminal-pane:terminal-pane-supported-contexts))
+    (let* ((state (ptui.components.terminal-pane:make-terminal-pane-state-for-context
+                   context
+                   :max-lines 4))
+           (label (symbol-name context)))
+      (ptui.components.terminal-pane:terminal-pane-append-output
+       state
+       (concatenate 'string
+                    "alpha" (string #\Newline)
+                    "beta" (string #\Newline))
+       :severity :info
+       :style :stdout)
+      (ptui.components.terminal-pane:terminal-pane-append-output
+       state
+       (concatenate 'string "failure" (string #\Newline))
+       :severity :error
+       :style :stderr)
+      (assert-true (eq (ptui.components.terminal-pane:terminal-pane-status state) :active)
+                   "context ~A should become :active after output"
+                   label)
+      (assert-true (equal (ptui.components.terminal-pane:terminal-pane-lines state)
+                          '("alpha" "beta" "failure"))
+                   "context ~A should preserve append-only line model, got ~S"
+                   label
+                   (ptui.components.terminal-pane:terminal-pane-lines state))
+      (let* ((metadata (ptui.components.terminal-pane:terminal-pane-visible-line-metadata
+                        state
+                        :viewport-height 3))
+             (severity-tail (getf (car (last metadata)) :severity)))
+        (assert-true (eq severity-tail :error)
+                     "context ~A should preserve per-line severity metadata, got ~S"
+                     label
+                     metadata))
+      (let* ((widget (ptui.components.terminal-pane:make-terminal-pane-widget
+                      state
+                      :id :terminal-pane
+                      :viewport-height 3))
+             (size (ptui.widgets.core:widget-measure widget)))
+        (assert-true (> (ptui.layout:layout-size-width size) 0)
+                     "context ~A widget width should be > 0"
+                     label)
+        (assert-true (>= (ptui.layout:layout-size-height size) 3)
+                     "context ~A widget height should include status + viewport rows"
+                     label)))))
+
 (deftest widgets-glob-widget-api-boundary
   (multiple-value-bind (widgets-sym widgets-status)
       (find-symbol "MAKE-GLOB-WIDGET" :ptui.widgets.core)
