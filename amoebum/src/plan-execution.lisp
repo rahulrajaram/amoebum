@@ -262,7 +262,8 @@
                          step-index)
                  (format nil
                          "Review step ~D details with /plan review before retrying."
-                         step-index))))
+                         step-index)
+                 "Choose next action: rerun /execute, inspect with /plan review, or revise with /plan modify.")))
     (when file-paths
       (let ((visible-paths (subseq file-paths 0 (min 3 (length file-paths)))))
         (setf recovery-actions
@@ -395,65 +396,6 @@
           (if (> (length line) 120)
               (concatenate 'string (subseq line 0 117) "...")
               line)))))
-
-(defun %result-plist-value (result key)
-  (and (listp result)
-       (not (null result))
-       (keywordp (first result))
-       (getf result key)))
-
-(defun %normalize-execution-status-keyword (value)
-  (cond
-    ((keywordp value) value)
-    ((symbolp value) (intern (string-upcase (symbol-name value)) :keyword))
-    ((stringp value)
-     (intern (string-upcase (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-             :keyword))
-    (t nil)))
-
-(defun %default-step-result-error-p (result)
-  (labels ((hash-value (table &rest keys)
-             (loop for key in keys do
-               (multiple-value-bind (value present-p) (gethash key table)
-                 (when present-p
-                   (return (values value t))))
-               finally (return (values nil nil)))))
-    (let ((plist-result-p (and (listp result)
-                               (not (null result))
-                               (keywordp (first result)))))
-      (or (typep result 'condition)
-          (eq result :error)
-          (eq result :failed)
-          (and plist-result-p
-               (or (and (member :ok result :test #'eq)
-                        (null (%result-plist-value result :ok)))
-                   (and (member :success result :test #'eq)
-                        (null (%result-plist-value result :success)))
-                   (member (%normalize-execution-status-keyword
-                            (%result-plist-value result :status))
-                           '(:error :failed :failure)
-                           :test #'eq)
-                   (not (null (%result-plist-value result :error)))))
-          (and (hash-table-p result)
-               (multiple-value-bind (ok-value ok-present-p)
-                   (hash-value result :ok "ok")
-                 (multiple-value-bind (success-value success-present-p)
-                     (hash-value result :success "success")
-                   (multiple-value-bind (error-value error-present-p)
-                       (hash-value result :error "error")
-                     (or (and ok-present-p (null ok-value))
-                         (and success-present-p (null success-value))
-                         (and error-present-p (not (null error-value)))
-                         (member (%normalize-execution-status-keyword
-                                  (or (gethash :status result)
-                                      (gethash "status" result)))
-                                 '(:error :failed :failure)
-                                 :test #'eq))))))))))
-
-(defun %step-review-pause-requested-p (pause-after-step-predicate state step result error-p)
-  (if (functionp pause-after-step-predicate)
-      (not (null (funcall pause-after-step-predicate state step result error-p)))
-      nil))
 
 (defun prime-plan-execution-continuity (&optional (state (current-plan-execution-state)))
   (check-type state plan-execution-state)
@@ -625,22 +567,10 @@
   (check-type state plan-execution-state)
   (first (plan-execution-state-pending-step-indexes state)))
 
-(defun execute-next-approved-plan-step (executor &key
-                                                 (state (current-plan-execution-state))
-                                                 (step-error-predicate #'%default-step-result-error-p)
-                                                 after-step-observer
-                                                 pause-after-step-predicate)
+(defun execute-next-approved-plan-step (executor &key (state (current-plan-execution-state)))
   (check-type state plan-execution-state)
   (unless (functionp executor)
     (error "Plan execution step executor must be a function."))
-  (unless (functionp step-error-predicate)
-    (error "Step error predicate must be a function."))
-  (when after-step-observer
-    (unless (functionp after-step-observer)
-      (error "After-step observer must be a function when provided.")))
-  (when pause-after-step-predicate
-    (unless (functionp pause-after-step-predicate)
-      (error "Pause-after-step predicate must be a function when provided.")))
   (let ((status (%normalize-plan-execution-status (plan-execution-state-status state))))
     (when (%plan-execution-terminal-status-p status)
       (error "Plan execution is already terminal (~S)." status))
@@ -673,98 +603,58 @@
          :phase :execution
          :style :meta
          :state state)
-        (let ((result nil)
-              (completed-p nil)
-              (error-p nil)
-              (paused-p nil))
-          (unwind-protect
-               (progn
-                 (setf result (funcall executor step)
-                       completed-p t)
-                 (%mark-plan-execution-step-completed step)
-                 (%publish-plan-step-status-event state step :status :done)
-                 (setf (plan-execution-state-pending-step-indexes state)
-                       (rest (plan-execution-state-pending-step-indexes state))
-                       (plan-execution-state-completed-step-indexes state)
-                       (append (plan-execution-state-completed-step-indexes state)
-                               (list next-step-index))
-                       (plan-execution-state-current-step-index state) nil)
-                 (plan-execution-append-output
-                  (format nil "LIVE> [step ~D done] ~A"
-                          next-step-index
-                          (%summarize-execution-result result))
-                  :step-index next-step-index
-                  :phase :execution
-                  :style :success
-                  :state state)
-                 (setf error-p (not (null (funcall step-error-predicate result))))
-                 (plan-execution-append-output
-                  (format nil
-                          "LIVE> [step ~D check] ~:[no errors detected.~;potential errors detected; review before continuing.~]"
-                          next-step-index
-                          error-p)
-                  :step-index next-step-index
-                  :phase :execution
-                  :severity (if error-p :warning :info)
-                  :style (if error-p :warning :meta)
-                  :state state)
-                 (when after-step-observer
-                   (funcall after-step-observer state step result error-p))
-                 (when (%step-review-pause-requested-p pause-after-step-predicate
-                                                       state
-                                                       step
-                                                       result
-                                                       error-p)
-                   (pause-plan-execution state)
-                   (setf paused-p t)
-                   (plan-execution-append-output
-                    (format nil
-                            "LIVE> Execution paused for review after step ~D."
-                            next-step-index)
-                    :step-index next-step-index
-                    :phase :execution
-                    :severity :warning
-                    :style :warning
-                    :state state))
-                 (%complete-plan-execution-if-finished state))
-            (unless completed-p
-              (%mark-plan-execution-step-blocked step)
-              (%publish-plan-step-status-event state step :status :blocked)
-              (setf (plan-execution-state-current-step-index state) nil)
+        (handler-case
+            (let ((result (funcall executor step)))
+              (%mark-plan-execution-step-completed step)
+              (%publish-plan-step-status-event state step :status :done)
+              (setf (plan-execution-state-pending-step-indexes state)
+                    (rest (plan-execution-state-pending-step-indexes state))
+                    (plan-execution-state-completed-step-indexes state)
+                    (append (plan-execution-state-completed-step-indexes state)
+                            (list next-step-index))
+                    (plan-execution-state-current-step-index state) nil)
               (plan-execution-append-output
-               (format nil "LIVE> [step ~D blocked] executor exited before completion."
-                       next-step-index)
+               (format nil "LIVE> [step ~D done] ~A"
+                       next-step-index
+                       (%summarize-execution-result result))
                :step-index next-step-index
                :phase :execution
-               :severity :warning
-               :style :warning
-               :state state)))
-          (values state
-                  step
-                  result
-                  (null (plan-execution-state-pending-step-indexes state))
-                  error-p
-                  paused-p))))))
+               :style :success
+               :state state)
+              (%complete-plan-execution-if-finished state)
+              (values state
+                      step
+                      result
+                      (null (plan-execution-state-pending-step-indexes state))))
+          (error (condition)
+            (%mark-plan-execution-step-blocked step)
+            (%publish-plan-step-status-event state step :status :blocked)
+            (setf (plan-execution-state-status state) :failed
+                  (plan-execution-state-failure-reason state) condition
+                  (plan-execution-state-current-step-index state) nil
+                  (plan-execution-state-finished-at state) (get-universal-time))
+            (plan-execution-append-output
+             (format nil
+                     "LIVE> [step ~D failed] ~A. Choose next action: /execute (retry), /plan review, or /plan modify."
+                     next-step-index
+                     (%safe-plan-execution-string condition "step execution failed"))
+             :step-index next-step-index
+             :phase :execution
+             :severity :error
+             :style :error
+             :state state)
+            (values state step condition t)))))))
 
-(defun execute-approved-plan-steps (executor &key
-                                             (state (current-plan-execution-state))
-                                             (step-error-predicate #'%default-step-result-error-p)
-                                             after-step-observer
-                                             pause-after-step-predicate)
+(defun execute-approved-plan-steps (executor &key (state (current-plan-execution-state)))
   (check-type state plan-execution-state)
   (unless (functionp executor)
     (error "Plan execution executor must be a function."))
   (let ((execution-results '()))
     (loop
-      (multiple-value-bind (_ step result done-p _error-p paused-p)
-          (execute-next-approved-plan-step
-           executor
-           :state state
-           :step-error-predicate step-error-predicate
-           :after-step-observer after-step-observer
-           :pause-after-step-predicate pause-after-step-predicate)
+      (multiple-value-bind (_ step result done-p)
+          (execute-next-approved-plan-step executor :state state)
         (declare (ignore _))
         (when step
           (push (cons (plan-execution-step-index step) result) execution-results))
-        (when (or done-p paused-p)
+        (when done-p
           (return (values state (nreverse execution-results))))))))
