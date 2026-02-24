@@ -52,6 +52,10 @@
          (current-plan-state-fn (funcall fn-in "CURRENT-PLAN-MODE-STATE" amoebum-pkg))
          (clear-plan-steps-fn (funcall fn-in "CLEAR-PLAN-MODE-STEPS" amoebum-pkg))
          (add-plan-step-fn (funcall fn-in "ADD-PLAN-STEP" amoebum-pkg))
+         (set-plan-step-approvals-fn (funcall fn-in "SET-PLAN-STEP-APPROVALS" amoebum-pkg))
+         (reset-plan-execution-state-fn (funcall fn-in "RESET-PLAN-EXECUTION-STATE" amoebum-pkg))
+         (initialize-plan-execution-fn (funcall fn-in "INITIALIZE-PLAN-EXECUTION" amoebum-pkg))
+         (plan-execution-append-output-fn (funcall fn-in "PLAN-EXECUTION-APPEND-OUTPUT" amoebum-pkg))
          (plan-output-stdin-policy-fn
            (funcall fn-in "%CHAT-PLAN-OUTPUT-STDIN-CAPTURE-POLICY" amoebum-pkg))
          (chat-role-cell-fn (funcall fn-in "CHAT-ROLE-CELL" amoebum-pkg))
@@ -189,9 +193,51 @@
                                "Expected selected step context to include first-step file reference.")))
             (setf (symbol-function make-plan-mode-presentation-widget-sym)
                   original-plan-widget-fn)))
+        (funcall reset-plan-execution-state-fn)
         (funcall setconfig-fn :plan-mode nil)
         (assert-true (eq (funcall plan-output-stdin-policy-fn) :enabled)
                      "Expected non-plan output stdin policy helper to resolve :enabled.")
+        (funcall clear-plan-steps-fn))
+
+      (let ((state (make-chat-state)))
+        (funcall reset-plan-execution-state-fn)
+        (funcall clear-plan-steps-fn)
+        (let ((plan-state (funcall current-plan-state-fn)))
+          (funcall add-plan-step-fn
+                   "Keep continuity pane on execution handoff via `rg -n plan`."
+                   :file-paths (list "amoebum/src/ui/chat.lisp")
+                   :state plan-state)
+          (funcall add-plan-step-fn
+                   "Verify execution logs with `timeout 60 ./bin/yarli-run-verification.sh`."
+                   :file-paths (list "amoebum/chat-ui-smoke-test.lisp")
+                   :state plan-state)
+          (funcall set-plan-step-approvals-fn '(1 2) :state plan-state)
+          (funcall setconfig-fn :plan-mode nil)
+          (let ((execution-state (funcall initialize-plan-execution-fn :plan-state plan-state)))
+            (funcall plan-execution-append-output-fn
+                     "LIVE> [step 1 running] executing rg -n plan."
+                     :step-index 1
+                     :phase :execution
+                     :style :meta
+                     :state execution-state)
+            (assert-true (eq (funcall plan-output-stdin-policy-fn) :disabled)
+                         "Expected execution continuity surface to keep output stdin policy disabled.")
+            (let* ((tree (funcall chat-ui-build-tree-fn state 110 26))
+                   (buffer (funcall render-chat-ui-buffer-fn
+                                    state
+                                    (funcall make-size-fn 110 26)))
+                   (rows (buffer-lines buffer)))
+              (assert-true (tree-has-id-p tree :chat-plan-presentation)
+                           "Expected chat UI tree to keep plan presentation widget after execution handoff.")
+              (assert-true (rows-contain-p rows "Plan Mode Workspace")
+                           "Expected execution handoff to preserve plan workspace container.")
+              (assert-true (rows-contain-p rows "Execution continuity initialized for run")
+                           "Expected execution continuity initialization line in terminal pane output.")
+              (assert-true (rows-contain-p rows "LIVE> [step 1 running]")
+                           "Expected execution terminal pane output to include live running line."))))
+        (funcall reset-plan-execution-state-fn)
+        (assert-true (eq (funcall plan-output-stdin-policy-fn) :enabled)
+                     "Expected output stdin policy helper to return :enabled after execution continuity reset.")
         (funcall clear-plan-steps-fn))
 
       (let ((state (make-chat-state)))
