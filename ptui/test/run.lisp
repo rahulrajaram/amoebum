@@ -887,7 +887,15 @@
                      :risk :high
                      :status :approved))
             :selected-step-index 2
-            :output-lines '("Plan mode active.")
+            :output-line-entries
+            '((:text "Plan mode active.")
+              (:text "LIVE> [step 2 blocked] timeout exited with code 124."
+               :severity :error
+               :style :error
+               :step-index 2
+               :recovery-actions
+               ("Retry step 2 from /execute after fixing command inputs."
+                "Review dependencies for step 2 in /plan review.")))
             :context-lines '("Referenced files: amoebum/src/ui/chat.lisp")))
          (size (ptui.widgets.core:widget-measure widget)))
     (assert-true (> (ptui.layout:layout-size-width size) 0)
@@ -934,6 +942,17 @@
                              (search "Inspect chat layout." line :test #'char-equal))
                            lines)
                      "expected rendered step description in plan steps panel, got ~S"
+                     lines)
+        (assert-true (member "Failure drill-down: step 2" lines :test #'string=)
+                     "expected failure drill-down heading in context panel, got ~S"
+                     lines)
+        (assert-true (some (lambda (line)
+                             (search "Originating step: 2." line :test #'char-equal))
+                           lines)
+                     "expected failure drill-down to map back to step 2, got ~S"
+                     lines)
+        (assert-true (member "Suggested recovery actions:" lines :test #'string=)
+                     "expected failure drill-down to render suggested recovery actions, got ~S"
                      lines)))))
 
 (deftest widgets-terminal-pane-buffering-and-scroll-contract

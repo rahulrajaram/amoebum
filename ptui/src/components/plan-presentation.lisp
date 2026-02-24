@@ -189,51 +189,71 @@
    :id :plan-presentation-steps
    :empty-message "No plan steps captured yet."))
 
-(defun %terminal-panel (output-lines
-                        output-line-entries
+(defun %normalize-recovery-actions (recovery-actions)
+  (remove nil
+          (loop for action in (or recovery-actions '())
+                for text = (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                        (%safe-string action ""))
+                when (plusp (length text))
+                  collect text)))
+
+(defun %normalize-output-line-entry (entry)
+  (cond
+    ((stringp entry)
+     (list :text (%safe-string entry "")
+           :severity :info
+           :style :plain
+           :step-index nil
+           :recovery-actions '()))
+    ((and (listp entry)
+          (or (getf entry :text)
+              (getf entry :line)))
+     (list :text (%safe-string (or (getf entry :text)
+                                   (getf entry :line))
+                               "")
+           :severity (or (getf entry :severity) :info)
+           :style (or (getf entry :style) :plain)
+           :step-index (and (integerp (getf entry :step-index))
+                            (getf entry :step-index))
+           :recovery-actions (%normalize-recovery-actions
+                              (getf entry :recovery-actions))))
+    (t
+     (list :text (%safe-string entry "")
+           :severity :info
+           :style :plain
+           :step-index nil
+           :recovery-actions '()))))
+
+(defun %normalize-output-line-entries (output-lines output-line-entries)
+  (let ((raw-entries (if output-line-entries
+                         output-line-entries
+                         (or output-lines '()))))
+    (loop for entry in raw-entries
+          for normalized = (%normalize-output-line-entry entry)
+          when (plusp (length (getf normalized :text "")))
+            collect normalized)))
+
+(defun %terminal-panel (entries
                         output-empty-message
                         output-viewport-height
                         output-stdin-capture-policy)
-  (labels ((normalize-line-entry (entry)
-             (cond
-               ((stringp entry)
-                (list :text (%safe-string entry "")
-                      :severity :info
-                      :style :plain))
-               ((and (listp entry)
-                     (or (getf entry :text)
-                         (getf entry :line)))
-                (list :text (%safe-string (or (getf entry :text)
-                                              (getf entry :line))
-                                          "")
-                      :severity (or (getf entry :severity) :info)
-                      :style (or (getf entry :style) :plain)))
-               (t
-                (list :text (%safe-string entry "")
-                      :severity :info
-                      :style :plain)))))
-    (let* ((raw-entries
-             (if output-line-entries
-                 output-line-entries
-                 (or output-lines '())))
-           (entries
-             (loop for entry in raw-entries
-                   for normalized = (normalize-line-entry entry)
-                   when (plusp (length (getf normalized :text "")))
-                     collect normalized))
-           (state (ptui.components.terminal-pane:make-terminal-pane-state
-                   :title "Plan Output"
-                   :lines (loop for entry in entries
-                                collect (getf entry :text))
-                   :line-metadata (loop for entry in entries
-                                        collect (list :severity (or (getf entry :severity) :info)
-                                                      :style (or (getf entry :style) :plain)))
-                   :empty-message output-empty-message
-                   :stdin-capture-policy output-stdin-capture-policy)))
-      (ptui.components.terminal-pane:make-terminal-pane-widget
-       state
-       :id :plan-presentation-output
-       :viewport-height output-viewport-height))))
+  (let ((state (ptui.components.terminal-pane:make-terminal-pane-state
+                :title "Plan Output"
+                :lines (loop for entry in entries
+                             collect (getf entry :text))
+                :line-metadata (loop for entry in entries
+                                     collect (list :severity (or (getf entry :severity) :info)
+                                                   :style (or (getf entry :style) :plain)
+                                                   :step-index (getf entry :step-index)
+                                                   :recovery-actions (copy-list
+                                                                      (or (getf entry :recovery-actions)
+                                                                          '()))))
+                :empty-message output-empty-message
+                :stdin-capture-policy output-stdin-capture-policy)))
+    (ptui.components.terminal-pane:make-terminal-pane-widget
+     state
+     :id :plan-presentation-output
+     :viewport-height output-viewport-height)))
 
 (defun %selected-step-context-lines (selected-step)
   (if (null selected-step)
@@ -258,11 +278,44 @@
             (append lines
                     (list (cons "File references: none" :meta)))))))
 
-(defun %context-panel (selected-step context-lines context-empty-message)
+(defun %latest-failure-entry (entries)
+  (loop for entry in (reverse (or entries '()))
+        for severity = (getf entry :severity :info)
+        for step-index = (getf entry :step-index)
+        when (and (member severity '(:error :critical) :test #'eq)
+                  (integerp step-index))
+          do (return entry)
+        finally (return nil)))
+
+(defun %failure-drilldown-lines (steps entries)
+  (let ((failure-entry (%latest-failure-entry entries)))
+    (when failure-entry
+      (let* ((step-index (getf failure-entry :step-index))
+             (step (%find-selected-step steps step-index))
+             (description (%safe-string
+                           (and step
+                                (plan-presentation-step-description step))
+                           "No matching plan step description available."))
+             (error-line (%safe-string (getf failure-entry :text) "unknown failure"))
+             (recovery-actions (%normalize-recovery-actions
+                                (getf failure-entry :recovery-actions))))
+        (append
+         (list (cons (format nil "Failure drill-down: step ~D" step-index) :system)
+               (cons (format nil "Originating step: ~D. ~A" step-index description) :assistant)
+               (cons (format nil "Terminal error: ~A" error-line) :meta))
+         (if recovery-actions
+             (append
+              (list (cons "Suggested recovery actions:" :system))
+              (loop for action in recovery-actions
+                    collect (cons (format nil "  - ~A" action) :meta)))
+             (list (cons "Suggested recovery actions: none provided." :meta))))))))
+
+(defun %context-panel (selected-step steps entries context-lines context-empty-message)
   (%make-section-widget
    "Context Inspector"
    (append
     (%selected-step-context-lines selected-step)
+    (%failure-drilldown-lines steps entries)
     (when context-lines
       (cons (cons "Summary:" :system)
             (loop for line in (or context-lines '())
@@ -284,18 +337,22 @@
                                              (context-empty-message "No context details yet."))
   (let* ((root-id (or id :plan-presentation))
          (normalized-steps (%normalize-steps steps))
+         (normalized-output-entries (%normalize-output-line-entries
+                                     output-lines
+                                     output-line-entries))
          (resolved-selected-step-index
            (%resolve-selected-step-index normalized-steps selected-step-index))
          (selected-step
            (%find-selected-step normalized-steps resolved-selected-step-index))
          (panels (list (%steps-panel normalized-steps
                                      resolved-selected-step-index)
-                       (%terminal-panel output-lines
-                                        output-line-entries
+                       (%terminal-panel normalized-output-entries
                                         output-empty-message
                                         output-viewport-height
                                         output-stdin-capture-policy)
                        (%context-panel selected-step
+                                       normalized-steps
+                                       normalized-output-entries
                                        context-lines
                                        context-empty-message)))
          (content (ptui.widgets.core:make-stack-widget

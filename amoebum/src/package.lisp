@@ -514,6 +514,7 @@
            #:plan-execution-output-entry-phase
            #:plan-execution-output-entry-severity
            #:plan-execution-output-entry-style
+           #:plan-execution-output-entry-recovery-actions
            #:plan-execution-output-entry-timestamp
            #:plan-execution-state
            #:plan-execution-state-p

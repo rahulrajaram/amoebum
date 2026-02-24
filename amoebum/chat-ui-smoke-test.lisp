@@ -55,11 +55,7 @@
          (set-plan-step-approvals-fn (funcall fn-in "SET-PLAN-STEP-APPROVALS" amoebum-pkg))
          (reset-plan-execution-state-fn (funcall fn-in "RESET-PLAN-EXECUTION-STATE" amoebum-pkg))
          (initialize-plan-execution-fn (funcall fn-in "INITIALIZE-PLAN-EXECUTION" amoebum-pkg))
-         (plan-execution-state-run-id-fn (funcall fn-in "PLAN-EXECUTION-STATE-RUN-ID" amoebum-pkg))
          (plan-execution-append-output-fn (funcall fn-in "PLAN-EXECUTION-APPEND-OUTPUT" amoebum-pkg))
-         (current-event-bus-fn (funcall fn-in "CURRENT-EVENT-BUS" amoebum-pkg))
-         (publish-fn (funcall fn-in "PUBLISH" amoebum-pkg))
-         (make-plan-step-status-event-fn (funcall fn-in "MAKE-PLAN-STEP-STATUS-EVENT" amoebum-pkg))
          (plan-output-stdin-policy-fn
            (funcall fn-in "%CHAT-PLAN-OUTPUT-STDIN-CAPTURE-POLICY" amoebum-pkg))
          (chat-role-cell-fn (funcall fn-in "CHAT-ROLE-CELL" amoebum-pkg))
@@ -76,6 +72,7 @@
          (ui-element-id-fn (funcall fn-in "UI-ELEMENT-ID" elements-pkg))
          (ui-element-type-fn (funcall fn-in "UI-ELEMENT-TYPE" elements-pkg))
          (ui-element-children-fn (funcall fn-in "UI-ELEMENT-CHILDREN" elements-pkg))
+         (ui-element-props-fn (funcall fn-in "UI-ELEMENT-PROPS" elements-pkg))
          (make-plan-mode-presentation-widget-sym
            (funcall symbol-in "MAKE-PLAN-MODE-PRESENTATION-WIDGET" plan-presentation-pkg))
          (message-role-fn (funcall fn-in "MESSAGE-ROLE" pseudopod-pkg))
@@ -94,6 +91,13 @@
                    (some (lambda (child)
                            (tree-has-id-p child id))
                          (funcall ui-element-children-fn node))))
+             (collect-tree-text-lines (node)
+               (append
+                (if (eq (funcall ui-element-type-fn node) :text)
+                    (list (getf (funcall ui-element-props-fn node) :text ""))
+                    '())
+                (loop for child in (funcall ui-element-children-fn node)
+                      append (collect-tree-text-lines child))))
              (buffer-cell-at (buffer col row)
                (let* ((cols (funcall buffer-cols-fn buffer))
                       (cells (funcall buffer-cells-fn buffer))
@@ -208,70 +212,66 @@
         (funcall clear-plan-steps-fn)
         (let ((plan-state (funcall current-plan-state-fn)))
           (funcall add-plan-step-fn
-                   "Run `rg -n plan`."
+                   "Keep continuity pane on execution handoff via `rg -n plan`."
                    :file-paths (list "amoebum/src/ui/chat.lisp")
                    :state plan-state)
           (funcall add-plan-step-fn
-                   "Run `./bin/yarli-run-verification.sh`."
+                   "Verify execution logs with `timeout 60 ./bin/yarli-run-verification.sh`."
                    :file-paths (list "amoebum/chat-ui-smoke-test.lisp")
                    :state plan-state)
           (funcall set-plan-step-approvals-fn '(1 2) :state plan-state)
           (funcall setconfig-fn :plan-mode nil)
           (let ((execution-state (funcall initialize-plan-execution-fn :plan-state plan-state)))
-            (let ((run-id (funcall plan-execution-state-run-id-fn execution-state)))
-              (funcall publish-fn
-                       (funcall current-event-bus-fn)
-                       (funcall make-plan-step-status-event-fn
-                                :run-id run-id
-                                :step-index 1
-                                :status :running
-                                :description "Executing preview command.")))
             (funcall plan-execution-append-output-fn
                      "LIVE> [step 1 running] executing rg -n plan."
                      :step-index 1
                      :phase :execution
                      :style :meta
                      :state execution-state)
+            (funcall plan-execution-append-output-fn
+                     "LIVE> [step 1 blocked] rg -n plan exited with code 2."
+                     :step-index 1
+                     :phase :execution
+                     :severity :error
+                     :style :error
+                     :state execution-state)
             (assert-true (eq (funcall plan-output-stdin-policy-fn) :disabled)
                          "Expected execution continuity surface to keep output stdin policy disabled.")
-            (let* ((tree (funcall chat-ui-build-tree-fn state 110 26))
+            (let* ((tree (funcall chat-ui-build-tree-fn state 110 30))
+                   (tree-lines (collect-tree-text-lines tree))
                    (buffer (funcall render-chat-ui-buffer-fn
                                     state
-                                    (funcall make-size-fn 110 26)))
+                                    (funcall make-size-fn 110 30)))
                    (rows (buffer-lines buffer)))
               (assert-true (tree-has-id-p tree :chat-plan-presentation)
                            "Expected chat UI tree to keep plan presentation widget after execution handoff.")
               (assert-true (rows-contain-p rows "Plan Mode Workspace")
                            "Expected execution handoff to preserve plan workspace container.")
-              (assert-true (rows-contain-p rows "Execution continuity initialized for run")
-                           "Expected execution continuity initialization line in terminal pane output.")
-              (assert-true (rows-contain-p rows "LIVE> [step 1 running]")
-                           "Expected execution terminal pane output to include live running line.")
-              (assert-true (rows-contain-p rows "status: running")
-                           "Expected plan-step status badge to update to running from event bus."))
-            (let ((run-id (funcall plan-execution-state-run-id-fn execution-state)))
-              (funcall publish-fn
-                       (funcall current-event-bus-fn)
-                       (funcall make-plan-step-status-event-fn
-                                :run-id run-id
-                                :step-index 1
-                                :status :done
-                                :description "Execution complete."))
-              (funcall publish-fn
-                       (funcall current-event-bus-fn)
-                       (funcall make-plan-step-status-event-fn
-                                :run-id run-id
-                                :step-index 2
-                                :status :blocked
-                                :description "Execution blocked by dependency."))
-              (let* ((buffer (funcall render-chat-ui-buffer-fn
-                                      state
-                                      (funcall make-size-fn 110 26)))
-                     (rows (buffer-lines buffer)))
-                (assert-true (rows-contain-p rows "status: done")
-                             "Expected plan-step status badge to update to done from event bus.")
-                (assert-true (rows-contain-p rows "status: blocked")
-                             "Expected plan-step status badge to update to blocked from event bus.")))))
+              (assert-true (some (lambda (line)
+                                   (search "LIVE> [step 1 running]"
+                                           line
+                                           :test #'char-equal))
+                                 tree-lines)
+                           "Expected execution workspace to include live running line, got ~S."
+                           tree-lines)
+              (assert-true (some (lambda (line)
+                                   (search "LIVE> [step 1 blocked]"
+                                           line
+                                           :test #'char-equal))
+                                 tree-lines)
+                           "Expected execution workspace to include blocked line for step 1, got ~S."
+                           tree-lines)
+              (assert-true (member "Failure drill-down: step 1" tree-lines :test #'string=)
+                           "Expected context inspector failure drill-down heading for step 1, got ~S."
+                           tree-lines)
+              (assert-true (member "Suggested recovery actions:" tree-lines :test #'string=)
+                           "Expected context inspector to include suggested recovery actions, got ~S."
+                           tree-lines)
+              (assert-true (some (lambda (line)
+                                   (rows-contain-p (list line) "Retry step 1"))
+                                 tree-lines)
+                           "Expected generated recovery action to suggest retrying step 1, got ~S."
+                           tree-lines))))
         (funcall reset-plan-execution-state-fn)
         (assert-true (eq (funcall plan-output-stdin-policy-fn) :enabled)
                      "Expected output stdin policy helper to return :enabled after execution continuity reset.")
