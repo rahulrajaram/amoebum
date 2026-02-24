@@ -724,6 +724,16 @@
     (labels ((captured-plan-available-p ()
                (and (stringp (plan-mode-state-last-plan-markdown plan-state))
                     (plusp (length (%slash-trim (plan-mode-state-last-plan-markdown plan-state))))))
+             (ensure-plan-captured-for-review (&key (reason :plan-command-exit))
+               (when active-p
+                 (multiple-value-bind (_ output-path)
+                     (exit-plan-mode :state plan-state
+                                     :reason reason
+                                     :write-output-p t)
+                   (declare (ignore _ output-path))
+                   (setconfig :plan-mode nil)
+                   (setf active-p nil)))
+               (captured-plan-available-p))
              (input-gating-snapshot ()
                (plan-input-gating-snapshot plan-state))
              (invalid-usage (detail)
@@ -755,7 +765,10 @@
                      (error ()
                        (values t "Expected optional write-to-file argument to be true/false for this action.")))))
              (decision-result (decision summary)
-               (if (captured-plan-available-p)
+               (if (or (captured-plan-available-p)
+                       (and (eq decision :approved)
+                            (ensure-plan-captured-for-review
+                             :reason :plan-command-approved-exit)))
                    (progn
                      (when (eq decision :approved)
                        (set-plan-step-approvals (plan-step-indexes plan-state)
@@ -781,7 +794,9 @@
                     (invalid-usage parse-error))
                    ((not step-request-p)
                     (decision-result :approved "Plan approved."))
-                   ((not (captured-plan-available-p))
+                   ((not (or (captured-plan-available-p)
+                             (ensure-plan-captured-for-review
+                              :reason :plan-command-approved-exit)))
                     (make-slash-command-result
                      :output "No captured plan is available yet. Exit plan mode first to capture one."))
                    (t
@@ -969,15 +984,25 @@
          (available-step-indexes (plan-step-indexes plan-state))
          (approved-step-indexes (or (plan-mode-state-approved-step-indexes plan-state) '()))
          (review-decision (plan-mode-state-review-decision plan-state)))
+    (when active-p
+      (multiple-value-bind (_ output-path)
+          (exit-plan-mode :state plan-state
+                          :reason :execute-transition
+                          :write-output-p t)
+        (declare (ignore _ output-path))
+        (setconfig :plan-mode nil)
+        (setf active-p nil
+              captured-plan (plan-mode-state-last-plan-markdown plan-state)
+              available-step-indexes (plan-step-indexes plan-state)
+              approved-step-indexes (or (plan-mode-state-approved-step-indexes plan-state) '())
+              review-decision (plan-mode-state-review-decision plan-state))))
     (cond
-      (active-p
-       (make-slash-command-result
-        :output "Plan mode is still active. Run /plan off first, then approve steps before /execute."))
-      ((or (not (stringp captured-plan))
+      ((or active-p
+           (not (stringp captured-plan))
            (zerop (length (%slash-trim captured-plan)))
            (null available-step-indexes))
        (make-slash-command-result
-        :output "No captured plan is available yet. Use /plan off to capture a plan for review."))
+        :output "No captured plan is available yet. Use /plan to draft a plan before /execute."))
       ((null approved-step-indexes)
        (make-slash-command-result
         :output "No approved steps are available for execution. Use /plan approve first."))
