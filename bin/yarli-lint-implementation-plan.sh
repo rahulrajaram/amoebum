@@ -44,7 +44,7 @@ function close_stanza(line_no) {
   if (status == "complete") {
     if (!have_evidence) {
       fail("missing Verification evidence: section for " tranche_id, line_no)
-    } else if (evidence_items < 1) {
+    } else if (evidence_items < 1 && !have_evidence_ref) {
       fail("Verification evidence: has no numbered entries for " tranche_id, line_no)
     }
   }
@@ -60,6 +60,7 @@ function close_stanza(line_no) {
   have_scope = 0
   have_exit = 0
   have_evidence = 0
+  have_evidence_ref = 0
   scope_items = 0
   exit_items = 0
   evidence_items = 0
@@ -99,6 +100,7 @@ in_next_work && /^Operator policy while queue is non-empty:/ {
     have_scope = 0
     have_exit = 0
     have_evidence = 0
+    have_evidence_ref = 0
     scope_items = 0
     exit_items = 0
     evidence_items = 0
@@ -146,7 +148,7 @@ in_next_work && /^Operator policy while queue is non-empty:/ {
     next
   }
 
-  if (line ~ /^    Verification evidence:$/) {
+  if (line ~ /^    Verification evidence:/) {
     if (!have_exit) {
       fail("Verification evidence: appears before Exit criteria: in " tranche_id, NR)
     }
@@ -155,6 +157,9 @@ in_next_work && /^Operator policy while queue is non-empty:/ {
     }
     have_evidence = 1
     section = "evidence"
+    if (line ~ /see \.yarli\/evidence\//) {
+      have_evidence_ref = 1
+    }
     next
   }
 
