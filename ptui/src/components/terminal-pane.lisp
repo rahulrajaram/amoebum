@@ -10,6 +10,8 @@
    #:terminal-pane-scroll-offset
    #:terminal-pane-status
    #:terminal-pane-empty-message
+   #:terminal-pane-line-metadata
+   #:terminal-pane-pending-line-metadata
    #:terminal-pane-append-line
    #:terminal-pane-append-output
    #:terminal-pane-clear
@@ -17,6 +19,7 @@
    #:terminal-pane-scroll-home
    #:terminal-pane-scroll-end
    #:terminal-pane-visible-lines
+   #:terminal-pane-visible-line-metadata
    #:terminal-pane-visible-styled-lines
    #:terminal-pane-line-segments
    #:terminal-pane-search-query
@@ -42,6 +45,9 @@
     #(36 114 200) #(188 63 188) #(17 168 205) #(229 229 229)
     #(102 102 102) #(241 76 76) #(35 209 139) #(245 245 67)
     #(59 142 234) #(214 112 214) #(41 184 219) #(255 255 255)))
+
+(defparameter +terminal-pane-severity-order+
+  '(:debug :info :warning :error :critical))
 
 (defstruct (terminal-pane-style
             (:constructor %make-terminal-pane-style
@@ -81,8 +87,10 @@
                   (title "terminal")
                   (lines '())
                   (line-segments '())
+                  (line-metadata '())
                   (pending-output "")
                   (pending-segments '())
+                  (pending-line-metadata '(:severity :info :style :plain))
                   (pending-escape "")
                   (ansi-style (%make-terminal-pane-style))
                   (max-lines 2000)
@@ -97,8 +105,10 @@
   (title "terminal" :type string)
   (lines '() :type list)
   (line-segments '() :type list)
+  (line-metadata '() :type list)
   (pending-output "" :type string)
   (pending-segments '() :type list)
+  (pending-line-metadata '(:severity :info :style :plain) :type list)
   (pending-escape "" :type string)
   (ansi-style (%make-terminal-pane-style) :type terminal-pane-style)
   (max-lines 2000 :type fixnum)
@@ -121,6 +131,62 @@
              (char= (char text (1- length)) #\Return))
         (subseq text 0 (1- length))
         text)))
+
+(defun %normalize-severity (severity)
+  (if (member severity +terminal-pane-severity-order+ :test #'eq)
+      severity
+      :info))
+
+(defun %normalize-style (style)
+  (if (keywordp style)
+      style
+      :plain))
+
+(defun %line-metadata-severity (metadata)
+  (%normalize-severity (getf metadata :severity :info)))
+
+(defun %line-metadata-style (metadata)
+  (%normalize-style (getf metadata :style :plain)))
+
+(defun %normalize-line-metadata (&key severity style)
+  (list :severity (%normalize-severity severity)
+        :style (%normalize-style style)))
+
+(defun %normalize-existing-metadata (metadata)
+  (%normalize-line-metadata
+   :severity (getf metadata :severity :info)
+   :style (getf metadata :style :plain)))
+
+(defun %severity-rank (severity)
+  (or (position (%normalize-severity severity)
+                +terminal-pane-severity-order+
+                :test #'eq)
+      1))
+
+(defun %merge-line-metadata (existing incoming)
+  (let* ((left (if (and (listp existing) existing)
+                   existing
+                   (%normalize-line-metadata :severity :info :style :plain)))
+         (right (if (and (listp incoming) incoming)
+                    incoming
+                    (%normalize-line-metadata :severity :info :style :plain)))
+         (left-severity (%line-metadata-severity left))
+         (right-severity (%line-metadata-severity right))
+         (left-style (%line-metadata-style left))
+         (right-style (%line-metadata-style right))
+         (severity (cond
+                     ((eq left-severity :info) right-severity)
+                     ((eq right-severity :info) left-severity)
+                     ((>= (%severity-rank right-severity) (%severity-rank left-severity))
+                      right-severity)
+                     (t
+                      left-severity)))
+         (style (cond
+                  ((eq left-style right-style) left-style)
+                  ((eq left-style :plain) right-style)
+                  ((eq right-style :plain) left-style)
+                  (t :mixed))))
+    (%normalize-line-metadata :severity severity :style style)))
 
 (defun %style->attrs (style)
   (ptui.core.types:make-attrs
@@ -186,12 +252,13 @@
       '()
       (list (list line (%style->cell (%make-terminal-pane-style))))))
 
-(defun %trim-lines+segments (lines line-segments max-lines)
+(defun %trim-lines+segments+metadata (lines line-segments line-metadata max-lines)
   (let ((overflow (- (length lines) max-lines)))
     (if (> overflow 0)
         (values (nthcdr overflow lines)
-                (nthcdr overflow line-segments))
-        (values lines line-segments))))
+                (nthcdr overflow line-segments)
+                (nthcdr overflow line-metadata))
+        (values lines line-segments line-metadata))))
 
 (defun %normalize-segments-list (line-segments lines)
   (let ((normalized
@@ -208,10 +275,20 @@
                        (nthcdr (length normalized) lines)))
         normalized)))
 
+(defun %normalize-metadata-list (line-metadata lines)
+  (let ((incoming (copy-list (or line-metadata '()))))
+    (loop repeat (length lines)
+          for metadata = (if incoming (pop incoming) nil)
+          collect (if (and (listp metadata) metadata)
+                      (%normalize-existing-metadata metadata)
+                      (%normalize-line-metadata :severity :info :style :plain)))))
+
 (defun make-terminal-pane-state (&key
                                    (title "terminal")
                                    (lines '())
+                                   (line-metadata '())
                                    (pending-output "")
+                                   (pending-line-metadata '(:severity :info :style :plain))
                                    (max-lines 2000)
                                    (scroll-offset 0)
                                    (status :idle)
@@ -222,14 +299,21 @@
   (check-type scroll-offset (integer 0 *))
   (check-type empty-message string)
   (let* ((normalized-lines (mapcar #'%normalize-line-text (or lines '())))
-         (normalized-segments (%normalize-segments-list '() normalized-lines)))
-    (multiple-value-bind (trimmed-lines trimmed-segments)
-        (%trim-lines+segments normalized-lines normalized-segments max-lines)
+         (normalized-segments (%normalize-segments-list '() normalized-lines))
+         (normalized-metadata (%normalize-metadata-list line-metadata normalized-lines)))
+    (multiple-value-bind (trimmed-lines trimmed-segments trimmed-metadata)
+        (%trim-lines+segments+metadata normalized-lines
+                                       normalized-segments
+                                       normalized-metadata
+                                       max-lines)
       (%make-terminal-pane-state :title title
                                  :lines trimmed-lines
                                  :line-segments trimmed-segments
+                                 :line-metadata trimmed-metadata
                                  :pending-output pending-output
                                  :pending-segments (%plain-line-segments pending-output)
+                                 :pending-line-metadata (%normalize-existing-metadata
+                                                         pending-line-metadata)
                                  :pending-escape ""
                                  :ansi-style (%make-terminal-pane-style)
                                  :max-lines max-lines
@@ -254,9 +338,17 @@
   (check-type state terminal-pane-state)
   (terminal-pane-state-line-segments state))
 
+(defun terminal-pane-line-metadata (state)
+  (check-type state terminal-pane-state)
+  (terminal-pane-state-line-metadata state))
+
 (defun terminal-pane-pending-output (state)
   (check-type state terminal-pane-state)
   (terminal-pane-state-pending-output state))
+
+(defun terminal-pane-pending-line-metadata (state)
+  (check-type state terminal-pane-state)
+  (terminal-pane-state-pending-line-metadata state))
 
 (defun terminal-pane-max-lines (state)
   (check-type state terminal-pane-state)
@@ -309,6 +401,18 @@
              pending)
         (nconc segments (list pending))
         segments)))
+
+(defun %display-line-metadata (state &key (include-pending t))
+  (check-type state terminal-pane-state)
+  (let ((metadata (copy-list (or (terminal-pane-state-line-metadata state) '())))
+        (pending (terminal-pane-state-pending-line-metadata state)))
+    (if (and include-pending
+             (> (length (terminal-pane-state-pending-output state)) 0))
+        (nconc metadata
+               (list (if (and (listp pending) pending)
+                         pending
+                         (%normalize-line-metadata :severity :info :style :plain))))
+        metadata)))
 
 (defun %max-scroll-offset (state viewport-height)
   (let ((line-count (length (%display-lines state))))
@@ -443,7 +547,7 @@
                             (setf (terminal-pane-style-bg style)
                                   (ptui.core.color:make-color-rgb r g b))))))))))))))))
 
-(defun %append-pending-run! (state text style)
+(defun %append-pending-run! (state text style line-metadata)
   (unless (zerop (length text))
     (setf (terminal-pane-state-pending-output state)
           (concatenate 'string
@@ -452,28 +556,37 @@
     (setf (terminal-pane-state-pending-segments state)
           (%append-segment (terminal-pane-state-pending-segments state)
                            text
-                           style))))
+                           style))
+    (setf (terminal-pane-state-pending-line-metadata state)
+          (%merge-line-metadata
+           (terminal-pane-state-pending-line-metadata state)
+           line-metadata))))
 
-(defun %append-line-internal (state line segments)
+(defun %append-line-internal (state line segments metadata)
   (let* ((normalized (%normalize-line-text line))
          (normalized-segments (if (and (listp segments) segments)
                                   segments
                                   (%plain-line-segments normalized)))
+         (normalized-metadata (%normalize-existing-metadata metadata))
          (next-lines (nconc (terminal-pane-state-lines state)
                             (list normalized)))
          (next-segments (nconc (terminal-pane-state-line-segments state)
-                               (list normalized-segments))))
-    (multiple-value-bind (trimmed-lines trimmed-segments)
-        (%trim-lines+segments next-lines
-                              next-segments
-                              (terminal-pane-state-max-lines state))
+                               (list normalized-segments)))
+         (next-metadata (nconc (terminal-pane-state-line-metadata state)
+                               (list normalized-metadata))))
+    (multiple-value-bind (trimmed-lines trimmed-segments trimmed-metadata)
+        (%trim-lines+segments+metadata next-lines
+                                       next-segments
+                                       next-metadata
+                                       (terminal-pane-state-max-lines state))
       (setf (terminal-pane-state-lines state) trimmed-lines
-            (terminal-pane-state-line-segments state) trimmed-segments)))
+            (terminal-pane-state-line-segments state) trimmed-segments
+            (terminal-pane-state-line-metadata state) trimmed-metadata)))
   (%clamp-scroll-offset! state)
   (%refresh-status! state)
   state)
 
-(defun %consume-output! (state output)
+(defun %consume-output! (state output line-metadata)
   (let* ((combined (if (zerop (length (terminal-pane-state-pending-escape state)))
                        output
                        (concatenate 'string
@@ -482,11 +595,12 @@
          (length (length combined))
          (index 0)
          (style (%clone-style (terminal-pane-state-ansi-style state)))
-         (run-text ""))
+         (run-text "")
+         (metadata (%normalize-existing-metadata line-metadata)))
     (setf (terminal-pane-state-pending-escape state) "")
     (labels ((flush-run ()
                (when (> (length run-text) 0)
-                 (%append-pending-run! state run-text style)
+                 (%append-pending-run! state run-text style metadata)
                  (setf run-text ""))))
       (loop while (< index length) do
         (let ((ch (char combined index)))
@@ -515,15 +629,18 @@
                    (if (= (1+ index) length)
                        (setf (terminal-pane-state-pending-escape state)
                              (string +esc-char+))
-                       (%append-pending-run! state (string ch) style))
+                       (%append-pending-run! state (string ch) style metadata))
                    (incf index))))
             ((char= ch #\Newline)
              (flush-run)
              (%append-line-internal state
                                     (terminal-pane-state-pending-output state)
-                                    (terminal-pane-state-pending-segments state))
+                                    (terminal-pane-state-pending-segments state)
+                                    (terminal-pane-state-pending-line-metadata state))
              (setf (terminal-pane-state-pending-output state) ""
-                   (terminal-pane-state-pending-segments state) '())
+                   (terminal-pane-state-pending-segments state) '()
+                   (terminal-pane-state-pending-line-metadata state)
+                   (%normalize-line-metadata :severity :info :style :plain))
              (incf index))
             ((char= ch #\Return)
              (incf index))
@@ -533,10 +650,13 @@
       (flush-run))
     (setf (terminal-pane-state-ansi-style state) style)))
 
-(defun terminal-pane-append-line (state line)
+(defun terminal-pane-append-line (state line &key (severity :info) (style :plain))
   "Append one completed output line."
   (check-type state terminal-pane-state)
-  (%append-line-internal state line (%plain-line-segments (%normalize-line-text line)))
+  (%append-line-internal state
+                         line
+                         (%plain-line-segments (%normalize-line-text line))
+                         (%normalize-line-metadata :severity severity :style style))
   (%recompute-search! state)
   state)
 
@@ -571,12 +691,14 @@
               (setf (terminal-pane-state-search-selected-index state) -1)))))
   state)
 
-(defun terminal-pane-append-output (state output)
+(defun terminal-pane-append-output (state output &key (severity :info) (style :plain))
   "Append raw output chunk, preserving trailing partial line state."
   (check-type state terminal-pane-state)
   (check-type output string)
   (unless (zerop (length output))
-    (%consume-output! state output))
+    (%consume-output! state
+                      output
+                      (%normalize-line-metadata :severity severity :style style)))
   (%recompute-search! state)
   (%refresh-status! state)
   state)
@@ -586,8 +708,11 @@
   (check-type state terminal-pane-state)
   (setf (terminal-pane-state-lines state) '()
         (terminal-pane-state-line-segments state) '()
+        (terminal-pane-state-line-metadata state) '()
         (terminal-pane-state-pending-output state) ""
         (terminal-pane-state-pending-segments state) '()
+        (terminal-pane-state-pending-line-metadata state)
+        (%normalize-line-metadata :severity :info :style :plain)
         (terminal-pane-state-pending-escape state) ""
         (terminal-pane-state-ansi-style state) (%make-terminal-pane-style)
         (terminal-pane-state-search-results state) '()
@@ -618,6 +743,17 @@
       (if (>= start end)
           '()
           (subseq lines start end)))))
+
+(defun terminal-pane-visible-line-metadata (state &key (viewport-height 12) (include-pending t))
+  "Return visible line metadata aligned with TERMINAL-PANE-VISIBLE-LINES."
+  (check-type state terminal-pane-state)
+  (check-type viewport-height (integer 1 *))
+  (let ((metadata (%display-line-metadata state :include-pending include-pending)))
+    (multiple-value-bind (start end)
+        (%visible-window-range state viewport-height :include-pending include-pending)
+      (if (>= start end)
+          '()
+          (subseq metadata start end)))))
 
 (defun terminal-pane-visible-styled-lines (state &key (viewport-height 12) (include-pending t))
   "Return visible styled line segments aligned with TERMINAL-PANE-VISIBLE-LINES."
@@ -839,13 +975,18 @@
   (let* ((status-widget (ptui.widgets.core:make-text-widget (%status-line state)))
          (line-widgets
            (let ((visible (terminal-pane-visible-lines state :viewport-height viewport-height))
-                 (styled (terminal-pane-visible-styled-lines state :viewport-height viewport-height)))
+                 (styled (terminal-pane-visible-styled-lines state :viewport-height viewport-height))
+                 (line-metadata (terminal-pane-visible-line-metadata
+                                 state
+                                 :viewport-height viewport-height)))
              (if visible
                  (loop for line in visible
                        for segments in styled
+                       for metadata in line-metadata
                        collect (ptui.widgets.core:make-text-widget
                                 line
-                                :styled-segments segments))
+                                :styled-segments segments
+                                :metadata metadata))
                  (list (ptui.widgets.core:make-text-widget
                         (terminal-pane-state-empty-message state))))))
          (content (ptui.widgets.core:make-stack-widget
