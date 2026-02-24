@@ -550,6 +550,64 @@
             (t
              (values nil nil nil)))))))
 
+(defun %parse-plan-step-reorder-token (token)
+  (let* ((trimmed (%slash-trim token))
+         (arrow-position (search "->" trimmed :test #'char=)))
+    (cond
+      ((zerop (length trimmed))
+       nil)
+      ((%digit-string-p trimmed)
+       (list (parse-integer trimmed)))
+      ((and arrow-position
+            (> arrow-position 0)
+            (< (+ arrow-position 2) (length trimmed)))
+       (let ((from-text (%slash-trim (subseq trimmed 0 arrow-position)))
+             (to-text (%slash-trim (subseq trimmed (+ arrow-position 2)))))
+         (when (and (%digit-string-p from-text)
+                    (%digit-string-p to-text))
+           (list (parse-integer from-text)
+                 (parse-integer to-text)))))
+      (t
+       nil))))
+
+(defun %parse-plan-step-reorder-args (raw-args)
+  (let ((tokens (%tokenize-command-arguments (or raw-args ""))))
+    (if (null tokens)
+        (values nil
+                nil
+                "Expected source and target step indexes (e.g. `/plan reorder 3 1`).")
+        (let ((indexes '())
+              (invalid-tokens '()))
+          (dolist (token tokens)
+            (if (member (string-downcase (%slash-trim token))
+                        '("step" "steps" "to" "into" "position")
+                        :test #'string=)
+                nil
+                (let ((parsed (%parse-plan-step-reorder-token token)))
+                  (if parsed
+                      (setf indexes (append indexes parsed))
+                      (push token invalid-tokens)))))
+          (cond
+            (invalid-tokens
+             (values nil
+                     nil
+                     (format nil
+                             "Invalid reorder token(s): ~{~A~^, ~}. Use `/plan reorder <from> <to>`."
+                             (nreverse invalid-tokens))))
+            ((/= (length indexes) 2)
+             (values nil
+                     nil
+                     "Expected exactly two step indexes for reorder (from and to)."))
+            ((or (< (first indexes) 1)
+                 (< (second indexes) 1))
+             (values nil
+                     nil
+                     "Step indexes must be positive integers."))
+            (t
+             (values (first indexes)
+                     (second indexes)
+                     nil)))))))
+
 (defun %plan-status-output (active-p
                             output-path
                             review-pending-p
@@ -631,9 +689,25 @@
                     (plusp (length (%slash-trim (plan-mode-state-last-plan-markdown plan-state))))))
              (invalid-usage (detail)
                (make-slash-command-result
-                :output (format nil "~A~%Usage: /plan [on|off|status|review|approve|reject|modify|request-modifications|request-changes] [args...] (approve accepts step selectors like `1`, `1,3`, `2-4`)"
+                :output (format nil "~A~%Usage: /plan [on|off|status|review|approve|reorder|reject|modify|request-modifications|request-changes] [args...] (approve accepts step selectors like `1`, `1,3`, `2-4`; reorder accepts `3 1` or `3->1`)"
                                 detail)
                 :echo-input-p t))
+             (recompute-review-decision ()
+               (let* ((available-step-indexes (plan-step-indexes plan-state))
+                      (approved-step-indexes
+                        (plan-mode-state-approved-step-indexes plan-state))
+                      (step-count (length available-step-indexes))
+                      (approved-count (length approved-step-indexes)))
+                 (set-plan-review-decision
+                  (cond
+                    ((and (> step-count 0)
+                          (= approved-count step-count))
+                     :approved)
+                    ((plusp approved-count)
+                     :partially-approved)
+                    (t
+                     :pending))
+                  :state plan-state)))
              (parse-write-to-file-p ()
                (if (%slash-blank-p raw-args)
                    (values t nil)
@@ -712,7 +786,57 @@
                                                              (member index approved-step-indexes :test #'=))
                                                            available-step-indexes)))
                                           (format out " Remaining steps: ~A."
-                                                  (%format-step-index-list remaining-step-indexes)))))))))))))))
+                                                  (%format-step-index-list remaining-step-indexes))))))))))))))
+             (reorder-steps-result ()
+               (multiple-value-bind (from-index to-index parse-error)
+                   (%parse-plan-step-reorder-args raw-args)
+                 (cond
+                   (parse-error
+                    (invalid-usage parse-error))
+                   ((not (captured-plan-available-p))
+                    (make-slash-command-result
+                     :output "No captured plan is available yet. Exit plan mode first to capture one."))
+                   (t
+                    (let* ((available-step-indexes (plan-step-indexes plan-state))
+                           (unknown-indexes
+                             (remove nil
+                                     (list (and (not (member from-index available-step-indexes :test #'=))
+                                                from-index)
+                                           (and (not (member to-index available-step-indexes :test #'=))
+                                                to-index)))))
+                      (cond
+                        ((null available-step-indexes)
+                         (make-slash-command-result
+                          :output "No captured plan steps are available to reorder."))
+                        (unknown-indexes
+                         (make-slash-command-result
+                          :output (format nil
+                                          "Unknown plan step index(es): ~A. Available steps: ~A."
+                                          (%format-step-index-list unknown-indexes)
+                                          (%format-step-index-list available-step-indexes))))
+                        ((= from-index to-index)
+                         (make-slash-command-result
+                          :output (format nil
+                                          "Step ~D is already at position ~D. No reorder needed."
+                                          from-index
+                                          to-index)))
+                        (t
+                         (reorder-plan-step from-index to-index :state plan-state)
+                         (recompute-review-decision)
+                         (refresh-plan-review-markdown plan-state)
+                         (let* ((approved-step-indexes
+                                  (plan-mode-state-approved-step-indexes plan-state))
+                                (step-count (length available-step-indexes))
+                                (approved-count (length approved-step-indexes)))
+                           (make-slash-command-result
+                            :output (with-output-to-string (out)
+                                      (format out "Reordered step ~D to position ~D."
+                                              from-index
+                                              to-index)
+                                      (format out " Approved steps: ~D/~D (~A)."
+                                              approved-count
+                                              step-count
+                                              (%format-step-index-list approved-step-indexes)))))))))))))
       (case state
         (:status
          (if (%slash-blank-p raw-args)
@@ -738,6 +862,8 @@
              (invalid-usage "The /plan review action does not accept extra arguments.")))
         (:approve
          (approve-steps-result))
+        (:reorder
+         (reorder-steps-result))
         (:reject
          (decision-result :rejected "Plan rejected."))
         ((:modify :request-modifications :request-changes)
@@ -1900,7 +2026,7 @@
   (declare (ignore _command _invocation _index _prefix))
   (let ((prefix (%slash-trim fragment)))
     (loop for option in '("on" "off" "status" "review"
-                          "approve" "reject" "modify"
+                          "approve" "reorder" "reject" "modify"
                           "request-modifications" "request-changes")
           when (%starts-with-ci-p prefix option)
             collect option)))
@@ -2694,14 +2820,14 @@
   (register-slash-command
    (make-slash-command
     :name "plan"
-    :description "Toggle plan mode, review captured plan output, record review decisions, and approve specific steps."
-    :usage "/plan [on|off|status|review|approve|reject|modify|request-modifications|request-changes] [args...]"
+    :description "Toggle plan mode, review captured plan output, reorder steps, record review decisions, and approve specific steps."
+    :usage "/plan [on|off|status|review|approve|reorder|reject|modify|request-modifications|request-changes] [args...]"
     :parameters
     (list (make-slash-command-parameter
            :name "state"
            :type :keyword
            :required-p nil
-           :choices '(:on :off :status :review :approve :reject :modify
+           :choices '(:on :off :status :review :approve :reorder :reject :modify
                       :request-modifications :request-changes)
            :description "Optional explicit plan mode action.")
           (make-slash-command-parameter
@@ -2709,7 +2835,7 @@
            :type :string
            :required-p nil
            :greedy-p t
-           :description "Optional action arguments (e.g. /plan off false, /plan approve 1,3, /plan modify <notes>)."))
+           :description "Optional action arguments (e.g. /plan off false, /plan approve 1,3, /plan reorder 3 1, /plan modify <notes>)."))
     :handler #'%plan-handler
     :completer #'%plan-arg-completer))
   (register-slash-command

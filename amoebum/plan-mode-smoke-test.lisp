@@ -54,6 +54,7 @@
          (current-plan-state-fn (funcall fn-in "CURRENT-PLAN-MODE-STATE" amoebum-pkg))
          (plan-mode-steps-fn (funcall fn-in "PLAN-MODE-STATE-STEPS" amoebum-pkg))
          (plan-approved-steps-fn (funcall fn-in "PLAN-MODE-STATE-APPROVED-STEP-INDEXES" amoebum-pkg))
+         (plan-step-description-fn (funcall fn-in "PLAN-STEP-DESCRIPTION" amoebum-pkg))
          (plan-step-depends-on-fn (funcall fn-in "PLAN-STEP-DEPENDS-ON" amoebum-pkg))
          (plan-review-pending-fn (funcall fn-in "PLAN-MODE-STATE-REVIEW-PENDING-P" amoebum-pkg))
          (plan-review-decision-fn (funcall fn-in "PLAN-MODE-STATE-REVIEW-DECISION" amoebum-pkg))
@@ -335,6 +336,55 @@
                                         "approved_for_execution: true")
                        "Expected /plan review markdown to include step-level approval markers, got ~S."
                        (funcall result-output-fn partial-review-result)))
+        (multiple-value-bind (handledp reorder-result)
+            (funcall dispatch-fn "/plan reorder 3 1")
+          (assert-true handledp "Expected /plan reorder 3 1 to be handled.")
+          (assert-true (contains-text-p (funcall result-output-fn reorder-result)
+                                        "Reordered step 3 to position 1.")
+                       "Expected /plan reorder to acknowledge source/target indexes, got ~S."
+                       (funcall result-output-fn reorder-result))
+          (assert-true (contains-text-p (funcall result-output-fn reorder-result)
+                                        "Approved steps: 2/4 (1, 2).")
+                       "Expected /plan reorder to remap approved indexes in output, got ~S."
+                       (funcall result-output-fn reorder-result)))
+        (assert-true (equal '(1 2) (funcall plan-approved-steps-fn plan-state))
+                     "Expected /plan reorder 3 1 to remap approved step indexes to '(1 2), got ~S."
+                     (funcall plan-approved-steps-fn plan-state))
+        (assert-true (eq :partially-approved (funcall plan-review-decision-fn plan-state))
+                     "Expected /plan reorder to preserve partial approval decision, got ~S."
+                     (funcall plan-review-decision-fn plan-state))
+        (let* ((reordered-steps (funcall plan-mode-steps-fn plan-state))
+               (first-step (first reordered-steps))
+               (third-step (third reordered-steps)))
+          (assert-true (contains-text-p (funcall plan-step-description-fn first-step)
+                                        "Assess integration boundary risk.")
+                       "Expected reordered step 1 description to match original step 3, got ~S."
+                       (funcall plan-step-description-fn first-step))
+          (assert-true (equal '(2) (funcall plan-step-depends-on-fn third-step))
+                       "Expected dependency remap to track reordered step indexes, got ~S."
+                       (funcall plan-step-depends-on-fn third-step)))
+        (multiple-value-bind (handledp reordered-status-result)
+            (funcall dispatch-fn "/plan status")
+          (assert-true handledp "Expected /plan status to be handled after reorder.")
+          (assert-true (contains-text-p (funcall result-output-fn reordered-status-result)
+                                        "Approved steps: 2/4 (1, 2)")
+                       "Expected /plan status to reflect remapped approvals after reorder, got ~S."
+                       (funcall result-output-fn reordered-status-result)))
+        (multiple-value-bind (handledp reordered-review-result)
+            (funcall dispatch-fn "/plan review")
+          (assert-true handledp "Expected /plan review after step reorder.")
+          (assert-true (contains-text-p (funcall result-output-fn reordered-review-result)
+                                        "1. Assess integration boundary risk.")
+                       "Expected reordered /plan review markdown to show moved step at index 1, got ~S."
+                       (funcall result-output-fn reordered-review-result))
+          (assert-true (contains-text-p (funcall result-output-fn reordered-review-result)
+                                        "3. Then update command parsing after step 1.")
+                       "Expected reordered /plan review markdown to keep moved ordering for prior step 2, got ~S."
+                       (funcall result-output-fn reordered-review-result))
+          (assert-true (contains-text-p (funcall result-output-fn reordered-review-result)
+                                        "depends_on: 2")
+                       "Expected reordered /plan review markdown to remap dependency indexes, got ~S."
+                       (funcall result-output-fn reordered-review-result)))
         (multiple-value-bind (handledp modify-result)
             (funcall dispatch-fn "/plan modify Split step 2 into two explicit steps.")
           (assert-true handledp "Expected /plan modify to be handled.")

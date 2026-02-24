@@ -452,6 +452,7 @@
            #:clear-plan-mode-steps
            #:clear-plan-step-approvals
            #:add-plan-step
+           #:reorder-plan-step
            #:set-plan-step-approvals
            #:approve-plan-steps
            #:plan-step-approved-p

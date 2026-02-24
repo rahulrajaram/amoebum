@@ -279,6 +279,54 @@
           (sort (copy-list (plan-mode-state-steps state)) #'< :key #'plan-step-index)))
   state)
 
+(defun reorder-plan-step (from-index to-index &key (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (let* ((steps (sort (copy-list (plan-mode-state-steps state))
+                      #'<
+                      :key #'plan-step-index))
+         (step-count (length steps)))
+    (unless (and (integerp from-index)
+                 (integerp to-index)
+                 (<= 1 from-index step-count)
+                 (<= 1 to-index step-count))
+      (return-from reorder-plan-step nil))
+    (when (= from-index to-index)
+      (return-from reorder-plan-step state))
+    (let* ((source-position (1- from-index))
+           (target-position (1- to-index))
+           (moved-step (nth source-position steps))
+           (remaining-steps (append (subseq steps 0 source-position)
+                                    (subseq steps (1+ source-position))))
+           (reordered-steps (append (subseq remaining-steps 0 target-position)
+                                    (list moved-step)
+                                    (subseq remaining-steps target-position)))
+           (old-index->new-index (make-hash-table :test #'eql))
+           (old-dependencies-by-step (make-hash-table :test #'eq)))
+      (dolist (step reordered-steps)
+        (setf (gethash step old-dependencies-by-step)
+              (copy-list (plan-step-depends-on step))))
+      (loop for step in reordered-steps
+            for new-index from 1 do
+              (setf (gethash (plan-step-index step) old-index->new-index) new-index
+                    (plan-step-index step) new-index))
+      (dolist (step reordered-steps)
+        (let ((remapped-dependencies
+                (loop for prior-index in (gethash step old-dependencies-by-step)
+                      for mapped-index = (gethash prior-index old-index->new-index)
+                      when (integerp mapped-index)
+                        collect mapped-index)))
+          (setf (plan-step-depends-on step)
+                (sort (remove-duplicates remapped-dependencies :test #'=) #'<))))
+      (setf (plan-mode-state-steps state) reordered-steps
+            (plan-mode-state-approved-step-indexes state)
+            (%normalize-step-indexes
+             (loop for approved-index in (plan-mode-state-approved-step-indexes state)
+                   for mapped-index = (gethash approved-index old-index->new-index)
+                   when (integerp mapped-index)
+                     collect mapped-index)
+             step-count))))
+  state)
+
 (defun %plan-step-markdown (step stream approved-p)
   (format stream "~D. ~A~%"
           (or (plan-step-index step) 0)
