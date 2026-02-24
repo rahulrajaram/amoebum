@@ -74,6 +74,16 @@
         normalized
         (%safe-string description ""))))
 
+(defun %truncate-string (text max-chars)
+  (let ((value (%safe-string text "")))
+    (if (and (integerp max-chars)
+             (> max-chars 3)
+             (> (length value) max-chars))
+        (concatenate 'string
+                     (subseq value 0 (- max-chars 3))
+                     "...")
+        value)))
+
 (defun %normalize-steps (steps)
   (loop for step in (or steps '())
         for raw-index = (if (typep step 'plan-presentation-step)
@@ -139,17 +149,14 @@
 (defun %step-line (step selected-p)
   (check-type step plan-presentation-step)
   (let ((approval (if (plan-presentation-step-approved-p step) "[x]" "[ ]"))
-        (selection (if selected-p ">" " "))
-        (risk (string-downcase (symbol-name (%normalize-risk (plan-presentation-step-risk step)))))
-        (status (string-downcase (symbol-name (%normalize-status
-                                               (plan-presentation-step-status step))))))
-    (format nil "~A ~A ~D. ~A (risk: ~A, status: ~A)"
+        (selection (if selected-p ">" " ")))
+    (format nil "~A ~A ~D. ~A"
             selection
             approval
             (or (plan-presentation-step-index step) 0)
-            (%safe-string (plan-presentation-step-description step) "Describe this step.")
-            risk
-            status)))
+            (%truncate-string
+             (%safe-string (plan-presentation-step-description step) "Describe this step.")
+             24))))
 
 (defun %resolve-selected-step-index (steps selected-step-index)
   (let ((indexes
@@ -344,22 +351,33 @@
            (%resolve-selected-step-index normalized-steps selected-step-index))
          (selected-step
            (%find-selected-step normalized-steps resolved-selected-step-index))
-         (panels (list (%steps-panel normalized-steps
-                                     resolved-selected-step-index)
-                       (%terminal-panel normalized-output-entries
-                                        output-empty-message
-                                        output-viewport-height
-                                        output-stdin-capture-policy)
-                       (%context-panel selected-step
-                                       normalized-steps
-                                       normalized-output-entries
-                                       context-lines
-                                       context-empty-message)))
+         (steps-panel (%steps-panel normalized-steps
+                                    resolved-selected-step-index))
+         (right-column
+           (ptui.widgets.core:make-stack-widget
+            (list (%terminal-panel normalized-output-entries
+                                   output-empty-message
+                                   output-viewport-height
+                                   output-stdin-capture-policy)
+                  (%context-panel selected-step
+                                  normalized-steps
+                                  normalized-output-entries
+                                  context-lines
+                                  context-empty-message))
+            :id (list root-id :right-column)
+            :direction :column
+            :gap 0))
+         (split-view
+           (ptui.widgets.core:make-stack-widget
+            (list right-column steps-panel)
+            :id (list root-id :split-view)
+            :direction :row
+            :gap 1))
          (content (ptui.widgets.core:make-stack-widget
                    (cons (%text-widget "Plan Mode Workspace"
                                       :id (list root-id :title)
                                       :role :system)
-                         panels)
+                         (list split-view))
                    :id (list root-id :stack)
                    :direction :column
                    :gap 0)))
