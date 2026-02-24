@@ -483,6 +483,8 @@
            #:exit-plan-mode
            #:toggle-plan-mode
            #:*known-plan-execution-statuses*
+           #:*plan-execution-continuity-max-lines*
+           #:*plan-execution-command-heads*
            #:plan-execution-step
            #:plan-execution-step-p
            #:make-plan-execution-step
@@ -495,6 +497,15 @@
            #:plan-execution-step-status
            #:plan-execution-step-started-at
            #:plan-execution-step-finished-at
+           #:plan-execution-output-entry
+           #:plan-execution-output-entry-p
+           #:make-plan-execution-output-entry
+           #:plan-execution-output-entry-line
+           #:plan-execution-output-entry-step-index
+           #:plan-execution-output-entry-phase
+           #:plan-execution-output-entry-severity
+           #:plan-execution-output-entry-style
+           #:plan-execution-output-entry-timestamp
            #:plan-execution-state
            #:plan-execution-state-p
            #:plan-execution-state-run-id
@@ -509,6 +520,7 @@
            #:plan-execution-state-approved-step-indexes
            #:plan-execution-state-pending-step-indexes
            #:plan-execution-state-completed-step-indexes
+           #:plan-execution-state-continuity-output
            #:plan-execution-state-current-step-index
            #:plan-execution-state-failure-reason
            #:plan-execution-state-abort-reason
@@ -521,6 +533,9 @@
            #:pause-plan-execution
            #:resume-plan-execution
            #:abort-plan-execution
+           #:plan-execution-append-output
+           #:plan-execution-output-lines
+           #:prime-plan-execution-continuity
            #:plan-execution-next-step-index
            #:execute-next-approved-plan-step
            #:execute-approved-plan-steps

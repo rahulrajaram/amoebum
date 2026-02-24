@@ -996,6 +996,13 @@
               (step-count (length available-step-indexes))
               (next-step-index (plan-execution-next-step-index execution-state))
               (run-id (plan-execution-state-run-id execution-state)))
+         (plan-execution-append-output
+          (format nil "LIVE> /execute accepted: run ~A with ~D approved step~:P."
+                  run-id
+                  approved-count)
+          :phase :system
+          :style :meta
+          :state execution-state)
          (make-slash-command-result
           :output (with-output-to-string (out)
                     (write-string "Execution pathways re-enabled after user approval." out)

@@ -3,6 +3,14 @@
 (defparameter *known-plan-execution-statuses*
   '(:idle :ready :running :paused :completed :failed :aborted))
 
+(defparameter *plan-execution-continuity-max-lines* 200)
+
+(defparameter *plan-execution-command-heads*
+  '("bash" "sh" "zsh" "fish" "timeout" "make" "cmake" "ninja" "pytest" "npm"
+    "pnpm" "yarn" "node" "python" "python3" "pip" "uv" "go" "cargo" "git"
+    "rg" "fd" "ls" "cat" "sed" "awk" "grep" "perl" "sbcl" "clisp" "qlot"
+    "nix" "docker" "podman" "kubectl"))
+
 (defstruct (plan-execution-step
             (:constructor make-plan-execution-step
                 (&key index
@@ -24,6 +32,22 @@
   started-at
   finished-at)
 
+(defstruct (plan-execution-output-entry
+            (:constructor make-plan-execution-output-entry
+                (&key
+                  line
+                  step-index
+                  (phase :execution)
+                  (severity :info)
+                  (style :plain)
+                  timestamp)))
+  line
+  step-index
+  (phase :execution)
+  (severity :info)
+  (style :plain)
+  timestamp)
+
 (defstruct (plan-execution-state
             (:constructor %make-plan-execution-state
                 (&key run-id
@@ -38,6 +62,7 @@
                       (approved-step-indexes '())
                       (pending-step-indexes '())
                       (completed-step-indexes '())
+                      (continuity-output '())
                       current-step-index
                       failure-reason
                       abort-reason)))
@@ -53,6 +78,7 @@
   (approved-step-indexes '() :type list)
   (pending-step-indexes '() :type list)
   (completed-step-indexes '() :type list)
+  (continuity-output '() :type list)
   current-step-index
   failure-reason
   abort-reason)
@@ -110,9 +136,15 @@
 (defun %complete-plan-execution-if-finished (state)
   (check-type state plan-execution-state)
   (when (null (plan-execution-state-pending-step-indexes state))
-    (setf (plan-execution-state-status state) :completed
-          (plan-execution-state-current-step-index state) nil
-          (plan-execution-state-finished-at state) (get-universal-time)))
+    (unless (eq :completed (plan-execution-state-status state))
+      (setf (plan-execution-state-status state) :completed
+            (plan-execution-state-current-step-index state) nil
+            (plan-execution-state-finished-at state) (get-universal-time))
+      (plan-execution-append-output
+       "LIVE> All approved steps completed."
+       :phase :execution
+       :style :success
+       :state state)))
   state)
 
 (defun %plan-step-order (steps)
@@ -135,6 +167,190 @@
    :depends-on (copy-list (or (plan-step-depends-on step) '()))
    :approved-p (not (null approved-p))
    :status :pending))
+
+(defun %safe-plan-execution-string (value &optional (fallback ""))
+  (cond
+    ((and (stringp value)
+          (plusp (length value)))
+     value)
+    ((null value)
+     fallback)
+    (t
+     (princ-to-string value))))
+
+(defun %normalize-output-phase (value)
+  (let* ((text (%safe-plan-execution-string value "execution"))
+         (phase (intern (string-upcase (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                    text))
+                        :keyword)))
+    (if (member phase '(:execution :dry-run :system) :test #'eq)
+        phase
+        :execution)))
+
+(defun %normalize-output-severity (value)
+  (let* ((text (%safe-plan-execution-string value "info"))
+         (severity (intern (string-upcase (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                       text))
+                           :keyword)))
+    (if (member severity '(:debug :info :warning :error :critical) :test #'eq)
+        severity
+        :info)))
+
+(defun %normalize-output-style (value)
+  (let* ((text (%safe-plan-execution-string value "plain"))
+         (style (intern (string-upcase (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                    text))
+                        :keyword)))
+    (if (member style '(:plain :meta :preview :success :warning :error) :test #'eq)
+        style
+        :plain)))
+
+(defun %trim-plan-execution-output (entries)
+  (let ((overflow (- (length entries) *plan-execution-continuity-max-lines*)))
+    (if (> overflow 0)
+        (nthcdr overflow entries)
+        entries)))
+
+(defun plan-execution-append-output (line &key
+                                            step-index
+                                            (phase :execution)
+                                            (severity :info)
+                                            (style :plain)
+                                            (state (current-plan-execution-state)))
+  (check-type state plan-execution-state)
+  (let* ((text (string-trim '(#\Space #\Tab #\Newline #\Return)
+                            (%safe-plan-execution-string line ""))))
+    (unless (plusp (length text))
+      (return-from plan-execution-append-output state))
+    (let* ((entry (make-plan-execution-output-entry
+                   :line text
+                   :step-index (and (integerp step-index) step-index)
+                   :phase (%normalize-output-phase phase)
+                   :severity (%normalize-output-severity severity)
+                   :style (%normalize-output-style style)
+                   :timestamp (get-universal-time)))
+           (updated (append (plan-execution-state-continuity-output state)
+                            (list entry))))
+      (setf (plan-execution-state-continuity-output state)
+            (%trim-plan-execution-output updated))
+      state)))
+
+(defun plan-execution-output-lines (&optional (state (current-plan-execution-state)))
+  (check-type state plan-execution-state)
+  (loop for entry in (plan-execution-state-continuity-output state)
+        collect (plan-execution-output-entry-line entry)))
+
+(defun %inline-code-spans (text)
+  (let* ((source (%safe-plan-execution-string text ""))
+         (length (length source))
+         (index 0)
+         (spans '()))
+    (loop while (< index length) do
+      (let ((start (position #\` source :start index)))
+        (if (null start)
+            (setf index length)
+            (let ((end (position #\` source :start (1+ start))))
+              (if (null end)
+                  (setf index length)
+                  (let ((snippet
+                          (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                       (subseq source (1+ start) end))))
+                    (when (plusp (length snippet))
+                      (push snippet spans))
+                    (setf index (1+ end))))))))
+    (nreverse spans)))
+
+(defun %leading-token (text)
+  (let* ((trimmed
+           (string-trim '(#\Space #\Tab #\Newline #\Return)
+                        (%safe-plan-execution-string text "")))
+         (length (length trimmed)))
+    (if (zerop length)
+        ""
+        (let ((end (or (position-if (lambda (char)
+                                      (member char '(#\Space #\Tab #\Newline #\Return)))
+                                    trimmed)
+                       length)))
+          (string-downcase (subseq trimmed 0 end))))))
+
+(defun %commandish-p (text)
+  (let* ((trimmed
+           (string-trim '(#\Space #\Tab #\Newline #\Return)
+                        (%safe-plan-execution-string text "")))
+         (length (length trimmed))
+         (token (%leading-token trimmed)))
+    (and (plusp length)
+         (or (member token *plan-execution-command-heads* :test #'string=)
+             (and (>= length 2)
+                  (string= (subseq trimmed 0 2) "./"))
+             (and (>= length 2)
+                  (string= (subseq trimmed 0 2) "~/"))
+             (char= (char trimmed 0) #\/)
+             (search "&&" trimmed :test #'char=)
+             (search "||" trimmed :test #'char=)
+             (search "|" trimmed :test #'char=)
+             (search ";" trimmed :test #'char=)
+             (search ">" trimmed :test #'char=)
+             (search "<" trimmed :test #'char=)))))
+
+(defun %plan-step-command-previews (step)
+  (check-type step plan-execution-step)
+  (let* ((description (%safe-plan-execution-string
+                       (plan-execution-step-description step)
+                       ""))
+         (inline-spans (%inline-code-spans description)))
+    (remove-duplicates
+     (loop for span in inline-spans
+           for normalized = (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                         (%safe-plan-execution-string span ""))
+           when (%commandish-p normalized)
+             collect normalized)
+     :test #'string=)))
+
+(defun %summarize-execution-result (result)
+  (let* ((text (%safe-plan-execution-string result ""))
+         (trimmed (string-trim '(#\Space #\Tab #\Newline #\Return) text)))
+    (if (zerop (length trimmed))
+        "completed without textual output"
+        (let* ((line-end (or (position #\Newline trimmed) (length trimmed)))
+               (line (subseq trimmed 0 line-end)))
+          (if (> (length line) 120)
+              (concatenate 'string (subseq line 0 117) "...")
+              line)))))
+
+(defun prime-plan-execution-continuity (&optional (state (current-plan-execution-state)))
+  (check-type state plan-execution-state)
+  (setf (plan-execution-state-continuity-output state) '())
+  (plan-execution-append-output
+   (format nil "Execution continuity initialized for run ~A."
+           (%safe-plan-execution-string (plan-execution-state-run-id state) "unknown"))
+   :phase :system
+   :style :meta
+   :state state)
+  (let ((preview-count 0))
+    (dolist (step (plan-execution-state-steps state))
+      (let ((step-index (plan-execution-step-index step)))
+        (when (and (integerp step-index)
+                   (member step-index
+                           (plan-execution-state-approved-step-indexes state)
+                           :test #'=))
+          (dolist (command (%plan-step-command-previews step))
+            (incf preview-count)
+            (plan-execution-append-output
+             (format nil "DRY-RUN> [step ~D approved | non-executed] ~A"
+                     step-index
+                     command)
+             :step-index step-index
+             :phase :dry-run
+             :style :preview
+             :state state)))))
+    (when (zerop preview-count)
+      (plan-execution-append-output
+       "DRY-RUN> No command snippets detected in approved steps."
+       :phase :dry-run
+       :style :meta
+       :state state)))
+  state)
 
 (defun %next-plan-execution-run-id ()
   (format nil "plan-exec-~D-~D"
@@ -159,6 +375,7 @@
         (plan-execution-state-approved-step-indexes state) '()
         (plan-execution-state-pending-step-indexes state) '()
         (plan-execution-state-completed-step-indexes state) '()
+        (plan-execution-state-continuity-output state) '()
         (plan-execution-state-current-step-index state) nil
         (plan-execution-state-failure-reason state) nil
         (plan-execution-state-abort-reason state) nil)
@@ -197,9 +414,11 @@
           (plan-execution-state-approved-step-indexes state) (copy-list approved-step-indexes)
           (plan-execution-state-pending-step-indexes state) (copy-list approved-step-indexes)
           (plan-execution-state-completed-step-indexes state) '()
+          (plan-execution-state-continuity-output state) '()
           (plan-execution-state-current-step-index state) nil
           (plan-execution-state-failure-reason state) nil
           (plan-execution-state-abort-reason state) nil)
+    (prime-plan-execution-continuity state)
     state))
 
 (defun plan-execution-ready-p (&optional (state (current-plan-execution-state)))
@@ -215,6 +434,11 @@
       (setf (plan-execution-state-started-at state) (get-universal-time)))
     (setf (plan-execution-state-status state) :running
           (plan-execution-state-finished-at state) nil)
+    (plan-execution-append-output
+     "LIVE> Execution run started."
+     :phase :execution
+     :style :meta
+     :state state)
     state))
 
 (defun pause-plan-execution (&optional (state (current-plan-execution-state)))
@@ -222,12 +446,22 @@
   (unless (eq :running (%normalize-plan-execution-status (plan-execution-state-status state)))
     (error "Plan execution can only be paused while running."))
   (setf (plan-execution-state-status state) :paused)
+  (plan-execution-append-output
+   "LIVE> Execution paused."
+   :phase :execution
+   :style :warning
+   :state state)
   state)
 
 (defun resume-plan-execution (&optional (state (current-plan-execution-state)))
   (check-type state plan-execution-state)
   (unless (eq :paused (%normalize-plan-execution-status (plan-execution-state-status state)))
     (error "Plan execution can only be resumed from paused state."))
+  (plan-execution-append-output
+   "LIVE> Execution resumed."
+   :phase :execution
+   :style :meta
+   :state state)
   (start-plan-execution state))
 
 (defun abort-plan-execution (&key
@@ -240,6 +474,13 @@
   (setf (plan-execution-state-status state) :aborted
         (plan-execution-state-abort-reason state) reason
         (plan-execution-state-finished-at state) (get-universal-time))
+  (plan-execution-append-output
+   (format nil "LIVE> Execution aborted (~A)."
+           (%safe-plan-execution-string reason "unspecified"))
+   :phase :execution
+   :severity :warning
+   :style :warning
+   :state state)
   state)
 
 (defun plan-execution-next-step-index (&optional (state (current-plan-execution-state)))
@@ -272,6 +513,15 @@
           (error "Missing execution step for approved index ~D." next-step-index))
         (setf (plan-execution-state-current-step-index state) next-step-index)
         (%mark-plan-execution-step-running step)
+        (plan-execution-append-output
+         (format nil "LIVE> [step ~D running] ~A"
+                 next-step-index
+                 (%safe-plan-execution-string (plan-execution-step-description step)
+                                              "Executing approved step."))
+         :step-index next-step-index
+         :phase :execution
+         :style :meta
+         :state state)
         (let ((result nil)
               (completed-p nil))
           (unwind-protect
@@ -285,10 +535,26 @@
                        (append (plan-execution-state-completed-step-indexes state)
                                (list next-step-index))
                        (plan-execution-state-current-step-index state) nil)
+                 (plan-execution-append-output
+                  (format nil "LIVE> [step ~D done] ~A"
+                          next-step-index
+                          (%summarize-execution-result result))
+                  :step-index next-step-index
+                  :phase :execution
+                  :style :success
+                  :state state)
                  (%complete-plan-execution-if-finished state))
             (unless completed-p
               (%mark-plan-execution-step-pending step)
-              (setf (plan-execution-state-current-step-index state) nil)))
+              (setf (plan-execution-state-current-step-index state) nil)
+              (plan-execution-append-output
+               (format nil "LIVE> [step ~D blocked] executor exited before completion."
+                       next-step-index)
+               :step-index next-step-index
+               :phase :execution
+               :severity :warning
+               :style :warning
+               :state state)))
           (values state
                   step
                   result

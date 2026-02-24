@@ -91,6 +91,7 @@
          (plan-execution-state-started-at-fn (funcall fn-in "PLAN-EXECUTION-STATE-STARTED-AT" amoebum-pkg))
          (plan-execution-state-finished-at-fn (funcall fn-in "PLAN-EXECUTION-STATE-FINISHED-AT" amoebum-pkg))
          (plan-execution-state-abort-reason-fn (funcall fn-in "PLAN-EXECUTION-STATE-ABORT-REASON" amoebum-pkg))
+         (plan-execution-output-lines-fn (funcall fn-in "PLAN-EXECUTION-OUTPUT-LINES" amoebum-pkg))
          (plan-execution-step-index-fn (funcall fn-in "PLAN-EXECUTION-STEP-INDEX" amoebum-pkg))
          (plan-execution-step-status-fn (funcall fn-in "PLAN-EXECUTION-STEP-STATUS" amoebum-pkg))
          (plan-execution-step-started-at-fn (funcall fn-in "PLAN-EXECUTION-STEP-STARTED-AT" amoebum-pkg))
@@ -217,7 +218,7 @@
           (assert-true saw-system-ack
                        "Expected a system acknowledgment for inferred /plan on.")))
       (funcall add-plan-step-fn
-               "Review target implementation files."
+               "Review target implementation files with `rg -n plan amoebum/src/plan-mode.lisp`."
                :file-paths (list "amoebum/src/plan-mode.lisp"
                                  "amoebum/src/commands.lisp")
                :risk :low)
@@ -367,7 +368,7 @@
         (assert-true (contains-text-p output-text "# Amoebum Plan")
                      "Expected plan output markdown header, got ~S."
                      output-text)
-        (assert-true (contains-text-p output-text "Review target implementation files.")
+        (assert-true (contains-text-p output-text "Review target implementation files with")
                      "Expected plan output to include captured step, got ~S."
                      output-text)
         (assert-true (contains-text-p output-text "risk: low")
@@ -425,7 +426,7 @@
                        "Expected /plan review output to include plan markdown header, got ~S."
                        (funcall result-output-fn review-result))
           (assert-true (contains-text-p (funcall result-output-fn review-result)
-                                        "Review target implementation files.")
+                                        "Review target implementation files with")
                        "Expected /plan review output to include captured step text, got ~S."
                        (funcall result-output-fn review-result)))
         (multiple-value-bind (handledp partial-approve-result)
@@ -687,6 +688,17 @@
                               (funcall plan-execution-state-pending-step-indexes-fn execution-state))
                        "Expected plan execution pending steps '(1 3), got ~S."
                        (funcall plan-execution-state-pending-step-indexes-fn execution-state))
+          (let ((continuity-lines (funcall plan-execution-output-lines-fn execution-state)))
+            (assert-true (some (lambda (line)
+                                 (contains-text-p line "Execution continuity initialized for run"))
+                               continuity-lines)
+                         "Expected continuity output to include run initialization, got ~S."
+                         continuity-lines)
+            (assert-true (some (lambda (line)
+                                 (contains-text-p line "DRY-RUN>"))
+                               continuity-lines)
+                         "Expected continuity output to include at least one DRY-RUN seed line, got ~S."
+                         continuity-lines))
           (funcall start-plan-execution-fn execution-state)
           (assert-true (eq :running (funcall plan-execution-state-status-fn execution-state))
                        "Expected start-plan-execution to set :running, got ~S."
@@ -748,6 +760,22 @@
           (assert-true (null (funcall plan-execution-next-step-index-fn execution-state))
                        "Expected no next approved step after sequential execution, got ~S."
                        (funcall plan-execution-next-step-index-fn execution-state))
+          (let ((continuity-lines (funcall plan-execution-output-lines-fn execution-state)))
+            (assert-true (some (lambda (line)
+                                 (contains-text-p line "LIVE> [step 1 running]"))
+                               continuity-lines)
+                         "Expected continuity output to include running marker for step 1, got ~S."
+                         continuity-lines)
+            (assert-true (some (lambda (line)
+                                 (contains-text-p line "LIVE> [step 3 done] step-3-ok"))
+                               continuity-lines)
+                         "Expected continuity output to include completion result for step 3, got ~S."
+                         continuity-lines)
+            (assert-true (some (lambda (line)
+                                 (contains-text-p line "LIVE> All approved steps completed."))
+                               continuity-lines)
+                         "Expected continuity output to include terminal completion line, got ~S."
+                         continuity-lines))
           (assert-true (integerp (funcall plan-execution-state-finished-at-fn execution-state))
                        "Expected sequential approved execution to set finished-at timestamp.")
           (dolist (step (funcall plan-execution-state-steps-fn execution-state))
