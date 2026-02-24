@@ -874,14 +874,19 @@
                      :index 1
                      :description "Inspect chat layout."
                      :approved-p nil
+                     :file-paths '("amoebum/src/ui/chat.lisp")
+                     :rationale-snippet "Inspect current chat composition and event flow."
                      :risk :medium
                      :status :pending)
                     (ptui.components.plan-presentation:make-plan-presentation-step
                      :index 2
                      :description "Validate terminal pane."
                      :approved-p t
+                     :file-paths '("ptui/src/components/terminal-pane.lisp")
+                     :rationale-snippet "Validate terminal pane output layout."
                      :risk :high
                      :status :approved))
+            :selected-step-index 2
             :output-lines '("Plan mode active.")
             :context-lines '("Referenced files: amoebum/src/ui/chat.lisp")))
          (size (ptui.widgets.core:widget-measure widget)))
@@ -911,6 +916,19 @@
                      lines)
         (assert-true (member "Context Inspector" lines :test #'string=)
                      "expected context panel heading, got ~S"
+                     lines)
+        (assert-true (member "Selected step: 2" lines :test #'string=)
+                     "expected selected-step header in context panel, got ~S"
+                     lines)
+        (assert-true (member "Rationale snippet: Validate terminal pane output layout."
+                             lines
+                             :test #'string=)
+                     "expected selected-step rationale snippet in context panel, got ~S"
+                     lines)
+        (assert-true (member "  - ptui/src/components/terminal-pane.lisp"
+                             lines
+                             :test #'string=)
+                     "expected selected-step file reference in context panel, got ~S"
                      lines)
         (assert-true (some (lambda (line)
                              (search "Inspect chat layout." line :test #'char-equal))

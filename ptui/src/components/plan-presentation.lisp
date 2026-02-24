@@ -7,6 +7,8 @@
    #:plan-presentation-step-index
    #:plan-presentation-step-description
    #:plan-presentation-step-approved-p
+   #:plan-presentation-step-file-paths
+   #:plan-presentation-step-rationale-snippet
    #:plan-presentation-step-risk
    #:plan-presentation-step-status
    #:make-plan-mode-presentation-widget))
@@ -18,11 +20,15 @@
                 (&key index
                       description
                       (approved-p nil)
+                      (file-paths '())
+                      rationale-snippet
                       (risk :medium)
                       (status :pending))))
   index
   description
   (approved-p nil :type boolean)
+  (file-paths '() :type list)
+  rationale-snippet
   (risk :medium)
   (status :pending))
 
@@ -48,6 +54,26 @@
         value
         :pending)))
 
+(defun %normalize-path-list (values)
+  (remove nil
+          (loop for value in (or values '())
+                for text = (typecase value
+                             (pathname (namestring value))
+                             (string value)
+                             (symbol (symbol-name value))
+                             (t (princ-to-string value)))
+                for trimmed = (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                           (%safe-string text ""))
+                when (plusp (length trimmed))
+                  collect trimmed)))
+
+(defun %normalize-rationale-snippet (rationale description)
+  (let ((normalized (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                 (%safe-string rationale ""))))
+    (if (plusp (length normalized))
+        normalized
+        (%safe-string description ""))))
+
 (defun %normalize-steps (steps)
   (loop for step in (or steps '())
         for raw-index = (if (typep step 'plan-presentation-step)
@@ -60,12 +86,21 @@
                      :description (%safe-string (plan-presentation-step-description step)
                                                 "Describe this step.")
                      :approved-p (not (null (plan-presentation-step-approved-p step)))
+                     :file-paths (%normalize-path-list
+                                  (plan-presentation-step-file-paths step))
+                     :rationale-snippet (%normalize-rationale-snippet
+                                         (plan-presentation-step-rationale-snippet step)
+                                         (plan-presentation-step-description step))
                      :risk (%normalize-risk (plan-presentation-step-risk step))
                      :status (%normalize-status (plan-presentation-step-status step)))
                     (make-plan-presentation-step
                      :index numeric-index
                      :description (%safe-string (getf step :description) "Describe this step.")
                      :approved-p (not (null (getf step :approved-p)))
+                     :file-paths (%normalize-path-list (getf step :file-paths))
+                     :rationale-snippet (%normalize-rationale-snippet
+                                         (getf step :rationale-snippet)
+                                         (getf step :description))
                      :risk (%normalize-risk (getf step :risk :medium))
                      :status (%normalize-status (getf step :status :pending))))))
 
@@ -101,27 +136,56 @@
                                        :borderp t
                                        :padding 0)))
 
-(defun %step-line (step)
+(defun %step-line (step selected-p)
   (check-type step plan-presentation-step)
   (let ((approval (if (plan-presentation-step-approved-p step) "[x]" "[ ]"))
+        (selection (if selected-p ">" " "))
         (risk (string-downcase (symbol-name (%normalize-risk (plan-presentation-step-risk step)))))
         (status (string-downcase (symbol-name (%normalize-status
                                                (plan-presentation-step-status step))))))
-    (format nil "~A ~D. ~A (risk: ~A, status: ~A)"
+    (format nil "~A ~A ~D. ~A (risk: ~A, status: ~A)"
+            selection
             approval
             (or (plan-presentation-step-index step) 0)
             (%safe-string (plan-presentation-step-description step) "Describe this step.")
             risk
             status)))
 
-(defun %steps-panel (steps)
+(defun %resolve-selected-step-index (steps selected-step-index)
+  (let ((indexes
+          (loop for step in (or steps '())
+                for index = (plan-presentation-step-index step)
+                when (integerp index)
+                  collect index)))
+    (cond
+      ((and (integerp selected-step-index)
+            (member selected-step-index indexes :test #'=))
+       selected-step-index)
+      (indexes
+       (first indexes))
+      (t
+       nil))))
+
+(defun %find-selected-step (steps selected-step-index)
+  (when (integerp selected-step-index)
+    (find selected-step-index
+          (or steps '())
+          :key #'plan-presentation-step-index
+          :test #'=)))
+
+(defun %steps-panel (steps selected-step-index)
   (%make-section-widget
    "Plan Steps"
-   (loop for step in (%normalize-steps steps)
-         collect (cons (%step-line step)
-                       (if (plan-presentation-step-approved-p step)
-                           :assistant
-                           :meta)))
+   (loop for step in (or steps '())
+         for step-index = (plan-presentation-step-index step)
+         for selected-p = (and (integerp selected-step-index)
+                               (integerp step-index)
+                               (= selected-step-index step-index))
+         collect (cons (%step-line step selected-p)
+                       (cond
+                         (selected-p :system)
+                         ((plan-presentation-step-approved-p step) :assistant)
+                         (t :meta))))
    :id :plan-presentation-steps
    :empty-message "No plan steps captured yet."))
 
@@ -137,16 +201,44 @@
      :id :plan-presentation-output
      :viewport-height output-viewport-height)))
 
-(defun %context-panel (context-lines context-empty-message)
+(defun %selected-step-context-lines (selected-step)
+  (if (null selected-step)
+      (list (cons "Selected step: none" :meta)
+            (cons "File references: none" :meta)
+            (cons "Rationale snippet: none" :meta))
+      (let* ((file-paths (plan-presentation-step-file-paths selected-step))
+             (rationale (%safe-string
+                         (plan-presentation-step-rationale-snippet selected-step)
+                         (plan-presentation-step-description selected-step)))
+             (lines (list (cons (format nil "Selected step: ~D"
+                                        (or (plan-presentation-step-index selected-step) 0))
+                                :system)
+                          (cons (format nil "Rationale snippet: ~A"
+                                        (%safe-string rationale "none"))
+                                :assistant))))
+        (if file-paths
+            (append lines
+                    (list (cons "File references:" :system))
+                    (loop for path in file-paths
+                          collect (cons (format nil "  - ~A" path) :meta)))
+            (append lines
+                    (list (cons "File references: none" :meta)))))))
+
+(defun %context-panel (selected-step context-lines context-empty-message)
   (%make-section-widget
    "Context Inspector"
-   (loop for line in (or context-lines '())
-         collect (cons (%safe-string line "") :meta))
+   (append
+    (%selected-step-context-lines selected-step)
+    (when context-lines
+      (cons (cons "Summary:" :system)
+            (loop for line in (or context-lines '())
+                  collect (cons (%safe-string line "") :meta)))))
    :id :plan-presentation-context
    :empty-message context-empty-message))
 
 (defun make-plan-mode-presentation-widget (&key
                                              steps
+                                             selected-step-index
                                              output-lines
                                              context-lines
                                              id
@@ -155,11 +247,19 @@
                                              (output-empty-message "No plan output yet.")
                                              (context-empty-message "No context details yet."))
   (let* ((root-id (or id :plan-presentation))
-         (panels (list (%steps-panel steps)
+         (normalized-steps (%normalize-steps steps))
+         (resolved-selected-step-index
+           (%resolve-selected-step-index normalized-steps selected-step-index))
+         (selected-step
+           (%find-selected-step normalized-steps resolved-selected-step-index))
+         (panels (list (%steps-panel normalized-steps
+                                     resolved-selected-step-index)
                        (%terminal-panel output-lines
                                         output-empty-message
                                         output-viewport-height)
-                       (%context-panel context-lines context-empty-message)))
+                       (%context-panel selected-step
+                                       context-lines
+                                       context-empty-message)))
          (content (ptui.widgets.core:make-stack-widget
                    (cons (%text-widget "Plan Mode Workspace"
                                       :id (list root-id :title)

@@ -160,7 +160,11 @@
           (assert-true (rows-contain-p rows "timeout 60 ./ptui/bin/test.sh")
                        "Expected dry-run command preview to include proposed shell command.")
           (assert-true (rows-contain-p rows "Context Inspector")
-                       "Expected rendered chat UI to show context inspector heading."))
+                       "Expected rendered chat UI to show context inspector heading.")
+          (assert-true (rows-contain-p rows "Selected step: 1")
+                       "Expected initial plan-step selection to target step 1.")
+          (assert-true (rows-contain-p rows "amoebum/src/ui/chat.lisp")
+                       "Expected selected step context to include first-step file reference."))
         (funcall setconfig-fn :plan-mode nil)
         (funcall clear-plan-steps-fn))
 
