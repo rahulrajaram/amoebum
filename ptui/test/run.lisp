@@ -1063,6 +1063,62 @@ foo bar foo")
                    "expected text widget metadata for first visible output row, got ~S"
                    metadata))))
 
+(deftest widgets-terminal-pane-stdin-capture-policy
+  (let* ((state (ptui.components.terminal-pane:make-terminal-pane-state
+                 :title "terminal"))
+         (capture-action
+           (ptui.components.terminal-pane:terminal-pane-handle-event
+            state
+            (ptui.core.events:make-key-event :text :text? "ls -la"))))
+    (assert-true (eq (getf capture-action :action) :stdin-captured)
+                 "expected text input to be captured when enabled, got ~S"
+                 capture-action)
+    (multiple-value-bind (events count)
+        (ptui.components.terminal-pane:terminal-pane-drain-stdin-events state)
+      (assert-true (= count 1)
+                   "expected one captured stdin event, got ~D"
+                   count)
+      (assert-true (eq (ptui.core.events:key-event-key (first events)) :text)
+                   "expected captured event key :text, got ~S"
+                   (first events))
+      (assert-true (string= (ptui.core.events:key-event-text? (first events)) "ls -la")
+                   "expected captured text payload, got ~S"
+                   (ptui.core.events:key-event-text? (first events))))
+    (ptui.components.terminal-pane:terminal-pane-set-stdin-capture-policy state :disabled)
+    (assert-true (not (ptui.components.terminal-pane:terminal-pane-stdin-capture-enabled-p state))
+                 "capture policy should report disabled after toggle")
+    (let ((blocked-action
+            (ptui.components.terminal-pane:terminal-pane-handle-event
+             state
+             (ptui.core.events:make-key-event :enter))))
+      (assert-true (eq (getf blocked-action :action) :stdin-blocked)
+                   "expected stdin capture to block when disabled, got ~S"
+                   blocked-action))
+    (multiple-value-bind (events count)
+        (ptui.components.terminal-pane:terminal-pane-drain-stdin-events state)
+      (assert-true (= count 0)
+                   "disabled capture should not queue stdin events, got ~D (~S)"
+                   count
+                   events))
+    (ptui.components.terminal-pane:terminal-pane-set-stdin-capture-policy state :enabled)
+    (assert-true (ptui.components.terminal-pane:terminal-pane-stdin-capture-enabled-p state)
+                 "capture policy should report enabled after re-toggle")
+    (let ((capture-tab
+            (ptui.components.terminal-pane:terminal-pane-handle-event
+             state
+             (ptui.core.events:make-key-event :tab))))
+      (assert-true (eq (getf capture-tab :action) :stdin-captured)
+                   "expected :tab to be captured after re-enable, got ~S"
+                   capture-tab))
+    (multiple-value-bind (events count)
+        (ptui.components.terminal-pane:terminal-pane-drain-stdin-events state)
+      (assert-true (= count 1)
+                   "expected one captured event after re-enable, got ~D"
+                   count)
+      (assert-true (eq (ptui.core.events:key-event-key (first events)) :tab)
+                   "expected captured key :tab, got ~S"
+                   (first events)))))
+
 (deftest widgets-glob-widget-api-boundary
   (multiple-value-bind (widgets-sym widgets-status)
       (find-symbol "MAKE-GLOB-WIDGET" :ptui.widgets.core)
