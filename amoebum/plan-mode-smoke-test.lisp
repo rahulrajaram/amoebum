@@ -286,6 +286,39 @@
                        "Expected read-file to remain allowed in plan mode, got ~S."
                        read-output))
 
+        (let* ((glob-call (funcall make-tool-call-fn
+                                   :name "glob-files"
+                                   :arguments (format nil
+                                                      "{\"pattern\":\"**/*.txt\",\"root\":\"~A\",\"limit\":20}"
+                                                      (namestring tmp-root))))
+               (glob-result (funcall execute-tool-fn glob-call context)))
+          (assert-true (and (stringp glob-result)
+                            (contains-text-p glob-result "\"MATCHES\":["))
+                       "Expected glob-files to remain allowed in plan mode, got ~S."
+                       glob-result))
+
+        (let* ((grep-call (funcall make-tool-call-fn
+                                   :name "grep-content"
+                                   :arguments (format nil
+                                                      "{\"pattern\":\"hello\",\"path-glob\":\"**/*.txt\",\"root\":\"~A\",\"before\":0,\"after\":0,\"limit\":20}"
+                                                      (namestring tmp-root))))
+               (grep-result (funcall execute-tool-fn grep-call context)))
+          (assert-true (and (stringp grep-result)
+                            (contains-text-p grep-result "\"MATCHES\":["))
+                       "Expected grep-content to remain allowed in plan mode, got ~S."
+                       grep-result))
+
+        (let* ((search-call (funcall make-tool-call-fn
+                                     :name "search-project"
+                                     :arguments (format nil
+                                                        "{\"query\":\"hello\",\"path-glob\":\"**/*.txt\",\"root\":\"~A\",\"include-content\":true,\"include-files\":true,\"limit\":20}"
+                                                        (namestring tmp-root))))
+               (search-result (funcall execute-tool-fn search-call context)))
+          (assert-true (and (stringp search-result)
+                            (contains-text-p search-result "\"RESULTS\":["))
+                       "Expected search-project to remain allowed in plan mode, got ~S."
+                       search-result))
+
         (let ((write-call (funcall make-tool-call-fn
                                    :name "write-file"
                                    :arguments (format nil

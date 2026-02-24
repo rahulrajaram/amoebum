@@ -43,6 +43,9 @@
 (defparameter *plan-mode-blocked-tool-names*
   '("write-file" "edit-file"))
 
+(defparameter *plan-mode-readonly-allowed-tool-names*
+  '("read-file" "glob-files" "grep-content" "search-project"))
+
 (defstruct (permission-rule
             (:constructor make-permission-rule
                 (&key id effect path command tool (source :project))))
@@ -1623,6 +1626,13 @@
          (or (%shell-tool-p tool command)
              (member tool-name *plan-mode-blocked-tool-names* :test #'string=)))))
 
+(defun %plan-mode-readonly-allowed-p (tool)
+  (let ((tool-name (%tool-name tool)))
+    (and (%plan-mode-enabled-p)
+         (member tool-name
+                 *plan-mode-readonly-allowed-tool-names*
+                 :test #'string=))))
+
 (defun %plan-mode-actionable-reason ()
   "Plan mode is read-only. Review the captured plan, approve allowed steps with /plan approve, then run /execute to re-enable mutating tools.")
 
@@ -1718,6 +1728,7 @@
                      ((or (eq path-decision :deny)
                           (eq command-decision :deny))
                       :deny)
+                     ((%plan-mode-readonly-allowed-p tool) :allow)
                      ((and path (%path-memory-allows-p tool path)) :allow)
                      ((eq command-decision :allow) :allow)
                      ((eq path-decision :allow) :allow)
