@@ -26,6 +26,10 @@
    #:terminal-pane-search-results
    #:terminal-pane-search-selected-index
    #:terminal-pane-last-copy
+   #:terminal-pane-stdin-capture-policy
+   #:terminal-pane-stdin-capture-enabled-p
+   #:terminal-pane-set-stdin-capture-policy
+   #:terminal-pane-drain-stdin-events
    #:terminal-pane-set-search-query
    #:terminal-pane-selected-search-result
    #:terminal-pane-search-next
@@ -101,7 +105,9 @@
                   (search-results '())
                   (search-selected-index -1)
                   (last-copy "")
-                  (empty-message "[no output]"))))
+                  (empty-message "[no output]")
+                  (stdin-capture-policy :enabled)
+                  (stdin-events '()))))
   (title "terminal" :type string)
   (lines '() :type list)
   (line-segments '() :type list)
@@ -119,7 +125,9 @@
   (search-results '() :type list)
   (search-selected-index -1 :type fixnum)
   (last-copy "" :type string)
-  (empty-message "[no output]" :type string))
+  (empty-message "[no output]" :type string)
+  (stdin-capture-policy :enabled :type keyword)
+  (stdin-events '() :type list))
 
 (defun %normalize-line-text (value)
   (let* ((text (typecase value
@@ -141,6 +149,22 @@
   (if (keywordp style)
       style
       :plain))
+
+(defun %normalize-stdin-capture-policy (policy)
+  (cond
+    ((or (eq policy t)
+         (eq policy :enabled)
+         (eq policy :capture)
+         (eq policy :on))
+     :enabled)
+    ((or (null policy)
+         (eq policy :disabled)
+         (eq policy :off)
+         (eq policy :blocked)
+         (eq policy :deny))
+     :disabled)
+    (t
+     :enabled)))
 
 (defun %line-metadata-severity (metadata)
   (%normalize-severity (getf metadata :severity :info)))
@@ -292,7 +316,8 @@
                                    (max-lines 2000)
                                    (scroll-offset 0)
                                    (status :idle)
-                                   (empty-message "[no output]"))
+                                   (empty-message "[no output]")
+                                   (stdin-capture-policy :enabled))
   (check-type title string)
   (check-type pending-output string)
   (check-type max-lines (integer 1 *))
@@ -324,7 +349,10 @@
                                  :search-results '()
                                  :search-selected-index -1
                                  :last-copy ""
-                                 :empty-message empty-message))))
+                                 :empty-message empty-message
+                                 :stdin-capture-policy (%normalize-stdin-capture-policy
+                                                        stdin-capture-policy)
+                                 :stdin-events '()))))
 
 (defun terminal-pane-title (state)
   (check-type state terminal-pane-state)
@@ -377,6 +405,26 @@
 (defun terminal-pane-last-copy (state)
   (check-type state terminal-pane-state)
   (terminal-pane-state-last-copy state))
+
+(defun terminal-pane-stdin-capture-policy (state)
+  (check-type state terminal-pane-state)
+  (terminal-pane-state-stdin-capture-policy state))
+
+(defun terminal-pane-stdin-capture-enabled-p (state)
+  (check-type state terminal-pane-state)
+  (eq (terminal-pane-state-stdin-capture-policy state) :enabled))
+
+(defun terminal-pane-set-stdin-capture-policy (state policy)
+  (check-type state terminal-pane-state)
+  (setf (terminal-pane-state-stdin-capture-policy state)
+        (%normalize-stdin-capture-policy policy))
+  state)
+
+(defun terminal-pane-drain-stdin-events (state)
+  (check-type state terminal-pane-state)
+  (let ((events (nreverse (terminal-pane-state-stdin-events state))))
+    (setf (terminal-pane-state-stdin-events state) '())
+    (values events (length events))))
 
 (defun terminal-pane-empty-message (state)
   (check-type state terminal-pane-state)
@@ -718,6 +766,7 @@
         (terminal-pane-state-search-results state) '()
         (terminal-pane-state-search-selected-index state) -1
         (terminal-pane-state-last-copy state) ""
+        (terminal-pane-state-stdin-events state) '()
         (terminal-pane-state-scroll-offset state) 0)
   (%refresh-status! state)
   state)
@@ -890,6 +939,18 @@
     (setf (terminal-pane-state-last-copy state) copied)
     copied))
 
+(defun %stdin-capturable-event-p (event)
+  (let ((key (ptui.core.events:key-event-key event)))
+    (or (eq key :text)
+        (member key '(:enter :ctrl-j :tab :backspace :delete :left :right)
+                :test #'eq)
+        (ptui.core.events:key-event-ctrlp event)
+        (ptui.core.events:key-event-altp event))))
+
+(defun %capture-stdin-event! (state event)
+  (push event (terminal-pane-state-stdin-events state))
+  state)
+
 (defun terminal-pane-handle-event (state event &key (viewport-height 12))
   "Apply key navigation event to STATE and return action metadata."
   (check-type state terminal-pane-state)
@@ -951,6 +1012,19 @@
          (list :action :copied-search-match
                :state state
                :text copied)))
+      ((%stdin-capturable-event-p event)
+       (if (terminal-pane-stdin-capture-enabled-p state)
+           (progn
+             (%capture-stdin-event! state event)
+             (list :action :stdin-captured
+                   :state state
+                   :event event
+                   :policy (terminal-pane-state-stdin-capture-policy state)))
+           (list :action :stdin-blocked
+                 :state state
+                 :event event
+                 :policy (terminal-pane-state-stdin-capture-policy state)
+                 :reason :consumer-policy)))
       (t
        (list :action :ignored :state state)))))
 
