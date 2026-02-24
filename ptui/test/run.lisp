@@ -836,6 +836,86 @@
                  "prompt-box height should be max-rows+border, got ~D"
                  (ptui.layout:layout-size-height size))))
 
+(deftest widgets-terminal-pane-api-boundary
+  (multiple-value-bind (widgets-sym widgets-status)
+      (find-symbol "MAKE-TERMINAL-PANE-WIDGET" :ptui.widgets.core)
+    (assert-true (null widgets-sym)
+                 "terminal-pane constructor must not exist in ptui.widgets.core, got ~S/~S"
+                 widgets-sym widgets-status))
+  (multiple-value-bind (components-sym components-status)
+      (find-symbol "MAKE-TERMINAL-PANE-WIDGET" :ptui.components.terminal-pane)
+    (assert-true (and components-sym (eql components-status :external))
+                 "terminal-pane constructor should be exported by ptui.components.terminal-pane, got ~S/~S"
+                 components-sym components-status)
+    (assert-true (fboundp components-sym)
+                 "terminal-pane constructor symbol should be fboundp: ~S"
+                 components-sym)))
+
+(deftest widgets-terminal-pane-buffering-and-scroll-contract
+  (let* ((state (ptui.components.terminal-pane:make-terminal-pane-state
+                 :title "build log"
+                 :max-lines 3)))
+    (ptui.components.terminal-pane:terminal-pane-append-output
+     state
+     (concatenate 'string "one" (string #\Newline)
+                  "two" (string #\Newline)
+                  "partial"))
+    (assert-true (equal (ptui.components.terminal-pane:terminal-pane-lines state)
+                        '("one" "two"))
+                 "expected completed lines after first append, got ~S"
+                 (ptui.components.terminal-pane:terminal-pane-lines state))
+    (assert-true (string= (ptui.components.terminal-pane:terminal-pane-pending-output state)
+                          "partial")
+                 "expected trailing partial output to be retained")
+    (ptui.components.terminal-pane:terminal-pane-append-output
+     state
+     (concatenate 'string "-line" (string #\Newline)
+                  "three" (string #\Newline)
+                  "four" (string #\Newline)))
+    (assert-true (equal (ptui.components.terminal-pane:terminal-pane-lines state)
+                        '("partial-line" "three" "four"))
+                 "expected max-lines trim to keep newest entries, got ~S"
+                 (ptui.components.terminal-pane:terminal-pane-lines state))
+    (assert-true (string= (ptui.components.terminal-pane:terminal-pane-pending-output state) "")
+                 "expected no pending partial output after newline-terminated append")
+    (assert-true (equal (ptui.components.terminal-pane:terminal-pane-visible-lines
+                         state
+                         :viewport-height 2)
+                        '("three" "four"))
+                 "expected viewport tail when scroll-offset=0")
+    (ptui.components.terminal-pane:terminal-pane-handle-event
+     state
+     (ptui.core.events:make-key-event :up)
+     :viewport-height 2)
+    (assert-true (= (ptui.components.terminal-pane:terminal-pane-scroll-offset state) 1)
+                 "expected :up event to move one row into scrollback")
+    (assert-true (equal (ptui.components.terminal-pane:terminal-pane-visible-lines
+                         state
+                         :viewport-height 2)
+                        '("partial-line" "three"))
+                 "expected scrollback window after one upward scroll")
+    (ptui.components.terminal-pane:terminal-pane-handle-event
+     state
+     (ptui.core.events:make-key-event :end)
+     :viewport-height 2)
+    (assert-true (= (ptui.components.terminal-pane:terminal-pane-scroll-offset state) 0)
+                 "expected :end event to jump back to live tail")))
+
+(deftest widgets-terminal-pane-widget-composition
+  (let* ((state (ptui.components.terminal-pane:make-terminal-pane-state
+                 :title "terminal"
+                 :lines '("alpha" "beta")
+                 :pending-output "gamma"))
+         (widget (ptui.components.terminal-pane:make-terminal-pane-widget
+                  state
+                  :id :terminal-pane
+                  :viewport-height 3))
+         (size (ptui.widgets.core:widget-measure widget)))
+    (assert-true (> (ptui.layout:layout-size-width size) 0)
+                 "terminal-pane widget width should be > 0")
+    (assert-true (>= (ptui.layout:layout-size-height size) 3)
+                 "terminal-pane widget height should include status + viewport rows")))
+
 (deftest widgets-glob-widget-api-boundary
   (multiple-value-bind (widgets-sym widgets-status)
       (find-symbol "MAKE-GLOB-WIDGET" :ptui.widgets.core)
