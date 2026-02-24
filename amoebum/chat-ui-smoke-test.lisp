@@ -45,6 +45,10 @@
          (chat-ui-state-input-text-fn (funcall fn-in "CHAT-UI-STATE-INPUT-TEXT" amoebum-pkg))
          (chat-ui-state-messages-fn (funcall fn-in "CHAT-UI-STATE-MESSAGES" amoebum-pkg))
          (chat-ui-state-scrollback-fn (funcall fn-in "CHAT-UI-STATE-MESSAGE-SCROLLBACK-LINES" amoebum-pkg))
+         (setconfig-fn (funcall fn-in "SETCONFIG" amoebum-pkg))
+         (current-plan-state-fn (funcall fn-in "CURRENT-PLAN-MODE-STATE" amoebum-pkg))
+         (clear-plan-steps-fn (funcall fn-in "CLEAR-PLAN-MODE-STEPS" amoebum-pkg))
+         (add-plan-step-fn (funcall fn-in "ADD-PLAN-STEP" amoebum-pkg))
          (chat-role-cell-fn (funcall fn-in "CHAT-ROLE-CELL" amoebum-pkg))
          (chat-ui-set-input-fn (funcall fn-in "CHAT-UI-SET-INPUT" amoebum-pkg))
          (render-chat-ui-buffer-fn (funcall fn-in "RENDER-CHAT-UI-BUFFER" amoebum-pkg))
@@ -56,6 +60,7 @@
          (buffer-cells-fn (funcall fn-in "CELL-BUFFER-CELLS" types-pkg))
          (cell-glyph-fn (funcall fn-in "CELL-GLYPH" types-pkg))
          (cell-fg-fn (funcall fn-in "CELL-FG" types-pkg))
+         (ui-element-id-fn (funcall fn-in "UI-ELEMENT-ID" elements-pkg))
          (ui-element-type-fn (funcall fn-in "UI-ELEMENT-TYPE" elements-pkg))
          (ui-element-children-fn (funcall fn-in "UI-ELEMENT-CHILDREN" elements-pkg))
          (message-role-fn (funcall fn-in "MESSAGE-ROLE" pseudopod-pkg))
@@ -68,6 +73,11 @@
                (or (eq (funcall ui-element-type-fn node) type)
                    (some (lambda (child)
                            (tree-has-type-p child type))
+                         (funcall ui-element-children-fn node))))
+             (tree-has-id-p (node id)
+               (or (equal (funcall ui-element-id-fn node) id)
+                   (some (lambda (child)
+                           (tree-has-id-p child id))
                          (funcall ui-element-children-fn node))))
              (buffer-cell-at (buffer col row)
                (let* ((cols (funcall buffer-cols-fn buffer))
@@ -119,6 +129,36 @@
                            24)))
         (assert-true (tree-has-type-p tree :prompt-box)
                      "Expected chat UI tree to include a prompt-box widget."))
+
+      (let ((state (make-chat-state)))
+        (funcall setconfig-fn :plan-mode t)
+        (funcall clear-plan-steps-fn)
+        (funcall add-plan-step-fn
+                 "Inspect `amoebum/src/ui/chat.lisp` plan-mode rendering."
+                 :file-paths (list "amoebum/src/ui/chat.lisp")
+                 :state (funcall current-plan-state-fn))
+        (funcall add-plan-step-fn
+                 "Validate `ptui` plan presentation composition."
+                 :file-paths (list "ptui/src/components/plan-presentation.lisp")
+                 :risk :high
+                 :state (funcall current-plan-state-fn))
+        (let* ((tree (funcall chat-ui-build-tree-fn state 110 26))
+               (buffer (funcall render-chat-ui-buffer-fn
+                                state
+                                (funcall make-size-fn 110 26)))
+               (rows (buffer-lines buffer)))
+          (assert-true (tree-has-id-p tree :chat-plan-presentation)
+                       "Expected chat UI tree to include the plan-mode presentation widget.")
+          (assert-true (rows-contain-p rows "Plan Mode Workspace")
+                       "Expected rendered chat UI to show plan-mode presentation title.")
+          (assert-true (rows-contain-p rows "Plan Steps")
+                       "Expected rendered chat UI to show plan steps panel heading.")
+          (assert-true (rows-contain-p rows "Plan Output")
+                       "Expected rendered chat UI to show plan output panel heading.")
+          (assert-true (rows-contain-p rows "Context Inspector")
+                       "Expected rendered chat UI to show context inspector heading."))
+        (funcall setconfig-fn :plan-mode nil)
+        (funcall clear-plan-steps-fn))
 
       (let ((state (make-chat-state)))
         (funcall chat-ui-add-message-fn state :system "System primed.")

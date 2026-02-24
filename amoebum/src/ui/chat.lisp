@@ -6,6 +6,8 @@
 (defparameter +context-compression-min-summarized-messages+ 2)
 (defparameter +context-compression-max-summary-points+ 4)
 (defparameter +context-compression-snippet-chars+ 96)
+(defparameter +chat-plan-presentation-max-steps+ 6)
+(defparameter +chat-plan-presentation-output-viewport-height+ 4)
 
 (defun %make-chat-stream-tool-call-table ()
   (make-hash-table :test #'equal))
@@ -1390,8 +1392,100 @@ Falls back to the global *toolset* when stream-tools is nil."
          (offset (- max-scrollback bounded-scrollback)))
     (values offset bounded-scrollback max-scrollback)))
 
+(defun %chat-plan-mode-enabled-p ()
+  (let ((config (%chat-config)))
+    (and (config-p config)
+         (not (null (config-value :plan-mode config))))))
+
+(defun %chat-plan-presentation-safe-string (value &optional (fallback ""))
+  (cond
+    ((and (stringp value)
+          (plusp (length value)))
+     value)
+    ((null value)
+     fallback)
+    (t
+     (princ-to-string value))))
+
+(defun %chat-plan-presentation-steps (plan-state)
+  (let* ((sorted-steps
+           (sort (copy-list (or (plan-mode-state-steps plan-state) '()))
+                 #'<
+                 :key #'plan-step-index))
+         (visible-steps
+           (subseq sorted-steps
+                   0
+                   (min (length sorted-steps) +chat-plan-presentation-max-steps+))))
+    (loop for step in visible-steps
+          for step-index = (or (plan-step-index step) 0)
+          for approved-p = (member step-index
+                                   (plan-mode-state-approved-step-indexes plan-state)
+                                   :test #'=)
+          collect (ptui.components.plan-presentation:make-plan-presentation-step
+                   :index step-index
+                   :description (%chat-plan-presentation-safe-string
+                                 (plan-step-description step)
+                                 "Describe this step.")
+                   :approved-p (not (null approved-p))
+                   :risk (or (plan-step-risk step) :medium)
+                   :status (if approved-p :approved :pending)))))
+
+(defun %chat-plan-presentation-output-lines (plan-state)
+  (let* ((steps (or (plan-mode-state-steps plan-state) '()))
+         (total (length steps))
+         (approved (length (plan-mode-state-approved-step-indexes plan-state)))
+         (decision-text
+           (string-downcase
+            (symbol-name (or (plan-mode-state-review-decision plan-state)
+                             :pending))))
+         (pending-p (plan-mode-state-review-pending-p plan-state)))
+    (list "Plan mode active. Mutating tools remain blocked."
+          (format nil "Review decision: ~A~:[~; (pending)~]" decision-text pending-p)
+          (format nil "Step approvals: ~D/~D" approved total)
+          "Use /plan review, /plan approve, and /plan reorder while drafting.")))
+
+(defun %chat-plan-presentation-context-lines (plan-state)
+  (let* ((steps (or (plan-mode-state-steps plan-state) '()))
+         (high-risk-count
+           (count-if (lambda (step)
+                       (eq (plan-step-risk step) :high))
+                     steps))
+         (flattened-file-paths
+           (remove-duplicates
+            (loop for step in steps
+                  append (or (plan-step-file-paths step) '()))
+            :test #'string=))
+         (notes (plan-mode-state-review-notes plan-state))
+         (extra-step-count
+           (max 0 (- (length steps) +chat-plan-presentation-max-steps+))))
+    (list (format nil "Captured steps: ~D~:[~; (showing first ~D)~]"
+                  (length steps)
+                  (> extra-step-count 0)
+                  +chat-plan-presentation-max-steps+)
+          (format nil "High-risk steps: ~D" high-risk-count)
+          (if flattened-file-paths
+              (format nil "Referenced files: ~{~A~^, ~}"
+                      (subseq flattened-file-paths
+                              0
+                              (min 3 (length flattened-file-paths))))
+              "Referenced files: none")
+          (format nil "Review notes: ~A"
+                  (%chat-plan-presentation-safe-string notes "none")))))
+
+(defun %chat-plan-presentation-widget (plan-state)
+  (when (and (%chat-plan-mode-enabled-p)
+             (plan-mode-state-p plan-state)
+             (plan-mode-state-steps plan-state))
+    (ptui.components.plan-presentation:make-plan-mode-presentation-widget
+     :id :chat-plan-presentation
+     :steps (%chat-plan-presentation-steps plan-state)
+     :output-lines (%chat-plan-presentation-output-lines plan-state)
+     :context-lines (%chat-plan-presentation-context-lines plan-state)
+     :output-viewport-height +chat-plan-presentation-output-viewport-height+)))
+
 (defun chat-ui-build-tree (state cols rows)
   (let* ((chat-state (ensure-chat-ui-state state))
+         (plan-state (current-plan-mode-state))
          (picker-state (%chat-sync-fuzzy-picker! chat-state))
          (tree-state (%ensure-chat-tree-browser-state chat-state))
          (picker-widget
@@ -1428,12 +1522,19 @@ Falls back to the global *toolset* when stream-tools is nil."
              (%chat-text-widget "Streaming... Press Ctrl-C to stop early."
                                 :chat-stream-stop-hint
                                 :meta)))
+         (plan-presentation-widget (%chat-plan-presentation-widget plan-state))
          (stream-stop-hint-height (if stream-stop-hint-widget 1 0))
+         (plan-presentation-height
+           (if plan-presentation-widget
+               (ptui.layout:layout-size-height
+                (ptui.widgets.core:widget-measure plan-presentation-widget))
+               0))
          (history-height (max 1 (- inner-height
                                    input-height
                                    header-height
                                    picker-height
                                    tree-height
+                                   plan-presentation-height
                                    stream-stop-hint-height
                                    1)))
          (message-lines (%message-line-entries chat-state
@@ -1482,10 +1583,13 @@ Falls back to the global *toolset* when stream-tools is nil."
              (ptui.widgets.core:make-stack-widget
               (append
                (list
-                (%chat-text-widget "amoebum chat" :chat-title :meta)
+               (%chat-text-widget "amoebum chat" :chat-title :meta)
                 status-widget)
                (if tree-widget
                    (list tree-widget)
+                   '())
+               (if plan-presentation-widget
+                   (list plan-presentation-widget)
                    '())
                (list history-scroll)
                (if picker-widget
