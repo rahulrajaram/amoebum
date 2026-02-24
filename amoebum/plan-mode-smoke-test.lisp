@@ -368,7 +368,63 @@
                           (funcall permission-blocked-payload-actionable-reason-fn blocked-payload)
                           "/execute")
                          "Expected blocked event actionable reason to include /execute guidance, got ~S."
-                         (funcall permission-blocked-payload-actionable-reason-fn blocked-payload)))))
+                         (funcall permission-blocked-payload-actionable-reason-fn blocked-payload))))
+
+        (let ((edit-call (funcall make-tool-call-fn
+                                  :name "edit-file"
+                                  :arguments
+                                  (format nil
+                                          "{\"path\":\"~A\",\"old-string\":\"hello\",\"new-string\":\"mutated\"}"
+                                          (namestring read-target))))
+              (saw-denied nil)
+              (denied-condition nil))
+          (handler-case
+              (funcall execute-tool-fn edit-call context)
+            (error (condition)
+              (when (typep condition permission-denied-sym)
+                (setf saw-denied t
+                      denied-condition condition))))
+          (assert-true saw-denied
+                       "Expected edit-file to be blocked during plan mode.")
+          (assert-true (and denied-condition
+                            (eq (funcall tool-error-reason-code-fn denied-condition)
+                                :plan-mode-mutating-command-blocked))
+                       "Expected edit-file plan-mode reason-code :plan-mode-mutating-command-blocked, got ~S."
+                       (and denied-condition
+                            (funcall tool-error-reason-code-fn denied-condition)))
+          (assert-true (contains-text-p (funcall tool-error-reason-fn denied-condition)
+                                        "/execute")
+                       "Expected edit-file denied reason to include /execute guidance, got ~S."
+                       (and denied-condition
+                            (funcall tool-error-reason-fn denied-condition))))
+
+        (let ((bash-call (funcall make-tool-call-fn
+                                  :name "bash-exec"
+                                  :arguments
+                                  (format nil
+                                          "{\"command\":\"touch ~A\"}"
+                                          (namestring write-target))))
+              (saw-denied nil)
+              (denied-condition nil))
+          (handler-case
+              (funcall execute-tool-fn bash-call context)
+            (error (condition)
+              (when (typep condition permission-denied-sym)
+                (setf saw-denied t
+                      denied-condition condition))))
+          (assert-true saw-denied
+                       "Expected mutating bash-exec command to be blocked during plan mode.")
+          (assert-true (and denied-condition
+                            (eq (funcall tool-error-reason-code-fn denied-condition)
+                                :plan-mode-mutating-command-blocked))
+                       "Expected bash-exec plan-mode reason-code :plan-mode-mutating-command-blocked, got ~S."
+                       (and denied-condition
+                            (funcall tool-error-reason-code-fn denied-condition)))
+          (assert-true (contains-text-p (funcall tool-error-reason-fn denied-condition)
+                                        "/execute")
+                       "Expected bash-exec denied reason to include /execute guidance, got ~S."
+                       (and denied-condition
+                            (funcall tool-error-reason-fn denied-condition)))))
 
       (let ((status-state (funcall make-status-bar-state-fn
                                    :config (funcall current-config-fn))))
