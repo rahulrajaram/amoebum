@@ -9,6 +9,7 @@
 (defparameter +chat-plan-presentation-max-steps+ 6)
 (defparameter +chat-plan-presentation-output-viewport-height+ 4)
 (defparameter +chat-plan-command-preview-max-lines+ 8)
+(defparameter +chat-plan-rationale-snippet-chars+ 160)
 (defparameter +chat-plan-command-heads+
   '("git" "make" "timeout" "sbcl" "bash" "sh" "zsh"
     "python" "python3" "pytest" "uv" "go" "cargo"
@@ -53,7 +54,8 @@
                       (stream-executed-tool-call-keys (%make-chat-stream-executed-table))
                       (stream-status-publish-key nil)
                       (frame-count 0)
-                      (agentic-iteration-count 0))))
+                      (agentic-iteration-count 0)
+                      (plan-selected-step-index nil))))
   runtime
   (messages '() :type list)
   (input-text "" :type string)
@@ -81,6 +83,7 @@
   (stream-status-publish-key nil)
   (frame-count 0 :type fixnum)
   (agentic-iteration-count 0 :type fixnum)
+  plan-selected-step-index
   (cached-tree-key nil)
   (cached-tree nil)
   (cached-layout nil)
@@ -1482,11 +1485,92 @@ Falls back to the global *toolset* when stream-tools is nil."
              collect normalized)
      :test #'string=)))
 
-(defun %chat-plan-command-preview-lines (plan-state)
-  (let* ((steps
-           (sort (copy-list (or (plan-mode-state-steps plan-state) '()))
-                 #'<
-                 :key #'plan-step-index))
+(defun %chat-plan-sorted-steps (plan-state)
+  (sort (copy-list (or (plan-mode-state-steps plan-state) '()))
+        #'<
+        :key #'plan-step-index))
+
+(defun %chat-plan-visible-steps (plan-state)
+  (let* ((sorted-steps (%chat-plan-sorted-steps plan-state))
+         (visible-count (min (length sorted-steps) +chat-plan-presentation-max-steps+)))
+    (subseq sorted-steps 0 visible-count)))
+
+(defun %chat-plan-normalize-path-list (paths)
+  (remove nil
+          (loop for path in (or paths '())
+                for text = (%chat-plan-presentation-safe-string path "")
+                for trimmed = (string-trim '(#\Space #\Tab #\Newline #\Return) text)
+                when (plusp (length trimmed))
+                  collect trimmed)))
+
+(defun %chat-plan-rationale-snippet (step)
+  (check-type step plan-step)
+  (%truncate-inline-text
+   (%chat-plan-presentation-safe-string (plan-step-description step) "")
+   +chat-plan-rationale-snippet-chars+))
+
+(defun %chat-plan-step-by-index (steps step-index)
+  (when (integerp step-index)
+    (find step-index (or steps '()) :key #'plan-step-index :test #'=)))
+
+(defun %chat-plan-resolve-selected-step-index (chat-state plan-state visible-steps)
+  (let* ((visible-indexes
+           (loop for step in (or visible-steps '())
+                 for index = (plan-step-index step)
+                 when (integerp index)
+                   collect index))
+         (approved-visible-indexes
+           (loop for index in (plan-mode-state-approved-step-indexes plan-state)
+                 when (member index visible-indexes :test #'=)
+                   collect index))
+         (current-selection (chat-ui-state-plan-selected-step-index chat-state))
+         (resolved-selection
+           (cond
+             ((and (integerp current-selection)
+                   (member current-selection visible-indexes :test #'=))
+              current-selection)
+             (approved-visible-indexes
+              (first approved-visible-indexes))
+             (visible-indexes
+              (first visible-indexes))
+             (t
+              nil))))
+    (setf (chat-ui-state-plan-selected-step-index chat-state) resolved-selection)
+    resolved-selection))
+
+(defun %chat-plan-move-selection! (chat-state delta)
+  (let* ((plan-state (current-plan-mode-state)))
+    (unless (and (%chat-plan-mode-enabled-p)
+                 (plan-mode-state-p plan-state)
+                 (plan-mode-state-steps plan-state)
+                 (integerp delta)
+                 (/= delta 0))
+      (return-from %chat-plan-move-selection! nil))
+    (let* ((visible-steps (%chat-plan-visible-steps plan-state))
+           (visible-indexes
+             (loop for step in visible-steps
+                   for index = (plan-step-index step)
+                   when (integerp index)
+                     collect index)))
+      (unless visible-indexes
+        (setf (chat-ui-state-plan-selected-step-index chat-state) nil)
+        (return-from %chat-plan-move-selection! nil))
+      (let* ((current-index
+               (%chat-plan-resolve-selected-step-index chat-state
+                                                      plan-state
+                                                      visible-steps))
+             (current-position
+               (or (position current-index visible-indexes :test #'=)
+                   0))
+             (next-position
+               (min (1- (length visible-indexes))
+                    (max 0 (+ current-position delta))))
+             (next-index (nth next-position visible-indexes)))
+        (setf (chat-ui-state-plan-selected-step-index chat-state) next-index)
+        t))))
+
+(defun %chat-plan-command-preview-lines (plan-state selected-step-index)
+  (let* ((steps (%chat-plan-sorted-steps plan-state))
          (approved-indexes (plan-mode-state-approved-step-indexes plan-state))
          (entries '()))
     (dolist (step steps)
@@ -1494,9 +1578,11 @@ Falls back to the global *toolset* when stream-tools is nil."
              (approved-p (member step-index approved-indexes :test #'=)))
         (dolist (command (%chat-plan-step-command-previews step))
           (push (format nil
-                        "DRY-RUN> [step ~D ~A | non-executed] ~A"
+                        "DRY-RUN> [step ~D ~A~:[~; | selected~] | non-executed] ~A"
                         step-index
                         (if approved-p "approved" "pending")
+                        (and (integerp selected-step-index)
+                             (= step-index selected-step-index))
                         command)
                 entries))))
     (let ((ordered (nreverse entries)))
@@ -1505,30 +1591,25 @@ Falls back to the global *toolset* when stream-tools is nil."
               (min (length ordered)
                    +chat-plan-command-preview-max-lines+)))))
 
-(defun %chat-plan-presentation-steps (plan-state)
-  (let* ((sorted-steps
-           (sort (copy-list (or (plan-mode-state-steps plan-state) '()))
-                 #'<
-                 :key #'plan-step-index))
-         (visible-steps
-           (subseq sorted-steps
-                   0
-                   (min (length sorted-steps) +chat-plan-presentation-max-steps+))))
-    (loop for step in visible-steps
+(defun %chat-plan-presentation-steps (plan-state visible-steps)
+  (loop for step in visible-steps
           for step-index = (or (plan-step-index step) 0)
           for approved-p = (member step-index
                                    (plan-mode-state-approved-step-indexes plan-state)
                                    :test #'=)
-          collect (ptui.components.plan-presentation:make-plan-presentation-step
-                   :index step-index
-                   :description (%chat-plan-presentation-safe-string
-                                 (plan-step-description step)
-                                 "Describe this step.")
-                   :approved-p (not (null approved-p))
-                   :risk (or (plan-step-risk step) :medium)
-                   :status (if approved-p :approved :pending)))))
+          collect
+          (ptui.components.plan-presentation:make-plan-presentation-step
+           :index step-index
+           :description (%chat-plan-presentation-safe-string
+                         (plan-step-description step)
+                         "Describe this step.")
+           :approved-p (not (null approved-p))
+           :file-paths (%chat-plan-normalize-path-list (plan-step-file-paths step))
+           :rationale-snippet (%chat-plan-rationale-snippet step)
+           :risk (or (plan-step-risk step) :medium)
+           :status (if approved-p :approved :pending))))
 
-(defun %chat-plan-presentation-output-lines (plan-state)
+(defun %chat-plan-presentation-output-lines (plan-state selected-step-index)
   (let* ((steps (or (plan-mode-state-steps plan-state) '()))
          (total (length steps))
          (approved (length (plan-mode-state-approved-step-indexes plan-state)))
@@ -1537,15 +1618,24 @@ Falls back to the global *toolset* when stream-tools is nil."
             (symbol-name (or (plan-mode-state-review-decision plan-state)
                              :pending))))
          (pending-p (plan-mode-state-review-pending-p plan-state))
-         (command-previews (%chat-plan-command-preview-lines plan-state)))
+         (command-previews (%chat-plan-command-preview-lines plan-state
+                                                             selected-step-index)))
     (if command-previews
-        command-previews
-        (list "Plan mode active. Mutating tools remain blocked."
+        (if (integerp selected-step-index)
+            (cons (format nil "Selected step: ~D (Ctrl-N/Ctrl-P to change)"
+                          selected-step-index)
+                  command-previews)
+            command-previews)
+        (append
+         (when (integerp selected-step-index)
+           (list (format nil "Selected step: ~D (Ctrl-N/Ctrl-P to change)"
+                         selected-step-index)))
+         (list "Plan mode active. Mutating tools remain blocked."
               (format nil "Review decision: ~A~:[~; (pending)~]" decision-text pending-p)
               (format nil "Step approvals: ~D/~D" approved total)
-              "DRY-RUN> [non-executed] No command snippets detected in proposed steps yet."))))
+              "DRY-RUN> [non-executed] No command snippets detected in proposed steps yet.")))))
 
-(defun %chat-plan-presentation-context-lines (plan-state)
+(defun %chat-plan-presentation-context-lines (plan-state selected-step visible-steps)
   (let* ((steps (or (plan-mode-state-steps plan-state) '()))
          (high-risk-count
            (count-if (lambda (step)
@@ -1559,30 +1649,47 @@ Falls back to the global *toolset* when stream-tools is nil."
          (notes (plan-mode-state-review-notes plan-state))
          (extra-step-count
            (max 0 (- (length steps) +chat-plan-presentation-max-steps+))))
-    (list (format nil "Captured steps: ~D~:[~; (showing first ~D)~]"
-                  (length steps)
-                  (> extra-step-count 0)
-                  +chat-plan-presentation-max-steps+)
-          (format nil "High-risk steps: ~D" high-risk-count)
-          (if flattened-file-paths
-              (format nil "Referenced files: ~{~A~^, ~}"
-                      (subseq flattened-file-paths
-                              0
-                              (min 3 (length flattened-file-paths))))
-              "Referenced files: none")
-          (format nil "Review notes: ~A"
-                  (%chat-plan-presentation-safe-string notes "none")))))
+    (append
+     (list (format nil "Captured steps: ~D~:[~; (showing first ~D)~]"
+                   (length steps)
+                   (> extra-step-count 0)
+                   +chat-plan-presentation-max-steps+)
+           (format nil "Visible steps: ~D" (length visible-steps))
+           (format nil "High-risk steps: ~D" high-risk-count)
+           (if flattened-file-paths
+               (format nil "Referenced files: ~{~A~^, ~}"
+                       (subseq flattened-file-paths
+                               0
+                               (min 3 (length flattened-file-paths))))
+               "Referenced files: none")
+           (format nil "Review notes: ~A"
+                   (%chat-plan-presentation-safe-string notes "none"))
+           "Selection controls: Ctrl-N next, Ctrl-P previous.")
+     (when selected-step
+       (list (format nil "Selected rationale chars: ~D"
+                     (length (%chat-plan-rationale-snippet selected-step))))))))
 
-(defun %chat-plan-presentation-widget (plan-state)
+(defun %chat-plan-presentation-widget (plan-state chat-state)
   (when (and (%chat-plan-mode-enabled-p)
              (plan-mode-state-p plan-state)
              (plan-mode-state-steps plan-state))
-    (ptui.components.plan-presentation:make-plan-mode-presentation-widget
-     :id :chat-plan-presentation
-     :steps (%chat-plan-presentation-steps plan-state)
-     :output-lines (%chat-plan-presentation-output-lines plan-state)
-     :context-lines (%chat-plan-presentation-context-lines plan-state)
-     :output-viewport-height +chat-plan-presentation-output-viewport-height+)))
+    (let* ((visible-steps (%chat-plan-visible-steps plan-state))
+           (selected-step-index (%chat-plan-resolve-selected-step-index
+                                 chat-state
+                                 plan-state
+                                 visible-steps))
+           (selected-step (%chat-plan-step-by-index visible-steps
+                                                    selected-step-index)))
+      (ptui.components.plan-presentation:make-plan-mode-presentation-widget
+       :id :chat-plan-presentation
+       :steps (%chat-plan-presentation-steps plan-state visible-steps)
+       :selected-step-index selected-step-index
+       :output-lines (%chat-plan-presentation-output-lines plan-state
+                                                           selected-step-index)
+       :context-lines (%chat-plan-presentation-context-lines plan-state
+                                                             selected-step
+                                                             visible-steps)
+       :output-viewport-height +chat-plan-presentation-output-viewport-height+))))
 
 (defun chat-ui-build-tree (state cols rows)
   (let* ((chat-state (ensure-chat-ui-state state))
@@ -1623,7 +1730,7 @@ Falls back to the global *toolset* when stream-tools is nil."
              (%chat-text-widget "Streaming... Press Ctrl-C to stop early."
                                 :chat-stream-stop-hint
                                 :meta)))
-         (plan-presentation-widget (%chat-plan-presentation-widget plan-state))
+         (plan-presentation-widget (%chat-plan-presentation-widget plan-state chat-state))
          (stream-stop-hint-height (if stream-stop-hint-widget 1 0))
          (plan-presentation-height
            (if plan-presentation-widget
@@ -2290,6 +2397,10 @@ Falls back to the global *toolset* when stream-tools is nil."
 
 (defun %handle-input-key (state key text)
   (cond
+    ((eql key :ctrl-p)
+     (%chat-plan-move-selection! state -1))
+    ((eql key :ctrl-n)
+     (%chat-plan-move-selection! state 1))
     ((eql key :ctrl-r)
      (if (chat-ui-state-history-search-active-p state)
          (%chat-deactivate-history-search! state :restore-input-p t)
