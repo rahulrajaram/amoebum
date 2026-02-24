@@ -262,7 +262,8 @@
                          step-index)
                  (format nil
                          "Review step ~D details with /plan review before retrying."
-                         step-index))))
+                         step-index)
+                 "Choose next action: rerun /execute, inspect with /plan review, or revise with /plan modify.")))
     (when file-paths
       (let ((visible-paths (subseq file-paths 0 (min 3 (length file-paths)))))
         (setf recovery-actions
@@ -602,45 +603,47 @@
          :phase :execution
          :style :meta
          :state state)
-        (let ((result nil)
-              (completed-p nil))
-          (unwind-protect
-               (progn
-                 (setf result (funcall executor step)
-                       completed-p t)
-                 (%mark-plan-execution-step-completed step)
-                 (%publish-plan-step-status-event state step :status :done)
-                 (setf (plan-execution-state-pending-step-indexes state)
-                       (rest (plan-execution-state-pending-step-indexes state))
-                       (plan-execution-state-completed-step-indexes state)
-                       (append (plan-execution-state-completed-step-indexes state)
-                               (list next-step-index))
-                       (plan-execution-state-current-step-index state) nil)
-                 (plan-execution-append-output
-                  (format nil "LIVE> [step ~D done] ~A"
-                          next-step-index
-                          (%summarize-execution-result result))
-                  :step-index next-step-index
-                  :phase :execution
-                  :style :success
-                  :state state)
-                 (%complete-plan-execution-if-finished state))
-            (unless completed-p
-              (%mark-plan-execution-step-blocked step)
-              (%publish-plan-step-status-event state step :status :blocked)
-              (setf (plan-execution-state-current-step-index state) nil)
+        (handler-case
+            (let ((result (funcall executor step)))
+              (%mark-plan-execution-step-completed step)
+              (%publish-plan-step-status-event state step :status :done)
+              (setf (plan-execution-state-pending-step-indexes state)
+                    (rest (plan-execution-state-pending-step-indexes state))
+                    (plan-execution-state-completed-step-indexes state)
+                    (append (plan-execution-state-completed-step-indexes state)
+                            (list next-step-index))
+                    (plan-execution-state-current-step-index state) nil)
               (plan-execution-append-output
-               (format nil "LIVE> [step ~D blocked] executor exited before completion."
-                       next-step-index)
+               (format nil "LIVE> [step ~D done] ~A"
+                       next-step-index
+                       (%summarize-execution-result result))
                :step-index next-step-index
                :phase :execution
-               :severity :warning
-               :style :warning
-               :state state)))
-          (values state
-                  step
-                  result
-                  (null (plan-execution-state-pending-step-indexes state))))))))
+               :style :success
+               :state state)
+              (%complete-plan-execution-if-finished state)
+              (values state
+                      step
+                      result
+                      (null (plan-execution-state-pending-step-indexes state))))
+          (error (condition)
+            (%mark-plan-execution-step-blocked step)
+            (%publish-plan-step-status-event state step :status :blocked)
+            (setf (plan-execution-state-status state) :failed
+                  (plan-execution-state-failure-reason state) condition
+                  (plan-execution-state-current-step-index state) nil
+                  (plan-execution-state-finished-at state) (get-universal-time))
+            (plan-execution-append-output
+             (format nil
+                     "LIVE> [step ~D failed] ~A. Choose next action: /execute (retry), /plan review, or /plan modify."
+                     next-step-index
+                     (%safe-plan-execution-string condition "step execution failed"))
+             :step-index next-step-index
+             :phase :execution
+             :severity :error
+             :style :error
+             :state state)
+            (values state step condition t)))))))
 
 (defun execute-approved-plan-steps (executor &key (state (current-plan-execution-state)))
   (check-type state plan-execution-state)

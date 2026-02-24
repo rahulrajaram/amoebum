@@ -92,6 +92,8 @@
          (plan-execution-state-started-at-fn (funcall fn-in "PLAN-EXECUTION-STATE-STARTED-AT" amoebum-pkg))
          (plan-execution-state-finished-at-fn (funcall fn-in "PLAN-EXECUTION-STATE-FINISHED-AT" amoebum-pkg))
          (plan-execution-state-abort-reason-fn (funcall fn-in "PLAN-EXECUTION-STATE-ABORT-REASON" amoebum-pkg))
+         (plan-execution-state-failure-reason-fn
+           (funcall fn-in "PLAN-EXECUTION-STATE-FAILURE-REASON" amoebum-pkg))
          (plan-execution-output-lines-fn (funcall fn-in "PLAN-EXECUTION-OUTPUT-LINES" amoebum-pkg))
          (plan-execution-step-index-fn (funcall fn-in "PLAN-EXECUTION-STEP-INDEX" amoebum-pkg))
          (plan-execution-step-status-fn (funcall fn-in "PLAN-EXECUTION-STEP-STATUS" amoebum-pkg))
@@ -938,6 +940,58 @@
                 (assert-true (integerp (funcall plan-execution-step-finished-at-fn step))
                              "Expected approved step ~D to include finished-at timestamp."
                              step-index)))))
+        (funcall reset-plan-execution-state-fn)
+        (let* ((execution-state (funcall initialize-plan-execution-fn :plan-state plan-state))
+               (execution-results '()))
+          (multiple-value-bind (_ results)
+              (funcall execute-approved-plan-steps-fn
+                       (lambda (step)
+                         (let ((step-index (funcall plan-execution-step-index-fn step)))
+                           (if (= step-index 1)
+                               "step-1-ok"
+                               (error "simulated failure at step ~D" step-index))))
+                       :state execution-state)
+            (declare (ignore _))
+            (setf execution-results results))
+          (assert-true (eq :failed (funcall plan-execution-state-status-fn execution-state))
+                       "Expected step failure to stop execution with terminal status :failed, got ~S."
+                       (funcall plan-execution-state-status-fn execution-state))
+          (assert-true (equal '(1)
+                              (funcall plan-execution-state-completed-step-indexes-fn execution-state))
+                       "Expected only completed steps before failure to be tracked, got ~S."
+                       (funcall plan-execution-state-completed-step-indexes-fn execution-state))
+          (assert-true (equal '(3)
+                              (funcall plan-execution-state-pending-step-indexes-fn execution-state))
+                       "Expected failed step to remain pending for user-directed retry, got ~S."
+                       (funcall plan-execution-state-pending-step-indexes-fn execution-state))
+          (assert-true (null (funcall plan-execution-state-current-step-index-fn execution-state))
+                       "Expected current-step-index to clear after failure, got ~S."
+                       (funcall plan-execution-state-current-step-index-fn execution-state))
+          (let ((failure-reason (funcall plan-execution-state-failure-reason-fn execution-state)))
+            (assert-true (typep failure-reason 'condition)
+                         "Expected failure-reason to store the execution condition, got ~S."
+                         failure-reason)
+            (assert-true (contains-text-p (princ-to-string failure-reason)
+                                          "simulated failure at step 3")
+                         "Expected failure-reason to include failing step context, got ~S."
+                         failure-reason))
+          (assert-true (equal '(1 3) (mapcar #'car execution-results))
+                       "Expected failed run results to stop after the first failing approved step, got ~S."
+                       execution-results)
+          (assert-true (typep (cdr (second execution-results)) 'condition)
+                       "Expected failed step result payload to preserve condition object, got ~S."
+                       (cdr (second execution-results)))
+          (let ((continuity-lines (funcall plan-execution-output-lines-fn execution-state)))
+            (assert-true (some (lambda (line)
+                                 (contains-text-p line "LIVE> [step 3 failed]"))
+                               continuity-lines)
+                         "Expected continuity output to report failed step, got ~S."
+                         continuity-lines)
+            (assert-true (some (lambda (line)
+                                 (contains-text-p line "Choose next action: /execute (retry), /plan review, or /plan modify."))
+                               continuity-lines)
+                         "Expected continuity output to guide user next action after failure, got ~S."
+                         continuity-lines)))
         (funcall clear-step-approvals-fn plan-state)
         (let ((saw-init-error nil))
           (handler-case
