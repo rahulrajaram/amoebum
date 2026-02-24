@@ -1175,7 +1175,11 @@
   "Build a reusable terminal pane element tree from STATE."
   (check-type state terminal-pane-state)
   (check-type viewport-height (integer 1 *))
-  (let* ((status-widget (ptui.widgets.core:make-text-widget (%status-line state)))
+  (let* ((root-id (or id :terminal-pane))
+         (status-widget
+           (ptui.widgets.core:make-text-widget
+            (%status-line state)
+            :id (list root-id :status)))
          (line-widgets
            (let ((visible (terminal-pane-visible-lines state :viewport-height viewport-height))
                  (styled (terminal-pane-visible-styled-lines state :viewport-height viewport-height))
@@ -1186,18 +1190,22 @@
                  (loop for line in visible
                        for segments in styled
                        for metadata in line-metadata
+                       for index from 0
                        collect (ptui.widgets.core:make-text-widget
                                 line
+                                :id (list root-id :line index)
                                 :styled-segments segments
                                 :metadata metadata))
                  (list (ptui.widgets.core:make-text-widget
-                        (terminal-pane-state-empty-message state))))))
+                        (terminal-pane-state-empty-message state)
+                        :id (list root-id :empty))))))
          (content (ptui.widgets.core:make-stack-widget
                    (append (list status-widget) line-widgets)
+                   :id (list root-id :content)
                    :direction :column
                    :gap 0)))
     (ptui.widgets.core:make-box-widget content
-                                       :id id
+                                       :id root-id
                                        :key key
                                        :padding padding
                                        :borderp borderp)))

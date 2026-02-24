@@ -69,8 +69,9 @@
                      :risk (%normalize-risk (getf step :risk :medium))
                      :status (%normalize-status (getf step :status :pending))))))
 
-(defun %text-widget (text &key id (role :meta))
+(defun %text-widget (text &key id key (role :meta))
   (ptui.widgets.core:make-text-widget (%safe-string text "")
+                                      :key key
                                       :id id
                                       :role role))
 
@@ -80,11 +81,16 @@
                lines
                (list (cons empty-message :meta))))
          (rows
-           (cons (%text-widget title :role :system)
+           (cons (%text-widget title
+                               :id (and id (list id :title))
+                               :role :system)
                  (loop for entry in resolved-lines
+                       for index from 0
                        for line = (if (consp entry) (car entry) entry)
                        for role = (if (consp entry) (cdr entry) :meta)
-                       collect (%text-widget line :role role))))
+                       collect (%text-widget line
+                                             :id (and id (list id :line index))
+                                             :role role))))
          (content (ptui.widgets.core:make-stack-widget
                    rows
                    :id (and id (list id :content))
@@ -155,7 +161,9 @@
                                         output-viewport-height)
                        (%context-panel context-lines context-empty-message)))
          (content (ptui.widgets.core:make-stack-widget
-                   (cons (%text-widget "Plan Mode Workspace" :role :system)
+                   (cons (%text-widget "Plan Mode Workspace"
+                                      :id (list root-id :title)
+                                      :role :system)
                          panels)
                    :id (list root-id :stack)
                    :direction :column

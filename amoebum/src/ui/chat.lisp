@@ -8,6 +8,13 @@
 (defparameter +context-compression-snippet-chars+ 96)
 (defparameter +chat-plan-presentation-max-steps+ 6)
 (defparameter +chat-plan-presentation-output-viewport-height+ 4)
+(defparameter +chat-plan-command-preview-max-lines+ 8)
+(defparameter +chat-plan-command-heads+
+  '("git" "make" "timeout" "sbcl" "bash" "sh" "zsh"
+    "python" "python3" "pytest" "uv" "go" "cargo"
+    "npm" "pnpm" "yarn" "node" "npx"
+    "rg" "grep" "sed" "awk" "find" "ls"
+    "docker" "kubectl" "helm"))
 
 (defun %make-chat-stream-tool-call-table ()
   (make-hash-table :test #'equal))
@@ -1407,6 +1414,97 @@ Falls back to the global *toolset* when stream-tools is nil."
     (t
      (princ-to-string value))))
 
+(defun %chat-plan-inline-code-spans (text)
+  (let* ((source (%chat-plan-presentation-safe-string text ""))
+         (length (length source))
+         (index 0)
+         (spans '()))
+    (loop while (< index length) do
+      (let ((start (position #\` source :start index)))
+        (if (null start)
+            (setf index length)
+            (let ((end (position #\` source :start (1+ start))))
+              (if (null end)
+                  (setf index length)
+                  (let ((snippet
+                          (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                       (subseq source (1+ start) end))))
+                    (when (plusp (length snippet))
+                      (push snippet spans))
+                    (setf index (1+ end))))))))
+    (nreverse spans)))
+
+(defun %chat-plan-leading-token (text)
+  (let* ((trimmed
+           (string-trim '(#\Space #\Tab #\Newline #\Return)
+                        (%chat-plan-presentation-safe-string text "")))
+         (length (length trimmed)))
+    (if (zerop length)
+        ""
+        (let ((end
+                (or (position-if #'%whitespace-char-p trimmed)
+                    length)))
+          (string-downcase (subseq trimmed 0 end))))))
+
+(defun %chat-plan-commandish-p (text)
+  (let* ((trimmed
+           (string-trim '(#\Space #\Tab #\Newline #\Return)
+                        (%chat-plan-presentation-safe-string text "")))
+         (length (length trimmed))
+         (token (%chat-plan-leading-token trimmed)))
+    (and (plusp length)
+         (or (member token +chat-plan-command-heads+ :test #'string=)
+             (and (>= length 2)
+                  (string= (subseq trimmed 0 2) "./"))
+             (and (>= length 2)
+                  (string= (subseq trimmed 0 2) "~/"))
+             (char= (char trimmed 0) #\/)
+             (search "&&" trimmed :test #'char=)
+             (search "||" trimmed :test #'char=)
+             (search "|" trimmed :test #'char=)
+             (search ";" trimmed :test #'char=)
+             (search ">" trimmed :test #'char=)
+             (search "<" trimmed :test #'char=)
+             (and (>= length 3)
+                  (string= (subseq trimmed (- length 3)) ".sh"))))))
+
+(defun %chat-plan-step-command-previews (step)
+  (check-type step plan-step)
+  (let* ((description (%chat-plan-presentation-safe-string
+                       (plan-step-description step)
+                       ""))
+         (inline-spans (%chat-plan-inline-code-spans description)))
+    (remove-duplicates
+     (loop for span in inline-spans
+           for normalized = (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                         (%normalize-inline-text span))
+           when (%chat-plan-commandish-p normalized)
+             collect normalized)
+     :test #'string=)))
+
+(defun %chat-plan-command-preview-lines (plan-state)
+  (let* ((steps
+           (sort (copy-list (or (plan-mode-state-steps plan-state) '()))
+                 #'<
+                 :key #'plan-step-index))
+         (approved-indexes (plan-mode-state-approved-step-indexes plan-state))
+         (entries '()))
+    (dolist (step steps)
+      (let* ((step-index (or (plan-step-index step) 0))
+             (approved-p (member step-index approved-indexes :test #'=)))
+        (dolist (command (%chat-plan-step-command-previews step))
+          (push (format nil
+                        "DRY-RUN> [step ~D ~A | non-executed] ~A"
+                        step-index
+                        (if approved-p "approved" "pending")
+                        command)
+                entries))))
+    (let ((ordered (nreverse entries)))
+      (subseq ordered
+              0
+              (min (length ordered)
+                   +chat-plan-command-preview-max-lines+)))))
+
 (defun %chat-plan-presentation-steps (plan-state)
   (let* ((sorted-steps
            (sort (copy-list (or (plan-mode-state-steps plan-state) '()))
@@ -1438,11 +1536,14 @@ Falls back to the global *toolset* when stream-tools is nil."
            (string-downcase
             (symbol-name (or (plan-mode-state-review-decision plan-state)
                              :pending))))
-         (pending-p (plan-mode-state-review-pending-p plan-state)))
-    (list "Plan mode active. Mutating tools remain blocked."
-          (format nil "Review decision: ~A~:[~; (pending)~]" decision-text pending-p)
-          (format nil "Step approvals: ~D/~D" approved total)
-          "Use /plan review, /plan approve, and /plan reorder while drafting.")))
+         (pending-p (plan-mode-state-review-pending-p plan-state))
+         (command-previews (%chat-plan-command-preview-lines plan-state)))
+    (if command-previews
+        command-previews
+        (list "Plan mode active. Mutating tools remain blocked."
+              (format nil "Review decision: ~A~:[~; (pending)~]" decision-text pending-p)
+              (format nil "Step approvals: ~D/~D" approved total)
+              "DRY-RUN> [non-executed] No command snippets detected in proposed steps yet."))))
 
 (defun %chat-plan-presentation-context-lines (plan-state)
   (let* ((steps (or (plan-mode-state-steps plan-state) '()))
