@@ -994,6 +994,75 @@ foo bar foo")
                  "expected styled segment text warn, got ~S"
                  segments)))
 
+(deftest widgets-terminal-pane-output-stream-metadata
+  (let* ((state (ptui.components.terminal-pane:make-terminal-pane-state
+                 :title "terminal"
+                 :max-lines 4)))
+    (ptui.components.terminal-pane:terminal-pane-append-output
+     state
+     (concatenate 'string "ok" (string #\Newline))
+     :severity :info
+     :style :stdout)
+    (ptui.components.terminal-pane:terminal-pane-append-output
+     state
+     "warn-part"
+     :severity :warning
+     :style :stderr)
+    (ptui.components.terminal-pane:terminal-pane-append-output
+     state
+     (concatenate 'string "-done" (string #\Newline)
+                  "error!" (string #\Newline))
+     :severity :error
+     :style :stderr)
+    (assert-true (equal (ptui.components.terminal-pane:terminal-pane-lines state)
+                        '("ok" "warn-part-done" "error!"))
+                 "expected append-only lines to include merged partial rows, got ~S"
+                 (ptui.components.terminal-pane:terminal-pane-lines state))
+    (let ((metadata (ptui.components.terminal-pane:terminal-pane-line-metadata state)))
+      (assert-true (equal (mapcar (lambda (entry) (getf entry :severity)) metadata)
+                          '(:info :error :error))
+                   "expected merged severities for completed lines, got ~S"
+                   metadata)
+      (assert-true (equal (mapcar (lambda (entry) (getf entry :style)) metadata)
+                          '(:stdout :stderr :stderr))
+                   "expected per-line style metadata, got ~S"
+                   metadata))
+    (ptui.components.terminal-pane:terminal-pane-append-line
+     state
+     "debug-note"
+     :severity :debug
+     :style :system)
+    (ptui.components.terminal-pane:terminal-pane-append-line
+     state
+     "critical-stop"
+     :severity :critical
+     :style :stderr)
+    (assert-true (equal (ptui.components.terminal-pane:terminal-pane-lines state)
+                        '("warn-part-done" "error!" "debug-note" "critical-stop"))
+                 "expected max-lines trim to keep newest lines, got ~S"
+                 (ptui.components.terminal-pane:terminal-pane-lines state))
+    (let* ((visible-meta (ptui.components.terminal-pane:terminal-pane-visible-line-metadata
+                          state
+                          :viewport-height 2))
+           (severities (mapcar (lambda (entry) (getf entry :severity)) visible-meta)))
+      (assert-true (equal severities '(:debug :critical))
+                   "expected visible metadata to align with viewport rows, got ~S"
+                   visible-meta))
+    (let* ((widget (ptui.components.terminal-pane:make-terminal-pane-widget
+                    state
+                    :id :terminal-pane
+                    :viewport-height 2))
+           (content (first (ptui.ui.elements:ui-element-children widget)))
+           (rows (ptui.ui.elements:ui-element-children content))
+           (first-output (second rows))
+           (metadata (getf (ptui.ui.elements:ui-element-props first-output)
+                           :metadata)))
+      (assert-true (and (listp metadata)
+                        (eq (getf metadata :severity) :debug)
+                        (eq (getf metadata :style) :system))
+                   "expected text widget metadata for first visible output row, got ~S"
+                   metadata))))
+
 (deftest widgets-glob-widget-api-boundary
   (multiple-value-bind (widgets-sym widgets-status)
       (find-symbol "MAKE-GLOB-WIDGET" :ptui.widgets.core)
