@@ -41,6 +41,8 @@
          (setconfig-fn (funcall fn-in "SETCONFIG" amoebum-pkg))
          (current-config-fn (funcall fn-in "CURRENT-CONFIG" amoebum-pkg))
          (config-value-fn (funcall fn-in "CONFIG-VALUE" amoebum-pkg))
+         (plan-mode-mutating-tools-blocked-p-fn
+           (funcall fn-in "PLAN-MODE-MUTATING-TOOLS-BLOCKED-P" amoebum-pkg))
          (make-status-bar-state-fn (funcall fn-in "MAKE-STATUS-BAR-STATE" amoebum-pkg))
          (make-chat-ui-state-fn (funcall fn-in "MAKE-CHAT-UI-STATE" amoebum-pkg))
          (chat-ui-set-input-fn (funcall fn-in "CHAT-UI-SET-INPUT" amoebum-pkg))
@@ -526,6 +528,13 @@
                                       "Missing rollback coverage")
                      "Expected /plan reject to store rejection notes, got ~S."
                      (funcall plan-review-notes-fn plan-state))
+        (multiple-value-bind (handledp blocked-execute-result)
+            (funcall dispatch-fn "/execute")
+          (assert-true handledp "Expected /execute without approvals to be handled.")
+          (assert-true (contains-text-p (funcall result-output-fn blocked-execute-result)
+                                        "No approved steps are available for execution")
+                       "Expected /execute to reject unapproved plans, got ~S."
+                       (funcall result-output-fn blocked-execute-result)))
         (multiple-value-bind (handledp approve-result)
             (funcall dispatch-fn "/plan approve Ready for execution.")
           (assert-true handledp "Expected /plan approve to be handled.")
@@ -572,6 +581,45 @@
                                         "awaiting explicit execute transition")
                        "Expected /plan status to report awaiting execute transition after /plan approve, got ~S."
                        (funcall result-output-fn status-result)))
+        (multiple-value-bind (handledp execute-result)
+            (funcall dispatch-fn "/execute")
+          (assert-true handledp "Expected /execute after approval to be handled.")
+          (assert-true (contains-text-p (funcall result-output-fn execute-result)
+                                        "Execution pathways re-enabled after user approval")
+                       "Expected /execute to confirm execution-pathway transition, got ~S."
+                       (funcall result-output-fn execute-result))
+          (assert-true (contains-text-p (funcall result-output-fn execute-result)
+                                        "Plan mode is OFF")
+                       "Expected /execute transition output to mention plan mode exit, got ~S."
+                       (funcall result-output-fn execute-result)))
+        (assert-true (not (bool-true-p (funcall config-value-fn :plan-mode (funcall current-config-fn))))
+                     "Expected /execute transition to keep :plan-mode disabled.")
+        (assert-true (not (bool-true-p
+                           (funcall plan-mode-mutating-tools-blocked-p-fn
+                                    (funcall current-config-fn))))
+                     "Expected /execute transition to re-enable mutating execution pathways.")
+        (let* ((tmp-root
+                 (funcall ensure-directory-pathname-fn
+                          (merge-pathnames
+                           (make-pathname :directory
+                                          `(:relative ,(format nil "amoebum-i186-~A"
+                                                                (get-universal-time))))
+                           (funcall temporary-directory-fn))))
+               (execute-write-target (merge-pathnames #P"execute-write.txt" tmp-root))
+               (context (funcall make-context-fn
+                                 :toolset (symbol-value toolset-sym)
+                                 :permission-mode :full-auto))
+               (write-call (funcall make-tool-call-fn
+                                    :name "write-file"
+                                    :arguments (format nil
+                                                       "{\"path\":\"~A\",\"content\":\"execute-transition-open\"}"
+                                                       (namestring execute-write-target)))))
+          (funcall execute-tool-fn write-call context)
+          (assert-true (and (probe-file execute-write-target)
+                            (contains-text-p (funcall read-file-string-fn execute-write-target)
+                                             "execute-transition-open"))
+                       "Expected write-file to succeed after /execute transition and create ~S."
+                       execute-write-target))
         (funcall set-step-approvals-fn '(1 3) :state plan-state)
         (funcall reset-plan-execution-state-fn)
         (let ((execution-state (funcall initialize-plan-execution-fn :plan-state plan-state)))
