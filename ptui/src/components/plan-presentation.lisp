@@ -190,19 +190,50 @@
    :empty-message "No plan steps captured yet."))
 
 (defun %terminal-panel (output-lines
+                        output-line-entries
                         output-empty-message
                         output-viewport-height
                         output-stdin-capture-policy)
-  (let* ((state (ptui.components.terminal-pane:make-terminal-pane-state
-                 :title "Plan Output"
-                 :lines (loop for line in (or output-lines '())
-                              collect (%safe-string line ""))
-                 :empty-message output-empty-message
-                 :stdin-capture-policy output-stdin-capture-policy)))
-    (ptui.components.terminal-pane:make-terminal-pane-widget
-     state
-     :id :plan-presentation-output
-     :viewport-height output-viewport-height)))
+  (labels ((normalize-line-entry (entry)
+             (cond
+               ((stringp entry)
+                (list :text (%safe-string entry "")
+                      :severity :info
+                      :style :plain))
+               ((and (listp entry)
+                     (or (getf entry :text)
+                         (getf entry :line)))
+                (list :text (%safe-string (or (getf entry :text)
+                                              (getf entry :line))
+                                          "")
+                      :severity (or (getf entry :severity) :info)
+                      :style (or (getf entry :style) :plain)))
+               (t
+                (list :text (%safe-string entry "")
+                      :severity :info
+                      :style :plain)))))
+    (let* ((raw-entries
+             (if output-line-entries
+                 output-line-entries
+                 (or output-lines '())))
+           (entries
+             (loop for entry in raw-entries
+                   for normalized = (normalize-line-entry entry)
+                   when (plusp (length (getf normalized :text "")))
+                     collect normalized))
+           (state (ptui.components.terminal-pane:make-terminal-pane-state
+                   :title "Plan Output"
+                   :lines (loop for entry in entries
+                                collect (getf entry :text))
+                   :line-metadata (loop for entry in entries
+                                        collect (list :severity (or (getf entry :severity) :info)
+                                                      :style (or (getf entry :style) :plain)))
+                   :empty-message output-empty-message
+                   :stdin-capture-policy output-stdin-capture-policy)))
+      (ptui.components.terminal-pane:make-terminal-pane-widget
+       state
+       :id :plan-presentation-output
+       :viewport-height output-viewport-height))))
 
 (defun %selected-step-context-lines (selected-step)
   (if (null selected-step)
@@ -243,6 +274,7 @@
                                              steps
                                              selected-step-index
                                              output-lines
+                                             output-line-entries
                                              context-lines
                                              id
                                              key
@@ -259,6 +291,7 @@
          (panels (list (%steps-panel normalized-steps
                                      resolved-selected-step-index)
                        (%terminal-panel output-lines
+                                        output-line-entries
                                         output-empty-message
                                         output-viewport-height
                                         output-stdin-capture-policy)
