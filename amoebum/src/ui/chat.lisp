@@ -1688,8 +1688,12 @@ Falls back to the global *toolset* when stream-tools is nil."
           collect (list :text (%chat-plan-presentation-safe-string
                                (plan-execution-output-entry-line entry)
                                "")
+                        :step-index (plan-execution-output-entry-step-index entry)
                         :severity (or (plan-execution-output-entry-severity entry) :info)
-                        :style (or (plan-execution-output-entry-style entry) :plain)))))
+                        :style (or (plan-execution-output-entry-style entry) :plain)
+                        :recovery-actions
+                        (copy-list (or (plan-execution-output-entry-recovery-actions entry)
+                                       '()))))))
 
 (defun %chat-plan-presentation-context-lines (plan-state selected-step visible-steps execution-state)
   (let* ((steps (or (plan-mode-state-steps plan-state) '()))
