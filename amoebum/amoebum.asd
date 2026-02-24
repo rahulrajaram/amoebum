@@ -16,6 +16,7 @@
    (:file "src/memory")
    (:file "src/memory/haake-adapter")
    (:file "src/plan-mode")
+   (:file "src/plan-execution")
    (:file "src/agents")
    (:file "src/extensions")
    (:file "src/checkpoint")

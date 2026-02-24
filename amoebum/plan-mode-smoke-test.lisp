@@ -56,10 +56,26 @@
          (plan-approved-steps-fn (funcall fn-in "PLAN-MODE-STATE-APPROVED-STEP-INDEXES" amoebum-pkg))
          (plan-step-description-fn (funcall fn-in "PLAN-STEP-DESCRIPTION" amoebum-pkg))
          (plan-step-depends-on-fn (funcall fn-in "PLAN-STEP-DEPENDS-ON" amoebum-pkg))
+         (clear-step-approvals-fn (funcall fn-in "CLEAR-PLAN-STEP-APPROVALS" amoebum-pkg))
+         (set-step-approvals-fn (funcall fn-in "SET-PLAN-STEP-APPROVALS" amoebum-pkg))
          (plan-review-pending-fn (funcall fn-in "PLAN-MODE-STATE-REVIEW-PENDING-P" amoebum-pkg))
          (plan-review-decision-fn (funcall fn-in "PLAN-MODE-STATE-REVIEW-DECISION" amoebum-pkg))
          (plan-review-notes-fn (funcall fn-in "PLAN-MODE-STATE-REVIEW-NOTES" amoebum-pkg))
          (plan-output-path-fn (funcall fn-in "PLAN-MODE-STATE-LAST-OUTPUT-PATH" amoebum-pkg))
+         (reset-plan-execution-state-fn (funcall fn-in "RESET-PLAN-EXECUTION-STATE" amoebum-pkg))
+         (initialize-plan-execution-fn (funcall fn-in "INITIALIZE-PLAN-EXECUTION" amoebum-pkg))
+         (start-plan-execution-fn (funcall fn-in "START-PLAN-EXECUTION" amoebum-pkg))
+         (pause-plan-execution-fn (funcall fn-in "PAUSE-PLAN-EXECUTION" amoebum-pkg))
+         (resume-plan-execution-fn (funcall fn-in "RESUME-PLAN-EXECUTION" amoebum-pkg))
+         (abort-plan-execution-fn (funcall fn-in "ABORT-PLAN-EXECUTION" amoebum-pkg))
+         (plan-execution-state-status-fn (funcall fn-in "PLAN-EXECUTION-STATE-STATUS" amoebum-pkg))
+         (plan-execution-state-approved-step-indexes-fn
+           (funcall fn-in "PLAN-EXECUTION-STATE-APPROVED-STEP-INDEXES" amoebum-pkg))
+         (plan-execution-state-pending-step-indexes-fn
+           (funcall fn-in "PLAN-EXECUTION-STATE-PENDING-STEP-INDEXES" amoebum-pkg))
+         (plan-execution-state-started-at-fn (funcall fn-in "PLAN-EXECUTION-STATE-STARTED-AT" amoebum-pkg))
+         (plan-execution-state-finished-at-fn (funcall fn-in "PLAN-EXECUTION-STATE-FINISHED-AT" amoebum-pkg))
+         (plan-execution-state-abort-reason-fn (funcall fn-in "PLAN-EXECUTION-STATE-ABORT-REASON" amoebum-pkg))
          (stream-markdown-styled-lines-fn (funcall fn-in "STREAM-MARKDOWN-STYLED-LINES" amoebum-pkg))
          (make-context-fn (funcall fn-in "MAKE-AMOEBUM-CONTEXT" amoebum-pkg))
          (execute-tool-fn (funcall fn-in "EXECUTE-TOOL" amoebum-pkg))
@@ -477,7 +493,55 @@
           (assert-true (contains-text-p (funcall result-output-fn status-result)
                                         "Approved steps: 4/4")
                        "Expected /plan status to report full step approval after /plan approve, got ~S."
-                       (funcall result-output-fn status-result))))
+                       (funcall result-output-fn status-result)))
+        (funcall set-step-approvals-fn '(1 3) :state plan-state)
+        (funcall reset-plan-execution-state-fn)
+        (let ((execution-state (funcall initialize-plan-execution-fn :plan-state plan-state)))
+          (assert-true (eq :ready (funcall plan-execution-state-status-fn execution-state))
+                       "Expected plan execution to initialize in :ready state, got ~S."
+                       (funcall plan-execution-state-status-fn execution-state))
+          (assert-true (equal '(1 3)
+                              (funcall plan-execution-state-approved-step-indexes-fn execution-state))
+                       "Expected plan execution to keep approved step indexes '(1 3), got ~S."
+                       (funcall plan-execution-state-approved-step-indexes-fn execution-state))
+          (assert-true (equal '(1 3)
+                              (funcall plan-execution-state-pending-step-indexes-fn execution-state))
+                       "Expected plan execution pending steps '(1 3), got ~S."
+                       (funcall plan-execution-state-pending-step-indexes-fn execution-state))
+          (funcall start-plan-execution-fn execution-state)
+          (assert-true (eq :running (funcall plan-execution-state-status-fn execution-state))
+                       "Expected start-plan-execution to set :running, got ~S."
+                       (funcall plan-execution-state-status-fn execution-state))
+          (assert-true (integerp (funcall plan-execution-state-started-at-fn execution-state))
+                       "Expected start-plan-execution to set started-at timestamp.")
+          (funcall pause-plan-execution-fn execution-state)
+          (assert-true (eq :paused (funcall plan-execution-state-status-fn execution-state))
+                       "Expected pause-plan-execution to set :paused, got ~S."
+                       (funcall plan-execution-state-status-fn execution-state))
+          (funcall resume-plan-execution-fn execution-state)
+          (assert-true (eq :running (funcall plan-execution-state-status-fn execution-state))
+                       "Expected resume-plan-execution to restore :running, got ~S."
+                       (funcall plan-execution-state-status-fn execution-state))
+          (funcall abort-plan-execution-fn :state execution-state :reason :smoke-stop)
+          (assert-true (eq :aborted (funcall plan-execution-state-status-fn execution-state))
+                       "Expected abort-plan-execution to set :aborted, got ~S."
+                       (funcall plan-execution-state-status-fn execution-state))
+          (assert-true (integerp (funcall plan-execution-state-finished-at-fn execution-state))
+                       "Expected abort-plan-execution to set finished-at timestamp.")
+          (assert-true (eq :smoke-stop (funcall plan-execution-state-abort-reason-fn execution-state))
+                       "Expected abort-plan-execution reason :smoke-stop, got ~S."
+                       (funcall plan-execution-state-abort-reason-fn execution-state)))
+        (funcall clear-step-approvals-fn plan-state)
+        (let ((saw-init-error nil))
+          (handler-case
+              (funcall initialize-plan-execution-fn :plan-state plan-state)
+            (error (condition)
+              (when (contains-text-p (princ-to-string condition)
+                                     "No approved plan steps are available for execution.")
+                (setf saw-init-error t))))
+          (assert-true saw-init-error
+                       "Expected initialize-plan-execution to reject plans without approved steps."))
+        (funcall set-step-approvals-fn '(1 2 3 4) :state plan-state))
 
       (funcall setconfig-fn :plan-mode nil)
       (funcall clear-steps-fn)
