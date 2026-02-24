@@ -101,6 +101,20 @@
          (assemble-system-prompt-fn (funcall fn-in "ASSEMBLE-SYSTEM-PROMPT" amoebum-pkg))
          (toolset-sym (funcall symbol-in "*TOOLSET*" amoebum-pkg))
          (permission-denied-sym (funcall symbol-in "TOOL-PERMISSION-DENIED" amoebum-pkg))
+         (permission-blocked-event-type
+           (symbol-value (funcall symbol-in "+EVENT-TYPE-PERMISSION-BLOCKED+" amoebum-pkg)))
+         (tool-error-reason-fn (funcall fn-in "TOOL-ERROR-REASON" amoebum-pkg))
+         (tool-error-reason-code-fn (funcall fn-in "TOOL-ERROR-REASON-CODE" amoebum-pkg))
+         (permission-blocked-payload-reason-fn
+           (funcall fn-in "PERMISSION-BLOCKED-PAYLOAD-REASON" amoebum-pkg))
+         (permission-blocked-payload-actionable-reason-fn
+           (funcall fn-in "PERMISSION-BLOCKED-PAYLOAD-ACTIONABLE-REASON" amoebum-pkg))
+         (permission-blocked-payload-reason-code-fn
+           (funcall fn-in "PERMISSION-BLOCKED-PAYLOAD-REASON-CODE" amoebum-pkg))
+         (make-event-bus-fn (funcall fn-in "MAKE-EVENT-BUS" amoebum-pkg))
+         (event-history-fn (funcall fn-in "EVENT-HISTORY" amoebum-pkg))
+         (event-type-fn (funcall fn-in "EVENT-TYPE" amoebum-pkg))
+         (event-payload-fn (funcall fn-in "EVENT-PAYLOAD" amoebum-pkg))
          (make-tool-call-fn (funcall fn-in "MAKE-TOOL-CALL" pseudopod-pkg))
          (temporary-directory-fn (funcall fn-in "TEMPORARY-DIRECTORY" uiop-pkg))
          (ensure-directory-pathname-fn (funcall fn-in "ENSURE-DIRECTORY-PATHNAME" uiop-pkg))
@@ -238,9 +252,11 @@
                          (funcall temporary-directory-fn))))
              (read-target (merge-pathnames #P"plan-mode-read.txt" tmp-root))
              (write-target (merge-pathnames #P"plan-mode-write.txt" tmp-root))
+             (event-bus (funcall make-event-bus-fn :capacity 64))
              (context (funcall make-context-fn
                                :toolset (symbol-value toolset-sym)
-                               :permission-mode :full-auto)))
+                               :permission-mode :full-auto
+                               :event-bus event-bus)))
         (ensure-directories-exist read-target)
         (with-open-file (stream read-target
                                 :direction :output
@@ -262,14 +278,51 @@
                                    :arguments (format nil
                                                       "{\"path\":\"~A\",\"content\":\"blocked\"}"
                                                       (namestring write-target))))
-              (saw-denied nil))
+              (saw-denied nil)
+              (denied-condition nil))
           (handler-case
               (funcall execute-tool-fn write-call context)
             (error (condition)
               (when (typep condition permission-denied-sym)
-                (setf saw-denied t))))
+                (setf saw-denied t
+                      denied-condition condition))))
           (assert-true saw-denied
-                       "Expected write-file to be blocked during plan mode.")))
+                       "Expected write-file to be blocked during plan mode.")
+          (assert-true (and denied-condition
+                            (eq (funcall tool-error-reason-code-fn denied-condition)
+                                :plan-mode-mutating-command-blocked))
+                       "Expected plan-mode block reason-code :plan-mode-mutating-command-blocked, got ~S."
+                       (and denied-condition
+                            (funcall tool-error-reason-code-fn denied-condition)))
+          (assert-true (contains-text-p (funcall tool-error-reason-fn denied-condition)
+                                        "/execute")
+                       "Expected denied condition reason to include /execute guidance, got ~S."
+                       (and denied-condition
+                            (funcall tool-error-reason-fn denied-condition)))
+          (let* ((blocked-event
+                   (find permission-blocked-event-type
+                         (funcall event-history-fn event-bus)
+                         :key event-type-fn
+                         :test #'eq))
+                 (blocked-payload (and blocked-event
+                                       (funcall event-payload-fn blocked-event))))
+            (assert-true blocked-event
+                         "Expected permission:blocked event for denied write-file in plan mode.")
+            (assert-true blocked-payload
+                         "Expected permission:blocked event payload.")
+            (assert-true (eq (funcall permission-blocked-payload-reason-code-fn blocked-payload)
+                             :plan-mode-mutating-command-blocked)
+                         "Expected blocked event reason-code :plan-mode-mutating-command-blocked, got ~S."
+                         (funcall permission-blocked-payload-reason-code-fn blocked-payload))
+            (assert-true (contains-text-p (funcall permission-blocked-payload-reason-fn blocked-payload)
+                                          "Plan mode blocked mutating tool")
+                         "Expected blocked event reason to mention plan-mode mutating-tool block, got ~S."
+                         (funcall permission-blocked-payload-reason-fn blocked-payload))
+            (assert-true (contains-text-p
+                          (funcall permission-blocked-payload-actionable-reason-fn blocked-payload)
+                          "/execute")
+                         "Expected blocked event actionable reason to include /execute guidance, got ~S."
+                         (funcall permission-blocked-payload-actionable-reason-fn blocked-payload)))))
 
       (let ((status-state (funcall make-status-bar-state-fn
                                    :config (funcall current-config-fn))))
