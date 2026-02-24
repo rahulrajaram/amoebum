@@ -909,7 +909,30 @@
                       (list (getf (ptui.ui.elements:ui-element-props element) :text ""))
                       '())
                   (loop for child in children
-                        append (collect-text-lines child))))))
+                        append (collect-text-lines child)))))
+             (find-node-by-id (element target-id)
+               (when element
+                 (if (equal (or (ptui.ui.elements:ui-element-id element)
+                                (ptui.ui.elements:ui-element-key element))
+                            target-id)
+                     element
+                     (loop for child in (ptui.ui.elements:ui-element-children element)
+                           for match = (find-node-by-id child target-id)
+                           when match do (return match))))))
+      (let* ((split-view (find-node-by-id widget '(:plan-presentation :split-view)))
+             (split-props (and split-view (ptui.ui.elements:ui-element-props split-view)))
+             (right-column (find-node-by-id widget '(:plan-presentation :right-column)))
+             (right-props (and right-column (ptui.ui.elements:ui-element-props right-column))))
+        (assert-true split-view
+                     "expected split-view container to be present in plan-presentation widget")
+        (assert-true (eq (getf split-props :direction) :row)
+                     "expected split-view direction :row, got ~S"
+                     (getf split-props :direction))
+        (assert-true right-column
+                     "expected right-column container to be present in plan-presentation widget")
+        (assert-true (eq (getf right-props :direction) :column)
+                     "expected right-column direction :column, got ~S"
+                     (getf right-props :direction)))
       (let ((lines (collect-text-lines widget)))
         (assert-true (member "Plan Mode Workspace" lines :test #'string=)
                      "expected root plan presentation heading, got ~S"
