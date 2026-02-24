@@ -618,7 +618,7 @@
   (let ((approved-count (length approved-step-indexes)))
     (if active-p
         (with-output-to-string (out)
-          (write-string "Plan mode is ON. PLAN MODE -- read-only." out)
+          (write-string "Plan mode is ON. PLAN MODE -- read-only [LOCK mutating tools blocked]." out)
           (when (> step-count 0)
             (format out " Approved steps: ~D/~D." approved-count step-count)))
         (with-output-to-string (out)
@@ -875,11 +875,11 @@
              (if active-p
                  (make-slash-command-result
                   :output "Plan mode already enabled.")
-                 (progn
+                (progn
                    (enter-plan-mode :state plan-state :clear-steps-p t)
                    (setconfig :plan-mode t)
                    (make-slash-command-result
-                    :output "Plan mode enabled. PLAN MODE -- read-only.")))))
+                    :output "Plan mode enabled. PLAN MODE -- read-only [LOCK mutating tools blocked].")))))
         (:off
          (multiple-value-bind (write-to-file-p parse-error)
              (parse-write-to-file-p)
@@ -918,7 +918,7 @@
                      (toggle-plan-mode :state plan-state :reason :plan-command-toggle)
                      (setconfig :plan-mode t)
                      (make-slash-command-result
-                      :output "Plan mode enabled. PLAN MODE -- read-only."))))))))))
+                      :output "Plan mode enabled. PLAN MODE -- read-only [LOCK mutating tools blocked]."))))))))))
 
 (defun %memory-handler (_invocation arguments context)
   (declare (ignore _invocation))

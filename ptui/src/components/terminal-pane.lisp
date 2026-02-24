@@ -10,6 +10,9 @@
    #:terminal-pane-scroll-offset
    #:terminal-pane-status
    #:terminal-pane-empty-message
+   #:terminal-pane-banner-text
+   #:terminal-pane-lock-indicator-p
+   #:terminal-pane-set-banner
    #:terminal-pane-line-metadata
    #:terminal-pane-pending-line-metadata
    #:terminal-pane-append-line
@@ -130,6 +133,8 @@
                   (max-lines 2000)
                   (scroll-offset 0)
                   (status :idle)
+                  banner-text
+                  (lock-indicator-p nil)
                   (search-query "")
                   (search-case-insensitive t)
                   (search-results '())
@@ -150,6 +155,8 @@
   (max-lines 2000 :type fixnum)
   (scroll-offset 0 :type fixnum)
   (status :idle :type keyword)
+  banner-text
+  (lock-indicator-p nil :type boolean)
   (search-query "" :type string)
   (search-case-insensitive t :type boolean)
   (search-results '() :type list)
@@ -179,6 +186,17 @@
   (if (keywordp style)
       style
       :plain))
+
+(defun %normalize-banner-text (value)
+  (let* ((text (typecase value
+                 (null "")
+                 (string value)
+                 (pathname (namestring value))
+                 (symbol (symbol-name value))
+                 (t (princ-to-string value))))
+         (trimmed (string-trim '(#\Space #\Tab #\Newline #\Return) text)))
+    (and (> (length trimmed) 0)
+         trimmed)))
 
 (defun %normalize-stdin-capture-policy (policy)
   (cond
@@ -346,6 +364,8 @@
                                    (max-lines 2000)
                                    (scroll-offset 0)
                                    (status :idle)
+                                   banner-text
+                                   (lock-indicator-p nil)
                                    (empty-message "[no output]")
                                    (stdin-capture-policy :enabled))
   (check-type title string)
@@ -374,6 +394,8 @@
                                  :max-lines max-lines
                                  :scroll-offset scroll-offset
                                  :status status
+                                 :banner-text (%normalize-banner-text banner-text)
+                                 :lock-indicator-p (not (null lock-indicator-p))
                                  :search-query ""
                                  :search-case-insensitive t
                                  :search-results '()
@@ -468,6 +490,22 @@
 (defun terminal-pane-status (state)
   (check-type state terminal-pane-state)
   (terminal-pane-state-status state))
+
+(defun terminal-pane-banner-text (state)
+  (check-type state terminal-pane-state)
+  (terminal-pane-state-banner-text state))
+
+(defun terminal-pane-lock-indicator-p (state)
+  (check-type state terminal-pane-state)
+  (not (null (terminal-pane-state-lock-indicator-p state))))
+
+(defun terminal-pane-set-banner (state &key text lock-indicator-p)
+  (check-type state terminal-pane-state)
+  (setf (terminal-pane-state-banner-text state)
+        (%normalize-banner-text text)
+        (terminal-pane-state-lock-indicator-p state)
+        (not (null lock-indicator-p)))
+  state)
 
 (defun terminal-pane-search-query (state)
   (check-type state terminal-pane-state)
@@ -1110,10 +1148,22 @@
 (defun %status-line (state)
   (let* ((line-count (length (%display-lines state)))
          (offset (terminal-pane-state-scroll-offset state))
+         (banner-text (terminal-pane-state-banner-text state))
+         (lock-indicator-p (terminal-pane-state-lock-indicator-p state))
+         (banner (cond
+                   ((and banner-text lock-indicator-p)
+                    (format nil "~A [LOCK]" banner-text))
+                   (banner-text
+                    banner-text)
+                   (lock-indicator-p
+                    "[LOCK]")
+                   (t
+                    nil)))
          (partialp (> (length (terminal-pane-state-pending-output state)) 0))
          (matches (length (terminal-pane-state-search-results state))))
-    (format nil "~A | ~A | ~D line~:P~@[ | +~D~]~:[~; | partial~]~:[~; | /~D~]"
+    (format nil "~A~@[ | ~A~] | ~A | ~D line~:P~@[ | +~D~]~:[~; | partial~]~:[~; | /~D~]"
             (terminal-pane-state-title state)
+            banner
             (terminal-pane-state-status state)
             line-count
             (and (> offset 0) offset)

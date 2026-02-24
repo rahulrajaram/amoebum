@@ -153,7 +153,9 @@
         (assert-true (bool-true-p (funcall config-value-fn :plan-mode (funcall current-config-fn)))
                      "Expected :plan-mode config value to be true after /plan on.")
         (assert-true (contains-text-p (funcall status-bar-line-fn status-state) "PLAN MODE -- read-only")
-                     "Expected status bar to show plan mode banner while active."))
+                     "Expected status bar to show plan mode banner while active.")
+        (assert-true (contains-text-p (funcall status-bar-line-fn status-state) "[LOCK mutating tools blocked]")
+                     "Expected status bar plan mode banner to include lock badge while active."))
 
       (let ((assembled (funcall assemble-system-prompt-fn)))
         (assert-true (contains-text-p assembled "Plan Mode Guidance")
@@ -263,7 +265,10 @@
                      "Expected :plan-mode config value to be false after /plan off.")
         (assert-true (not (contains-text-p (funcall status-bar-line-fn status-state)
                                            "PLAN MODE -- read-only"))
-                     "Expected status bar to hide plan mode banner after exit."))
+                     "Expected status bar to hide plan mode banner after exit.")
+        (assert-true (not (contains-text-p (funcall status-bar-line-fn status-state)
+                                           "[LOCK mutating tools blocked]"))
+                     "Expected status bar to hide lock badge after plan mode exit."))
 
       (let* ((plan-state (funcall current-plan-state-fn))
              (output-path (funcall plan-output-path-fn plan-state))

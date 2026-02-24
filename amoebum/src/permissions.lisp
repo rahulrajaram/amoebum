@@ -1605,9 +1605,21 @@
 (defun %plan-mode-enabled-p ()
   (not (null (ignore-errors (config-value :plan-mode (current-config))))))
 
+(defun plan-mode-mutating-tools-blocked-p (&optional
+                                             (config (ignore-errors (current-config)))
+                                             plan-mode-enabled-override)
+  (let ((plan-mode-enabled-p
+          (if (null plan-mode-enabled-override)
+              (and (config-p config)
+                   (not (null (config-value :plan-mode config))))
+              (not (null plan-mode-enabled-override)))))
+    (and plan-mode-enabled-p
+         (not (null *plan-mode-blocked-tool-names*))
+         (not (null *shell-tool-names*)))))
+
 (defun %plan-mode-blocked-p (tool command)
   (let ((tool-name (%tool-name tool)))
-    (and (%plan-mode-enabled-p)
+    (and (plan-mode-mutating-tools-blocked-p)
          (or (%shell-tool-p tool command)
              (member tool-name *plan-mode-blocked-tool-names* :test #'string=)))))
 
