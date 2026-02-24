@@ -920,6 +920,53 @@
                      (make-slash-command-result
                       :output "Plan mode enabled. PLAN MODE -- read-only [LOCK mutating tools blocked]."))))))))))
 
+(defun %execute-handler (_invocation _arguments _context)
+  (declare (ignore _invocation _arguments _context))
+  (let* ((plan-state (current-plan-mode-state))
+         (active-p (plan-mode-active-p plan-state))
+         (captured-plan (plan-mode-state-last-plan-markdown plan-state))
+         (available-step-indexes (plan-step-indexes plan-state))
+         (approved-step-indexes (or (plan-mode-state-approved-step-indexes plan-state) '()))
+         (review-decision (plan-mode-state-review-decision plan-state)))
+    (cond
+      (active-p
+       (make-slash-command-result
+        :output "Plan mode is still active. Run /plan off first, then approve steps before /execute."))
+      ((or (not (stringp captured-plan))
+           (zerop (length (%slash-trim captured-plan)))
+           (null available-step-indexes))
+       (make-slash-command-result
+        :output "No captured plan is available yet. Use /plan off to capture a plan for review."))
+      ((null approved-step-indexes)
+       (make-slash-command-result
+        :output "No approved steps are available for execution. Use /plan approve first."))
+      ((not (member review-decision '(:approved :partially-approved) :test #'eq))
+       (make-slash-command-result
+        :output (format nil
+                        "Plan review decision is ~A. Approve steps with /plan approve before /execute."
+                        (%plan-review-decision-label review-decision))))
+      (t
+       ;; Explicitly disable plan-mode gating before execution handoff.
+       (setconfig :plan-mode nil)
+       (setf (plan-mode-state-review-pending-p plan-state) nil)
+       (refresh-plan-review-markdown plan-state)
+       (let* ((execution-state (initialize-plan-execution :plan-state plan-state))
+              (approved-count (length approved-step-indexes))
+              (step-count (length available-step-indexes))
+              (next-step-index (plan-execution-next-step-index execution-state))
+              (run-id (plan-execution-state-run-id execution-state)))
+         (make-slash-command-result
+          :output (with-output-to-string (out)
+                    (write-string "Execution pathways re-enabled after user approval." out)
+                    (write-string " Plan mode is OFF." out)
+                    (format out " Approved steps: ~D/~D (~A)."
+                            approved-count
+                            step-count
+                            (%format-step-index-list approved-step-indexes))
+                    (format out " Execution run initialized: ~A." run-id)
+                    (when next-step-index
+                      (format out " Next approved step: ~D." next-step-index)))))))))
+
 (defun %memory-handler (_invocation arguments context)
   (declare (ignore _invocation))
   (let* ((tail (or (gethash :ARGS arguments) ""))
@@ -2838,6 +2885,12 @@
            :description "Optional action arguments (e.g. /plan off false, /plan approve 1,3, /plan reorder 3 1, /plan modify <notes>)."))
     :handler #'%plan-handler
     :completer #'%plan-arg-completer))
+  (register-slash-command
+   (make-slash-command
+    :name "execute"
+    :description "Transition from approved plan review into execution mode."
+    :usage "/execute"
+    :handler #'%execute-handler))
   (register-slash-command
    (make-slash-command
     :name "memory"
