@@ -81,6 +81,40 @@
           '(:completed :failed :aborted)
           :test #'eq))
 
+(defun %find-plan-execution-step (state step-index)
+  (find step-index
+        (plan-execution-state-steps state)
+        :key #'plan-execution-step-index
+        :test #'=))
+
+(defun %mark-plan-execution-step-running (step)
+  (check-type step plan-execution-step)
+  (setf (plan-execution-step-status step) :running
+        (plan-execution-step-started-at step) (get-universal-time)
+        (plan-execution-step-finished-at step) nil)
+  step)
+
+(defun %mark-plan-execution-step-completed (step)
+  (check-type step plan-execution-step)
+  (setf (plan-execution-step-status step) :completed
+        (plan-execution-step-finished-at step) (get-universal-time))
+  step)
+
+(defun %mark-plan-execution-step-pending (step)
+  (check-type step plan-execution-step)
+  (setf (plan-execution-step-status step) :pending
+        (plan-execution-step-started-at step) nil
+        (plan-execution-step-finished-at step) nil)
+  step)
+
+(defun %complete-plan-execution-if-finished (state)
+  (check-type state plan-execution-state)
+  (when (null (plan-execution-state-pending-step-indexes state))
+    (setf (plan-execution-state-status state) :completed
+          (plan-execution-state-current-step-index state) nil
+          (plan-execution-state-finished-at state) (get-universal-time)))
+  state)
+
 (defun %plan-step-order (steps)
   (loop for step in (or steps '())
         for index = (plan-step-index step)
@@ -207,3 +241,69 @@
         (plan-execution-state-abort-reason state) reason
         (plan-execution-state-finished-at state) (get-universal-time))
   state)
+
+(defun plan-execution-next-step-index (&optional (state (current-plan-execution-state)))
+  (check-type state plan-execution-state)
+  (first (plan-execution-state-pending-step-indexes state)))
+
+(defun execute-next-approved-plan-step (executor &key (state (current-plan-execution-state)))
+  (check-type state plan-execution-state)
+  (unless (functionp executor)
+    (error "Plan execution step executor must be a function."))
+  (let ((status (%normalize-plan-execution-status (plan-execution-state-status state))))
+    (when (%plan-execution-terminal-status-p status)
+      (error "Plan execution is already terminal (~S)." status))
+    (when (eq :idle status)
+      (error "Plan execution has not been initialized."))
+    (when (eq :paused status)
+      (error "Plan execution is paused. Resume it before executing steps."))
+    (when (eq :ready status)
+      (start-plan-execution state))
+    (unless (eq :running (plan-execution-state-status state))
+      (error "Plan execution cannot execute steps from status ~S."
+             (plan-execution-state-status state)))
+    (let ((next-step-index (plan-execution-next-step-index state)))
+      (unless next-step-index
+        (%complete-plan-execution-if-finished state)
+        (return-from execute-next-approved-plan-step
+          (values state nil nil t)))
+      (let ((step (%find-plan-execution-step state next-step-index)))
+        (unless step
+          (error "Missing execution step for approved index ~D." next-step-index))
+        (setf (plan-execution-state-current-step-index state) next-step-index)
+        (%mark-plan-execution-step-running step)
+        (let ((result nil)
+              (completed-p nil))
+          (unwind-protect
+               (progn
+                 (setf result (funcall executor step)
+                       completed-p t)
+                 (%mark-plan-execution-step-completed step)
+                 (setf (plan-execution-state-pending-step-indexes state)
+                       (rest (plan-execution-state-pending-step-indexes state))
+                       (plan-execution-state-completed-step-indexes state)
+                       (append (plan-execution-state-completed-step-indexes state)
+                               (list next-step-index))
+                       (plan-execution-state-current-step-index state) nil)
+                 (%complete-plan-execution-if-finished state))
+            (unless completed-p
+              (%mark-plan-execution-step-pending step)
+              (setf (plan-execution-state-current-step-index state) nil)))
+          (values state
+                  step
+                  result
+                  (null (plan-execution-state-pending-step-indexes state))))))))
+
+(defun execute-approved-plan-steps (executor &key (state (current-plan-execution-state)))
+  (check-type state plan-execution-state)
+  (unless (functionp executor)
+    (error "Plan execution executor must be a function."))
+  (let ((execution-results '()))
+    (loop
+      (multiple-value-bind (_ step result done-p)
+          (execute-next-approved-plan-step executor :state state)
+        (declare (ignore _))
+        (when step
+          (push (cons (plan-execution-step-index step) result) execution-results))
+        (when done-p
+          (return (values state (nreverse execution-results))))))))
