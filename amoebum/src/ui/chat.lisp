@@ -1750,6 +1750,59 @@ Falls back to the global *toolset* when stream-tools is nil."
                         (copy-list (or (plan-execution-output-entry-recovery-actions entry)
                                        '()))))))
 
+(defun %chat-plan-format-elapsed-seconds (elapsed-seconds)
+  (let* ((total-seconds (max 0 (or elapsed-seconds 0)))
+         (hours (truncate total-seconds 3600))
+         (remaining (mod total-seconds 3600))
+         (minutes (truncate remaining 60))
+         (seconds (mod remaining 60)))
+    (cond
+      ((> hours 0)
+       (format nil "~Dh ~Dm ~Ds" hours minutes seconds))
+      ((> minutes 0)
+       (format nil "~Dm ~Ds" minutes seconds))
+      (t
+       (format nil "~Ds" seconds)))))
+
+(defun %chat-plan-execution-elapsed-seconds (execution-state)
+  (let* ((started-at (plan-execution-state-started-at execution-state))
+         (finished-at (plan-execution-state-finished-at execution-state))
+         (status (plan-execution-state-status execution-state))
+         (end-time (if (member status '(:completed :failed :aborted) :test #'eq)
+                       finished-at
+                       (get-universal-time))))
+    (if (and (integerp started-at)
+             (integerp end-time))
+        (max 0 (- end-time started-at))
+        0)))
+
+(defun %chat-plan-execution-progress-line (execution-state)
+  (let* ((approved-indexes (or (plan-execution-state-approved-step-indexes execution-state) '()))
+         (total (length approved-indexes)))
+    (unless (plusp total)
+      (return-from %chat-plan-execution-progress-line
+        "Execution progress: step 0 of 0 (elapsed 0s)"))
+    (let* ((current-index (plan-execution-state-current-step-index execution-state))
+           (current-position (and (integerp current-index)
+                                  (position current-index approved-indexes :test #'=)))
+           (completed (length (plan-execution-state-completed-step-indexes execution-state)))
+           (status (plan-execution-state-status execution-state))
+           (step-number
+             (cond
+               ((integerp current-position)
+                (1+ current-position))
+               ((eq status :completed)
+                total)
+               ((plusp completed)
+                (min total (1+ completed)))
+               (t
+                1)))
+           (elapsed-seconds (%chat-plan-execution-elapsed-seconds execution-state)))
+      (format nil "Execution progress: step ~D of ~D (elapsed ~A)"
+              step-number
+              total
+              (%chat-plan-format-elapsed-seconds elapsed-seconds)))))
+
 (defun %chat-plan-presentation-context-lines (plan-state selected-step visible-steps execution-state)
   (let* ((steps (or (plan-mode-state-steps plan-state) '()))
          (high-risk-count
@@ -1792,6 +1845,7 @@ Falls back to the global *toolset* when stream-tools is nil."
                      (string-downcase
                       (symbol-name (or (plan-execution-state-status execution-state)
                                        :idle))))
+             (%chat-plan-execution-progress-line execution-state)
              (format nil "Execution progress: done ~D / pending ~D"
                      (length (plan-execution-state-completed-step-indexes execution-state))
                      (length (plan-execution-state-pending-step-indexes execution-state))))))))
@@ -1844,6 +1898,8 @@ Falls back to the global *toolset* when stream-tools is nil."
           (plan-execution-state-run-id execution-state)
           (plan-execution-state-status execution-state)
           (plan-execution-state-current-step-index execution-state)
+          (and (%chat-plan-execution-surface-active-p execution-state)
+               (%chat-plan-execution-elapsed-seconds execution-state))
           (%chat-plan-step-status-event-signature chat-state execution-state)
           (copy-list (or (plan-execution-state-pending-step-indexes execution-state) '()))
           (copy-list (or (plan-execution-state-completed-step-indexes execution-state) '()))

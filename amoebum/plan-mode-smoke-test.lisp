@@ -97,6 +97,10 @@
          (plan-execution-state-rollback-succeeded-p-fn
            (funcall fn-in "PLAN-EXECUTION-STATE-ROLLBACK-SUCCEEDED-P" amoebum-pkg))
          (plan-execution-output-lines-fn (funcall fn-in "PLAN-EXECUTION-OUTPUT-LINES" amoebum-pkg))
+         (chat-plan-execution-progress-line-fn
+           (funcall fn-in "%CHAT-PLAN-EXECUTION-PROGRESS-LINE" amoebum-pkg))
+         (chat-plan-presentation-context-lines-fn
+           (funcall fn-in "%CHAT-PLAN-PRESENTATION-CONTEXT-LINES" amoebum-pkg))
          (plan-execution-step-index-fn (funcall fn-in "PLAN-EXECUTION-STEP-INDEX" amoebum-pkg))
          (plan-execution-step-status-fn (funcall fn-in "PLAN-EXECUTION-STEP-STATUS" amoebum-pkg))
          (plan-execution-step-started-at-fn (funcall fn-in "PLAN-EXECUTION-STEP-STARTED-AT" amoebum-pkg))
@@ -798,6 +802,11 @@
                               (funcall plan-execution-state-pending-step-indexes-fn execution-state))
                        "Expected plan execution pending steps '(1 3), got ~S."
                        (funcall plan-execution-state-pending-step-indexes-fn execution-state))
+          (assert-true (contains-text-p
+                        (funcall chat-plan-execution-progress-line-fn execution-state)
+                        "Execution progress: step 1 of 2 (elapsed 0s)")
+                       "Expected execution progress indicator to initialize at step 1 of 2 with zero elapsed time, got ~S."
+                       (funcall chat-plan-execution-progress-line-fn execution-state))
           (let ((continuity-lines (funcall plan-execution-output-lines-fn execution-state)))
             (assert-true (some (lambda (line)
                                  (contains-text-p line "Execution continuity initialized for run"))
@@ -857,6 +866,10 @@
           (assert-true (eq :completed (funcall plan-execution-state-status-fn execution-state))
                        "Expected sequential approved execution to end in :completed, got ~S."
                        (funcall plan-execution-state-status-fn execution-state))
+          (let ((progress-line (funcall chat-plan-execution-progress-line-fn execution-state)))
+            (assert-true (contains-text-p progress-line "Execution progress: step 2 of 2 (elapsed ")
+                         "Expected completed execution progress indicator to report step 2 of 2 with elapsed time, got ~S."
+                         progress-line))
           (assert-true (equal '(1 3)
                               (funcall plan-execution-state-completed-step-indexes-fn execution-state))
                        "Expected completed-step-indexes '(1 3)' after sequential execution, got ~S."
@@ -928,6 +941,17 @@
                                step-status-events)
                          "Expected plan-step-status events to include done status for step 3, got ~S."
                          step-status-events))
+          (let ((context-lines
+                  (funcall chat-plan-presentation-context-lines-fn
+                           plan-state
+                           nil
+                           (funcall plan-mode-steps-fn plan-state)
+                           execution-state)))
+            (assert-true (some (lambda (line)
+                                 (contains-text-p line "Execution progress: step 2 of 2 (elapsed "))
+                               context-lines)
+                         "Expected plan presentation context lines to include step-of-total progress and elapsed time, got ~S."
+                         context-lines))
           (assert-true (integerp (funcall plan-execution-state-finished-at-fn execution-state))
                        "Expected sequential approved execution to set finished-at timestamp.")
           (dolist (step (funcall plan-execution-state-steps-fn execution-state))
