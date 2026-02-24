@@ -462,6 +462,45 @@
            #:enter-plan-mode
            #:exit-plan-mode
            #:toggle-plan-mode
+           #:*known-plan-execution-statuses*
+           #:plan-execution-step
+           #:plan-execution-step-p
+           #:make-plan-execution-step
+           #:plan-execution-step-index
+           #:plan-execution-step-description
+           #:plan-execution-step-file-paths
+           #:plan-execution-step-risk
+           #:plan-execution-step-depends-on
+           #:plan-execution-step-approved-p
+           #:plan-execution-step-status
+           #:plan-execution-step-started-at
+           #:plan-execution-step-finished-at
+           #:plan-execution-state
+           #:plan-execution-state-p
+           #:plan-execution-state-run-id
+           #:plan-execution-state-status
+           #:plan-execution-state-created-at
+           #:plan-execution-state-started-at
+           #:plan-execution-state-finished-at
+           #:plan-execution-state-source-plan-exited-at
+           #:plan-execution-state-source-plan-exit-reason
+           #:plan-execution-state-steps
+           #:plan-execution-state-ordered-step-indexes
+           #:plan-execution-state-approved-step-indexes
+           #:plan-execution-state-pending-step-indexes
+           #:plan-execution-state-completed-step-indexes
+           #:plan-execution-state-current-step-index
+           #:plan-execution-state-failure-reason
+           #:plan-execution-state-abort-reason
+           #:*plan-execution-state*
+           #:current-plan-execution-state
+           #:reset-plan-execution-state
+           #:initialize-plan-execution
+           #:plan-execution-ready-p
+           #:start-plan-execution
+           #:pause-plan-execution
+           #:resume-plan-execution
+           #:abort-plan-execution
            #:+event-type-agent-spawn+
            #:+event-type-agent-complete+
            #:+event-type-agent-cancelled+
