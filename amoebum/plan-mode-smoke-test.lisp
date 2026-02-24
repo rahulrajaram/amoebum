@@ -54,6 +54,9 @@
          (current-plan-state-fn (funcall fn-in "CURRENT-PLAN-MODE-STATE" amoebum-pkg))
          (plan-mode-steps-fn (funcall fn-in "PLAN-MODE-STATE-STEPS" amoebum-pkg))
          (plan-approved-steps-fn (funcall fn-in "PLAN-MODE-STATE-APPROVED-STEP-INDEXES" amoebum-pkg))
+         (plan-execution-pathways-enabled-fn
+           (funcall fn-in "PLAN-MODE-STATE-EXECUTION-PATHWAYS-ENABLED-P" amoebum-pkg))
+         (plan-input-gating-snapshot-fn (funcall fn-in "PLAN-INPUT-GATING-SNAPSHOT" amoebum-pkg))
          (plan-step-description-fn (funcall fn-in "PLAN-STEP-DESCRIPTION" amoebum-pkg))
          (plan-step-depends-on-fn (funcall fn-in "PLAN-STEP-DEPENDS-ON" amoebum-pkg))
          (clear-step-approvals-fn (funcall fn-in "CLEAR-PLAN-STEP-APPROVALS" amoebum-pkg))
@@ -155,7 +158,21 @@
         (assert-true (contains-text-p (funcall status-bar-line-fn status-state) "PLAN MODE -- read-only")
                      "Expected status bar to show plan mode banner while active.")
         (assert-true (contains-text-p (funcall status-bar-line-fn status-state) "[LOCK mutating tools blocked]")
-                     "Expected status bar plan mode banner to include lock badge while active."))
+                     "Expected status bar plan mode banner to include lock badge while active.")
+        (let ((snapshot (funcall plan-input-gating-snapshot-fn
+                                 (funcall current-plan-state-fn))))
+          (assert-true (bool-true-p (getf snapshot :active-p))
+                       "Expected input gating to be active while plan mode is enabled, got ~S."
+                       snapshot)
+          (assert-true (eq :plan-mode-active (getf snapshot :reason))
+                       "Expected input gating reason :plan-mode-active while plan mode is enabled, got ~S."
+                       snapshot)
+          (assert-true (not (bool-true-p (getf snapshot :terminal-stdin-enabled-p)))
+                       "Expected terminal stdin to be gated while plan mode is enabled, got ~S."
+                       snapshot)
+          (assert-true (not (bool-true-p (getf snapshot :execution-pathways-enabled-p)))
+                       "Expected execution pathways to be gated while plan mode is enabled, got ~S."
+                       snapshot)))
 
       (let ((assembled (funcall assemble-system-prompt-fn)))
         (assert-true (contains-text-p assembled "Plan Mode Guidance")
@@ -268,7 +285,21 @@
                      "Expected status bar to hide plan mode banner after exit.")
         (assert-true (not (contains-text-p (funcall status-bar-line-fn status-state)
                                            "[LOCK mutating tools blocked]"))
-                     "Expected status bar to hide lock badge after plan mode exit."))
+                     "Expected status bar to hide lock badge after plan mode exit.")
+        (let ((snapshot (funcall plan-input-gating-snapshot-fn
+                                 (funcall current-plan-state-fn))))
+          (assert-true (bool-true-p (getf snapshot :active-p))
+                       "Expected input gating to remain active after plan capture, got ~S."
+                       snapshot)
+          (assert-true (eq :review-pending (getf snapshot :reason))
+                       "Expected input gating reason :review-pending after /plan off, got ~S."
+                       snapshot)
+          (assert-true (bool-true-p (getf snapshot :terminal-stdin-enabled-p))
+                       "Expected terminal stdin to be re-enabled after leaving plan mode, got ~S."
+                       snapshot)
+          (assert-true (not (bool-true-p (getf snapshot :execution-pathways-enabled-p)))
+                       "Expected execution pathways to remain gated after /plan off, got ~S."
+                       snapshot)))
 
       (let* ((plan-state (funcall current-plan-state-fn))
              (output-path (funcall plan-output-path-fn plan-state))
@@ -314,6 +345,14 @@
           (assert-true (contains-text-p (funcall result-output-fn status-result)
                                         "/plan review")
                        "Expected /plan status output to suggest /plan review, got ~S."
+                       (funcall result-output-fn status-result))
+          (assert-true (contains-text-p (funcall result-output-fn status-result)
+                                        "Input gating: active")
+                       "Expected /plan status output to include input gating state, got ~S."
+                       (funcall result-output-fn status-result))
+          (assert-true (contains-text-p (funcall result-output-fn status-result)
+                                        "Execution pathways: blocked")
+                       "Expected /plan status output to report blocked execution pathways, got ~S."
                        (funcall result-output-fn status-result)))
         (multiple-value-bind (handledp review-result)
             (funcall dispatch-fn "/plan review")
@@ -321,6 +360,10 @@
           (assert-true (contains-text-p (funcall result-output-fn review-result)
                                         "Plan review:")
                        "Expected /plan review output heading, got ~S."
+                       (funcall result-output-fn review-result))
+          (assert-true (contains-text-p (funcall result-output-fn review-result)
+                                        "Input gating: active")
+                       "Expected /plan review output to include input gating summary, got ~S."
                        (funcall result-output-fn review-result))
           (assert-true (contains-text-p (funcall result-output-fn review-result)
                                         "# Amoebum Plan")
@@ -502,6 +545,18 @@
         (assert-true (equal '(1 2 3 4) (funcall plan-approved-steps-fn plan-state))
                      "Expected /plan approve to mark all steps approved, got ~S."
                      (funcall plan-approved-steps-fn plan-state))
+        (assert-true (not (bool-true-p (funcall plan-execution-pathways-enabled-fn plan-state)))
+                     "Expected plan approval to keep execution pathways gated until explicit execute transition.")
+        (let ((snapshot (funcall plan-input-gating-snapshot-fn plan-state)))
+          (assert-true (bool-true-p (getf snapshot :active-p))
+                       "Expected input gating to remain active after /plan approve, got ~S."
+                       snapshot)
+          (assert-true (eq :awaiting-explicit-execute (getf snapshot :reason))
+                       "Expected input gating reason :awaiting-explicit-execute after /plan approve, got ~S."
+                       snapshot)
+          (assert-true (not (bool-true-p (getf snapshot :execution-pathways-enabled-p)))
+                       "Expected execution pathways to remain blocked after /plan approve, got ~S."
+                       snapshot))
         (multiple-value-bind (handledp status-result)
             (funcall dispatch-fn "/plan status")
           (assert-true handledp "Expected /plan status to be handled after approval.")
@@ -512,6 +567,10 @@
           (assert-true (contains-text-p (funcall result-output-fn status-result)
                                         "Approved steps: 4/4")
                        "Expected /plan status to report full step approval after /plan approve, got ~S."
+                       (funcall result-output-fn status-result))
+          (assert-true (contains-text-p (funcall result-output-fn status-result)
+                                        "awaiting explicit execute transition")
+                       "Expected /plan status to report awaiting execute transition after /plan approve, got ~S."
                        (funcall result-output-fn status-result)))
         (funcall set-step-approvals-fn '(1 3) :state plan-state)
         (funcall reset-plan-execution-state-fn)
