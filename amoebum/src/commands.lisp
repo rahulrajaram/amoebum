@@ -511,7 +511,7 @@
                     (plusp (length (%slash-trim (plan-mode-state-last-plan-markdown plan-state))))))
              (invalid-usage (detail)
                (make-slash-command-result
-                :output (format nil "~A~%Usage: /plan [on|off|status|review|approve|reject|modify] [args...]"
+                :output (format nil "~A~%Usage: /plan [on|off|status|review|approve|reject|modify|request-modifications|request-changes] [args...]"
                                 detail)
                 :echo-input-p t))
              (parse-write-to-file-p ()
@@ -555,7 +555,7 @@
          (decision-result :approved "Plan approved."))
         (:reject
          (decision-result :rejected "Plan rejected."))
-        (:modify
+        ((:modify :request-modifications :request-changes)
          (decision-result :modification-requested
                           "Plan modifications requested. Re-enter /plan on to update the draft."))
         (:on
@@ -1714,7 +1714,9 @@
 (defun %plan-arg-completer (_command _invocation _index fragment _prefix)
   (declare (ignore _command _invocation _index _prefix))
   (let ((prefix (%slash-trim fragment)))
-    (loop for option in '("on" "off" "status" "review" "approve" "reject" "modify")
+    (loop for option in '("on" "off" "status" "review"
+                          "approve" "reject" "modify"
+                          "request-modifications" "request-changes")
           when (%starts-with-ci-p prefix option)
             collect option)))
 
@@ -2508,13 +2510,14 @@
    (make-slash-command
     :name "plan"
     :description "Toggle plan mode, review captured plan output, and record review decisions."
-    :usage "/plan [on|off|status|review|approve|reject|modify] [args...]"
+    :usage "/plan [on|off|status|review|approve|reject|modify|request-modifications|request-changes] [args...]"
     :parameters
     (list (make-slash-command-parameter
            :name "state"
            :type :keyword
            :required-p nil
-           :choices '(:on :off :status :review :approve :reject :modify)
+           :choices '(:on :off :status :review :approve :reject :modify
+                      :request-modifications :request-changes)
            :description "Optional explicit plan mode action.")
           (make-slash-command-parameter
            :name "args"
