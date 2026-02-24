@@ -304,6 +304,36 @@
                                       "Split step 2")
                      "Expected /plan modify to store review notes, got ~S."
                      (funcall plan-review-notes-fn plan-state))
+        (multiple-value-bind (handledp request-mods-result)
+            (funcall dispatch-fn "/plan request-modifications Add explicit rollback validation checks.")
+          (assert-true handledp "Expected /plan request-modifications to be handled.")
+          (assert-true (contains-text-p (funcall result-output-fn request-mods-result)
+                                        "Plan modifications requested")
+                       "Expected /plan request-modifications output to acknowledge modification request, got ~S."
+                       (funcall result-output-fn request-mods-result)))
+        (assert-true (eq :modification-requested
+                         (funcall plan-review-decision-fn plan-state))
+                     "Expected /plan request-modifications to set decision :modification-requested, got ~S."
+                     (funcall plan-review-decision-fn plan-state))
+        (assert-true (contains-text-p (funcall plan-review-notes-fn plan-state)
+                                      "rollback validation")
+                     "Expected /plan request-modifications to store review notes, got ~S."
+                     (funcall plan-review-notes-fn plan-state))
+        (multiple-value-bind (handledp request-changes-result)
+            (funcall dispatch-fn "/plan request-changes Clarify dependency ordering.")
+          (assert-true handledp "Expected /plan request-changes to be handled.")
+          (assert-true (contains-text-p (funcall result-output-fn request-changes-result)
+                                        "Plan modifications requested")
+                       "Expected /plan request-changes output to acknowledge modification request, got ~S."
+                       (funcall result-output-fn request-changes-result)))
+        (assert-true (eq :modification-requested
+                         (funcall plan-review-decision-fn plan-state))
+                     "Expected /plan request-changes to keep decision :modification-requested, got ~S."
+                     (funcall plan-review-decision-fn plan-state))
+        (assert-true (contains-text-p (funcall plan-review-notes-fn plan-state)
+                                      "dependency ordering")
+                     "Expected /plan request-changes to store review notes, got ~S."
+                     (funcall plan-review-notes-fn plan-state))
         (multiple-value-bind (handledp reject-result)
             (funcall dispatch-fn "/plan reject Missing rollback coverage.")
           (assert-true handledp "Expected /plan reject to be handled.")
