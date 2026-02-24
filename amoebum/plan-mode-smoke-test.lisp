@@ -207,7 +207,11 @@
         (assert-true (contains-text-p assembled "Plan Mode Guidance")
                      "Expected assembled system prompt to include plan mode guidance section.")
         (assert-true (contains-text-p assembled "Explore the codebase first")
-                     "Expected plan mode guidance to instruct exploration before planning."))
+                     "Expected plan mode guidance to instruct exploration before planning.")
+        (assert-true (contains-text-p assembled "Output the plan as numbered steps")
+                     "Expected plan mode guidance to require numbered plan steps.")
+        (assert-true (contains-text-p assembled "include a concise step description and explicit file paths")
+                     "Expected plan mode guidance to require per-step descriptions and file paths."))
 
       (let ((chat-state (funcall make-chat-ui-state-fn)))
         (funcall chat-ui-set-input-fn chat-state

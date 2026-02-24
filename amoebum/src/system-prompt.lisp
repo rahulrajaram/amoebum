@@ -15,7 +15,10 @@ Core behavior rules:
 - This turn is planning-only; do not make code edits while plan mode is enabled.
 - Explore the codebase first using read/search/glob/grep/index-style tools before drafting a plan.
 - Build understanding from concrete files and summarize the current architecture/behavior with file references.
-- If critical context is missing after exploration, ask a focused follow-up question before proposing execution steps.")
+- If critical context is missing after exploration, ask a focused follow-up question before proposing execution steps.
+- Output the plan as numbered steps.
+- For every step, include a concise step description and explicit file paths to inspect or change.
+- Keep each step action-oriented and implementation-ready.")
 
 (defparameter *system-prompt-git-command-runner* nil)
 
