@@ -938,6 +938,95 @@
                 (assert-true (integerp (funcall plan-execution-step-finished-at-fn step))
                              "Expected approved step ~D to include finished-at timestamp."
                              step-index)))))
+        (funcall reset-plan-execution-state-fn)
+        (let* ((execution-state (funcall initialize-plan-execution-fn :plan-state plan-state))
+               (observer-calls '()))
+          (multiple-value-bind (_ execution-results)
+              (funcall execute-approved-plan-steps-fn
+                       (lambda (step)
+                         (let ((step-index (funcall plan-execution-step-index-fn step)))
+                           (if (= step-index 1)
+                               (list :status :error :error "synthetic failure for review")
+                               (format nil "step-~D-ok" step-index))))
+                       :state execution-state
+                       :after-step-observer
+                       (lambda (_observer-state step _result error-p)
+                         (declare (ignore _observer-state _result))
+                         (push (cons (funcall plan-execution-step-index-fn step) error-p)
+                               observer-calls)))
+            (declare (ignore _))
+            (assert-true (equal '((1 :status :error :error "synthetic failure for review")
+                                  (3 . "step-3-ok"))
+                                execution-results)
+                         "Expected execution results to preserve step outputs, got ~S."
+                         execution-results))
+          (let ((continuity-lines (funcall plan-execution-output-lines-fn execution-state)))
+            (assert-true (some (lambda (line)
+                                 (contains-text-p
+                                  line
+                                  "LIVE> [step 1 check] potential errors detected; review before continuing."))
+                               continuity-lines)
+                         "Expected per-step error check line for step 1, got ~S."
+                         continuity-lines)
+            (assert-true (some (lambda (line)
+                                 (contains-text-p
+                                  line
+                                  "LIVE> [step 3 check] no errors detected."))
+                               continuity-lines)
+                         "Expected per-step no-error check line for step 3, got ~S."
+                         continuity-lines))
+          (let ((observer-calls-forward (nreverse observer-calls)))
+            (assert-true (equal '((1 . t) (3 . nil)) observer-calls-forward)
+                         "Expected observer callbacks to receive step error booleans, got ~S."
+                         observer-calls-forward)))
+        (funcall reset-plan-execution-state-fn)
+        (let* ((execution-state (funcall initialize-plan-execution-fn :plan-state plan-state))
+               (paused-step-indexes '()))
+          (multiple-value-bind (_ execution-results)
+              (funcall execute-approved-plan-steps-fn
+                       (lambda (step)
+                         (format nil "step-~D-ok" (funcall plan-execution-step-index-fn step)))
+                       :state execution-state
+                       :pause-after-step-predicate
+                       (lambda (_pause-state step _result _error-p)
+                         (declare (ignore _pause-state _result _error-p))
+                         (let ((step-index (funcall plan-execution-step-index-fn step)))
+                           (push step-index paused-step-indexes)
+                           (= step-index 1))))
+            (declare (ignore _ execution-results)))
+          (assert-true (eq :paused (funcall plan-execution-state-status-fn execution-state))
+                       "Expected optional review pause to leave execution state :paused, got ~S."
+                       (funcall plan-execution-state-status-fn execution-state))
+          (assert-true (equal '(1) (funcall plan-execution-state-completed-step-indexes-fn execution-state))
+                       "Expected pause-after-step to stop after first approved step, got completed ~S."
+                       (funcall plan-execution-state-completed-step-indexes-fn execution-state))
+          (assert-true (equal '(3) (funcall plan-execution-state-pending-step-indexes-fn execution-state))
+                       "Expected pause-after-step to leave remaining approved steps pending, got ~S."
+                       (funcall plan-execution-state-pending-step-indexes-fn execution-state))
+          (let ((paused-step-indexes-forward (nreverse paused-step-indexes)))
+            (assert-true (equal '(1) paused-step-indexes-forward)
+                         "Expected pause predicate to evaluate at first step and pause there, got ~S."
+                         paused-step-indexes-forward))
+          (let ((continuity-lines (funcall plan-execution-output-lines-fn execution-state)))
+            (assert-true (some (lambda (line)
+                                 (contains-text-p line "LIVE> Execution paused for review after step 1."))
+                               continuity-lines)
+                         "Expected continuity output to include review pause marker, got ~S."
+                         continuity-lines))
+          (funcall resume-plan-execution-fn execution-state)
+          (multiple-value-bind (_ execution-results)
+              (funcall execute-approved-plan-steps-fn
+                       (lambda (step)
+                         (format nil "step-~D-resumed-ok"
+                                 (funcall plan-execution-step-index-fn step)))
+                       :state execution-state)
+            (declare (ignore _))
+            (assert-true (equal '((3 . "step-3-resumed-ok")) execution-results)
+                         "Expected resumed run to execute remaining pending step, got ~S."
+                         execution-results))
+          (assert-true (eq :completed (funcall plan-execution-state-status-fn execution-state))
+                       "Expected resumed execution after review pause to complete, got ~S."
+                       (funcall plan-execution-state-status-fn execution-state)))
         (funcall clear-step-approvals-fn plan-state)
         (let ((saw-init-error nil))
           (handler-case
