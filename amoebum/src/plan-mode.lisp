@@ -27,6 +27,7 @@
                    exited-at
                    (steps '())
                    (approved-step-indexes '())
+                   (execution-pathways-enabled-p t)
                    (review-pending-p nil)
                    (review-decision :pending)
                    review-notes
@@ -40,6 +41,7 @@
   exited-at
   (steps '() :type list)
   (approved-step-indexes '() :type list)
+  (execution-pathways-enabled-p t :type boolean)
   (review-pending-p nil :type boolean)
   (review-decision :pending)
   review-notes
@@ -165,6 +167,65 @@
                              '(:pending :partially-approved :modification-requested)
                              :test #'eq)))))
   state)
+
+(defun set-plan-execution-pathways-enabled (enabled-p &key (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (setf (plan-mode-state-execution-pathways-enabled-p state)
+        (not (null enabled-p)))
+  state)
+
+(defun %captured-plan-available-p (state)
+  (let ((plan-markdown (plan-mode-state-last-plan-markdown state)))
+    (and (stringp plan-markdown)
+         (plusp (length (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                     plan-markdown))))))
+
+(defun plan-input-gating-snapshot (&optional (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (let* ((active-plan-mode-p (not (null (plan-mode-state-active-p state))))
+         (captured-plan-p (%captured-plan-available-p state))
+         (review-pending-p (not (null (plan-mode-state-review-pending-p state))))
+         (review-decision (%normalize-plan-review-decision
+                           (plan-mode-state-review-decision state)))
+         (terminal-stdin-enabled-p (not active-plan-mode-p))
+         (execution-pathways-enabled-p
+           (and (not active-plan-mode-p)
+                (plan-mode-state-execution-pathways-enabled-p state)
+                (or (not captured-plan-p)
+                    (and (eq review-decision :approved)
+                         (not review-pending-p)))))
+         (reason
+           (cond
+             (active-plan-mode-p :plan-mode-active)
+             ((and captured-plan-p review-pending-p) :review-pending)
+             ((and captured-plan-p (not (eq review-decision :approved)))
+              :review-not-approved)
+             ((not execution-pathways-enabled-p)
+              :awaiting-explicit-execute)
+             (t
+              :open)))
+         (active-p
+           (or (not terminal-stdin-enabled-p)
+               (not execution-pathways-enabled-p))))
+    (list :active-p active-p
+          :reason reason
+          :terminal-stdin-enabled-p terminal-stdin-enabled-p
+          :execution-pathways-enabled-p execution-pathways-enabled-p
+          :captured-plan-p captured-plan-p
+          :review-pending-p review-pending-p
+          :review-decision review-decision)))
+
+(defun plan-input-gating-active-p (&optional (state (current-plan-mode-state)))
+  (not (null (getf (plan-input-gating-snapshot state) :active-p))))
+
+(defun plan-input-gating-reason (&optional (state (current-plan-mode-state)))
+  (getf (plan-input-gating-snapshot state) :reason))
+
+(defun plan-input-gating-terminal-stdin-enabled-p (&optional (state (current-plan-mode-state)))
+  (not (null (getf (plan-input-gating-snapshot state) :terminal-stdin-enabled-p))))
+
+(defun plan-input-gating-execution-pathways-enabled-p (&optional (state (current-plan-mode-state)))
+  (not (null (getf (plan-input-gating-snapshot state) :execution-pathways-enabled-p))))
 
 (defun %normalize-path-list (values)
   (loop for value in values
@@ -419,6 +480,7 @@
         (plan-mode-state-entered-at state) (get-universal-time)
         (plan-mode-state-exited-at state) nil
         (plan-mode-state-approved-step-indexes state) '()
+        (plan-mode-state-execution-pathways-enabled-p state) nil
         (plan-mode-state-review-pending-p state) nil
         (plan-mode-state-review-decision state) :pending
         (plan-mode-state-review-notes state) nil
@@ -437,6 +499,7 @@
     (let ((captured-plan (%plan-markdown state reason)))
       (setf (plan-mode-state-last-plan-markdown state) captured-plan
             (plan-mode-state-approved-step-indexes state) '()
+            (plan-mode-state-execution-pathways-enabled-p state) nil
             (plan-mode-state-review-pending-p state) t
             (plan-mode-state-review-decision state) :pending
             (plan-mode-state-review-notes state) nil

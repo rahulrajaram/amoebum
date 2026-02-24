@@ -437,6 +437,7 @@
            #:plan-mode-state-exited-at
            #:plan-mode-state-steps
            #:plan-mode-state-approved-step-indexes
+           #:plan-mode-state-execution-pathways-enabled-p
            #:plan-mode-state-review-pending-p
            #:plan-mode-state-review-decision
            #:plan-mode-state-review-notes
@@ -456,6 +457,12 @@
            #:set-plan-step-approvals
            #:approve-plan-steps
            #:plan-step-approved-p
+           #:set-plan-execution-pathways-enabled
+           #:plan-input-gating-snapshot
+           #:plan-input-gating-active-p
+           #:plan-input-gating-reason
+           #:plan-input-gating-terminal-stdin-enabled-p
+           #:plan-input-gating-execution-pathways-enabled-p
            #:set-plan-review-decision
            #:refresh-plan-review-markdown
            #:default-plan-output-path

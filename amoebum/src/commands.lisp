@@ -614,13 +614,36 @@
                             review-decision
                             review-notes
                             step-count
-                            approved-step-indexes)
+                            approved-step-indexes
+                            input-gating-snapshot)
+  (labels ((input-gating-reason-label (reason)
+             (case reason
+               (:plan-mode-active "plan mode active")
+               (:review-pending "review pending")
+               (:review-not-approved "review decision not approved")
+               (:awaiting-explicit-execute "awaiting explicit execute transition")
+               (otherwise "open")))
+           (input-gating-summary ()
+             (let ((terminal-enabled-p
+                     (not (null (getf input-gating-snapshot
+                                      :terminal-stdin-enabled-p))))
+                   (execution-enabled-p
+                     (not (null (getf input-gating-snapshot
+                                      :execution-pathways-enabled-p)))))
+               (format nil
+                       " Input gating: ~:[inactive~;active~] (~A). Terminal stdin: ~:[blocked~;enabled~]. Execution pathways: ~:[blocked~;enabled~]."
+                       (not (null (getf input-gating-snapshot :active-p)))
+                       (input-gating-reason-label
+                        (getf input-gating-snapshot :reason))
+                       terminal-enabled-p
+                       execution-enabled-p))))
   (let ((approved-count (length approved-step-indexes)))
     (if active-p
         (with-output-to-string (out)
           (write-string "Plan mode is ON. PLAN MODE -- read-only [LOCK mutating tools blocked]." out)
           (when (> step-count 0)
-            (format out " Approved steps: ~D/~D." approved-count step-count)))
+            (format out " Approved steps: ~D/~D." approved-count step-count))
+          (write-string (input-gating-summary) out))
         (with-output-to-string (out)
           (write-string "Plan mode is OFF." out)
           (when output-path
@@ -639,7 +662,8 @@
                     (%plan-review-decision-label review-decision)))
           (when (and (stringp review-notes)
                      (plusp (length (%slash-trim review-notes))))
-            (format out " Review notes: ~A." (%slash-trim review-notes)))))))
+            (format out " Review notes: ~A." (%slash-trim review-notes)))
+          (write-string (input-gating-summary) out))))))
 
 (defun %plan-exit-output (plan-markdown output-path write-to-file-p)
   (with-output-to-string (out)
@@ -659,11 +683,24 @@
                             review-decision
                             review-notes
                             approved-step-indexes
-                            step-count)
+                            step-count
+                            input-gating-snapshot)
+  (labels ((input-gating-reason-label (reason)
+             (case reason
+               (:plan-mode-active "plan mode active")
+               (:review-pending "review pending")
+               (:review-not-approved "review decision not approved")
+               (:awaiting-explicit-execute "awaiting explicit execute transition")
+               (otherwise "open"))))
   (if (and (stringp plan-markdown)
            (plusp (length (%slash-trim plan-markdown))))
       (with-output-to-string (out)
         (format out "Plan review:~%")
+        (format out "Input gating: ~:[inactive~;active~] (~A), terminal stdin ~:[blocked~;enabled~], execution pathways ~:[blocked~;enabled~].~%"
+                (not (null (getf input-gating-snapshot :active-p)))
+                (input-gating-reason-label (getf input-gating-snapshot :reason))
+                (not (null (getf input-gating-snapshot :terminal-stdin-enabled-p)))
+                (not (null (getf input-gating-snapshot :execution-pathways-enabled-p))))
         (when (symbolp review-decision)
           (format out "Current decision: ~A.~%"
                   (%plan-review-decision-label review-decision)))
@@ -676,7 +713,7 @@
                   step-count
                   (%format-step-index-list approved-step-indexes)))
         (format out "~%~A" plan-markdown))
-      "No captured plan is available yet. Exit plan mode first to capture one."))
+      "No captured plan is available yet. Exit plan mode first to capture one.")))
 
 (defun %plan-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
@@ -687,6 +724,8 @@
     (labels ((captured-plan-available-p ()
                (and (stringp (plan-mode-state-last-plan-markdown plan-state))
                     (plusp (length (%slash-trim (plan-mode-state-last-plan-markdown plan-state))))))
+             (input-gating-snapshot ()
+               (plan-input-gating-snapshot plan-state))
              (invalid-usage (detail)
                (make-slash-command-result
                 :output (format nil "~A~%Usage: /plan [on|off|status|review|approve|reorder|reject|modify|request-modifications|request-changes] [args...] (approve accepts step selectors like `1`, `1,3`, `2-4`; reorder accepts `3 1` or `3->1`)"
@@ -847,7 +886,8 @@
                                            (plan-mode-state-review-decision plan-state)
                                            (plan-mode-state-review-notes plan-state)
                                            (length (plan-mode-state-steps plan-state))
-                                           (plan-mode-state-approved-step-indexes plan-state)))
+                                           (plan-mode-state-approved-step-indexes plan-state)
+                                           (input-gating-snapshot)))
              (invalid-usage "The /plan status action does not accept extra arguments.")))
         (:review
          (if (%slash-blank-p raw-args)
@@ -858,7 +898,8 @@
                                              (plan-mode-state-review-decision plan-state)
                                              (plan-mode-state-review-notes plan-state)
                                              (plan-mode-state-approved-step-indexes plan-state)
-                                             (length (plan-mode-state-steps plan-state)))))
+                                             (length (plan-mode-state-steps plan-state))
+                                             (input-gating-snapshot))))
              (invalid-usage "The /plan review action does not accept extra arguments.")))
         (:approve
          (approve-steps-result))
