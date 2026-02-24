@@ -88,12 +88,12 @@ in_next_work && /^Operator policy while queue is non-empty:/ {
   if (line ~ /^[0-9]+\. I[0-9A-Z]+ `[^`]+`: (incomplete|blocked|complete)\. tranche_group=[a-z0-9][a-z0-9-]*$/) {
     close_stanza(NR)
 
-    split(line, header_parts, ": ")
-    split(header_parts[1], left_tokens, " ")
-    tranche_id = left_tokens[2]
+    # Extract tranche_id as second whitespace-delimited token
+    tranche_id = $2
 
-    split(header_parts[2], right_tokens, ". tranche_group=")
-    status = right_tokens[1]
+    # Extract status from the known suffix pattern: `: <status>. tranche_group=`
+    match(line, /`: (incomplete|blocked|complete)\. tranche_group=/, m)
+    status = m[1]
 
     in_stanza = 1
     section = ""
