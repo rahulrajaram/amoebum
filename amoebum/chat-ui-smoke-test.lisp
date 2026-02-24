@@ -55,7 +55,11 @@
          (set-plan-step-approvals-fn (funcall fn-in "SET-PLAN-STEP-APPROVALS" amoebum-pkg))
          (reset-plan-execution-state-fn (funcall fn-in "RESET-PLAN-EXECUTION-STATE" amoebum-pkg))
          (initialize-plan-execution-fn (funcall fn-in "INITIALIZE-PLAN-EXECUTION" amoebum-pkg))
+         (plan-execution-state-run-id-fn (funcall fn-in "PLAN-EXECUTION-STATE-RUN-ID" amoebum-pkg))
          (plan-execution-append-output-fn (funcall fn-in "PLAN-EXECUTION-APPEND-OUTPUT" amoebum-pkg))
+         (current-event-bus-fn (funcall fn-in "CURRENT-EVENT-BUS" amoebum-pkg))
+         (publish-fn (funcall fn-in "PUBLISH" amoebum-pkg))
+         (make-plan-step-status-event-fn (funcall fn-in "MAKE-PLAN-STEP-STATUS-EVENT" amoebum-pkg))
          (plan-output-stdin-policy-fn
            (funcall fn-in "%CHAT-PLAN-OUTPUT-STDIN-CAPTURE-POLICY" amoebum-pkg))
          (chat-role-cell-fn (funcall fn-in "CHAT-ROLE-CELL" amoebum-pkg))
@@ -204,16 +208,24 @@
         (funcall clear-plan-steps-fn)
         (let ((plan-state (funcall current-plan-state-fn)))
           (funcall add-plan-step-fn
-                   "Keep continuity pane on execution handoff via `rg -n plan`."
+                   "Run `rg -n plan`."
                    :file-paths (list "amoebum/src/ui/chat.lisp")
                    :state plan-state)
           (funcall add-plan-step-fn
-                   "Verify execution logs with `timeout 60 ./bin/yarli-run-verification.sh`."
+                   "Run `./bin/yarli-run-verification.sh`."
                    :file-paths (list "amoebum/chat-ui-smoke-test.lisp")
                    :state plan-state)
           (funcall set-plan-step-approvals-fn '(1 2) :state plan-state)
           (funcall setconfig-fn :plan-mode nil)
           (let ((execution-state (funcall initialize-plan-execution-fn :plan-state plan-state)))
+            (let ((run-id (funcall plan-execution-state-run-id-fn execution-state)))
+              (funcall publish-fn
+                       (funcall current-event-bus-fn)
+                       (funcall make-plan-step-status-event-fn
+                                :run-id run-id
+                                :step-index 1
+                                :status :running
+                                :description "Executing preview command.")))
             (funcall plan-execution-append-output-fn
                      "LIVE> [step 1 running] executing rg -n plan."
                      :step-index 1
@@ -234,7 +246,32 @@
               (assert-true (rows-contain-p rows "Execution continuity initialized for run")
                            "Expected execution continuity initialization line in terminal pane output.")
               (assert-true (rows-contain-p rows "LIVE> [step 1 running]")
-                           "Expected execution terminal pane output to include live running line."))))
+                           "Expected execution terminal pane output to include live running line.")
+              (assert-true (rows-contain-p rows "status: running")
+                           "Expected plan-step status badge to update to running from event bus."))
+            (let ((run-id (funcall plan-execution-state-run-id-fn execution-state)))
+              (funcall publish-fn
+                       (funcall current-event-bus-fn)
+                       (funcall make-plan-step-status-event-fn
+                                :run-id run-id
+                                :step-index 1
+                                :status :done
+                                :description "Execution complete."))
+              (funcall publish-fn
+                       (funcall current-event-bus-fn)
+                       (funcall make-plan-step-status-event-fn
+                                :run-id run-id
+                                :step-index 2
+                                :status :blocked
+                                :description "Execution blocked by dependency."))
+              (let* ((buffer (funcall render-chat-ui-buffer-fn
+                                      state
+                                      (funcall make-size-fn 110 26)))
+                     (rows (buffer-lines buffer)))
+                (assert-true (rows-contain-p rows "status: done")
+                             "Expected plan-step status badge to update to done from event bus.")
+                (assert-true (rows-contain-p rows "status: blocked")
+                             "Expected plan-step status badge to update to blocked from event bus.")))))
         (funcall reset-plan-execution-state-fn)
         (assert-true (eq (funcall plan-output-stdin-policy-fn) :enabled)
                      "Expected output stdin policy helper to return :enabled after execution continuity reset.")

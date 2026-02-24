@@ -78,6 +78,7 @@
          (execute-approved-plan-steps-fn
            (funcall fn-in "EXECUTE-APPROVED-PLAN-STEPS" amoebum-pkg))
          (plan-execution-state-status-fn (funcall fn-in "PLAN-EXECUTION-STATE-STATUS" amoebum-pkg))
+         (plan-execution-state-run-id-fn (funcall fn-in "PLAN-EXECUTION-STATE-RUN-ID" amoebum-pkg))
          (plan-execution-state-approved-step-indexes-fn
            (funcall fn-in "PLAN-EXECUTION-STATE-APPROVED-STEP-INDEXES" amoebum-pkg))
          (plan-execution-state-pending-step-indexes-fn
@@ -113,9 +114,20 @@
          (permission-blocked-payload-reason-code-fn
            (funcall fn-in "PERMISSION-BLOCKED-PAYLOAD-REASON-CODE" amoebum-pkg))
          (make-event-bus-fn (funcall fn-in "MAKE-EVENT-BUS" amoebum-pkg))
+         (current-event-bus-fn (funcall fn-in "CURRENT-EVENT-BUS" amoebum-pkg))
          (event-history-fn (funcall fn-in "EVENT-HISTORY" amoebum-pkg))
          (event-type-fn (funcall fn-in "EVENT-TYPE" amoebum-pkg))
          (event-payload-fn (funcall fn-in "EVENT-PAYLOAD" amoebum-pkg))
+         (plan-step-status-event-type
+           (symbol-value (funcall symbol-in "+EVENT-TYPE-PLAN-STEP-STATUS+" amoebum-pkg)))
+         (plan-step-status-payload-p-fn
+           (funcall fn-in "PLAN-STEP-STATUS-PAYLOAD-P" amoebum-pkg))
+         (plan-step-status-payload-run-id-fn
+           (funcall fn-in "PLAN-STEP-STATUS-PAYLOAD-RUN-ID" amoebum-pkg))
+         (plan-step-status-payload-step-index-fn
+           (funcall fn-in "PLAN-STEP-STATUS-PAYLOAD-STEP-INDEX" amoebum-pkg))
+         (plan-step-status-payload-status-fn
+           (funcall fn-in "PLAN-STEP-STATUS-PAYLOAD-STATUS" amoebum-pkg))
          (make-tool-call-fn (funcall fn-in "MAKE-TOOL-CALL" pseudopod-pkg))
          (temporary-directory-fn (funcall fn-in "TEMPORARY-DIRECTORY" uiop-pkg))
          (ensure-directory-pathname-fn (funcall fn-in "ENSURE-DIRECTORY-PATHNAME" uiop-pkg))
@@ -776,6 +788,48 @@
                                continuity-lines)
                          "Expected continuity output to include terminal completion line, got ~S."
                          continuity-lines))
+          (let* ((run-id (funcall plan-execution-state-run-id-fn execution-state))
+                 (step-status-events
+                   (loop for event in (funcall event-history-fn (funcall current-event-bus-fn))
+                         for payload = (funcall event-payload-fn event)
+                         when (and (eq (funcall event-type-fn event)
+                                       plan-step-status-event-type)
+                                   (funcall plan-step-status-payload-p-fn payload)
+                                   (integerp (funcall plan-step-status-payload-step-index-fn payload))
+                                   (stringp (funcall plan-step-status-payload-run-id-fn payload))
+                                   (string= (funcall plan-step-status-payload-run-id-fn payload)
+                                            run-id))
+                           collect payload)))
+            (assert-true (some (lambda (payload)
+                                 (and (= (funcall plan-step-status-payload-step-index-fn payload) 1)
+                                      (eq (funcall plan-step-status-payload-status-fn payload) :pending)))
+                               step-status-events)
+                         "Expected plan-step-status events to include pending status for step 1, got ~S."
+                         step-status-events)
+            (assert-true (some (lambda (payload)
+                                 (and (= (funcall plan-step-status-payload-step-index-fn payload) 1)
+                                      (eq (funcall plan-step-status-payload-status-fn payload) :running)))
+                               step-status-events)
+                         "Expected plan-step-status events to include running status for step 1, got ~S."
+                         step-status-events)
+            (assert-true (some (lambda (payload)
+                                 (and (= (funcall plan-step-status-payload-step-index-fn payload) 1)
+                                      (eq (funcall plan-step-status-payload-status-fn payload) :done)))
+                               step-status-events)
+                         "Expected plan-step-status events to include done status for step 1, got ~S."
+                         step-status-events)
+            (assert-true (some (lambda (payload)
+                                 (and (= (funcall plan-step-status-payload-step-index-fn payload) 3)
+                                      (eq (funcall plan-step-status-payload-status-fn payload) :running)))
+                               step-status-events)
+                         "Expected plan-step-status events to include running status for step 3, got ~S."
+                         step-status-events)
+            (assert-true (some (lambda (payload)
+                                 (and (= (funcall plan-step-status-payload-step-index-fn payload) 3)
+                                      (eq (funcall plan-step-status-payload-status-fn payload) :done)))
+                               step-status-events)
+                         "Expected plan-step-status events to include done status for step 3, got ~S."
+                         step-status-events))
           (assert-true (integerp (funcall plan-execution-state-finished-at-fn execution-state))
                        "Expected sequential approved execution to set finished-at timestamp.")
           (dolist (step (funcall plan-execution-state-steps-fn execution-state))
