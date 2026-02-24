@@ -189,13 +189,16 @@
    :id :plan-presentation-steps
    :empty-message "No plan steps captured yet."))
 
-(defun %terminal-panel (output-lines output-empty-message output-viewport-height)
+(defun %terminal-panel (output-lines
+                        output-empty-message
+                        output-viewport-height
+                        output-stdin-capture-policy)
   (let* ((state (ptui.components.terminal-pane:make-terminal-pane-state
                  :title "Plan Output"
                  :lines (loop for line in (or output-lines '())
                               collect (%safe-string line ""))
                  :empty-message output-empty-message
-                 :stdin-capture-policy :disabled)))
+                 :stdin-capture-policy output-stdin-capture-policy)))
     (ptui.components.terminal-pane:make-terminal-pane-widget
      state
      :id :plan-presentation-output
@@ -244,6 +247,7 @@
                                              id
                                              key
                                              (output-viewport-height 4)
+                                             (output-stdin-capture-policy :disabled)
                                              (output-empty-message "No plan output yet.")
                                              (context-empty-message "No context details yet."))
   (let* ((root-id (or id :plan-presentation))
@@ -256,7 +260,8 @@
                                      resolved-selected-step-index)
                        (%terminal-panel output-lines
                                         output-empty-message
-                                        output-viewport-height)
+                                        output-viewport-height
+                                        output-stdin-capture-policy)
                        (%context-panel selected-step
                                        context-lines
                                        context-empty-message)))

@@ -1635,6 +1635,11 @@ Falls back to the global *toolset* when stream-tools is nil."
               (format nil "Step approvals: ~D/~D" approved total)
               "DRY-RUN> [non-executed] No command snippets detected in proposed steps yet.")))))
 
+(defun %chat-plan-output-stdin-capture-policy ()
+  (if (%chat-plan-mode-enabled-p)
+      :disabled
+      :enabled))
+
 (defun %chat-plan-presentation-context-lines (plan-state selected-step visible-steps)
   (let* ((steps (or (plan-mode-state-steps plan-state) '()))
          (high-risk-count
@@ -1686,6 +1691,7 @@ Falls back to the global *toolset* when stream-tools is nil."
        :selected-step-index selected-step-index
        :output-lines (%chat-plan-presentation-output-lines plan-state
                                                            selected-step-index)
+       :output-stdin-capture-policy (%chat-plan-output-stdin-capture-policy)
        :context-lines (%chat-plan-presentation-context-lines plan-state
                                                              selected-step
                                                              visible-steps)
