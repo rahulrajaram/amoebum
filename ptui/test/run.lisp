@@ -851,6 +851,73 @@
                  "terminal-pane constructor symbol should be fboundp: ~S"
                  components-sym)))
 
+(deftest widgets-plan-presentation-api-boundary
+  (multiple-value-bind (widgets-sym widgets-status)
+      (find-symbol "MAKE-PLAN-MODE-PRESENTATION-WIDGET" :ptui.widgets.core)
+    (assert-true (null widgets-sym)
+                 "plan-presentation constructor must not exist in ptui.widgets.core, got ~S/~S"
+                 widgets-sym widgets-status))
+  (multiple-value-bind (components-sym components-status)
+      (find-symbol "MAKE-PLAN-MODE-PRESENTATION-WIDGET" :ptui.components.plan-presentation)
+    (assert-true (and components-sym (eql components-status :external))
+                 "plan-presentation constructor should be exported by ptui.components.plan-presentation, got ~S/~S"
+                 components-sym components-status)
+    (assert-true (fboundp components-sym)
+                 "plan-presentation constructor symbol should be fboundp: ~S"
+                 components-sym)))
+
+(deftest widgets-plan-presentation-widget-composition
+  (let* ((widget
+           (ptui.components.plan-presentation:make-plan-mode-presentation-widget
+            :steps (list
+                    (ptui.components.plan-presentation:make-plan-presentation-step
+                     :index 1
+                     :description "Inspect chat layout."
+                     :approved-p nil
+                     :risk :medium
+                     :status :pending)
+                    (ptui.components.plan-presentation:make-plan-presentation-step
+                     :index 2
+                     :description "Validate terminal pane."
+                     :approved-p t
+                     :risk :high
+                     :status :approved))
+            :output-lines '("Plan mode active.")
+            :context-lines '("Referenced files: amoebum/src/ui/chat.lisp")))
+         (size (ptui.widgets.core:widget-measure widget)))
+    (assert-true (> (ptui.layout:layout-size-width size) 0)
+                 "plan-presentation widget width should be > 0")
+    (assert-true (> (ptui.layout:layout-size-height size) 0)
+                 "plan-presentation widget height should be > 0")
+    (labels ((collect-text-lines (element)
+               (let ((children (ptui.ui.elements:ui-element-children element)))
+                 (append
+                  (if (eq (ptui.ui.elements:ui-element-type element) :text)
+                      (list (getf (ptui.ui.elements:ui-element-props element) :text ""))
+                      '())
+                  (loop for child in children
+                        append (collect-text-lines child))))))
+      (let ((lines (collect-text-lines widget)))
+        (assert-true (member "Plan Mode Workspace" lines :test #'string=)
+                     "expected root plan presentation heading, got ~S"
+                     lines)
+        (assert-true (member "Plan Steps" lines :test #'string=)
+                     "expected plan steps panel heading, got ~S"
+                     lines)
+        (assert-true (some (lambda (line)
+                             (search "Plan Output" line :test #'char-equal))
+                           lines)
+                     "expected terminal panel heading, got ~S"
+                     lines)
+        (assert-true (member "Context Inspector" lines :test #'string=)
+                     "expected context panel heading, got ~S"
+                     lines)
+        (assert-true (some (lambda (line)
+                             (search "Inspect chat layout." line :test #'char-equal))
+                           lines)
+                     "expected rendered step description in plan steps panel, got ~S"
+                     lines)))))
+
 (deftest widgets-terminal-pane-buffering-and-scroll-contract
   (let* ((state (ptui.components.terminal-pane:make-terminal-pane-state
                  :title "build log"

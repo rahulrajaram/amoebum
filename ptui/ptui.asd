@@ -131,6 +131,7 @@
   :components
   ((:file "src/components/prompt-box")
    (:file "src/components/terminal-pane")
+   (:file "src/components/plan-presentation")
    (:file "src/components/glob-widget")
    (:file "src/components/search-widget")))
 
@@ -204,6 +205,7 @@
   :components
   ((:file "src/components/prompt-box")
    (:file "src/components/terminal-pane")
+   (:file "src/components/plan-presentation")
    (:file "src/components/glob-widget")
    (:file "src/components/search-widget")))
 
