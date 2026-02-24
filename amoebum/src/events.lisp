@@ -10,6 +10,7 @@
 (defparameter +event-type-tool-redefined+ (%event-type-keyword "tool:redefined"))
 (defparameter +event-type-config-changed+ (%event-type-keyword "config:changed"))
 (defparameter +event-type-permission-prompted+ (%event-type-keyword "permission:prompted"))
+(defparameter +event-type-permission-blocked+ (%event-type-keyword "permission:blocked"))
 (defparameter +event-type-memory-updated+ (%event-type-keyword "memory:updated"))
 (defparameter +event-type-memory-backend-selected+
   (%event-type-keyword "memory:backend-selected"))
@@ -35,6 +36,7 @@
         +event-type-tool-redefined+
         +event-type-config-changed+
         +event-type-permission-prompted+
+        +event-type-permission-blocked+
         +event-type-memory-updated+
         +event-type-memory-backend-selected+
         +event-type-context-compressed+
@@ -119,6 +121,17 @@
   path
   command
   reason
+  permission-mode
+  reason-code)
+
+(defstruct (permission-blocked-payload
+            (:constructor make-permission-blocked-payload
+                (&key tool-name path command reason actionable-reason permission-mode reason-code)))
+  tool-name
+  path
+  command
+  reason
+  actionable-reason
   permission-mode
   reason-code)
 
@@ -506,6 +519,20 @@
                         :path path
                         :command command
                         :reason reason
+                        :reason-code reason-code
+                        :permission-mode permission-mode)))
+
+(defun make-permission-blocked-event (&key tool-name path command reason actionable-reason
+                                           permission-mode reason-code)
+  (make-event :type +event-type-permission-blocked+
+              :source :amoebum
+              :severity :warning
+              :payload (make-permission-blocked-payload
+                        :tool-name tool-name
+                        :path path
+                        :command command
+                        :reason reason
+                        :actionable-reason actionable-reason
                         :reason-code reason-code
                         :permission-mode permission-mode)))
 

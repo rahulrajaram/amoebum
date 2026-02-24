@@ -266,15 +266,28 @@
   (%effective-permission-mode (context-permission-mode context)))
 
 (defun %publish-permission-prompted (context tool-name arguments decision
-                                   &optional reason-code)
+                                   &key reason reason-code)
   (publish (%effective-event-bus context)
            (make-permission-prompted-event
             :tool-name tool-name
             :path (%coerce-path-string (%extract-path-argument arguments))
             :command (%coerce-command-string (%extract-command-argument arguments))
-            :reason (format nil "permission decision ~A" decision)
+            :reason (or reason (format nil "permission decision ~A" decision))
             :reason-code reason-code
             :permission-mode (%context-effective-permission-mode context))))
+
+(defun %publish-permission-blocked (context tool-name arguments decision
+                                  &key reason actionable-reason reason-code)
+  (let ((resolved-reason (or reason (format nil "permission decision ~A" decision))))
+    (publish (%effective-event-bus context)
+             (make-permission-blocked-event
+              :tool-name tool-name
+              :path (%coerce-path-string (%extract-path-argument arguments))
+              :command (%coerce-command-string (%extract-command-argument arguments))
+              :reason resolved-reason
+              :actionable-reason (or actionable-reason resolved-reason)
+              :reason-code reason-code
+              :permission-mode (%context-effective-permission-mode context)))))
 
 (defun %check-permission-or-signal (tool-name arguments context)
   (let* ((effective-mode (%context-effective-permission-mode context))
@@ -286,17 +299,38 @@
                                      :command (%coerce-command-string
                                                (%extract-command-argument arguments))
                                      :dangerous-p dangerous-p
-                                     :permission-mode effective-mode)))
+                                     :permission-mode effective-mode))
+         (trace (last-permission-decision-trace))
+         (reason-code (and (listp trace) (getf trace :reason-code)))
+         (decision-reason (or (and (listp trace) (getf trace :reason))
+                              (format nil "permission decision ~A" decision)))
+         (actionable-reason (or (and (listp trace) (getf trace :actionable-reason))
+                                decision-reason)))
     (unless (eq decision :allow)
       (when (eq decision :prompt)
-        (%publish-permission-prompted context tool-name arguments decision))
+        (%publish-permission-prompted context
+                                      tool-name
+                                      arguments
+                                      decision
+                                      :reason decision-reason
+                                      :reason-code reason-code))
+      (when (eq decision :deny)
+        (%publish-permission-blocked context
+                                     tool-name
+                                     arguments
+                                     decision
+                                     :reason decision-reason
+                                     :actionable-reason actionable-reason
+                                     :reason-code reason-code))
       (error 'tool-permission-denied
              :tool-name tool-name
              :arguments arguments
-             :message (format nil "Permission decision ~A for tool ~S."
+             :reason-code reason-code
+             :message (format nil "Permission decision ~A for tool ~S: ~A."
                               decision
-                              tool-name)
-             :reason (format nil "permission decision ~A" decision)))))
+                              tool-name
+                              actionable-reason)
+             :reason actionable-reason))))
 
 (defun %pipeline-monotonic-milliseconds ()
   (truncate (* 1000

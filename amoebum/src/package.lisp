@@ -74,6 +74,7 @@
            #:+event-type-tool-redefined+
            #:+event-type-config-changed+
            #:+event-type-permission-prompted+
+           #:+event-type-permission-blocked+
            #:+event-type-memory-updated+
            #:+event-type-memory-backend-selected+
            #:+event-type-context-compressed+
@@ -127,6 +128,16 @@
            #:permission-prompted-payload-reason
            #:permission-prompted-payload-reason-code
            #:permission-prompted-payload-permission-mode
+           #:permission-blocked-payload
+           #:permission-blocked-payload-p
+           #:make-permission-blocked-payload
+           #:permission-blocked-payload-tool-name
+           #:permission-blocked-payload-path
+           #:permission-blocked-payload-command
+           #:permission-blocked-payload-reason
+           #:permission-blocked-payload-actionable-reason
+           #:permission-blocked-payload-reason-code
+           #:permission-blocked-payload-permission-mode
            #:memory-updated-payload
            #:memory-updated-payload-p
            #:make-memory-updated-payload
@@ -210,6 +221,7 @@
            #:make-tool-redefined-event
            #:make-config-changed-event
            #:make-permission-prompted-event
+           #:make-permission-blocked-event
            #:make-memory-updated-event
            #:make-memory-backend-selected-event
            #:make-context-compressed-event
