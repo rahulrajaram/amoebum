@@ -1004,6 +1004,62 @@
           (assert-true (contains-text-p (funcall result-output-fn review-result)
                                         "Persist the drafted plan in chat history.")
                        "Expected /plan review to return latest captured plan from /plan off false, got ~S."
-                       (funcall result-output-fn review-result))))))
+                       (funcall result-output-fn review-result))))
 
-  (format t "AMOEBUM_PLAN_MODE_SMOKE_OK~%"))
+      (funcall setconfig-fn :plan-mode nil)
+      (funcall clear-steps-fn)
+      (multiple-value-bind (handledp plan-on-result)
+          (funcall dispatch-fn "/plan on")
+        (assert-true handledp "Expected /plan on to be handled for active approval exit test.")
+        (assert-true (contains-text-p (funcall result-output-fn plan-on-result)
+                                      "Plan mode enabled")
+                     "Expected /plan on output for active approval exit test, got ~S."
+                     (funcall result-output-fn plan-on-result)))
+      (funcall add-plan-step-fn
+               "Approve from active plan mode should auto-capture and exit."
+               :file-paths (list "amoebum/src/commands.lisp")
+               :risk :low)
+      (multiple-value-bind (handledp approve-active-result)
+          (funcall dispatch-fn "/plan approve ready-now")
+        (assert-true handledp "Expected /plan approve while active to be handled.")
+        (assert-true (contains-text-p (funcall result-output-fn approve-active-result)
+                                      "Plan approved")
+                     "Expected /plan approve while active to approve and exit, got ~S."
+                     (funcall result-output-fn approve-active-result)))
+      (assert-true (not (bool-true-p (funcall config-value-fn :plan-mode (funcall current-config-fn))))
+                   "Expected /plan approve while active to disable :plan-mode.")
+      (let ((snapshot (funcall plan-input-gating-snapshot-fn
+                               (funcall current-plan-state-fn))))
+        (assert-true (not (eq :plan-mode-active (getf snapshot :reason)))
+                     "Expected /plan approve while active to clear plan-mode-active gating, got ~S."
+                     snapshot))
+
+      (funcall setconfig-fn :plan-mode nil)
+      (funcall clear-steps-fn)
+      (multiple-value-bind (handledp plan-on-result)
+          (funcall dispatch-fn "/plan on")
+        (assert-true handledp "Expected /plan on to be handled for active /execute exit test.")
+        (assert-true (contains-text-p (funcall result-output-fn plan-on-result)
+                                      "Plan mode enabled")
+                     "Expected /plan on output for active /execute exit test, got ~S."
+                     (funcall result-output-fn plan-on-result)))
+      (funcall add-plan-step-fn
+               "Execute from active plan mode should auto-capture and then enforce approvals."
+               :file-paths (list "amoebum/src/commands.lisp")
+               :risk :low)
+      (multiple-value-bind (handledp execute-active-result)
+          (funcall dispatch-fn "/execute")
+        (assert-true handledp "Expected /execute while active to be handled.")
+        (assert-true (contains-text-p (funcall result-output-fn execute-active-result)
+                                      "No approved steps are available for execution")
+                     "Expected /execute while active to auto-exit then enforce approvals, got ~S."
+                     (funcall result-output-fn execute-active-result)))
+      (assert-true (not (bool-true-p (funcall config-value-fn :plan-mode (funcall current-config-fn))))
+                   "Expected /execute while active to disable :plan-mode as part of auto-exit.")
+      (let ((snapshot (funcall plan-input-gating-snapshot-fn
+                               (funcall current-plan-state-fn))))
+        (assert-true (not (eq :plan-mode-active (getf snapshot :reason)))
+                     "Expected /execute while active to clear plan-mode-active gating, got ~S."
+                     snapshot)))
+
+  (format t "AMOEBUM_PLAN_MODE_SMOKE_OK~%")))
