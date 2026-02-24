@@ -90,6 +90,7 @@
            #:+event-type-tool-call-argument-complete+
            #:+event-type-session-checkpointed+
            #:+event-type-session-restored+
+           #:+event-type-plan-step-status+
            #:+core-event-types+
            #:tool-invoked-payload
            #:tool-invoked-payload-p
@@ -209,6 +210,13 @@
            #:session-restored-payload-extension-count
            #:session-restored-payload-tool-count
            #:session-restored-payload-memory-count
+           #:plan-step-status-payload
+           #:plan-step-status-payload-p
+           #:make-plan-step-status-payload
+           #:plan-step-status-payload-run-id
+           #:plan-step-status-payload-step-index
+           #:plan-step-status-payload-status
+           #:plan-step-status-payload-description
            #:context-compressed-payload-before-tokens
            #:context-compressed-payload-after-tokens
            #:context-compressed-payload-saved-tokens
@@ -234,6 +242,7 @@
            #:make-tool-call-argument-complete-event
            #:make-session-checkpointed-event
            #:make-session-restored-event
+           #:make-plan-step-status-event
            #:sound-theme
            #:sound-theme-p
            #:make-sound-theme

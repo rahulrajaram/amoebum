@@ -133,6 +133,15 @@
         (plan-execution-step-finished-at step) nil)
   step)
 
+(defun %mark-plan-execution-step-blocked (step)
+  (check-type step plan-execution-step)
+  (let ((now (get-universal-time)))
+    (setf (plan-execution-step-status step) :blocked
+          (plan-execution-step-started-at step)
+          (or (plan-execution-step-started-at step) now)
+          (plan-execution-step-finished-at step) now))
+  step)
+
 (defun %complete-plan-execution-if-finished (state)
   (check-type state plan-execution-state)
   (when (null (plan-execution-state-pending-step-indexes state))
@@ -177,6 +186,30 @@
      fallback)
     (t
      (princ-to-string value))))
+
+(defun %publish-plan-step-status-event (state step &key status)
+  (check-type state plan-execution-state)
+  (check-type step plan-execution-step)
+  (let ((step-index (plan-execution-step-index step))
+        (run-id (plan-execution-state-run-id state)))
+    (when (and (integerp step-index)
+               (stringp run-id)
+               (plusp (length run-id)))
+      (publish (current-event-bus)
+               (make-plan-step-status-event
+                :run-id run-id
+                :step-index step-index
+                :status (or status
+                            (plan-execution-step-status step)
+                            :pending)
+                :description (plan-execution-step-description step)))))
+  state)
+
+(defun %publish-plan-step-status-snapshot (state)
+  (check-type state plan-execution-state)
+  (dolist (step (plan-execution-state-steps state))
+    (%publish-plan-step-status-event state step))
+  state)
 
 (defun %normalize-output-phase (value)
   (let* ((text (%safe-plan-execution-string value "execution"))
@@ -418,6 +451,7 @@
           (plan-execution-state-current-step-index state) nil
           (plan-execution-state-failure-reason state) nil
           (plan-execution-state-abort-reason state) nil)
+    (%publish-plan-step-status-snapshot state)
     (prime-plan-execution-continuity state)
     state))
 
@@ -513,6 +547,7 @@
           (error "Missing execution step for approved index ~D." next-step-index))
         (setf (plan-execution-state-current-step-index state) next-step-index)
         (%mark-plan-execution-step-running step)
+        (%publish-plan-step-status-event state step :status :running)
         (plan-execution-append-output
          (format nil "LIVE> [step ~D running] ~A"
                  next-step-index
@@ -529,6 +564,7 @@
                  (setf result (funcall executor step)
                        completed-p t)
                  (%mark-plan-execution-step-completed step)
+                 (%publish-plan-step-status-event state step :status :done)
                  (setf (plan-execution-state-pending-step-indexes state)
                        (rest (plan-execution-state-pending-step-indexes state))
                        (plan-execution-state-completed-step-indexes state)
@@ -545,7 +581,8 @@
                   :state state)
                  (%complete-plan-execution-if-finished state))
             (unless completed-p
-              (%mark-plan-execution-step-pending step)
+              (%mark-plan-execution-step-blocked step)
+              (%publish-plan-step-status-event state step :status :blocked)
               (setf (plan-execution-state-current-step-index state) nil)
               (plan-execution-append-output
                (format nil "LIVE> [step ~D blocked] executor exited before completion."

@@ -28,6 +28,7 @@
   (%event-type-keyword "tool-call:argument-complete"))
 (defparameter +event-type-session-checkpointed+ (%event-type-keyword "session:checkpointed"))
 (defparameter +event-type-session-restored+ (%event-type-keyword "session:restored"))
+(defparameter +event-type-plan-step-status+ (%event-type-keyword "plan:step-status"))
 
 (defparameter +core-event-types+
   (list +event-type-tool-invoked+
@@ -51,7 +52,8 @@
         +event-type-tool-call-started+
         +event-type-tool-call-argument-complete+
         +event-type-session-checkpointed+
-        +event-type-session-restored+))
+        +event-type-session-restored+
+        +event-type-plan-step-status+))
 
 (defparameter *event-bus* nil)
 
@@ -259,6 +261,18 @@
   (extension-count 0 :type integer)
   (tool-count 0 :type integer)
   (memory-count 0 :type integer))
+
+(defstruct (plan-step-status-payload
+            (:constructor make-plan-step-status-payload
+                (&key
+                   run-id
+                   step-index
+                   (status :pending)
+                   description)))
+  run-id
+  step-index
+  (status :pending)
+  description)
 
 (defstruct (event-subscription
             (:constructor %make-event-subscription
@@ -700,3 +714,31 @@
                         :extension-count extension-count
                         :tool-count tool-count
                         :memory-count memory-count)))
+
+(defun %normalize-plan-step-status (value)
+  (let ((status (%normalize-keyword value "PLAN-STEP-STATUS")))
+    (if (member status '(:pending :running :blocked :done) :test #'eq)
+        status
+        :pending)))
+
+(defun %plan-step-status-severity (status)
+  (case (%normalize-plan-step-status status)
+    (:running :info)
+    (:done :info)
+    (:blocked :warning)
+    (otherwise :debug)))
+
+(defun make-plan-step-status-event (&key
+                                      run-id
+                                      step-index
+                                      (status :pending)
+                                      description)
+  (let ((normalized-status (%normalize-plan-step-status status)))
+    (make-event :type +event-type-plan-step-status+
+                :source :amoebum
+                :severity (%plan-step-status-severity normalized-status)
+                :payload (make-plan-step-status-payload
+                          :run-id run-id
+                          :step-index (and (integerp step-index) step-index)
+                          :status normalized-status
+                          :description description))))

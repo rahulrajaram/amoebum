@@ -1611,7 +1611,64 @@ Falls back to the global *toolset* when stream-tools is nil."
               (min (length ordered)
                    +chat-plan-command-preview-max-lines+)))))
 
-(defun %chat-plan-presentation-steps (plan-state visible-steps execution-state)
+(defun %chat-plan-step-status-from-execution-step (execution-step approved-p)
+  (if execution-step
+      (case (plan-execution-step-status execution-step)
+        (:running :running)
+        (:completed :done)
+        (:done :done)
+        (:blocked :blocked)
+        (:failed :blocked)
+        (:aborted :blocked)
+        (otherwise :pending))
+      (if approved-p :approved :pending)))
+
+(defun %chat-plan-step-status-event-table (chat-state execution-state)
+  (let* ((run-id (and (plan-execution-state-p execution-state)
+                      (plan-execution-state-run-id execution-state)))
+         (bus (and chat-state (%context-event-bus chat-state))))
+    (unless (and (%chat-plan-execution-surface-active-p execution-state)
+                 (event-bus-p bus)
+                 (stringp run-id)
+                 (plusp (length run-id)))
+      (return-from %chat-plan-step-status-event-table nil))
+    (let ((table (make-hash-table :test #'eql)))
+      (dolist (event (event-history bus))
+        (when (eq (event-type event) +event-type-plan-step-status+)
+          (let ((payload (event-payload event)))
+            (when (and (plan-step-status-payload-p payload)
+                       (integerp (plan-step-status-payload-step-index payload))
+                       (stringp (plan-step-status-payload-run-id payload))
+                       (string= (plan-step-status-payload-run-id payload) run-id))
+              (setf (gethash (plan-step-status-payload-step-index payload) table)
+                    (case (plan-step-status-payload-status payload)
+                      (:running :running)
+                      (:blocked :blocked)
+                      (:done :done)
+                      (otherwise :pending)))))))
+      table)))
+
+(defun %chat-plan-step-status-event-signature (chat-state execution-state)
+  (let* ((run-id (and (plan-execution-state-p execution-state)
+                      (plan-execution-state-run-id execution-state)))
+         (bus (and chat-state (%context-event-bus chat-state))))
+    (unless (and (%chat-plan-execution-surface-active-p execution-state)
+                 (event-bus-p bus)
+                 (stringp run-id)
+                 (plusp (length run-id)))
+      (return-from %chat-plan-step-status-event-signature nil))
+    (loop for event in (event-history bus)
+          for payload = (event-payload event)
+          when (and (eq (event-type event) +event-type-plan-step-status+)
+                    (plan-step-status-payload-p payload)
+                    (integerp (plan-step-status-payload-step-index payload))
+                    (stringp (plan-step-status-payload-run-id payload))
+                    (string= (plan-step-status-payload-run-id payload) run-id))
+            collect (list (event-seq event)
+                          (plan-step-status-payload-step-index payload)
+                          (plan-step-status-payload-status payload)))))
+
+(defun %chat-plan-presentation-steps (plan-state visible-steps execution-state &optional chat-state)
   (let ((execution-step-table
           (when (%chat-plan-execution-surface-active-p execution-state)
             (let ((table (make-hash-table :test #'eql)))
@@ -1619,8 +1676,9 @@ Falls back to the global *toolset* when stream-tools is nil."
                 (let ((step-index (plan-execution-step-index execution-step)))
                   (when (integerp step-index)
                     (setf (gethash step-index table) execution-step))))
-              table))))
-  (loop for step in visible-steps
+              table)))
+        (event-status-table (%chat-plan-step-status-event-table chat-state execution-state)))
+    (loop for step in visible-steps
           for step-index = (or (plan-step-index step) 0)
           for execution-step = (and execution-step-table
                                     (gethash step-index execution-step-table))
@@ -1629,15 +1687,12 @@ Falls back to the global *toolset* when stream-tools is nil."
                                (member step-index
                                        (plan-mode-state-approved-step-indexes plan-state)
                                        :test #'=))
-          for status = (if execution-step
-                           (case (plan-execution-step-status execution-step)
-                             (:running :running)
-                             (:completed :done)
-                             (:pending (if approved-p :approved :pending))
-                             (:failed :blocked)
-                             (:aborted :blocked)
-                             (otherwise (if approved-p :approved :pending)))
-                           (if approved-p :approved :pending))
+          for fallback-status = (%chat-plan-step-status-from-execution-step
+                                 execution-step
+                                 approved-p)
+          for event-status = (and event-status-table
+                                  (gethash step-index event-status-table))
+          for status = (or event-status fallback-status)
           collect
           (ptui.components.plan-presentation:make-plan-presentation-step
            :index step-index
@@ -1754,7 +1809,10 @@ Falls back to the global *toolset* when stream-tools is nil."
                                                                   selected-step-index))))
       (ptui.components.plan-presentation:make-plan-mode-presentation-widget
        :id :chat-plan-presentation
-       :steps (%chat-plan-presentation-steps plan-state visible-steps execution-state)
+       :steps (%chat-plan-presentation-steps plan-state
+                                             visible-steps
+                                             execution-state
+                                             chat-state)
        :selected-step-index selected-step-index
        :output-lines output-lines
        :output-line-entries output-line-entries
@@ -1782,6 +1840,7 @@ Falls back to the global *toolset* when stream-tools is nil."
           (plan-execution-state-run-id execution-state)
           (plan-execution-state-status execution-state)
           (plan-execution-state-current-step-index execution-state)
+          (%chat-plan-step-status-event-signature chat-state execution-state)
           (copy-list (or (plan-execution-state-pending-step-indexes execution-state) '()))
           (copy-list (or (plan-execution-state-completed-step-indexes execution-state) '()))
           (loop for entry in (or (plan-execution-state-continuity-output execution-state) '())
