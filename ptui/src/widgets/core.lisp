@@ -22,12 +22,16 @@
   (or (ptui.ui.elements:ui-element-id element)
       (ptui.ui.elements:ui-element-key element)))
 
-(defun make-text-widget (text &key id key)
+(defun make-text-widget (text &key id key styled-segments role)
   (ptui.ui.elements:make-element
    :text
    :id id
    :key key
-   :props (list :text text)
+   :props (append (list :text text)
+                  (when styled-segments
+                    (list :styled-segments styled-segments))
+                  (when role
+                    (list :role role)))
    :children '()))
 
 (defun make-spacer-widget (width height &key id key)

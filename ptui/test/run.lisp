@@ -916,6 +916,84 @@
     (assert-true (>= (ptui.layout:layout-size-height size) 3)
                  "terminal-pane widget height should include status + viewport rows")))
 
+(deftest widgets-terminal-pane-ansi-search-and-copy
+  (let* ((esc (string (code-char 27)))
+         (state (ptui.components.terminal-pane:make-terminal-pane-state
+                 :title "terminal"
+                 :max-lines 16)))
+    (ptui.components.terminal-pane:terminal-pane-append-output
+     state
+     (format nil "~A[31mERR~A[0m ok~%plain~%foo bar foo~%"
+             esc
+             esc))
+    (assert-true (equal (ptui.components.terminal-pane:terminal-pane-lines state)
+                        '("ERR ok" "plain" "foo bar foo"))
+                 "expected ANSI escapes to render into plain lines, got ~S"
+                 (ptui.components.terminal-pane:terminal-pane-lines state))
+    (let* ((styled (ptui.components.terminal-pane:terminal-pane-visible-styled-lines
+                    state
+                    :viewport-height 3))
+           (first-line (first styled))
+           (first-segment (first first-line))
+           (first-cell (second first-segment)))
+      (assert-true (= (length first-line) 2)
+                   "expected styled split for ANSI reset, got ~S"
+                   first-line)
+      (assert-true (string= (first first-segment) "ERR")
+                   "expected first styled segment text ERR, got ~S"
+                   first-segment)
+      (assert-true (typep (ptui.core.types:cell-fg first-cell)
+                          'ptui.core.color:color-rgb)
+                   "expected ANSI fg color to materialize as color-rgb, got ~S"
+                   (ptui.core.types:cell-fg first-cell)))
+    (ptui.components.terminal-pane:terminal-pane-set-search-query state "foo")
+    (assert-true (= (length (ptui.components.terminal-pane:terminal-pane-search-results state)) 2)
+                 "expected two search matches for foo")
+    (ptui.components.terminal-pane:terminal-pane-search-next state)
+    (assert-true (= (ptui.components.terminal-pane:terminal-pane-search-selected-index state) 1)
+                 "expected search-next to advance selection index")
+    (assert-true (string= (ptui.components.terminal-pane:terminal-pane-copy-visible
+                           state
+                           :viewport-height 2)
+                          "plain
+foo bar foo")
+                 "copy-visible should copy viewport rows")
+    (assert-true (string= (ptui.components.terminal-pane:terminal-pane-copy-search-result state)
+                          "foo bar foo")
+                 "copy-search-result should copy selected match line")
+    (let ((action
+            (ptui.components.terminal-pane:terminal-pane-handle-event
+             state
+             (ptui.core.events:make-key-event :copy-visible)
+             :viewport-height 2)))
+      (assert-true (eq (getf action :action) :copied-visible)
+                   "expected copy event action, got ~S"
+                   action))))
+
+(deftest widgets-terminal-pane-widget-exposes-ansi-segments
+  (let* ((esc (string (code-char 27)))
+         (state (ptui.components.terminal-pane:make-terminal-pane-state
+                 :title "terminal"))
+         (_ (ptui.components.terminal-pane:terminal-pane-append-output
+             state
+             (format nil "~A[33mwarn~A[0m~%" esc esc)))
+         (widget (ptui.components.terminal-pane:make-terminal-pane-widget
+                  state
+                  :id :terminal-pane
+                  :viewport-height 1))
+         (content (first (ptui.ui.elements:ui-element-children widget)))
+         (rows (ptui.ui.elements:ui-element-children content))
+         (first-output (second rows))
+         (segments (getf (ptui.ui.elements:ui-element-props first-output)
+                         :styled-segments)))
+    (declare (ignore _))
+    (assert-true (and (listp segments) segments)
+                 "expected terminal-pane output text to include :styled-segments metadata, got ~S"
+                 segments)
+    (assert-true (string= (first (first segments)) "warn")
+                 "expected styled segment text warn, got ~S"
+                 segments)))
+
 (deftest widgets-glob-widget-api-boundary
   (multiple-value-bind (widgets-sym widgets-status)
       (find-symbol "MAKE-GLOB-WIDGET" :ptui.widgets.core)
