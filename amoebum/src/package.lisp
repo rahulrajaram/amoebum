@@ -502,6 +502,9 @@
            #:pause-plan-execution
            #:resume-plan-execution
            #:abort-plan-execution
+           #:plan-execution-next-step-index
+           #:execute-next-approved-plan-step
+           #:execute-approved-plan-steps
            #:+event-type-agent-spawn+
            #:+event-type-agent-complete+
            #:+event-type-agent-cancelled+

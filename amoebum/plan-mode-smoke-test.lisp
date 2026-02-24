@@ -68,14 +68,28 @@
          (pause-plan-execution-fn (funcall fn-in "PAUSE-PLAN-EXECUTION" amoebum-pkg))
          (resume-plan-execution-fn (funcall fn-in "RESUME-PLAN-EXECUTION" amoebum-pkg))
          (abort-plan-execution-fn (funcall fn-in "ABORT-PLAN-EXECUTION" amoebum-pkg))
+         (plan-execution-next-step-index-fn
+           (funcall fn-in "PLAN-EXECUTION-NEXT-STEP-INDEX" amoebum-pkg))
+         (execute-approved-plan-steps-fn
+           (funcall fn-in "EXECUTE-APPROVED-PLAN-STEPS" amoebum-pkg))
          (plan-execution-state-status-fn (funcall fn-in "PLAN-EXECUTION-STATE-STATUS" amoebum-pkg))
          (plan-execution-state-approved-step-indexes-fn
            (funcall fn-in "PLAN-EXECUTION-STATE-APPROVED-STEP-INDEXES" amoebum-pkg))
          (plan-execution-state-pending-step-indexes-fn
            (funcall fn-in "PLAN-EXECUTION-STATE-PENDING-STEP-INDEXES" amoebum-pkg))
+         (plan-execution-state-completed-step-indexes-fn
+           (funcall fn-in "PLAN-EXECUTION-STATE-COMPLETED-STEP-INDEXES" amoebum-pkg))
+         (plan-execution-state-current-step-index-fn
+           (funcall fn-in "PLAN-EXECUTION-STATE-CURRENT-STEP-INDEX" amoebum-pkg))
+         (plan-execution-state-steps-fn
+           (funcall fn-in "PLAN-EXECUTION-STATE-STEPS" amoebum-pkg))
          (plan-execution-state-started-at-fn (funcall fn-in "PLAN-EXECUTION-STATE-STARTED-AT" amoebum-pkg))
          (plan-execution-state-finished-at-fn (funcall fn-in "PLAN-EXECUTION-STATE-FINISHED-AT" amoebum-pkg))
          (plan-execution-state-abort-reason-fn (funcall fn-in "PLAN-EXECUTION-STATE-ABORT-REASON" amoebum-pkg))
+         (plan-execution-step-index-fn (funcall fn-in "PLAN-EXECUTION-STEP-INDEX" amoebum-pkg))
+         (plan-execution-step-status-fn (funcall fn-in "PLAN-EXECUTION-STEP-STATUS" amoebum-pkg))
+         (plan-execution-step-started-at-fn (funcall fn-in "PLAN-EXECUTION-STEP-STARTED-AT" amoebum-pkg))
+         (plan-execution-step-finished-at-fn (funcall fn-in "PLAN-EXECUTION-STEP-FINISHED-AT" amoebum-pkg))
          (stream-markdown-styled-lines-fn (funcall fn-in "STREAM-MARKDOWN-STYLED-LINES" amoebum-pkg))
          (make-context-fn (funcall fn-in "MAKE-AMOEBUM-CONTEXT" amoebum-pkg))
          (execute-tool-fn (funcall fn-in "EXECUTE-TOOL" amoebum-pkg))
@@ -531,6 +545,59 @@
           (assert-true (eq :smoke-stop (funcall plan-execution-state-abort-reason-fn execution-state))
                        "Expected abort-plan-execution reason :smoke-stop, got ~S."
                        (funcall plan-execution-state-abort-reason-fn execution-state)))
+        (funcall reset-plan-execution-state-fn)
+        (let* ((execution-state (funcall initialize-plan-execution-fn :plan-state plan-state))
+               (executed-order '()))
+          (assert-true (= 1 (funcall plan-execution-next-step-index-fn execution-state))
+                       "Expected first pending approved step index to be 1, got ~S."
+                       (funcall plan-execution-next-step-index-fn execution-state))
+          (multiple-value-bind (_ execution-results)
+              (funcall execute-approved-plan-steps-fn
+                       (lambda (step)
+                         (let ((step-index (funcall plan-execution-step-index-fn step)))
+                           (push step-index executed-order)
+                           (format nil "step-~D-ok" step-index)))
+                       :state execution-state)
+            (declare (ignore _))
+            (let ((executed-order-forward (nreverse executed-order)))
+              (assert-true (equal '(1 3) executed-order-forward)
+                           "Expected approved steps to execute sequentially in order '(1 3), got ~S."
+                           executed-order-forward))
+            (assert-true (equal '((1 . "step-1-ok") (3 . "step-3-ok"))
+                                execution-results)
+                         "Expected sequential execution results to map step indexes in order, got ~S."
+                         execution-results))
+          (assert-true (eq :completed (funcall plan-execution-state-status-fn execution-state))
+                       "Expected sequential approved execution to end in :completed, got ~S."
+                       (funcall plan-execution-state-status-fn execution-state))
+          (assert-true (equal '(1 3)
+                              (funcall plan-execution-state-completed-step-indexes-fn execution-state))
+                       "Expected completed-step-indexes '(1 3)' after sequential execution, got ~S."
+                       (funcall plan-execution-state-completed-step-indexes-fn execution-state))
+          (assert-true (null (funcall plan-execution-state-pending-step-indexes-fn execution-state))
+                       "Expected no pending steps after sequential execution, got ~S."
+                       (funcall plan-execution-state-pending-step-indexes-fn execution-state))
+          (assert-true (null (funcall plan-execution-state-current-step-index-fn execution-state))
+                       "Expected no current running step after sequential execution, got ~S."
+                       (funcall plan-execution-state-current-step-index-fn execution-state))
+          (assert-true (null (funcall plan-execution-next-step-index-fn execution-state))
+                       "Expected no next approved step after sequential execution, got ~S."
+                       (funcall plan-execution-next-step-index-fn execution-state))
+          (assert-true (integerp (funcall plan-execution-state-finished-at-fn execution-state))
+                       "Expected sequential approved execution to set finished-at timestamp.")
+          (dolist (step (funcall plan-execution-state-steps-fn execution-state))
+            (let ((step-index (funcall plan-execution-step-index-fn step)))
+              (when (member step-index '(1 3) :test #'=)
+                (assert-true (eq :completed (funcall plan-execution-step-status-fn step))
+                             "Expected approved step ~D to be :completed after sequential execution, got ~S."
+                             step-index
+                             (funcall plan-execution-step-status-fn step))
+                (assert-true (integerp (funcall plan-execution-step-started-at-fn step))
+                             "Expected approved step ~D to include started-at timestamp."
+                             step-index)
+                (assert-true (integerp (funcall plan-execution-step-finished-at-fn step))
+                             "Expected approved step ~D to include finished-at timestamp."
+                             step-index)))))
         (funcall clear-step-approvals-fn plan-state)
         (let ((saw-init-error nil))
           (handler-case
