@@ -8,6 +8,8 @@
   (%status-event-type-keyword "ui:stream-progress"))
 
 (defparameter +default-context-window-tokens+ +default-context-window-limit+)
+(defparameter +plan-mode-read-only-banner+ "PLAN MODE -- read-only")
+(defparameter +plan-mode-lock-badge+ "[LOCK mutating tools blocked]")
 
 (defstruct (status-bar-stream-payload
             (:constructor make-status-bar-stream-payload
@@ -26,6 +28,7 @@
                 (&key
                    permission-mode
                    (plan-mode-active-p nil)
+                   (plan-mode-mutating-tools-blocked-p nil)
                    branch-name
                    model-name
                    context-limit-override
@@ -37,6 +40,7 @@
                    (subscription-ids '()))))
   permission-mode
   (plan-mode-active-p nil :type boolean)
+  (plan-mode-mutating-tools-blocked-p nil :type boolean)
   (branch-name "-" :type string)
   (model-name "unknown" :type string)
   context-limit-override
@@ -115,8 +119,11 @@
        (setf (status-bar-state-permission-mode state)
              (config-changed-payload-new-value payload)))
       (:plan-mode
-       (setf (status-bar-state-plan-mode-active-p state)
-             (not (null (config-changed-payload-new-value payload)))))
+       (let ((active-p (not (null (config-changed-payload-new-value payload)))))
+         (setf (status-bar-state-plan-mode-active-p state) active-p
+               (status-bar-state-plan-mode-mutating-tools-blocked-p state)
+               (and active-p
+                    (plan-mode-mutating-tools-blocked-p nil active-p)))))
       (:context-window-limit
        (let ((override (config-changed-payload-new-value payload)))
          (setf (status-bar-state-context-limit-override state)
@@ -220,6 +227,9 @@
          (resolved-plan-mode-active-p
            (and (config-p config)
                 (not (null (config-value :plan-mode config)))))
+         (resolved-plan-mode-mutating-tools-blocked-p
+           (and resolved-plan-mode-active-p
+                (plan-mode-mutating-tools-blocked-p config)))
          (resolved-root
            (or project-root
                (and (config-p config) (config-project-root config))
@@ -236,6 +246,7 @@
            (%make-status-bar-state
             :permission-mode resolved-mode
             :plan-mode-active-p resolved-plan-mode-active-p
+            :plan-mode-mutating-tools-blocked-p resolved-plan-mode-mutating-tools-blocked-p
             :branch-name (%safe-string (or branch-name
                                            (%resolve-branch-name resolved-root))
                                        "-")
@@ -322,16 +333,25 @@
   (check-type state status-bar-state)
   (let ((segments (mapcar (lambda (entry) (getf entry :text))
                           (%status-segment-specs state))))
-    (if (status-bar-state-plan-mode-active-p state)
-        (cons "PLAN MODE -- read-only" segments)
+    (if (and (status-bar-state-plan-mode-active-p state)
+             (status-bar-state-plan-mode-mutating-tools-blocked-p state))
+        (cons (format nil "~A ~A"
+                      +plan-mode-read-only-banner+
+                      +plan-mode-lock-badge+)
+              segments)
         segments)))
 
 (defun status-bar-styled-segments (state)
   (check-type state status-bar-state)
   (let ((segments '())
         (segment-specs (%status-segment-specs state)))
-    (when (status-bar-state-plan-mode-active-p state)
-      (push (cons "PLAN MODE -- read-only" :system) segments)
+    (when (and (status-bar-state-plan-mode-active-p state)
+               (status-bar-state-plan-mode-mutating-tools-blocked-p state))
+      (push (cons (format nil "~A ~A"
+                          +plan-mode-read-only-banner+
+                          +plan-mode-lock-badge+)
+                  :system)
+            segments)
       (push (cons " | " :meta) segments))
     (loop for spec in segment-specs
           for index from 0 do
@@ -359,6 +379,7 @@
   (check-type state status-bar-state)
   (list (status-bar-state-permission-mode state)
         (status-bar-state-plan-mode-active-p state)
+        (status-bar-state-plan-mode-mutating-tools-blocked-p state)
         (status-bar-state-branch-name state)
         (status-bar-state-model-name state)
         (status-bar-state-context-used-tokens state)

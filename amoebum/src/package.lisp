@@ -998,6 +998,7 @@
            #:remember-path-approval
            #:forget-path-approval
            #:dangerous-command-p
+           #:plan-mode-mutating-tools-blocked-p
            #:check-permission
            #:last-permission-decision-trace
            #:permission-decision-history
@@ -1083,6 +1084,7 @@
            #:make-status-bar-state
            #:status-bar-state-permission-mode
            #:status-bar-state-plan-mode-active-p
+           #:status-bar-state-plan-mode-mutating-tools-blocked-p
            #:status-bar-state-branch-name
            #:status-bar-state-model-name
            #:status-bar-state-context-used-tokens

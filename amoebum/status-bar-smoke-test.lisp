@@ -95,6 +95,9 @@
         (let ((plan-line (funcall status-bar-line-fn state)))
           (assert-true (line-contains-p plan-line "PLAN MODE -- read-only")
                        "Expected plan-mode banner in status bar, got ~S."
+                       plan-line)
+          (assert-true (line-contains-p plan-line "[LOCK mutating tools blocked]")
+                       "Expected plan-mode lock badge in status bar, got ~S."
                        plan-line))
 
         (funcall publish-fn

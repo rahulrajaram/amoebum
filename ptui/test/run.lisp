@@ -916,6 +916,44 @@
     (assert-true (>= (ptui.layout:layout-size-height size) 3)
                  "terminal-pane widget height should include status + viewport rows")))
 
+(deftest widgets-terminal-pane-banner-lock-persistence
+  (let* ((state (ptui.components.terminal-pane:make-terminal-pane-state
+                 :title "terminal"
+                 :banner-text "PLAN MODE -- read-only"
+                 :lock-indicator-p t)))
+    (ptui.components.terminal-pane:terminal-pane-append-output
+     state
+     (concatenate 'string "alpha" (string #\Newline)))
+    (let* ((widget (ptui.components.terminal-pane:make-terminal-pane-widget
+                    state
+                    :id :terminal-pane
+                    :viewport-height 2))
+           (content (first (ptui.ui.elements:ui-element-children widget)))
+           (rows (ptui.ui.elements:ui-element-children content))
+           (status-row (first rows))
+           (status-text (getf (ptui.ui.elements:ui-element-props status-row) :text "")))
+      (assert-true (search "PLAN MODE -- read-only" status-text :test #'char=)
+                   "expected status row to preserve banner text, got ~S"
+                   status-text)
+      (assert-true (search "[LOCK]" status-text :test #'char=)
+                   "expected status row to include lock indicator, got ~S"
+                   status-text))
+    (ptui.components.terminal-pane:terminal-pane-set-banner
+     state
+     :text nil
+     :lock-indicator-p nil)
+    (let* ((widget (ptui.components.terminal-pane:make-terminal-pane-widget
+                    state
+                    :id :terminal-pane
+                    :viewport-height 2))
+           (content (first (ptui.ui.elements:ui-element-children widget)))
+           (rows (ptui.ui.elements:ui-element-children content))
+           (status-row (first rows))
+           (status-text (getf (ptui.ui.elements:ui-element-props status-row) :text "")))
+      (assert-true (null (search "[LOCK]" status-text :test #'char=))
+                   "expected status row lock indicator to clear, got ~S"
+                   status-text))))
+
 (deftest widgets-terminal-pane-ansi-search-and-copy
   (let* ((esc (string (code-char 27)))
          (state (ptui.components.terminal-pane:make-terminal-pane-state
