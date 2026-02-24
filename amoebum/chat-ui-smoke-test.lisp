@@ -134,11 +134,11 @@
         (funcall setconfig-fn :plan-mode t)
         (funcall clear-plan-steps-fn)
         (funcall add-plan-step-fn
-                 "Inspect `amoebum/src/ui/chat.lisp` plan-mode rendering."
+                 "Inspect preview output with `rg -n plan`."
                  :file-paths (list "amoebum/src/ui/chat.lisp")
                  :state (funcall current-plan-state-fn))
         (funcall add-plan-step-fn
-                 "Validate `ptui` plan presentation composition."
+                 "Validate dry-run rendering with `timeout 60 ./ptui/bin/test.sh`."
                  :file-paths (list "ptui/src/components/plan-presentation.lisp")
                  :risk :high
                  :state (funcall current-plan-state-fn))
@@ -155,6 +155,10 @@
                        "Expected rendered chat UI to show plan steps panel heading.")
           (assert-true (rows-contain-p rows "Plan Output")
                        "Expected rendered chat UI to show plan output panel heading.")
+          (assert-true (rows-contain-p rows "DRY-RUN>")
+                       "Expected plan output terminal pane to show dry-run command previews.")
+          (assert-true (rows-contain-p rows "timeout 60 ./ptui/bin/test.sh")
+                       "Expected dry-run command preview to include proposed shell command.")
           (assert-true (rows-contain-p rows "Context Inspector")
                        "Expected rendered chat UI to show context inspector heading."))
         (funcall setconfig-fn :plan-mode nil)
