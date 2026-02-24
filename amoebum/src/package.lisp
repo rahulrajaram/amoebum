@@ -534,7 +534,14 @@
            #:plan-execution-state-current-step-index
            #:plan-execution-state-failure-reason
            #:plan-execution-state-abort-reason
+           #:plan-execution-state-rollback-baseline-stash
+           #:plan-execution-state-rollback-baseline-directory
+           #:plan-execution-state-rollback-attempted-p
+           #:plan-execution-state-rollback-succeeded-p
+           #:plan-execution-state-rollback-notes
            #:*plan-execution-state*
+           #:*plan-execution-git-command-runner*
+           #:default-plan-execution-git-command-runner
            #:current-plan-execution-state
            #:reset-plan-execution-state
            #:initialize-plan-execution

@@ -92,8 +92,10 @@
          (plan-execution-state-started-at-fn (funcall fn-in "PLAN-EXECUTION-STATE-STARTED-AT" amoebum-pkg))
          (plan-execution-state-finished-at-fn (funcall fn-in "PLAN-EXECUTION-STATE-FINISHED-AT" amoebum-pkg))
          (plan-execution-state-abort-reason-fn (funcall fn-in "PLAN-EXECUTION-STATE-ABORT-REASON" amoebum-pkg))
-         (plan-execution-state-failure-reason-fn
-           (funcall fn-in "PLAN-EXECUTION-STATE-FAILURE-REASON" amoebum-pkg))
+         (plan-execution-state-rollback-attempted-p-fn
+           (funcall fn-in "PLAN-EXECUTION-STATE-ROLLBACK-ATTEMPTED-P" amoebum-pkg))
+         (plan-execution-state-rollback-succeeded-p-fn
+           (funcall fn-in "PLAN-EXECUTION-STATE-ROLLBACK-SUCCEEDED-P" amoebum-pkg))
          (plan-execution-output-lines-fn (funcall fn-in "PLAN-EXECUTION-OUTPUT-LINES" amoebum-pkg))
          (plan-execution-step-index-fn (funcall fn-in "PLAN-EXECUTION-STEP-INDEX" amoebum-pkg))
          (plan-execution-step-status-fn (funcall fn-in "PLAN-EXECUTION-STEP-STATUS" amoebum-pkg))
@@ -133,7 +135,8 @@
          (make-tool-call-fn (funcall fn-in "MAKE-TOOL-CALL" pseudopod-pkg))
          (temporary-directory-fn (funcall fn-in "TEMPORARY-DIRECTORY" uiop-pkg))
          (ensure-directory-pathname-fn (funcall fn-in "ENSURE-DIRECTORY-PATHNAME" uiop-pkg))
-         (read-file-string-fn (funcall fn-in "READ-FILE-STRING" uiop-pkg)))
+         (read-file-string-fn (funcall fn-in "READ-FILE-STRING" uiop-pkg))
+         (run-program-fn (funcall fn-in "RUN-PROGRAM" uiop-pkg)))
     (labels ((assert-true (condition format-string &rest format-args)
                (unless condition
                  (error (apply #'format nil format-string format-args))))
@@ -940,57 +943,98 @@
                 (assert-true (integerp (funcall plan-execution-step-finished-at-fn step))
                              "Expected approved step ~D to include finished-at timestamp."
                              step-index)))))
+        (funcall set-step-approvals-fn '(1 2) :state plan-state)
         (funcall reset-plan-execution-state-fn)
-        (let* ((execution-state (funcall initialize-plan-execution-fn :plan-state plan-state))
-               (execution-results '()))
-          (multiple-value-bind (_ results)
+        (let* ((rollback-root
+                 (funcall ensure-directory-pathname-fn
+                          (merge-pathnames
+                           (make-pathname :directory
+                                          `(:relative ,(format nil "amoebum-i172-~A"
+                                                                (get-universal-time))))
+                           (funcall temporary-directory-fn))))
+               (rollback-file (merge-pathnames #P"tracked.txt" rollback-root))
+               (execution-state (funcall initialize-plan-execution-fn :plan-state plan-state))
+               (executed-order '()))
+          (ensure-directories-exist rollback-file)
+          (with-open-file (stream rollback-file
+                                  :direction :output
+                                  :if-exists :supersede
+                                  :if-does-not-exist :create)
+            (write-line "baseline" stream))
+          (funcall run-program-fn '("git" "init")
+                   :directory rollback-root
+                   :output :string
+                   :error-output :string)
+          (funcall run-program-fn '("git" "config" "user.email" "plan-smoke@example.com")
+                   :directory rollback-root
+                   :output :string
+                   :error-output :string)
+          (funcall run-program-fn '("git" "config" "user.name" "Plan Smoke")
+                   :directory rollback-root
+                   :output :string
+                   :error-output :string)
+          (funcall run-program-fn '("git" "add" "tracked.txt")
+                   :directory rollback-root
+                   :output :string
+                   :error-output :string)
+          (funcall run-program-fn '("git" "commit" "-m" "baseline")
+                   :directory rollback-root
+                   :output :string
+                   :error-output :string)
+          (multiple-value-bind (_ execution-results failure-condition rollback-succeeded-p)
               (funcall execute-approved-plan-steps-fn
                        (lambda (step)
                          (let ((step-index (funcall plan-execution-step-index-fn step)))
-                           (if (= step-index 1)
-                               "step-1-ok"
-                               (error "simulated failure at step ~D" step-index))))
-                       :state execution-state)
+                           (push step-index executed-order)
+                           (cond
+                             ((= step-index 1)
+                              (with-open-file (stream rollback-file
+                                                      :direction :output
+                                                      :if-exists :supersede
+                                                      :if-does-not-exist :create)
+                                (write-line "step-one-change" stream))
+                              "step-1-mutated")
+                             ((= step-index 2)
+                              (error "step-2-failure"))
+                             (t
+                              "unexpected-step"))))
+                       :state execution-state
+                       :rollback-on-failure-p t
+                       :signal-failure-p nil
+                       :rollback-directory rollback-root)
             (declare (ignore _))
-            (setf execution-results results))
+            (assert-true (equal '((1 . "step-1-mutated")) execution-results)
+                         "Expected rollback scenario to retain only completed result for step 1 mutation, got ~S."
+                         execution-results)
+            (assert-true failure-condition
+                         "Expected rollback scenario to surface failure condition.")
+            (assert-true rollback-succeeded-p
+                         "Expected rollback scenario to report successful rollback, got ~S."
+                         rollback-succeeded-p))
+          (let ((executed-order-forward (nreverse executed-order)))
+            (assert-true (equal '(1 2) executed-order-forward)
+                         "Expected rollback scenario to execute steps 1 then 2, got ~S."
+                         executed-order-forward))
           (assert-true (eq :failed (funcall plan-execution-state-status-fn execution-state))
-                       "Expected step failure to stop execution with terminal status :failed, got ~S."
+                       "Expected rollback scenario execution status :failed, got ~S."
                        (funcall plan-execution-state-status-fn execution-state))
-          (assert-true (equal '(1)
-                              (funcall plan-execution-state-completed-step-indexes-fn execution-state))
-                       "Expected only completed steps before failure to be tracked, got ~S."
-                       (funcall plan-execution-state-completed-step-indexes-fn execution-state))
-          (assert-true (equal '(3)
-                              (funcall plan-execution-state-pending-step-indexes-fn execution-state))
-                       "Expected failed step to remain pending for user-directed retry, got ~S."
-                       (funcall plan-execution-state-pending-step-indexes-fn execution-state))
-          (assert-true (null (funcall plan-execution-state-current-step-index-fn execution-state))
-                       "Expected current-step-index to clear after failure, got ~S."
-                       (funcall plan-execution-state-current-step-index-fn execution-state))
-          (let ((failure-reason (funcall plan-execution-state-failure-reason-fn execution-state)))
-            (assert-true (typep failure-reason 'condition)
-                         "Expected failure-reason to store the execution condition, got ~S."
-                         failure-reason)
-            (assert-true (contains-text-p (princ-to-string failure-reason)
-                                          "simulated failure at step 3")
-                         "Expected failure-reason to include failing step context, got ~S."
-                         failure-reason))
-          (assert-true (equal '(1 3) (mapcar #'car execution-results))
-                       "Expected failed run results to stop after the first failing approved step, got ~S."
-                       execution-results)
-          (assert-true (typep (cdr (second execution-results)) 'condition)
-                       "Expected failed step result payload to preserve condition object, got ~S."
-                       (cdr (second execution-results)))
+          (assert-true (funcall plan-execution-state-rollback-attempted-p-fn execution-state)
+                       "Expected rollback scenario to mark rollback-attempted-p true.")
+          (assert-true (funcall plan-execution-state-rollback-succeeded-p-fn execution-state)
+                       "Expected rollback scenario to mark rollback-succeeded-p true.")
+          (assert-true (contains-text-p (funcall read-file-string-fn rollback-file)
+                                        "baseline")
+                       "Expected rollback scenario to restore tracked file baseline content.")
           (let ((continuity-lines (funcall plan-execution-output-lines-fn execution-state)))
             (assert-true (some (lambda (line)
-                                 (contains-text-p line "LIVE> [step 3 failed]"))
+                                 (contains-text-p line "Failure detected; attempting git rollback"))
                                continuity-lines)
-                         "Expected continuity output to report failed step, got ~S."
+                         "Expected rollback continuity output to include rollback start marker, got ~S."
                          continuity-lines)
             (assert-true (some (lambda (line)
-                                 (contains-text-p line "Choose next action: /execute (retry), /plan review, or /plan modify."))
+                                 (contains-text-p line "Rollback completed; git baseline restored"))
                                continuity-lines)
-                         "Expected continuity output to guide user next action after failure, got ~S."
+                         "Expected rollback continuity output to include rollback success marker, got ~S."
                          continuity-lines)))
         (funcall clear-step-approvals-fn plan-state)
         (let ((saw-init-error nil))
