@@ -53,6 +53,7 @@
          (add-plan-step-fn (funcall fn-in "ADD-PLAN-STEP" amoebum-pkg))
          (current-plan-state-fn (funcall fn-in "CURRENT-PLAN-MODE-STATE" amoebum-pkg))
          (plan-mode-steps-fn (funcall fn-in "PLAN-MODE-STATE-STEPS" amoebum-pkg))
+         (plan-approved-steps-fn (funcall fn-in "PLAN-MODE-STATE-APPROVED-STEP-INDEXES" amoebum-pkg))
          (plan-step-depends-on-fn (funcall fn-in "PLAN-STEP-DEPENDS-ON" amoebum-pkg))
          (plan-review-pending-fn (funcall fn-in "PLAN-MODE-STATE-REVIEW-PENDING-P" amoebum-pkg))
          (plan-review-decision-fn (funcall fn-in "PLAN-MODE-STATE-REVIEW-DECISION" amoebum-pkg))
@@ -259,6 +260,12 @@
         (assert-true (contains-text-p output-text "depends_on: 1")
                      "Expected plan output to include inferred dependency annotation, got ~S."
                      output-text)
+        (assert-true (contains-text-p output-text "approved_step_count: 0")
+                     "Expected plan output to include approved step count metadata, got ~S."
+                     output-text)
+        (assert-true (contains-text-p output-text "approved_for_execution: false")
+                     "Expected plan output to initialize step approvals as false, got ~S."
+                     output-text)
         (assert-true (bool-true-p (funcall plan-review-pending-fn plan-state))
                      "Expected plan review pending marker after plan mode exit.")
         (multiple-value-bind (handledp status-result)
@@ -287,6 +294,47 @@
                                         "Review target implementation files.")
                        "Expected /plan review output to include captured step text, got ~S."
                        (funcall result-output-fn review-result)))
+        (multiple-value-bind (handledp partial-approve-result)
+            (funcall dispatch-fn "/plan approve 1,3")
+          (assert-true handledp "Expected /plan approve 1,3 to be handled.")
+          (assert-true (contains-text-p (funcall result-output-fn partial-approve-result)
+                                        "Approved step(s): 1, 3.")
+                       "Expected /plan approve 1,3 to acknowledge approved step subset, got ~S."
+                       (funcall result-output-fn partial-approve-result))
+          (assert-true (contains-text-p (funcall result-output-fn partial-approve-result)
+                                        "Current approval: 2/4.")
+                       "Expected /plan approve 1,3 to report partial approval ratio, got ~S."
+                       (funcall result-output-fn partial-approve-result)))
+        (assert-true (equal '(1 3) (funcall plan-approved-steps-fn plan-state))
+                     "Expected approved step indexes '(1 3) after /plan approve 1,3, got ~S."
+                     (funcall plan-approved-steps-fn plan-state))
+        (assert-true (bool-true-p (funcall plan-review-pending-fn plan-state))
+                     "Expected partial step approval to keep plan review pending.")
+        (assert-true (eq :partially-approved (funcall plan-review-decision-fn plan-state))
+                     "Expected partial step approval to set decision :partially-approved, got ~S."
+                     (funcall plan-review-decision-fn plan-state))
+        (multiple-value-bind (handledp partial-status-result)
+            (funcall dispatch-fn "/plan status")
+          (assert-true handledp "Expected /plan status to be handled after partial approval.")
+          (assert-true (contains-text-p (funcall result-output-fn partial-status-result)
+                                        "Approved steps: 2/4 (1, 3)")
+                       "Expected /plan status to include partial step approval summary, got ~S."
+                       (funcall result-output-fn partial-status-result)))
+        (multiple-value-bind (handledp partial-review-result)
+            (funcall dispatch-fn "/plan review")
+          (assert-true handledp "Expected /plan review after partial step approval.")
+          (assert-true (contains-text-p (funcall result-output-fn partial-review-result)
+                                        "Approved steps: 2/4 (1, 3).")
+                       "Expected /plan review to include partial step approval summary, got ~S."
+                       (funcall result-output-fn partial-review-result))
+          (assert-true (contains-text-p (funcall result-output-fn partial-review-result)
+                                        "approved_step_count: 2")
+                       "Expected /plan review markdown to include updated approved step count, got ~S."
+                       (funcall result-output-fn partial-review-result))
+          (assert-true (contains-text-p (funcall result-output-fn partial-review-result)
+                                        "approved_for_execution: true")
+                       "Expected /plan review markdown to include step-level approval markers, got ~S."
+                       (funcall result-output-fn partial-review-result)))
         (multiple-value-bind (handledp modify-result)
             (funcall dispatch-fn "/plan modify Split step 2 into two explicit steps.")
           (assert-true handledp "Expected /plan modify to be handled.")
@@ -366,12 +414,19 @@
                                       "Ready for execution")
                      "Expected /plan approve to store approval notes, got ~S."
                      (funcall plan-review-notes-fn plan-state))
+        (assert-true (equal '(1 2 3 4) (funcall plan-approved-steps-fn plan-state))
+                     "Expected /plan approve to mark all steps approved, got ~S."
+                     (funcall plan-approved-steps-fn plan-state))
         (multiple-value-bind (handledp status-result)
             (funcall dispatch-fn "/plan status")
           (assert-true handledp "Expected /plan status to be handled after approval.")
           (assert-true (contains-text-p (funcall result-output-fn status-result)
                                         "Last review decision: approved")
                        "Expected /plan status to mention the approved decision, got ~S."
+                       (funcall result-output-fn status-result))
+          (assert-true (contains-text-p (funcall result-output-fn status-result)
+                                        "Approved steps: 4/4")
+                       "Expected /plan status to report full step approval after /plan approve, got ~S."
                        (funcall result-output-fn status-result))))
 
       (funcall setconfig-fn :plan-mode nil)

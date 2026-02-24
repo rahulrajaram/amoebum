@@ -4,7 +4,7 @@
   '(:low :medium :high))
 
 (defparameter *known-plan-review-decisions*
-  '(:pending :approved :rejected :modification-requested))
+  '(:pending :approved :partially-approved :rejected :modification-requested))
 
 (defstruct (plan-step
             (:constructor make-plan-step
@@ -26,6 +26,7 @@
                    entered-at
                    exited-at
                    (steps '())
+                   (approved-step-indexes '())
                    (review-pending-p nil)
                    (review-decision :pending)
                    review-notes
@@ -38,6 +39,7 @@
   entered-at
   exited-at
   (steps '() :type list)
+  (approved-step-indexes '() :type list)
   (review-pending-p nil :type boolean)
   (review-decision :pending)
   review-notes
@@ -103,6 +105,52 @@
         decision
         :pending)))
 
+(defun %normalize-step-indexes (indexes max-index)
+  (sort (remove-duplicates
+         (loop for entry in (or indexes '())
+               when (and (integerp entry)
+                         (>= entry 1)
+                         (<= entry max-index))
+                 collect entry)
+         :test #'=)
+        #'<))
+
+(defun plan-step-indexes (&optional (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (sort (loop for step in (plan-mode-state-steps state)
+              for index = (plan-step-index step)
+              when (integerp index)
+                collect index)
+        #'<))
+
+(defun clear-plan-step-approvals (&optional (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (setf (plan-mode-state-approved-step-indexes state) '())
+  state)
+
+(defun set-plan-step-approvals (step-indexes &key (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (let* ((available-indexes (plan-step-indexes state))
+         (max-index (if available-indexes
+                        (reduce #'max available-indexes)
+                        0)))
+    (setf (plan-mode-state-approved-step-indexes state)
+          (%normalize-step-indexes step-indexes max-index)))
+  state)
+
+(defun approve-plan-steps (step-indexes &key (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (let ((merged (append (plan-mode-state-approved-step-indexes state)
+                        (or step-indexes '()))))
+    (set-plan-step-approvals merged :state state)))
+
+(defun plan-step-approved-p (step-index &optional (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (and (integerp step-index)
+       (member step-index
+               (plan-mode-state-approved-step-indexes state)
+               :test #'=)))
+
 (defun set-plan-review-decision (decision &key notes (state (current-plan-mode-state)))
   (check-type state plan-mode-state)
   (let ((normalized-notes (string-trim '(#\Space #\Tab #\Newline #\Return)
@@ -114,7 +162,7 @@
           (plan-mode-state-review-decided-at state) (get-universal-time)
           (plan-mode-state-review-pending-p state)
           (not (null (member normalized-decision
-                             '(:pending :modification-requested)
+                             '(:pending :partially-approved :modification-requested)
                              :test #'eq)))))
   state)
 
@@ -212,6 +260,7 @@
 (defun clear-plan-mode-steps (&optional (state (current-plan-mode-state)))
   (check-type state plan-mode-state)
   (setf (plan-mode-state-steps state) '())
+  (clear-plan-step-approvals state)
   state)
 
 (defun add-plan-step (description &key file-paths (risk :medium) depends-on
@@ -230,7 +279,7 @@
           (sort (copy-list (plan-mode-state-steps state)) #'< :key #'plan-step-index)))
   state)
 
-(defun %plan-step-markdown (step stream)
+(defun %plan-step-markdown (step stream approved-p)
   (format stream "~D. ~A~%"
           (or (plan-step-index step) 0)
           (%safe-plan-string (plan-step-description step) "Describe the step."))
@@ -241,11 +290,14 @@
             (%normalize-path-list (plan-step-file-paths step))))
   (when (plan-step-depends-on step)
     (format stream "   - depends_on: ~{~A~^, ~}~%"
-            (plan-step-depends-on step))))
+            (plan-step-depends-on step)))
+  (format stream "   - approved_for_execution: ~A~%"
+          (if approved-p "true" "false")))
 
 (defun %plan-markdown (state reason)
   (with-output-to-string (stream)
-    (let ((steps (plan-mode-state-steps state)))
+    (let ((steps (plan-mode-state-steps state))
+          (approved-step-indexes (plan-mode-state-approved-step-indexes state)))
       (format stream "# Amoebum Plan~%~%")
       (format stream "- generated_at: ~A~%" (%timestamp-iso8601))
       (format stream "- exit_reason: ~A~%"
@@ -253,10 +305,16 @@
                   (%safe-plan-string reason "manual-exit")
                   "manual-exit"))
       (format stream "- step_count: ~D~%~%" (length steps))
+      (format stream "- approved_step_count: ~D~%~%"
+              (length approved-step-indexes))
       (format stream "## Steps~%~%")
       (if steps
           (dolist (step steps)
-            (%plan-step-markdown step stream))
+            (%plan-step-markdown step
+                                 stream
+                                 (member (plan-step-index step)
+                                         approved-step-indexes
+                                         :test #'=)))
           (format stream "1. No explicit steps captured.~%")))))
 
 (defun plan-markdown (&key
@@ -264,6 +322,15 @@
                         reason)
   (check-type state plan-mode-state)
   (%plan-markdown state reason))
+
+(defun refresh-plan-review-markdown (&optional (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (when (stringp (plan-mode-state-last-plan-markdown state))
+    (setf (plan-mode-state-last-plan-markdown state)
+          (%plan-markdown state
+                          (or (plan-mode-state-last-exit-reason state)
+                              :review-update))))
+  state)
 
 (defun default-plan-output-path (&key project-root (timestamp (get-universal-time)))
   (let* ((root-path
@@ -303,6 +370,7 @@
   (setf (plan-mode-state-active-p state) t
         (plan-mode-state-entered-at state) (get-universal-time)
         (plan-mode-state-exited-at state) nil
+        (plan-mode-state-approved-step-indexes state) '()
         (plan-mode-state-review-pending-p state) nil
         (plan-mode-state-review-decision state) :pending
         (plan-mode-state-review-notes state) nil
@@ -320,6 +388,7 @@
   (when (plan-mode-state-active-p state)
     (let ((captured-plan (%plan-markdown state reason)))
       (setf (plan-mode-state-last-plan-markdown state) captured-plan
+            (plan-mode-state-approved-step-indexes state) '()
             (plan-mode-state-review-pending-p state) t
             (plan-mode-state-review-decision state) :pending
             (plan-mode-state-review-notes state) nil

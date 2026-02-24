@@ -436,6 +436,7 @@
            #:plan-mode-state-entered-at
            #:plan-mode-state-exited-at
            #:plan-mode-state-steps
+           #:plan-mode-state-approved-step-indexes
            #:plan-mode-state-review-pending-p
            #:plan-mode-state-review-decision
            #:plan-mode-state-review-notes
@@ -447,9 +448,15 @@
            #:*plan-mode-state*
            #:current-plan-mode-state
            #:plan-mode-active-p
+           #:plan-step-indexes
            #:clear-plan-mode-steps
+           #:clear-plan-step-approvals
            #:add-plan-step
+           #:set-plan-step-approvals
+           #:approve-plan-steps
+           #:plan-step-approved-p
            #:set-plan-review-decision
+           #:refresh-plan-review-markdown
            #:default-plan-output-path
            #:write-plan-output
            #:enter-plan-mode

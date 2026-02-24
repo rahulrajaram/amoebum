@@ -448,29 +448,140 @@
 (defun %plan-review-decision-label (decision)
   (case decision
     (:approved "approved")
+    (:partially-approved "partially-approved")
     (:rejected "rejected")
     (:modification-requested "modification-requested")
     (:pending "pending")
     (otherwise
      (string-downcase (symbol-name (or decision :pending))))))
 
-(defun %plan-status-output (active-p output-path review-pending-p review-decision review-notes)
-  (if active-p
-      "Plan mode is ON. PLAN MODE -- read-only."
-      (with-output-to-string (out)
-        (write-string "Plan mode is OFF." out)
-        (when output-path
-          (format out " Last plan output: ~A." (namestring output-path)))
-        (when review-pending-p
-          (write-string " Plan review pending. Use /plan review to inspect the latest captured plan."
-                        out))
-        (when (and (symbolp review-decision)
-                   (not (eq review-decision :pending)))
-          (format out " Last review decision: ~A."
-                  (%plan-review-decision-label review-decision)))
-        (when (and (stringp review-notes)
-                   (plusp (length (%slash-trim review-notes))))
-          (format out " Review notes: ~A." (%slash-trim review-notes))))))
+(defun %format-step-index-list (step-indexes)
+  (if step-indexes
+      (format nil "~{~D~^, ~}" step-indexes)
+      "none"))
+
+(defun %split-delimited (text delimiter)
+  (let ((parts '())
+        (start 0)
+        (length (length text)))
+    (loop for index from 0 to length do
+      (when (or (= index length)
+                (char= (char text index) delimiter))
+        (push (subseq text start index) parts)
+        (setf start (1+ index))))
+    (nreverse parts)))
+
+(defun %digit-string-p (text)
+  (and (stringp text)
+       (plusp (length text))
+       (loop for char across text
+             always (digit-char-p char))))
+
+(defun %parse-step-index-fragment (fragment)
+  (let ((trimmed (%slash-trim fragment)))
+    (cond
+      ((zerop (length trimmed))
+       nil)
+      ((%digit-string-p trimmed)
+       (let ((value (parse-integer trimmed)))
+         (when (>= value 1)
+           (list value))))
+      ((find #\- trimmed)
+       (let* ((parts (%split-delimited trimmed #\-))
+              (from-text (and (= (length parts) 2)
+                              (%slash-trim (first parts))))
+              (to-text (and (= (length parts) 2)
+                            (%slash-trim (second parts)))))
+         (when (and from-text
+                    to-text
+                    (%digit-string-p from-text)
+                    (%digit-string-p to-text))
+           (let ((from (parse-integer from-text))
+                 (to (parse-integer to-text)))
+             (when (and (>= from 1)
+                        (>= to from))
+               (loop for value from from to to
+                     collect value))))))
+      (t
+       nil))))
+
+(defun %parse-step-index-token (token)
+  (let ((fragments (%split-delimited token #\,))
+        (result '()))
+    (dolist (fragment fragments)
+      (let ((parsed (%parse-step-index-fragment fragment)))
+        (unless parsed
+          (return-from %parse-step-index-token nil))
+        (setf result (append result parsed))))
+    result))
+
+(defun %parse-plan-step-approval-args (raw-args)
+  (let ((tokens (%tokenize-command-arguments (or raw-args ""))))
+    (if (null tokens)
+        (values nil nil nil)
+        (let ((indexes '())
+              (invalid-tokens '())
+              (saw-step-marker-p nil))
+          (dolist (token tokens)
+            (cond
+              ((or (string-equal token "step")
+                   (string-equal token "steps"))
+               (setf saw-step-marker-p t))
+              (t
+               (let ((parsed (%parse-step-index-token token)))
+                 (if parsed
+                     (setf indexes (append indexes parsed))
+                     (push token invalid-tokens))))))
+          (cond
+            ((and saw-step-marker-p invalid-tokens)
+             (values nil
+                     nil
+                     (format nil
+                             "Invalid step selector(s): ~{~A~^, ~}. Use step indexes like `1`, `1,3`, or `2-4`."
+                             (nreverse invalid-tokens))))
+            ((and saw-step-marker-p (null indexes))
+             (values nil
+                     nil
+                     "Expected at least one step index after `step` or `steps`."))
+            ((and indexes (null invalid-tokens))
+             (values (sort (remove-duplicates indexes :test #'=) #'<)
+                     t
+                     nil))
+            (t
+             (values nil nil nil)))))))
+
+(defun %plan-status-output (active-p
+                            output-path
+                            review-pending-p
+                            review-decision
+                            review-notes
+                            step-count
+                            approved-step-indexes)
+  (let ((approved-count (length approved-step-indexes)))
+    (if active-p
+        (with-output-to-string (out)
+          (write-string "Plan mode is ON. PLAN MODE -- read-only." out)
+          (when (> step-count 0)
+            (format out " Approved steps: ~D/~D." approved-count step-count)))
+        (with-output-to-string (out)
+          (write-string "Plan mode is OFF." out)
+          (when output-path
+            (format out " Last plan output: ~A." (namestring output-path)))
+          (when (> step-count 0)
+            (format out " Approved steps: ~D/~D (~A)."
+                    approved-count
+                    step-count
+                    (%format-step-index-list approved-step-indexes)))
+          (when review-pending-p
+            (write-string " Plan review pending. Use /plan review to inspect the latest captured plan."
+                          out))
+          (when (and (symbolp review-decision)
+                     (not (eq review-decision :pending)))
+            (format out " Last review decision: ~A."
+                    (%plan-review-decision-label review-decision)))
+          (when (and (stringp review-notes)
+                     (plusp (length (%slash-trim review-notes))))
+            (format out " Review notes: ~A." (%slash-trim review-notes)))))))
 
 (defun %plan-exit-output (plan-markdown output-path write-to-file-p)
   (with-output-to-string (out)
@@ -486,7 +597,11 @@
       (format out "~%~%Plan captured in conversation:~%~%```markdown~%~A~%```"
               plan-markdown))))
 
-(defun %plan-review-output (plan-markdown review-decision review-notes)
+(defun %plan-review-output (plan-markdown
+                            review-decision
+                            review-notes
+                            approved-step-indexes
+                            step-count)
   (if (and (stringp plan-markdown)
            (plusp (length (%slash-trim plan-markdown))))
       (with-output-to-string (out)
@@ -497,6 +612,11 @@
         (when (and (stringp review-notes)
                    (plusp (length (%slash-trim review-notes))))
           (format out "Review notes: ~A~%" (%slash-trim review-notes)))
+        (when (> step-count 0)
+          (format out "Approved steps: ~D/~D (~A).~%"
+                  (length approved-step-indexes)
+                  step-count
+                  (%format-step-index-list approved-step-indexes)))
         (format out "~%~A" plan-markdown))
       "No captured plan is available yet. Exit plan mode first to capture one."))
 
@@ -511,7 +631,7 @@
                     (plusp (length (%slash-trim (plan-mode-state-last-plan-markdown plan-state))))))
              (invalid-usage (detail)
                (make-slash-command-result
-                :output (format nil "~A~%Usage: /plan [on|off|status|review|approve|reject|modify|request-modifications|request-changes] [args...]"
+                :output (format nil "~A~%Usage: /plan [on|off|status|review|approve|reject|modify|request-modifications|request-changes] [args...] (approve accepts step selectors like `1`, `1,3`, `2-4`)"
                                 detail)
                 :echo-input-p t))
              (parse-write-to-file-p ()
@@ -524,14 +644,75 @@
              (decision-result (decision summary)
                (if (captured-plan-available-p)
                    (progn
+                     (when (eq decision :approved)
+                       (set-plan-step-approvals (plan-step-indexes plan-state)
+                                                :state plan-state))
+                     (when (member decision
+                                   '(:rejected :modification-requested :pending)
+                                   :test #'eq)
+                       (clear-plan-step-approvals plan-state))
                      (set-plan-review-decision decision :notes raw-args :state plan-state)
+                     (refresh-plan-review-markdown plan-state)
                      (make-slash-command-result
                       :output (with-output-to-string (out)
                                 (write-string summary out)
                                 (unless (%slash-blank-p raw-args)
                                   (format out " Notes recorded: ~A." raw-args)))))
                    (make-slash-command-result
-                    :output "No captured plan is available yet. Exit plan mode first to capture one."))))
+                    :output "No captured plan is available yet. Exit plan mode first to capture one.")))
+             (approve-steps-result ()
+               (multiple-value-bind (requested-step-indexes step-request-p parse-error)
+                   (%parse-plan-step-approval-args raw-args)
+                 (cond
+                   (parse-error
+                    (invalid-usage parse-error))
+                   ((not step-request-p)
+                    (decision-result :approved "Plan approved."))
+                   ((not (captured-plan-available-p))
+                    (make-slash-command-result
+                     :output "No captured plan is available yet. Exit plan mode first to capture one."))
+                   (t
+                    (let* ((available-step-indexes (plan-step-indexes plan-state))
+                           (missing-step-indexes
+                             (remove-if (lambda (index)
+                                          (member index available-step-indexes :test #'=))
+                                        requested-step-indexes)))
+                      (cond
+                        ((null available-step-indexes)
+                         (make-slash-command-result
+                          :output "No captured plan steps are available to approve."))
+                        (missing-step-indexes
+                         (make-slash-command-result
+                          :output (format nil
+                                          "Unknown plan step index(es): ~A. Available steps: ~A."
+                                          (%format-step-index-list missing-step-indexes)
+                                          (%format-step-index-list available-step-indexes))))
+                        (t
+                         (approve-plan-steps requested-step-indexes :state plan-state)
+                         (let* ((approved-step-indexes
+                                  (plan-mode-state-approved-step-indexes plan-state))
+                                (approved-count (length approved-step-indexes))
+                                (step-count (length available-step-indexes))
+                                (all-approved-p (= approved-count step-count)))
+                           (set-plan-review-decision (if all-approved-p
+                                                         :approved
+                                                         :partially-approved)
+                                                     :state plan-state)
+                           (refresh-plan-review-markdown plan-state)
+                           (make-slash-command-result
+                            :output (with-output-to-string (out)
+                                      (format out "Approved step(s): ~A."
+                                              (%format-step-index-list requested-step-indexes))
+                                      (format out " Current approval: ~D/~D."
+                                              approved-count
+                                              step-count)
+                                      (unless all-approved-p
+                                        (let ((remaining-step-indexes
+                                                (remove-if (lambda (index)
+                                                             (member index approved-step-indexes :test #'=))
+                                                           available-step-indexes)))
+                                          (format out " Remaining steps: ~A."
+                                                  (%format-step-index-list remaining-step-indexes)))))))))))))))
       (case state
         (:status
          (if (%slash-blank-p raw-args)
@@ -540,7 +721,9 @@
                                            (plan-mode-state-last-output-path plan-state)
                                            (plan-mode-state-review-pending-p plan-state)
                                            (plan-mode-state-review-decision plan-state)
-                                           (plan-mode-state-review-notes plan-state)))
+                                           (plan-mode-state-review-notes plan-state)
+                                           (length (plan-mode-state-steps plan-state))
+                                           (plan-mode-state-approved-step-indexes plan-state)))
              (invalid-usage "The /plan status action does not accept extra arguments.")))
         (:review
          (if (%slash-blank-p raw-args)
@@ -549,10 +732,12 @@
                (make-slash-command-result
                 :output (%plan-review-output (plan-mode-state-last-plan-markdown plan-state)
                                              (plan-mode-state-review-decision plan-state)
-                                             (plan-mode-state-review-notes plan-state))))
+                                             (plan-mode-state-review-notes plan-state)
+                                             (plan-mode-state-approved-step-indexes plan-state)
+                                             (length (plan-mode-state-steps plan-state)))))
              (invalid-usage "The /plan review action does not accept extra arguments.")))
         (:approve
-         (decision-result :approved "Plan approved."))
+         (approve-steps-result))
         (:reject
          (decision-result :rejected "Plan rejected."))
         ((:modify :request-modifications :request-changes)
@@ -2509,7 +2694,7 @@
   (register-slash-command
    (make-slash-command
     :name "plan"
-    :description "Toggle plan mode, review captured plan output, and record review decisions."
+    :description "Toggle plan mode, review captured plan output, record review decisions, and approve specific steps."
     :usage "/plan [on|off|status|review|approve|reject|modify|request-modifications|request-changes] [args...]"
     :parameters
     (list (make-slash-command-parameter
@@ -2524,7 +2709,7 @@
            :type :string
            :required-p nil
            :greedy-p t
-           :description "Optional action arguments (e.g. /plan off false, /plan modify <notes>)."))
+           :description "Optional action arguments (e.g. /plan off false, /plan approve 1,3, /plan modify <notes>)."))
     :handler #'%plan-handler
     :completer #'%plan-arg-completer))
   (register-slash-command
