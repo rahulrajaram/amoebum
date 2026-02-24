@@ -15,7 +15,7 @@ if ! grep -Fq "${TARGET}" "${GITIGNORE}"; then
   exit 1
 fi
 
-if ! (cd "${REPO_ROOT}" && git check-ignore -q dist); then
+if ! (cd "${REPO_ROOT}" && git check-ignore -q dist/); then
   echo "Git ignore rules do not currently mark dist/ as ignored" >&2
   exit 1
 fi
