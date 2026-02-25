@@ -22,7 +22,7 @@
 (defstruct (tool-metadata
             (:constructor make-tool-metadata
                 (&key name permission dangerous-p category timeout-seconds
-                 source-file source-line parameter-specs defined-at)))
+                 source-file source-line parameter-specs defined-at mcp-server)))
   name
   permission
   dangerous-p
@@ -31,7 +31,8 @@
   source-file
   source-line
   parameter-specs
-  defined-at)
+  defined-at
+  mcp-server)
 
 (defstruct (tool-history-entry
             (:constructor make-tool-history-entry
@@ -192,7 +193,8 @@
      :source-file (tool-metadata-source-file metadata)
      :source-line (tool-metadata-source-line metadata)
      :parameter-specs (copy-tree (tool-metadata-parameter-specs metadata))
-     :defined-at (tool-metadata-defined-at metadata))))
+     :defined-at (tool-metadata-defined-at metadata)
+     :mcp-server (tool-metadata-mcp-server metadata))))
 
 (defun %tool-history-entries (tool-name)
   (copy-list (gethash (%tool-name-string tool-name) *tool-history*)))
@@ -234,7 +236,8 @@
              :source-file (tool-metadata-source-file metadata)
              :source-line (tool-metadata-source-line metadata)
              :parameter-specs (copy-tree (tool-metadata-parameter-specs metadata))
-             :defined-at (tool-metadata-defined-at metadata))))
+             :defined-at (tool-metadata-defined-at metadata)
+             :mcp-server (tool-metadata-mcp-server metadata))))
 
 (defun %tool-metadata-diff (old-metadata new-metadata)
   (let ((diff '()))
@@ -280,7 +283,12 @@
                  (and (tool-metadata-p old-metadata)
                       (tool-metadata-defined-at old-metadata))
                  (and (tool-metadata-p new-metadata)
-                      (tool-metadata-defined-at new-metadata))))
+                      (tool-metadata-defined-at new-metadata)))
+      (push-diff :mcp-server
+                 (and (tool-metadata-p old-metadata)
+                      (tool-metadata-mcp-server old-metadata))
+                 (and (tool-metadata-p new-metadata)
+                      (tool-metadata-mcp-server new-metadata))))
     (nreverse diff)))
 
 (defun %emit-tool-redefined (tool-name old-metadata new-metadata)
@@ -548,7 +556,8 @@
     (let ((options (list :permission :supervised
                          :dangerous nil
                          :category :general
-                         :timeout 30))
+                         :timeout 30
+                         :mcp-server nil))
           (remaining forms))
       (loop while (and remaining
                        (consp (first remaining))
@@ -556,7 +565,8 @@
             do (let ((declaration (first remaining)))
                  (destructuring-bind (keyword value &rest extra) declaration
                    (declare (ignore extra))
-                   (unless (member keyword '(:permission :dangerous :category :timeout)
+                   (unless (member keyword '(:permission :dangerous :category :timeout
+                                             :mcp-server)
                                    :test #'eq)
                      (error "Unknown deftool declaration keyword: ~S" keyword))
                    (setf (getf options keyword)
@@ -593,6 +603,14 @@
              (dangerous-p (getf declarations :dangerous))
              (category (getf declarations :category))
              (timeout (getf declarations :timeout))
+             (mcp-server
+               (let ((raw (getf declarations :mcp-server)))
+                 (and raw
+                      (let ((text (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                               (princ-to-string raw))))
+                        (unless (plusp (length text))
+                          (error "DEFTTOOL ~S :MCP-SERVER must not be blank." name))
+                        (string-downcase text)))))
              (exec-name (%tool-exec-symbol name))
              (schema-name (%tool-schema-symbol name))
              (source-file (or *compile-file-truename* *load-truename*))
@@ -648,7 +666,7 @@
                   validation-forms)))
         `(progn
            (defun ,exec-name (arguments &optional tool-call)
-             (declare (ignore tool-call))
+             (declare (ignorable tool-call))
              (let* ,(nreverse bindings)
                ,@(nreverse validation-forms)
                ,(if timeout
@@ -679,10 +697,11 @@
                       :dangerous-p ,dangerous-p
                       :category ',category
                       :timeout-seconds ,timeout
-                      :source-file ,source-file
-                      :source-line ,source-line
-                      :parameter-specs ',normalized-parameters
-                      :defined-at (get-universal-time))))
+                     :source-file ,source-file
+                     :source-line ,source-line
+                     :parameter-specs ',normalized-parameters
+                     :defined-at (get-universal-time)
+                     :mcp-server ,mcp-server)))
                (setf (gethash ,tool-name *tool-metadata*) new-metadata)
                (when previous-definition
                  (%emit-tool-redefined ,tool-name previous-metadata new-metadata))))

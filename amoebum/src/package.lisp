@@ -488,6 +488,7 @@
            #:tool-metadata-source-line
            #:tool-metadata-parameter-specs
            #:tool-metadata-defined-at
+           #:tool-metadata-mcp-server
            #:tool-history-entry
            #:tool-history-entry-p
            #:make-tool-history-entry
@@ -1048,6 +1049,11 @@
            #:mcp-timeout
            #:mcp-timeout-request-id
            #:mcp-timeout-timeout-seconds
+           #:mcp-tool-bridge-error
+           #:mcp-tool-bridge-error-server-name
+           #:mcp-tool-bridge-error-mcp-tool-name
+           #:mcp-tool-bridge-error-mcp-error-code
+           #:mcp-tool-bridge-error-mcp-response-error
            #:*mcp-jsonrpc-default-timeout-seconds*
            #:mcp-jsonrpc-client
            #:mcp-jsonrpc-client-p
@@ -1143,7 +1149,11 @@
            #:unregister-mcp-tool-server
            #:find-mcp-tool-server
            #:discover-mcp-server-tools
+           #:invoke-mcp-tool-bridge
            #:invoke-mcp-tool
+           #:auto-register-mcp-server-tools
+           #:mcp-tool-name-for-amoebum-tool
+           #:amoebum-tool-name-for-mcp-tool
            #:*lsp-server-initialize-timeout-seconds*
            #:*lsp-request-timeout-seconds*
            #:*lsp-server-restart-backoff-base-seconds*
