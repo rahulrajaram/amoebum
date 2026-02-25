@@ -74,6 +74,11 @@ skip-tool-call, abort-step, or ask-user."
     (funcall *tool-error-llm-recovery-function*
              condition tool-name arguments)))
 
+(defun %run-on-error-hooks (context condition tool-name)
+  (let ((*hook-registry* (or (context-hook-registry context)
+                             *hook-registry*)))
+    (run-hooks :on-error condition tool-name)))
+
 (defun %execute-tool-with-restarts (tool-name arguments toolset permission-mode)
   (let* ((normalized-tool-name (%pipeline-normalize-tool-name tool-name))
          (normalized-arguments (%normalize-restart-arguments arguments))
@@ -82,6 +87,7 @@ skip-tool-call, abort-step, or ask-user."
     (handler-bind
         ((tool-error
            (lambda (condition)
+             (%run-on-error-hooks context condition normalized-tool-name)
              (when (and (not (eq (%effective-permission-mode permission-mode) :supervised))
                         (functionp *tool-error-llm-recovery-function*))
                (%handle-tool-error-via-llm condition
