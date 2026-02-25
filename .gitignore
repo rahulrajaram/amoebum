@@ -1,7 +1,6 @@
 .agent/
 .ralph/
 .yarl/
-.yarli/continuation.json
 yarli.toml
 
 # Local build artifacts / caches
