@@ -14,6 +14,9 @@
 (defparameter *supervised-restart-selector*
   nil)
 
+(defparameter *tool-error-llm-recovery-function*
+  nil)
+
 (define-condition amoebum-error (error)
   ((message :initarg :message
             :initform nil
@@ -264,6 +267,164 @@
    condition
    (format nil "~A budget exceeded; reduce scope/cost and continue with smaller operations."
            (string-downcase (symbol-name (budget-exceeded-kind condition))))))
+
+(defun %llm-message->text (message)
+  (if (pseudopod:message-p message)
+      (with-output-to-string (stream)
+        (loop for part in (pseudopod:message-content message)
+              for index from 0 do
+                (when (> index 0)
+                  (write-char #\Newline stream))
+                (let ((type (string-downcase
+                             (or (pseudopod:content-part-type part) "text"))))
+                  (write-string
+                   (cond
+                     ((string= type "text")
+                      (or (pseudopod:content-part-text part) ""))
+                     ((string= type "think")
+                      (or (pseudopod:content-part-think part) ""))
+                     (t
+                      (or (pseudopod:content-part-text part)
+                          (pseudopod:content-part-think part)
+                          "")))
+                   stream))))
+      (princ-to-string message)))
+
+(defun %strip-json-code-fence (text)
+  (let ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return) (or text ""))))
+    (if (and (>= (length trimmed) 6)
+             (uiop:string-prefix-p "```" trimmed)
+             (uiop:string-suffix-p "```" trimmed))
+        (let ((middle (subseq trimmed 3 (- (length trimmed) 3))))
+          (string-trim
+           '(#\Space #\Tab #\Newline #\Return)
+           (if (uiop:string-prefix-p "json" (string-downcase middle))
+               (subseq middle 4)
+               middle)))
+        trimmed)))
+
+(defun %format-restart-options-for-llm (condition)
+  (loop for restart in (%tool-restarts condition)
+        for name = (restart-name restart)
+        when name
+          collect (list :name (string-downcase (symbol-name name))
+                        :symbol name)))
+
+(defun %default-tool-error-llm-recovery-function (condition tool-name arguments restart-options)
+  (let* ((model (or (ignore-errors (config-model (current-config)))
+                    "moonshot-v1-128k"))
+         (client (pseudopod:make-client :model model))
+         (error-context (condition-to-llm-context condition))
+         (prompt
+           (format nil
+                   "Choose the best recovery restart for this tool error.~%\
+Tool: ~A~%\
+Arguments: ~S~2%\
+~A~2%\
+Available restarts:~%~{  - ~A~%~}~%\
+Return ONLY JSON with keys `restart` and optional `args`."
+                   tool-name
+                   arguments
+                   error-context
+                   (mapcar (lambda (entry) (getf entry :name))
+                           restart-options)))
+         (response
+           (pseudopod:chat-completion*
+            client
+            prompt
+            :system-prompt
+            "You are an error recovery agent. Return valid JSON only.")))
+    (%llm-message->text response)))
+
+(unless (functionp *tool-error-llm-recovery-function*)
+  (setf *tool-error-llm-recovery-function*
+        #'%default-tool-error-llm-recovery-function))
+
+(defun %restart-name-from-json (value)
+  (cond
+    ((symbolp value) value)
+    ((stringp value)
+     (let ((needle (string-downcase value)))
+       (loop for candidate in +tool-restart-names+
+             when (string= needle (string-downcase (symbol-name candidate)))
+               do (return candidate))))
+    (t nil)))
+
+(defun %parse-llm-restart-decision (response-text)
+  (let* ((payload (%strip-json-code-fence response-text))
+         (decoded (jonathan:parse payload :as :hash-table))
+         (restart-value (and (hash-table-p decoded) (gethash "restart" decoded)))
+         (args (and (hash-table-p decoded)
+                    (or (gethash "args" decoded)
+                        (gethash "arguments" decoded))))
+         (tool (and (hash-table-p decoded)
+                    (or (gethash "tool" decoded)
+                        (gethash "tool_name" decoded)
+                        (gethash "alternative_tool" decoded)))))
+    (unless (and (hash-table-p decoded) restart-value)
+      (error "Missing restart selection JSON payload."))
+    (list :restart (%restart-name-from-json restart-value)
+          :args args
+          :tool tool)))
+
+(defun %find-first-restart (condition names)
+  (loop for name in names
+        for restart = (find-restart name condition)
+        when restart
+          do (return restart)))
+
+(defun %invoke-ask-user-fallback (condition)
+  (let ((restart (%find-first-restart condition '(ask-user))))
+    (when restart
+      (invoke-restart restart)
+      t)))
+
+(defun %apply-llm-restart-decision (condition tool-name arguments decision)
+  (let* ((selected (getf decision :restart))
+         (new-args (or (getf decision :args) arguments))
+         (alternative-tool (or (getf decision :tool) tool-name)))
+    (case selected
+      ((retry-with-modified-args retry-tool)
+       (let ((restart (%find-first-restart condition '(retry-with-modified-args retry-tool))))
+         (when restart
+           (invoke-restart restart new-args)
+           t)))
+      (use-alternative-tool
+       (let ((restart (%find-first-restart condition '(use-alternative-tool))))
+         (when restart
+           (invoke-restart restart alternative-tool new-args)
+           t)))
+      ((skip-tool-call skip-tool)
+       (let ((restart (%find-first-restart condition '(skip-tool-call skip-tool))))
+         (when restart
+           (invoke-restart restart)
+           t)))
+      ((abort-step abort-tool)
+       (let ((restart (%find-first-restart condition '(abort-step abort-tool))))
+         (when restart
+           (invoke-restart restart)
+           t)))
+      (ask-user
+       (%invoke-ask-user-fallback condition))
+      (otherwise
+       nil))))
+
+(defun %handle-tool-error-via-llm (condition tool-name arguments)
+  (let* ((restart-options (%format-restart-options-for-llm condition))
+         (response
+           (and restart-options
+                (functionp *tool-error-llm-recovery-function*)
+                (funcall *tool-error-llm-recovery-function*
+                         condition
+                         tool-name
+                         arguments
+                         restart-options))))
+    (handler-case
+        (let ((decision (%parse-llm-restart-decision response)))
+          (or (%apply-llm-restart-decision condition tool-name arguments decision)
+              (%invoke-ask-user-fallback condition)))
+      (error ()
+        (%invoke-ask-user-fallback condition)))))
 
 (defun %argument-as-string (arguments key)
   (let ((value (and (hash-table-p arguments)
