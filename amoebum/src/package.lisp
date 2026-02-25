@@ -983,6 +983,8 @@
            #:+tool-restart-names+
            #:*supervised-restart-selector*
            #:default-supervised-restart-selector
+           #:parse-recovery-decision
+           #:apply-user-recovery-decision
            #:execute-tool-with-restarts
            #:tool-execution-context
            #:amoebum-context
