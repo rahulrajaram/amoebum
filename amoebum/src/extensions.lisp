@@ -13,11 +13,21 @@
             (:constructor make-extension-load-record
                 (&key path
                  scope
+                 name
+                 version
+                 dependencies
+                 entry-point
+                 manifest-path
                  status
                  message
                  (timestamp (get-universal-time)))))
   path
   (scope :project :type keyword)
+  name
+  version
+  (dependencies '() :type list)
+  entry-point
+  manifest-path
   (status :loaded :type keyword)
   message
   (timestamp 0 :type integer))

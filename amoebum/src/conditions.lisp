@@ -139,8 +139,7 @@
          (prompt (ptui.components.prompt-box:make-prompt-box-widget
                   ""
                   :id :recovery-prompt
-                  :min-width 24
-                  :label "choice")))
+                  :min-width 24)))
     (ptui.widgets.core:make-box-widget
      (ptui.widgets.core:make-stack-widget
       (append (list header message) options (list prompt))

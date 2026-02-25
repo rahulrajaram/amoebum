@@ -15,29 +15,6 @@
 (defparameter *extensions-global-directory-override* nil)
 (defparameter *extensions-project-directory-override* nil)
 
-(defstruct (extension-load-record
-            (:constructor make-extension-load-record
-                (&key path
-                 scope
-                 name
-                 version
-                 dependencies
-                 entry-point
-                 manifest-path
-                 status
-                 message
-                 (timestamp (get-universal-time)))))
-  path
-  (scope :project :type keyword)
-  name
-  version
-  (dependencies '() :type list)
-  entry-point
-  manifest-path
-  (status :loaded :type keyword)
-  message
-  (timestamp 0 :type integer))
-
 (defstruct (extension-registry-entry
             (:constructor make-extension-registry-entry
                 (&key name

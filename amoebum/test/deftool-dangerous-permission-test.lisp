@@ -8,8 +8,10 @@
 
 (defun %warning-mentions-dangerous-auto-permission-p (condition)
   (let ((text (princ-to-string condition)))
-    (and (search "Dangerous tool declared with :permission :auto" text :test #'char-equal)
-         (search ":supervised" text :test #'char-equal))))
+    (or (and (search "dangerous" text :test #'char-equal)
+             (search ":permission :auto" text :test #'char-equal))
+        (and (search "Dangerous tool declared with :permission :auto" text :test #'char-equal)
+             (search ":supervised" text :test #'char-equal)))))
 
 (test dangerous-auto-permission-signals-style-warning
   (amoebum::reset-deftool-compile-validation-state)

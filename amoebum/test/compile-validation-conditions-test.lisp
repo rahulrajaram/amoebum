@@ -20,25 +20,22 @@
         (saw-dangerous-auto nil))
     (handler-bind ((amoebum::missing-tool-description
                      (lambda (condition)
+                       (setf saw-missing t)
                        (let ((restart (find-restart 'muffle-warning condition)))
                          (when restart
-                           (invoke-restart restart)))
-                       (setf saw-missing t)
-                       nil))
+                           (invoke-restart restart)))))
                    (amoebum::duplicate-tool-name
                      (lambda (condition)
+                       (setf saw-duplicate t)
                        (let ((restart (find-restart 'muffle-warning condition)))
                          (when restart
-                           (invoke-restart restart)))
-                       (setf saw-duplicate t)
-                       nil))
+                           (invoke-restart restart)))))
                    (amoebum::dangerous-auto-permission
                      (lambda (condition)
+                       (setf saw-dangerous-auto t)
                        (let ((restart (find-restart 'muffle-warning condition)))
                          (when restart
-                           (invoke-restart restart)))
-                       (setf saw-dangerous-auto t)
-                       nil)))
+                           (invoke-restart restart))))))
       (amoebum::reset-deftool-compile-validation-state)
       (macroexpand-1
        '(amoebum:deftool i205-condition-tool-1 ((path pathname :required t))
@@ -65,11 +62,10 @@
   (let ((saw-warning nil))
     (handler-bind ((amoebum::unknown-tool-reference
                      (lambda (condition)
+                       (setf saw-warning t)
                        (let ((restart (find-restart 'muffle-warning condition)))
                          (when restart
-                           (invoke-restart restart)))
-                       (setf saw-warning t)
-                       nil)))
+                           (invoke-restart restart))))))
       (amoebum::reset-deftool-compile-validation-state)
       (macroexpand-1
        '(amoebum:defhook :pre-tool-use (tool-name args)

@@ -27,8 +27,8 @@
            :fn (lambda (_arguments _call)
                  (declare (ignore _arguments _call))
                  (let ((restart-names (mapcar #'restart-name (compute-restarts))))
-                   (setf saw-retry (member 'retry-tool restart-names)
-                         saw-skip (member 'skip-tool restart-names)))
+                   (setf saw-retry (member 'amoebum::retry-tool restart-names)
+                         saw-skip (member 'amoebum::skip-tool restart-names)))
                  (push :primary order)
                  "primary-ok"))
           (amoebum:register-hook :pre-tool-use

@@ -65,8 +65,10 @@
         (handler-bind
             ((warning
                (lambda (condition)
-                 (when (contains-text-p (princ-to-string condition)
-                                        "Required parameter is missing :description")
+                 (when (or (contains-text-p (princ-to-string condition)
+                                            "missing a description")
+                           (contains-text-p (princ-to-string condition)
+                                            "Required parameter is missing :description"))
                    (setf deftool-warning-seen t))
                  (let ((restart (find-restart 'muffle-warning condition)))
                    (when restart

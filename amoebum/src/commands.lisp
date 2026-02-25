@@ -2717,6 +2717,28 @@
         (make-slash-command-result
          :output "No model router configured. Set up providers in config."))))
 
+(defun %providers-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let* ((raw-action (gethash :ACTION arguments))
+         (action (and (stringp raw-action)
+                      (string-downcase (%slash-trim raw-action)))))
+    (cond
+      ((string-equal action "on")
+       (make-slash-command-result
+        :echo-input-p t
+        :action :toggle-provider-dashboard
+        :payload :on))
+      ((string-equal action "off")
+       (make-slash-command-result
+        :echo-input-p t
+        :action :toggle-provider-dashboard
+        :payload :off))
+      (t
+       (make-slash-command-result
+        :echo-input-p t
+        :action :toggle-provider-dashboard
+        :payload :toggle)))))
+
 (defun %slash-message-text (message)
   (cond
     ((typep message 'pseudopod:message)
@@ -3692,6 +3714,18 @@
            :required-p nil
            :description "Optional provider name to inspect."))
     :handler #'%models-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "providers"
+    :description "Toggle provider health dashboard visibility."
+    :usage "/providers [on|off]"
+    :parameters
+    (list (make-slash-command-parameter
+           :name "action"
+           :type :string
+           :required-p nil
+           :description "Optional on/off to explicitly set visibility."))
+    :handler #'%providers-handler))
   (register-slash-command
    (make-slash-command
     :name "cost"

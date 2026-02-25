@@ -34,7 +34,7 @@
                  styled-lines
                  (lambda (segment)
                    (eq (getf segment :role) :assistant-code-fence)))))
-    (amoebum:streaming-markdown-renderer-append-chunk renderer "`\n")
+    (amoebum:streaming-markdown-renderer-append-chunk renderer (format nil "`~%"))
     (let ((styled-lines
             (amoebum:streaming-markdown-renderer-render-lines
              renderer
@@ -45,9 +45,9 @@
                 styled-lines
                 (lambda (segment)
                   (eq (getf segment :role) :assistant-code-fence)))))
-    (amoebum:streaming-markdown-renderer-append-chunk renderer "```\n")
-    (amoebum:streaming-markdown-renderer-append-chunk renderer "line\n")
-    (amoebum:streaming-markdown-renderer-append-chunk renderer "**bold** *italic* [link](https://example.com)\n")
+    (amoebum:streaming-markdown-renderer-append-chunk renderer (format nil "```~%"))
+    (amoebum:streaming-markdown-renderer-append-chunk renderer (format nil "line~%"))
+    (amoebum:streaming-markdown-renderer-append-chunk renderer (format nil "**bold** *italic* [link](https://example.com)~%"))
     (amoebum:streaming-markdown-renderer-append-chunk renderer "- item")
     (let* ((styled-lines (amoebum:streaming-markdown-renderer-render-lines
                           renderer
