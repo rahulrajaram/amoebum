@@ -21,6 +21,7 @@
 (defparameter +event-type-keymap-overlay-exit+ (%event-type-keyword "keymap-overlay-exit"))
 (defparameter +event-type-extension-loaded+ (%event-type-keyword "extension:loaded"))
 (defparameter +event-type-extension-error+ (%event-type-keyword "extension:error"))
+(defparameter +event-type-llm-stream-chunk+ (%event-type-keyword "llm:stream-chunk"))
 (defparameter +event-type-stream-budget-warning+ (%event-type-keyword "stream:budget-warning"))
 (defparameter +event-type-conversation-forked+ (%event-type-keyword "conversation:forked"))
 (defparameter +event-type-tool-call-started+ (%event-type-keyword "tool-call:started"))
@@ -47,6 +48,7 @@
         +event-type-keymap-overlay-exit+
         +event-type-extension-loaded+
         +event-type-extension-error+
+        +event-type-llm-stream-chunk+
         +event-type-stream-budget-warning+
         +event-type-conversation-forked+
         +event-type-tool-call-started+
@@ -197,6 +199,14 @@
   path
   scope
   condition)
+
+(defstruct (llm-stream-chunk-payload
+            (:constructor make-llm-stream-chunk-payload
+                (&key token chunk-index token-index total-tokens)))
+  token
+  chunk-index
+  token-index
+  total-tokens)
 
 (defstruct (stream-budget-warning-payload
             (:constructor make-stream-budget-warning-payload
@@ -628,6 +638,16 @@
                         :path path
                         :scope scope
                         :condition condition)))
+
+(defun make-llm-stream-chunk-event (&key token chunk-index token-index total-tokens)
+  (make-event :type +event-type-llm-stream-chunk+
+              :source :amoebum
+              :severity :debug
+              :payload (make-llm-stream-chunk-payload
+                        :token token
+                        :chunk-index chunk-index
+                        :token-index token-index
+                        :total-tokens total-tokens)))
 
 (defun make-stream-budget-warning-event (&key
                                            used-tokens

@@ -992,6 +992,66 @@
                     :threshold-percent (getf warning :threshold-percent))))
         warning))))
 
+(defun %stream-budget-abort-threshold-percent (chat-state)
+  (let* ((cfg (%chat-config))
+         (value (and (config-p cfg)
+                     (config-value :stream-budget-abort-threshold-percent cfg))))
+    (if (and (integerp value) (>= value 1) (<= value 100))
+        value
+        +stream-budget-abort-threshold-percent+)))
+
+(defun %stream-budget-threshold-limit (limit threshold-percent)
+  (truncate (* (max 0 limit)
+               (/ (max 1 threshold-percent) 100.0d0))))
+
+(defun %stream-tokenize-chunk (chunk)
+  (let ((value (if (stringp chunk) chunk "")))
+    (remove-if (lambda (token)
+                 (or (null token)
+                     (zerop (length token))))
+               (cl-ppcre:split "\\s+" value))))
+
+(defun %emit-stream-chunk-token-events (chat-state event)
+  (let* ((chunk (getf event :text))
+         (tokens (%stream-tokenize-chunk chunk))
+         (token-count (or (getf event :token-count) 0)))
+    (when (plusp (length tokens))
+      (let* ((summary (token-stream-progress-summary (chat-ui-state-stream-state chat-state)))
+             (total-tokens (or (getf summary :tokens) 0))
+             (chunk-index (or (getf summary :chunks) 0))
+             (base-total (max 0 (- total-tokens token-count))))
+        (loop for token in tokens
+              for token-index from 1 do
+                (publish (%context-event-bus chat-state)
+                         (make-llm-stream-chunk-event
+                          :token token
+                          :chunk-index chunk-index
+                          :token-index token-index
+                          :total-tokens (+ base-total token-index))))))))
+
+(defun %enforce-stream-token-budget-if-needed (chat-state)
+  (let* ((stream-state (chat-ui-state-stream-state chat-state))
+         (limit (chat-ui-state-context-window-limit chat-state))
+         (threshold-percent (%stream-budget-abort-threshold-percent chat-state))
+         (summary (token-stream-progress-summary stream-state))
+         (stream-tokens (or (getf summary :tokens) 0))
+         (aborted-p (not (null (getf summary :aborted-p)))))
+    (when (and (token-stream-active-p stream-state)
+               (integerp limit)
+               (> limit 0)
+               (not aborted-p))
+      (let ((threshold-limit (%stream-budget-threshold-limit limit threshold-percent)))
+        (when (> stream-tokens threshold-limit)
+          (token-stream-abort stream-state :budget-exceeded)
+          (publish (%context-event-bus chat-state)
+                   (make-stream-budget-warning-event
+                    :used-tokens stream-tokens
+                    :limit-tokens limit
+                    :usage-percent (truncate (/ (* stream-tokens 100.0d0)
+                                                (max 1 limit)))
+                    :threshold-percent threshold-percent))
+          t)))))
+
 (defun %collect-stream-tool-calls (chat-state)
   "Collect pseudopod:tool-call structs from the stream preview table."
   (let ((calls '()))
@@ -1092,7 +1152,9 @@ Like %start-streaming-assistant-response but without adding a new user message."
                       :system-prompt system-prompt
                       :client (chat-ui-state-stream-client chat-state)
                       :tools (%resolve-chat-tools chat-state))))
-         :target-message-index target-index)))))
+         :target-message-index target-index
+         :budget-abort-threshold-percent
+         (%stream-budget-abort-threshold-percent chat-state))))))
 
 (defun %drain-stream-events (chat-state)
   (let ((conversation (%ensure-chat-conversation-state chat-state)))
@@ -1102,10 +1164,14 @@ Like %start-streaming-assistant-response but without adding a new user message."
      (case (getf event :kind)
        (:text-delta
         (%append-streaming-assistant-chunk chat-state (getf event :text))
-        (%emit-stream-budget-warning-if-needed chat-state))
+        (%emit-stream-chunk-token-events chat-state event)
+        (%emit-stream-budget-warning-if-needed chat-state)
+        (%enforce-stream-token-budget-if-needed chat-state))
        (:chunk
         (%append-streaming-assistant-chunk chat-state (getf event :text))
-        (%emit-stream-budget-warning-if-needed chat-state))
+        (%emit-stream-chunk-token-events chat-state event)
+        (%emit-stream-budget-warning-if-needed chat-state)
+        (%enforce-stream-token-budget-if-needed chat-state))
        (:tool-call-delta
         (%update-stream-tool-call-preview! chat-state event))
        (:tool-call-started
@@ -1203,9 +1269,13 @@ Like %start-streaming-assistant-response but without adding a new user message."
                tps
                (/ elapsed-ms 1000.0d0)))
       (:cancelled
-       (format nil "stream cancelled (~D tok, ~,1fs)"
-               tokens
-               (/ elapsed-ms 1000.0d0)))
+       (if (getf summary :aborted-p)
+           (format nil "stream aborted (~D tok, ~A)"
+                   tokens
+                   (or (getf summary :abort-reason) :unknown))
+           (format nil "stream cancelled (~D tok, ~,1fs)"
+                   tokens
+                   (/ elapsed-ms 1000.0d0))))
       (:completed
        (format nil "stream complete (~D tok, ~,1fs)"
                tokens
@@ -1362,7 +1432,9 @@ Falls back to the global *toolset* when stream-tools is nil."
                           :system-prompt system-prompt
                           :client (chat-ui-state-stream-client chat-state)
                           :tools (%resolve-chat-tools chat-state))))
-             :target-message-index target-index))
+             :target-message-index target-index
+             :budget-abort-threshold-percent
+             (%stream-budget-abort-threshold-percent chat-state)))
           (%start-step-loop-assistant-response chat-state)))))
 
 (defun %styled-segments->text (segments)

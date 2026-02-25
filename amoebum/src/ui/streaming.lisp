@@ -6,11 +6,26 @@
 (defparameter +stream-cursor-glyph+ "█")
 (defparameter +stream-cursor-blink-ms+ 450)
 (defparameter +stream-budget-warning-threshold-percent+ 90)
+(defparameter +stream-budget-abort-threshold-percent+ 80)
 ;; Bound by chat.lisp while a stream is active to observe each incoming chunk.
 (defvar *stream-chunk-hook-callback* nil)
 
 (define-condition token-stream-cancelled (condition)
   ())
+
+(defstruct (stream-stats
+            (:constructor make-stream-stats
+                (&key
+                   (tokens-received 0)
+                   (chunks-processed 0)
+                   (elapsed-ms 0)
+                   (aborted-p nil)
+                   (abort-reason nil))))
+  (tokens-received 0 :type fixnum)
+  (chunks-processed 0 :type fixnum)
+  (elapsed-ms 0 :type integer)
+  (aborted-p nil :type boolean)
+  abort-reason)
 
 (defstruct (token-stream-state
             (:constructor make-token-stream-state
@@ -26,7 +41,11 @@
                    (error-message nil)
                    (budget-warning-threshold-percent
                      +stream-budget-warning-threshold-percent+)
-                   (budget-warning-emitted-p nil))))
+                   (budget-warning-emitted-p nil)
+                   (budget-abort-threshold-percent
+                     +stream-budget-abort-threshold-percent+)
+                   (aborted-p nil)
+                   (abort-reason nil))))
   (status :idle)
   (events (ptui.runtime.queue:make-event-queue)
           :type ptui.runtime.queue:event-queue)
@@ -41,6 +60,11 @@
     +stream-budget-warning-threshold-percent+
     :type integer)
   (budget-warning-emitted-p nil :type boolean)
+  (budget-abort-threshold-percent
+    +stream-budget-abort-threshold-percent+
+    :type integer)
+  (aborted-p nil :type boolean)
+  abort-reason
   (worker-thread nil)
   (lock (bordeaux-threads:make-lock "amoebum-token-stream-lock")))
 
@@ -96,6 +120,10 @@
           (token-stream-state-cancel-requested-p stream-state) nil
           (token-stream-state-error-message stream-state) nil
           (token-stream-state-budget-warning-emitted-p stream-state) nil
+          (token-stream-state-budget-abort-threshold-percent stream-state)
+          +stream-budget-abort-threshold-percent+
+          (token-stream-state-aborted-p stream-state) nil
+          (token-stream-state-abort-reason stream-state) nil
           (token-stream-state-worker-thread stream-state) nil))
   (ptui.runtime.queue:queue-pop-all (token-stream-state-events stream-state))
   stream-state)
@@ -129,6 +157,24 @@
           threshold-percent
           (token-stream-state-budget-warning-emitted-p stream-state) nil))
   threshold-percent)
+
+(defun token-stream-set-budget-abort-threshold (stream-state threshold-percent)
+  (check-type stream-state token-stream-state)
+  (unless (%token-stream-valid-threshold-percent-p threshold-percent)
+    (error "THRESHOLD-PERCENT must be an integer in [1, 100], got ~S."
+           threshold-percent))
+  (%with-token-stream-lock (stream-state)
+    (setf (token-stream-state-budget-abort-threshold-percent stream-state)
+          threshold-percent))
+  threshold-percent)
+
+(defun token-stream-abort (stream-state abort-reason)
+  (check-type stream-state token-stream-state)
+  (%with-token-stream-lock (stream-state)
+    (setf (token-stream-state-cancel-requested-p stream-state) t
+          (token-stream-state-aborted-p stream-state) t
+          (token-stream-state-abort-reason stream-state) abort-reason))
+  t)
 
 (defun token-stream-maybe-budget-warning (stream-state used-tokens limit-tokens
                                           &key threshold-percent)
@@ -277,7 +323,8 @@
 (defun token-stream-start (stream-state worker-fn
                            &key
                              target-message-index
-                             budget-warning-threshold-percent)
+                             budget-warning-threshold-percent
+                             budget-abort-threshold-percent)
   (check-type stream-state token-stream-state)
   (check-type worker-fn function)
   (%token-stream-reset! stream-state)
@@ -288,7 +335,13 @@
           (%token-stream-normalize-threshold-percent
            (or budget-warning-threshold-percent
                (token-stream-state-budget-warning-threshold-percent stream-state)))
+          (token-stream-state-budget-abort-threshold-percent stream-state)
+          (%token-stream-normalize-threshold-percent
+           (or budget-abort-threshold-percent
+               (token-stream-state-budget-abort-threshold-percent stream-state)))
           (token-stream-state-budget-warning-emitted-p stream-state) nil
+          (token-stream-state-aborted-p stream-state) nil
+          (token-stream-state-abort-reason stream-state) nil
           (token-stream-state-target-message-index stream-state) target-message-index))
   #+sb-thread
   (let ((thread
@@ -374,6 +427,10 @@
             (token-stream-state-budget-warning-threshold-percent stream-state))
           (budget-warning-emitted-p
             (token-stream-state-budget-warning-emitted-p stream-state))
+          (budget-abort-threshold
+            (token-stream-state-budget-abort-threshold-percent stream-state))
+          (aborted-p (token-stream-state-aborted-p stream-state))
+          (abort-reason (token-stream-state-abort-reason stream-state))
           (target-index (token-stream-state-target-message-index stream-state))
           (started (token-stream-state-started-ms stream-state))
           (ended (token-stream-state-ended-ms stream-state))
@@ -395,7 +452,20 @@
             :tokens-per-second (/ tokens elapsed-seconds)
             :budget-warning-threshold-percent budget-warning-threshold
             :budget-warning-emitted-p budget-warning-emitted-p
+            :budget-abort-threshold-percent budget-abort-threshold
+            :aborted-p aborted-p
+            :abort-reason abort-reason
             :error-message error-message))))
+
+(defun token-stream-stats (stream-state)
+  (check-type stream-state token-stream-state)
+  (let ((summary (token-stream-progress-summary stream-state)))
+    (make-stream-stats
+     :tokens-received (or (getf summary :tokens) 0)
+     :chunks-processed (or (getf summary :chunks) 0)
+     :elapsed-ms (or (getf summary :elapsed-ms) 0)
+     :aborted-p (not (null (getf summary :aborted-p)))
+     :abort-reason (getf summary :abort-reason))))
 
 (defun %stream-markdown-split-lines (text)
   (let ((value (if (stringp text)

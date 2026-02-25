@@ -5,6 +5,7 @@
     :provider-override nil
     :api-base-url nil
     :context-window-limit nil
+    :stream-budget-abort-threshold-percent 80
     :permission-mode :supervised
     :approval-policy :on-request
     :sandbox-policy :strict
@@ -155,6 +156,10 @@
      (or (null value)
          (and (integerp value)
               (> value 0))))
+    (:stream-budget-abort-threshold-percent
+     (and (integerp value)
+          (>= value 1)
+          (<= value 100)))
     (:permission-mode
      (member value *known-permission-modes* :test #'eq))
     (:approval-policy

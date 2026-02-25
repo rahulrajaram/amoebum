@@ -92,6 +92,7 @@
            #:+event-type-keymap-overlay-exit+
            #:+event-type-extension-loaded+
            #:+event-type-extension-error+
+           #:+event-type-llm-stream-chunk+
            #:+event-type-stream-budget-warning+
            #:+event-type-conversation-forked+
            #:+event-type-tool-call-started+
@@ -218,6 +219,13 @@
            #:extension-error-payload-path
            #:extension-error-payload-scope
            #:extension-error-payload-condition
+           #:llm-stream-chunk-payload
+           #:llm-stream-chunk-payload-p
+           #:make-llm-stream-chunk-payload
+           #:llm-stream-chunk-payload-token
+           #:llm-stream-chunk-payload-chunk-index
+           #:llm-stream-chunk-payload-token-index
+           #:llm-stream-chunk-payload-total-tokens
            #:stream-budget-warning-payload
            #:stream-budget-warning-payload-p
            #:make-stream-budget-warning-payload
@@ -287,6 +295,7 @@
            #:make-mcp-tool-invoked-event
            #:make-extension-loaded-event
            #:make-extension-error-event
+           #:make-llm-stream-chunk-event
            #:make-stream-budget-warning-event
            #:make-tool-call-started-event
            #:make-tool-call-argument-complete-event
@@ -1240,6 +1249,15 @@
            #:+stream-cursor-glyph+
            #:+stream-cursor-blink-ms+
            #:+stream-budget-warning-threshold-percent+
+           #:+stream-budget-abort-threshold-percent+
+           #:stream-stats
+           #:stream-stats-p
+           #:make-stream-stats
+           #:stream-stats-tokens-received
+           #:stream-stats-chunks-processed
+           #:stream-stats-elapsed-ms
+           #:stream-stats-aborted-p
+           #:stream-stats-abort-reason
            #:token-stream-cancelled
            #:token-stream-state
            #:token-stream-state-p
@@ -1254,12 +1272,17 @@
            #:token-stream-state-error-message
            #:token-stream-state-budget-warning-threshold-percent
            #:token-stream-state-budget-warning-emitted-p
+           #:token-stream-state-budget-abort-threshold-percent
+           #:token-stream-state-aborted-p
+           #:token-stream-state-abort-reason
            #:token-stream-state-worker-thread
            #:token-stream-active-p
            #:token-stream-cancel-requested-p
            #:token-stream-request-cancel
            #:token-stream-check-cancel
            #:token-stream-set-budget-warning-threshold
+           #:token-stream-set-budget-abort-threshold
+           #:token-stream-abort
            #:token-stream-maybe-budget-warning
            #:token-stream-emit-chunk
            #:token-stream-emit-tool-call-delta
@@ -1273,6 +1296,7 @@
            #:token-stream-elapsed-ms
            #:token-stream-tokens-per-second
            #:token-stream-progress-summary
+           #:token-stream-stats
            #:stream-cursor-visible-p
            #:stream-markdown-styled-lines
            #:stream-pseudopod-chat
