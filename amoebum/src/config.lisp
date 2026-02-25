@@ -32,6 +32,7 @@
     :notification-sound-player nil
     :notification-desktop-command nil
     :notification-log-path nil
+    :notification-webhooks nil
     :notification-sound-task-complete nil
     :notification-sound-error nil
     :notification-sound-approval-needed nil
@@ -237,6 +238,10 @@
     (:notification-log-path
      (or (null value)
          (%pathname-or-string-p value)))
+    (:notification-webhooks
+     (or (null value)
+         (listp value)
+         (vectorp value)))
     (:notification-sound-task-complete
      (or (null value)
          (%pathname-or-string-p value)))

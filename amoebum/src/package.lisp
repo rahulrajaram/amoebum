@@ -392,6 +392,21 @@
            #:desktop-backend
            #:desktop-backend-command
            #:desktop-backend-app-name
+           #:webhook-config
+           #:webhook-config-p
+           #:make-webhook-config
+           #:webhook-config-url
+           #:webhook-config-method
+           #:webhook-config-headers
+           #:webhook-config-secret
+           #:webhook-backend
+           #:webhook-backend-config
+           #:*webhook-fetch-function*
+           #:*webhook-http-request-function*
+           #:*webhook-sleep-function*
+           #:send-webhook-notification
+           #:make-webhook-backend
+           #:make-webhook-backends
            #:log-backend
            #:log-backend-path
            #:log-backend-include-event-payload-p

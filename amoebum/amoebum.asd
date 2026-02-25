@@ -3,7 +3,7 @@
   :author "amoebum"
   :license "MIT"
   :version "0.1.0"
-  :depends-on ("pseudopod" "ptui" "ptui/components" "sw4rm-sdk" "uiop" "cl-ppcre" "bordeaux-threads")
+  :depends-on ("pseudopod" "ptui" "ptui/components" "sw4rm-sdk" "uiop" "cl-ppcre" "bordeaux-threads" "ironclad" "babel")
   :serial t
   :components
   ((:file "src/package")
@@ -41,6 +41,7 @@
    (:file "src/lsp/client")
    (:file "src/mcp/tools")
    (:file "src/notifications")
+   (:file "src/notifications/webhook")
    (:file "src/pipeline")
    (:file "src/tools/files")
    (:file "src/tools/read-orchestration")
@@ -100,7 +101,8 @@
    (:file "test/stream-hooks-test")
    (:file "test/chat-snapshot-test")
    (:file "test/conversation-roundtrip-test")
-   (:file "test/lifecycle-events-test"))
+   (:file "test/lifecycle-events-test")
+   (:file "test/webhook-notification-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (unless (uiop:symbol-call :amoebum/test :run-all)
