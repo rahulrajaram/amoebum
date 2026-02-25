@@ -1274,6 +1274,12 @@
            #:token-stream-tokens-per-second
            #:token-stream-progress-summary
            #:stream-cursor-visible-p
+           #:streaming-markdown-renderer
+           #:streaming-markdown-renderer-p
+           #:make-streaming-markdown-renderer
+           #:streaming-markdown-renderer-reset
+           #:streaming-markdown-renderer-append-chunk
+           #:streaming-markdown-renderer-render-lines
            #:stream-markdown-styled-lines
            #:stream-pseudopod-chat
            #:+event-type-ui-stream-progress+

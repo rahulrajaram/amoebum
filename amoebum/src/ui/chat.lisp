@@ -47,6 +47,7 @@
                       (stream-system-prompt +chat-stream-default-system-prompt+)
                       (stream-tools nil)
                       (stream-scroll-follow-p t)
+                      (stream-markdown-renderer (make-streaming-markdown-renderer))
                       (status-bar-state (make-status-bar-state))
                       (conversation nil)
                       (context-used-tokens 0)
@@ -75,6 +76,8 @@
   (stream-system-prompt +chat-stream-default-system-prompt+ :type string)
   (stream-tools nil)
   (stream-scroll-follow-p t :type boolean)
+  (stream-markdown-renderer (make-streaming-markdown-renderer)
+                            :type streaming-markdown-renderer)
   (status-bar-state (make-status-bar-state) :type status-bar-state)
   (conversation nil)
   (context-used-tokens 0 :type integer)
@@ -445,6 +448,10 @@
             +chat-stream-default-system-prompt+))
     (unless (typep (chat-ui-state-stream-scroll-follow-p chat-state) 'boolean)
       (setf (chat-ui-state-stream-scroll-follow-p chat-state) t))
+    (unless (typep (chat-ui-state-stream-markdown-renderer chat-state)
+                   'streaming-markdown-renderer)
+      (setf (chat-ui-state-stream-markdown-renderer chat-state)
+            (make-streaming-markdown-renderer)))
     (unless (typep (chat-ui-state-history-search-active-p chat-state) 'boolean)
       (setf (chat-ui-state-history-search-active-p chat-state) nil))
     (unless (stringp (chat-ui-state-history-search-original-input chat-state))
@@ -948,6 +955,9 @@
       (let* ((message (nth target-index messages))
              (current-text (%message-content->text message))
              (next-text (concatenate 'string current-text (or chunk ""))))
+        (streaming-markdown-renderer-append-chunk
+         (chat-ui-state-stream-markdown-renderer chat-state)
+         chunk)
         (%set-streaming-assistant-message chat-state target-index next-text :partialp t)))))
 
 (defun %finalize-streaming-assistant-message (chat-state &key partialp)
@@ -1077,6 +1087,8 @@ Like %start-streaming-assistant-response but without adding a new user message."
              (stream-state (chat-ui-state-stream-state chat-state))
              (system-prompt (chat-ui-state-stream-system-prompt chat-state)))
         (setf (chat-ui-state-stream-scroll-follow-p chat-state) t)
+        (streaming-markdown-renderer-reset
+         (chat-ui-state-stream-markdown-renderer chat-state))
         (conversation-transition! (%ensure-chat-conversation-state chat-state)
                                   :streaming)
         (chat-ui-add-message chat-state "assistant" "" :partial t)
@@ -1347,6 +1359,8 @@ Falls back to the global *toolset* when stream-tools is nil."
                  (system-prompt (%resolve-chat-system-prompt chat-state)))
             (setf (chat-ui-state-stream-system-prompt chat-state) system-prompt)
             (setf (chat-ui-state-stream-scroll-follow-p chat-state) t)
+            (streaming-markdown-renderer-reset
+             (chat-ui-state-stream-markdown-renderer chat-state))
             (conversation-transition! (%ensure-chat-conversation-state chat-state)
                                       :streaming)
             (chat-ui-add-message chat-state "assistant" "" :partial t)
@@ -1375,16 +1389,24 @@ Falls back to the global *toolset* when stream-tools is nil."
          (stream-active-p (token-stream-active-p stream-state))
          (target-index (token-stream-state-target-message-index stream-state))
          (partialp (not (null (pseudopod:message-partial message))))
-         (cursor-visible-p
+         (streaming-target-p
            (and partialp
                 stream-active-p
                 (integerp target-index)
-                (= target-index message-index)
+                (= target-index message-index)))
+         (cursor-visible-p
+           (and streaming-target-p
                 (stream-cursor-visible-p stream-state))))
-    (stream-markdown-styled-lines (%message-content->text message)
-                                  content-width
-                                  :partialp partialp
-                                  :cursor-visible-p cursor-visible-p)))
+    (if streaming-target-p
+        (streaming-markdown-renderer-render-lines
+         (chat-ui-state-stream-markdown-renderer chat-state)
+         content-width
+         :partialp partialp
+         :cursor-visible-p cursor-visible-p)
+        (stream-markdown-styled-lines (%message-content->text message)
+                                      content-width
+                                      :partialp partialp
+                                      :cursor-visible-p cursor-visible-p))))
 
 (defun %message-line-entries (chat-state messages width)
   (let ((entries '())
