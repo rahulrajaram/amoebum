@@ -143,6 +143,13 @@
               :parameter parameter-name
               :reason "Required parameter is missing :description.")))))
 
+(defun %validate-dangerous-permission-combination (tool-name permission dangerous-p)
+  (when (and dangerous-p (eq permission :auto))
+    (warn 'deftool-definition-warning
+          :tool-name tool-name
+          :parameter :permission
+          :reason "Dangerous tool declared with :permission :auto; use :supervised (the default).")))
+
 (defun reset-deftool-compile-validation-state ()
   (clrhash *deftool-compile-time-tool-names*)
   t)
@@ -553,6 +560,7 @@
              (validation-forms '()))
         (%record-deftool-name-for-validation tool-name)
         (%validate-tool-parameter-specs tool-name normalized-parameters)
+        (%validate-dangerous-permission-combination tool-name permission dangerous-p)
         (dolist (parameter normalized-parameters)
           (let* ((parameter-name (getf parameter :name))
                  (parameter-type (getf parameter :type))
