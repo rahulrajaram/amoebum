@@ -2958,6 +2958,56 @@
                 collect option))
       nil))
 
+(defun %mcp-status-tool-count (server-name)
+  (let ((normalized (string-downcase (%slash-trim (princ-to-string server-name))))
+        (count 0))
+    (maphash (lambda (_name binding)
+               (declare (ignore _name))
+               (when (string= (mcp-tool-binding-server-name binding) normalized)
+                 (incf count)))
+             *mcp-tool-binding-registry*)
+    count))
+
+(defun %mcp-status-handler (_invocation _arguments _context)
+  (declare (ignore _invocation _arguments _context))
+  (let ((servers '()))
+    (maphash (lambda (_name server)
+               (declare (ignore _name))
+               (push server servers))
+             *mcp-tool-server-registry*)
+    (if (null servers)
+        (make-slash-command-result
+         :echo-input-p t
+         :output "No MCP servers are currently registered.")
+        (make-slash-command-result
+         :echo-input-p t
+         :output
+         (with-output-to-string (out)
+           (format out "MCP servers: ~D~%" (length servers))
+           (dolist (server (sort (copy-list servers) #'string<
+                                 :key #'mcp-server-name))
+             (let* ((info (mcp-server-server-info server))
+                    (status (if (mcp-server-running-p server) "running" "stopped"))
+                    (protocol (or (and info (mcp-server-info-protocol-version info))
+                                  "unknown"))
+                    (match (if (and info (mcp-server-info-protocol-version-match-p info))
+                               "match"
+                               "mismatch"))
+                    (capabilities (or (mcp-server-capability-summary server) '()))
+                    (declared-count (length (or (and info (mcp-server-info-declared-tools info))
+                                                '())))
+                    (discovered-count (%mcp-status-tool-count (mcp-server-name server))))
+               (format out
+                       "- ~A (~A) protocol=~A [~A] capabilities=~:[none~;~{~A~^, ~}~] declared-tools=~D discovered-tools=~D~%"
+                       (mcp-server-name server)
+                       status
+                       protocol
+                       match
+                       capabilities
+                       capabilities
+                       declared-count
+                       discovered-count))))))))
+
 (defun %mcp-auth-usage ()
   "/mcp-auth [list|set <server|default> <allow|deny|prompt>|clear <server|all>]")
 
@@ -3550,6 +3600,12 @@
            :description "Optional subcommand and arguments."))
     :handler #'%hooks-handler
     :completer #'%hooks-arg-completer))
+  (register-slash-command
+   (make-slash-command
+    :name "mcp-status"
+    :description "Show MCP server negotiation state, capabilities, and discovered tool counts."
+    :usage "/mcp-status"
+    :handler #'%mcp-status-handler))
   (register-slash-command
    (make-slash-command
     :name "mcp-auth"
