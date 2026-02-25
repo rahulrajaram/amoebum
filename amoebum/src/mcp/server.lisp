@@ -53,6 +53,7 @@
   (restarting-p nil :type boolean)
   process
   jsonrpc-client
+  server-info
   monitor-thread
   (restart-count 0 :type integer)
   (consecutive-restart-failures 0 :type integer)
@@ -203,15 +204,17 @@
     nil))
 
 (defun %mcp-server-initialize-params ()
-  (let ((params (make-hash-table :test #'equal))
-        (capabilities (make-hash-table :test #'equal))
-        (client-info (make-hash-table :test #'equal)))
-    (setf (gethash "protocolVersion" params) "2024-11-05"
-          (gethash "capabilities" params) capabilities
-          (gethash "name" client-info) "amoebum"
-          (gethash "version" client-info) "0.1.0"
-          (gethash "clientInfo" params) client-info)
-    params))
+  (if (fboundp 'mcp-build-initialize-params)
+      (mcp-build-initialize-params)
+      (let ((params (make-hash-table :test #'equal))
+            (capabilities (make-hash-table :test #'equal))
+            (client-info (make-hash-table :test #'equal)))
+        (setf (gethash "protocolVersion" params) "2024-11-05"
+              (gethash "capabilities" params) capabilities
+              (gethash "name" client-info) "amoebum"
+              (gethash "version" client-info) "0.1.0"
+              (gethash "clientInfo" params) client-info)
+        params)))
 
 (defun %mcp-server-send-shutdown-sequence (client)
   (when client
@@ -263,11 +266,16 @@
                      :start-reader-p t)))
        (handler-case
            (progn
-             (mcp-jsonrpc-send-request
-              client
-              "initialize"
-              :params (%mcp-server-initialize-params)
-              :timeout-seconds (mcp-server-initialize-timeout-seconds server))
+             (if (fboundp 'mcp-negotiate-server-capabilities)
+                 (mcp-negotiate-server-capabilities
+                  server
+                  client
+                  :timeout-seconds (mcp-server-initialize-timeout-seconds server))
+                 (mcp-jsonrpc-send-request
+                  client
+                  "initialize"
+                  :params (%mcp-server-initialize-params)
+                  :timeout-seconds (mcp-server-initialize-timeout-seconds server)))
              (mcp-jsonrpc-send-notification client "initialized")
              (%mcp-server-set-active-connection server process client))
          (error (condition)

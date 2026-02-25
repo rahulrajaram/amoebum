@@ -1099,6 +1099,7 @@
            #:mcp-server-running-p
            #:mcp-server-process
            #:mcp-server-jsonrpc-client
+           #:mcp-server-server-info
            #:mcp-server-monitor-thread
            #:mcp-server-restart-count
            #:mcp-server-last-error
@@ -1106,8 +1107,29 @@
            #:mcp-server-stop
            #:mcp-server-health-check
            #:mcp-server-restart
+           #:*mcp-protocol-version*
+           #:*mcp-negotiation-request-function*
+           #:mcp-server-info
+           #:mcp-server-info-p
+           #:make-mcp-server-info
+           #:mcp-server-info-protocol-version
+           #:mcp-server-info-protocol-version-match-p
+           #:mcp-server-info-capabilities
+           #:mcp-server-info-tools-capability
+           #:mcp-server-info-resources-capability
+           #:mcp-server-info-prompts-capability
+           #:mcp-server-info-logging-capability
+           #:mcp-server-info-declared-tools
+           #:mcp-server-info-discovered-tool-count
+           #:mcp-server-info-negotiated-at-unix-time
+           #:mcp-build-initialize-params
+           #:mcp-negotiate-server-capabilities
+           #:mcp-server-tool-declared-p
+           #:mcp-update-server-discovered-tool-count
+           #:mcp-server-capability-summary
            #:*mcp-tool-server-registry*
            #:*mcp-tool-binding-registry*
+           #:*mcp-tools-list-request-function*
            #:mcp-tool-binding
            #:mcp-tool-binding-p
            #:mcp-tool-binding-server-name

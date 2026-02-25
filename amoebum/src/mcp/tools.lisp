@@ -2,6 +2,7 @@
 
 (defparameter *mcp-tool-server-registry* (make-hash-table :test #'equal))
 (defparameter *mcp-tool-binding-registry* (make-hash-table :test #'equal))
+(defparameter *mcp-tools-list-request-function* nil)
 
 (defstruct (mcp-tool-binding
             (:constructor %make-mcp-tool-binding
@@ -155,6 +156,9 @@
       (error "MCP server ~A has no active JSON-RPC client." (mcp-server-name server))))
 
 (defun %mcp-tools-list-request (server cursor)
+  (when *mcp-tools-list-request-function*
+    (return-from %mcp-tools-list-request
+      (funcall *mcp-tools-list-request-function* server cursor)))
   (let* ((client (%mcp-server-client-or-error server))
          (params (when cursor
                    (let ((payload (make-hash-table :test #'equal)))
@@ -321,15 +325,19 @@
       (multiple-value-bind (tools next-cursor)
           (%mcp-tools-list-request server cursor)
         (dolist (tool-entry tools)
-          (push (%register-mcp-tool-definition server
-                                               tool-entry
-                                               toolset
-                                               event-bus)
-                namespaced-tools))
+          (let ((tool-name (and (hash-table-p tool-entry)
+                                (gethash "name" tool-entry))))
+            (when (mcp-server-tool-declared-p server (or tool-name ""))
+              (push (%register-mcp-tool-definition server
+                                                   tool-entry
+                                                   toolset
+                                                   event-bus)
+                    namespaced-tools))))
         (if (and next-cursor
                  (not (gethash next-cursor seen-cursors)))
             (progn
               (setf (gethash next-cursor seen-cursors) t
                     cursor next-cursor))
             (return))))
+    (mcp-update-server-discovered-tool-count server (length namespaced-tools))
     (nreverse namespaced-tools)))
