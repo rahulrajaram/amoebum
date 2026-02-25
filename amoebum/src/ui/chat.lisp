@@ -2763,4 +2763,5 @@ Falls back to the global *toolset* when stream-tools is nil."
                           :backend backend
                           :fps fps
                           :initial-state (ensure-chat-ui-state resolved-state)
+                          :event-bus (current-event-bus)
                           :on-event #'handle-chat-ui-event)))

@@ -58,12 +58,56 @@
            (and (eql (ptui.core.events:key-event-key event) :text)
                 (string= (or (ptui.core.events:key-event-text? event) "") "q")))))
 
+(defun %resolve-event-bus-drain-fn ()
+  (let ((pkg (find-package "EVENT-BUS")))
+    (and pkg
+         (multiple-value-bind (sym status) (find-symbol "DRAIN-AND-DISPATCH" pkg)
+           (declare (ignore status))
+           (and sym
+                (fboundp sym)
+                (symbol-function sym))))))
+
+(defun %default-on-handler-error (condition)
+  (ptui.util.log:log-warn
+   "event_bus_handler_error=~S"
+   (princ-to-string condition))
+  nil)
+
+(defun %resolve-on-handler-error (on-handler-error)
+  (cond
+    ((or (null on-handler-error)
+         (eq on-handler-error :log-and-continue))
+     #'%default-on-handler-error)
+    ((functionp on-handler-error)
+     on-handler-error)
+    (t
+     (error "ON-HANDLER-ERROR must be NIL, :LOG-AND-CONTINUE, or a function, got ~S."
+            on-handler-error))))
+
+(defun %drain-event-bus (event-bus on-handler-error)
+  (when event-bus
+    (let ((drain-fn (%resolve-event-bus-drain-fn)))
+      (when drain-fn
+        (let ((on-handler-error-fn (%resolve-on-handler-error on-handler-error)))
+          (restart-case
+              (handler-bind
+                  ((error
+                     (lambda (condition)
+                       (let ((restart (find-restart :on-handler-error condition)))
+                         (when restart
+                           (invoke-restart restart condition))))))
+                (funcall drain-fn event-bus))
+            (:on-handler-error (condition)
+              (funcall on-handler-error-fn condition))))))))
+
 (defun run (render-fn
             &key
               (backend :ansi)
               (fps 20)
               (initial-state nil)
-              (on-event nil))
+              (on-event nil)
+              (event-bus nil)
+              (on-handler-error :log-and-continue))
   (check-type render-fn function)
   (setf ptui.util.log:*log-level* (ptui.util.log:resolve-log-level))
   (let* ((backend-obj (%make-backend backend))
@@ -106,6 +150,7 @@
                  (setf running nil))
                (when on-event
                  (setf state (funcall on-event state event))))
+             (%drain-event-bus event-bus on-handler-error)
              (ptui.runtime.scheduler:scheduler-run-due scheduler)
              (when needs-redraw
                (setf needs-redraw nil)

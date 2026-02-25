@@ -229,6 +229,43 @@
    :rss-kb rss-kb
    :command command))
 
+(defclass engine-loop-test-backend (ptui.backend.protocol:terminal-backend)
+  ((cols :initarg :cols :reader engine-loop-test-backend-cols)
+   (rows :initarg :rows :reader engine-loop-test-backend-rows)
+   (pending-events :initform '() :accessor engine-loop-test-backend-pending-events)))
+
+(defun make-engine-loop-test-backend (&key (cols 20) (rows 5))
+  (make-instance 'engine-loop-test-backend
+                 :cols cols
+                 :rows rows
+                 :caps (ptui.term.caps:probe-terminal-caps)))
+
+(defun engine-loop-test-backend-inject-events (backend events)
+  (setf (engine-loop-test-backend-pending-events backend)
+        (append (engine-loop-test-backend-pending-events backend)
+                (if (listp events) events (list events)))))
+
+(defmethod ptui.backend.protocol:backend-init ((backend engine-loop-test-backend))
+  (declare (ignore backend))
+  nil)
+
+(defmethod ptui.backend.protocol:backend-shutdown ((backend engine-loop-test-backend))
+  (declare (ignore backend))
+  nil)
+
+(defmethod ptui.backend.protocol:backend-poll-events ((backend engine-loop-test-backend))
+  (let ((events (engine-loop-test-backend-pending-events backend)))
+    (setf (engine-loop-test-backend-pending-events backend) '())
+    events))
+
+(defmethod ptui.backend.protocol:backend-size ((backend engine-loop-test-backend))
+  (ptui.core.types:make-size (engine-loop-test-backend-cols backend)
+                             (engine-loop-test-backend-rows backend)))
+
+(defmethod ptui.backend.protocol:backend-commit ((backend engine-loop-test-backend) draw-ops)
+  (declare (ignore backend))
+  (length draw-ops))
+
 (defun run-all-tests ()
   (let ((passed 0)
         (failed 0))
@@ -2351,6 +2388,92 @@ foo bar foo")
     (assert-true (eq (ptui.components.search-widget:search-widget-status state) :ready)
                  "expected :ready status after restoring query, got ~S"
                  (ptui.components.search-widget:search-widget-status state))))
+
+(deftest engine-loop-drains-event-bus-before-render
+  (let* ((backend (make-engine-loop-test-backend :cols 20 :rows 5))
+         (event-bus-package (or (find-package "EVENT-BUS")
+                                (make-package "EVENT-BUS" :use '(:cl))))
+         (drain-symbol (or (find-symbol "DRAIN-AND-DISPATCH" event-bus-package)
+                           (intern "DRAIN-AND-DISPATCH" event-bus-package)))
+         (had-drain-fn (fboundp drain-symbol))
+         (old-drain-fn (and had-drain-fn (symbol-function drain-symbol)))
+         (drain-calls 0)
+         (handler-calls 0)
+         (handler-thread nil)
+         (render-observed-handler-calls nil)
+         (bus (list :handlers (list (lambda ()
+                                      (incf handler-calls)
+                                      (setf handler-thread
+                                            (bordeaux-threads:current-thread)))))))
+    (engine-loop-test-backend-inject-events
+     backend
+     (list (ptui.core.events:make-key-event :ctrl-c :ctrlp t)))
+    (unwind-protect
+         (progn
+           (setf (symbol-function drain-symbol)
+                 (lambda (target-bus &key on-handler-error)
+                   (declare (ignore on-handler-error))
+                   (incf drain-calls)
+                   (dolist (handler (getf target-bus :handlers))
+                     (funcall handler))
+                   nil))
+           (ptui.engine.loop:run
+            (lambda (state size)
+              (declare (ignore state size))
+              (setf render-observed-handler-calls handler-calls)
+              (ptui.render.buffer:make-buffer 20 5))
+            :backend backend
+            :fps 200
+            :initial-state nil
+            :event-bus bus))
+      (if had-drain-fn
+          (setf (symbol-function drain-symbol) old-drain-fn)
+          (fmakunbound drain-symbol)))
+    (assert-true (= drain-calls 1)
+                 "expected exactly one drain call, got ~D"
+                 drain-calls)
+    (assert-true (= handler-calls 1)
+                 "expected exactly one handler call, got ~D"
+                 handler-calls)
+    (assert-true (= render-observed-handler-calls 1)
+                 "expected render to observe handler call in same tick, got ~S"
+                 render-observed-handler-calls)
+    (assert-true (eq handler-thread (bordeaux-threads:current-thread))
+                 "expected handler to run on engine loop thread.")))
+
+(deftest engine-loop-on-handler-error-restart-defaults-to-continue
+  (let* ((backend (make-engine-loop-test-backend :cols 20 :rows 5))
+         (event-bus-package (or (find-package "EVENT-BUS")
+                                (make-package "EVENT-BUS" :use '(:cl))))
+         (drain-symbol (or (find-symbol "DRAIN-AND-DISPATCH" event-bus-package)
+                           (intern "DRAIN-AND-DISPATCH" event-bus-package)))
+         (had-drain-fn (fboundp drain-symbol))
+         (old-drain-fn (and had-drain-fn (symbol-function drain-symbol)))
+         (render-count 0))
+    (engine-loop-test-backend-inject-events
+     backend
+     (list (ptui.core.events:make-key-event :ctrl-c :ctrlp t)))
+    (unwind-protect
+         (progn
+           (setf (symbol-function drain-symbol)
+                 (lambda (target-bus &key on-handler-error)
+                   (declare (ignore target-bus))
+                   (funcall on-handler-error (error "synthetic drain failure"))
+                   nil))
+           (ptui.engine.loop:run
+            (lambda (state size)
+              (declare (ignore state size))
+              (incf render-count)
+              (ptui.render.buffer:make-buffer 20 5))
+            :backend backend
+            :fps 200
+            :initial-state nil
+            :event-bus (list :handlers nil)))
+      (if had-drain-fn
+          (setf (symbol-function drain-symbol) old-drain-fn)
+          (fmakunbound drain-symbol)))
+    (assert-true (> render-count 0)
+                 "expected render to continue after handler error restart.")))
 
 ;; Script entry
 (multiple-value-bind (passed failed) (run-all-tests)
