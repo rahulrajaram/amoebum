@@ -1526,6 +1526,25 @@
            #:clear-asdf-extensions
            #:save-asdf-extension-manifest
            #:load-asdf-extension-manifest
+           ;; Extension manifests + dependency resolver (I233)
+           #:+extension-capabilities+
+           #:extension-manifest
+           #:extension-manifest-p
+           #:make-extension-manifest
+           #:extension-manifest-name
+           #:extension-manifest-version
+           #:extension-manifest-author
+           #:extension-manifest-description
+           #:extension-manifest-license
+           #:extension-manifest-dependencies
+           #:extension-manifest-provides
+           #:extension-manifest-entry-point
+           #:extension-manifest-source-path
+           #:parse-extension-manifest-sexp
+           #:read-extension-manifest-file
+           #:compare-extension-version
+           #:version-satisfies-constraint-p
+           #:resolve-extension-manifests
            ;; Profiler (I101)
            #:metrics-entry
            #:metrics-entry-p
