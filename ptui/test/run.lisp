@@ -2352,6 +2352,12 @@ foo bar foo")
                  "expected :ready status after restoring query, got ~S"
                  (ptui.components.search-widget:search-widget-status state))))
 
+(eval-when (:load-toplevel :execute)
+  (load (merge-pathnames
+         "event-bus-publish-test.lisp"
+         (uiop:pathname-directory-pathname
+          (or *load-truename* *compile-file-truename*)))))
+
 ;; Script entry
 (multiple-value-bind (passed failed) (run-all-tests)
   (declare (ignore passed))
