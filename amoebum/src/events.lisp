@@ -435,18 +435,16 @@
     (error "BUS must be an EVENT-BUS, got ~S." bus))
   (unless (functionp handler)
     (error "HANDLER must be a function, got ~S." handler))
-  (when filter
-    (unless (functionp filter)
-      (error "FILTER must be a function or NIL, got ~S." filter)))
   (unless (integerp priority)
     (error "PRIORITY must be an integer, got ~S." priority))
-  (let* ((normalized-type (%normalize-subscription-event-type event-type))
+  (let* ((compiled-filter (ptui.runtime.event-filters:coerce-filter-function filter))
+         (normalized-type (%normalize-subscription-event-type event-type))
          (id (%next-subscription-id bus))
          (subscription (%make-event-subscription
                         :id id
                         :event-type normalized-type
                         :handler handler
-                        :filter filter
+                        :filter compiled-filter
                         :priority priority
                         :created-at id)))
     (push subscription (gethash normalized-type (event-bus-subscriptions bus)))

@@ -46,6 +46,7 @@
   :serial t
   :components
   ((:file "src/runtime/queue")
+   (:file "src/runtime/event-filters")
    (:file "src/runtime/scheduler")))
 
 (asdf:defsystem "ptui/term"
@@ -172,6 +173,7 @@
    (:file "src/util/time")
    (:file "src/search/engine")
    (:file "src/runtime/queue")
+   (:file "src/runtime/event-filters")
    (:file "src/runtime/scheduler")
    (:file "src/term/tty")
    (:file "src/term/signals")
@@ -256,4 +258,5 @@
   :serial t
   :components
   ((:file "test/defwidget-test")
-   (:file "test/snapshot-test")))
+   (:file "test/snapshot-test")
+   (:file "test/event-filters-test")))
