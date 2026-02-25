@@ -68,6 +68,9 @@
       (let ((plan-command (funcall find-command-fn "plan")))
         (assert-true plan-command
                      "Expected built-in slash command /plan to be registered."))
+      (let ((cost-command (funcall find-command-fn "cost")))
+        (assert-true cost-command
+                     "Expected built-in slash command /cost to be registered."))
 
       (multiple-value-bind (handledp result)
           (funcall dispatch-fn "/help")
@@ -105,6 +108,12 @@
         (assert-true handledp "Expected /sounds to be handled.")
         (assert-true (contains-text-p (funcall result-output-fn result) "Sound themes")
                      "Expected /sounds output to list themes."))
+
+      (multiple-value-bind (handledp result)
+          (funcall dispatch-fn "/cost 2")
+        (assert-true handledp "Expected /cost to be handled.")
+        (assert-true (contains-text-p (funcall result-output-fn result) "Cost estimation")
+                     "Expected /cost output to mention cost estimation requirements."))
 
       (multiple-value-bind (handledp result)
           (funcall dispatch-fn "/sounds set minimal")

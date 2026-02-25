@@ -187,7 +187,15 @@
    #:make-model-router
    #:model-router-strategy
    #:model-router-providers
+   #:model-router-model-costs
    #:model-router-max-retries
+   #:cost-model
+   #:cost-model-p
+   #:make-cost-model
+   #:cost-model-input-cost-per-1k-tokens
+   #:cost-model-output-cost-per-1k-tokens
+   #:cost-model-context-window
+   #:cost-estimate
    #:router-add-provider
    #:router-remove-provider
    #:router-find-provider

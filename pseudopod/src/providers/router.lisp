@@ -14,14 +14,169 @@
   (strategy :fallback-chain :type keyword)
   (providers '() :type list)
   (task-routing (make-hash-table :test #'equal) :type hash-table)
+  (model-costs (make-hash-table :test #'equal) :type hash-table)
   (cost-tiers '() :type list)
   (max-retries 2 :type integer)
   (health-check-interval-seconds 300 :type integer)
   (last-health-check-at 0 :type integer))
 
+(defstruct (cost-model
+            (:constructor make-cost-model (&key input-cost-per-1k-tokens
+                                                 output-cost-per-1k-tokens
+                                                 context-window)))
+  (input-cost-per-1k-tokens 0.0d0 :type real)
+  (output-cost-per-1k-tokens 0.0d0 :type real)
+  (context-window 8192 :type integer))
+
+(defparameter *default-model-costs*
+  '(("claude-sonnet" . (:input 0.003d0 :output 0.015d0 :context 200000))
+    ("claude-haiku" . (:input 0.0008d0 :output 0.004d0 :context 200000))
+    ("gpt-4o" . (:input 0.005d0 :output 0.015d0 :context 128000))
+    ("gpt-4o-mini" . (:input 0.00015d0 :output 0.0006d0 :context 128000))
+    ("kimi-k2.5" . (:input 0.0003d0 :output 0.0012d0 :context 128000))))
+
+(defun %normalize-model-id (value)
+  (let ((text (string-downcase
+               (string-trim '(#\Space #\Tab #\Newline #\Return)
+                            (or value "")))))
+    (cond
+      ((or (search "haiku" text :test #'char-equal)
+           (string= text "claude-haiku"))
+       "claude-haiku")
+      ((or (search "sonnet" text :test #'char-equal)
+           (string= text "claude-sonnet"))
+       "claude-sonnet")
+      ((search "gpt-4o-mini" text :test #'char-equal)
+       "gpt-4o-mini")
+      ((search "gpt-4o" text :test #'char-equal)
+       "gpt-4o")
+      ((or (search "kimi-k2.5" text :test #'char-equal)
+           (search "moonshot" text :test #'char-equal))
+       "kimi-k2.5")
+      ((plusp (length text))
+       text)
+      (t
+       nil))))
+
+(defun %default-model-cost-table ()
+  (let ((table (make-hash-table :test #'equal)))
+    (dolist (entry *default-model-costs*)
+      (destructuring-bind (name . config) entry
+        (setf (gethash (%normalize-model-id name) table)
+              (make-cost-model
+               :input-cost-per-1k-tokens (getf config :input 0.0d0)
+               :output-cost-per-1k-tokens (getf config :output 0.0d0)
+               :context-window (getf config :context 8192)))))
+    table))
+
+(defun %normalize-model-cost-entry (entry)
+  (when (consp entry)
+    (let ((model-key (%normalize-model-id (car entry)))
+          (value (cdr entry)))
+      (when model-key
+        (cond
+          ((cost-model-p value)
+           (cons model-key value))
+          ((and (listp value)
+                (or (getf value :input-cost-per-1k-tokens)
+                    (getf value :output-cost-per-1k-tokens)
+                    (getf value :context-window)))
+           (cons model-key
+                 (make-cost-model
+                  :input-cost-per-1k-tokens
+                  (or (getf value :input-cost-per-1k-tokens)
+                      (getf value :input)
+                      0.0d0)
+                  :output-cost-per-1k-tokens
+                  (or (getf value :output-cost-per-1k-tokens)
+                      (getf value :output)
+                      0.0d0)
+                  :context-window
+                  (or (getf value :context-window)
+                      (getf value :context)
+                      8192)))))))))
+
+(defun %message-text (message)
+  (cond
+    ((message-p message)
+     (with-output-to-string (out)
+       (dolist (part (message-content message))
+         (when (and (content-part-p part)
+                    (stringp (content-part-text part)))
+           (write-string (content-part-text part) out)
+           (write-char #\Space out)))))
+    ((stringp message)
+     message)
+    ((hash-table-p message)
+     (let ((content (gethash "content" message)))
+       (cond
+         ((stringp content)
+          content)
+         ((listp content)
+          (with-output-to-string (out)
+            (dolist (part content)
+              (when (hash-table-p part)
+                (let ((text (gethash "text" part)))
+                  (when (stringp text)
+                    (write-string text out)
+                    (write-char #\Space out)))))))
+         ((vectorp content)
+          (with-output-to-string (out)
+            (loop for part across content do
+              (when (hash-table-p part)
+                (let ((text (gethash "text" part)))
+                  (when (stringp text)
+                    (write-string text out)
+                    (write-char #\Space out)))))))
+         (t
+          ""))))
+    (t
+     (princ-to-string message))))
+
+(defun %estimate-input-tokens (provider messages)
+  (loop for message in (or messages '())
+        for text = (%message-text message)
+        sum (max 0 (estimate-provider-tokens provider (or text "")))))
+
+(defun %router-provider-cost-model (router provider &key model)
+  (let* ((model-id (%normalize-model-id (or model (provider-default-model provider))))
+         (table (model-router-model-costs router)))
+    (and model-id
+         (hash-table-p table)
+         (gethash model-id table))))
+
+(defun cost-estimate (provider messages &key (output-tokens 0) model cost-model)
+  "Estimate provider cost from input/output token counts and model pricing."
+  (let* ((resolved-cost-model
+           (or cost-model
+               (let ((defaults (%default-model-cost-table)))
+                 (gethash (%normalize-model-id (or model (provider-default-model provider)))
+                          defaults))))
+         (input-tokens (%estimate-input-tokens provider messages))
+         (input-cost (if resolved-cost-model
+                         (* (/ (float input-tokens 1.0d0) 1000.0d0)
+                            (float (cost-model-input-cost-per-1k-tokens resolved-cost-model)
+                                   1.0d0))
+                         0.0d0))
+         (output-cost (if resolved-cost-model
+                          (* (/ (float (max 0 output-tokens) 1.0d0) 1000.0d0)
+                             (float (cost-model-output-cost-per-1k-tokens resolved-cost-model)
+                                    1.0d0))
+                          0.0d0)))
+    (list :provider (provider-name provider)
+          :model (or model (provider-default-model provider))
+          :input-tokens input-tokens
+          :output-tokens (max 0 output-tokens)
+          :input-cost-usd input-cost
+          :output-cost-usd output-cost
+          :total-cost-usd (+ input-cost output-cost)
+          :context-window (and resolved-cost-model
+                               (cost-model-context-window resolved-cost-model)))))
+
 (defun make-model-router (&key (strategy :fallback-chain)
                                 providers
                                 task-routing
+                                model-costs
                                 cost-tiers
                                 (max-retries 2)
                                 (health-check-interval-seconds 300))
@@ -32,12 +187,19 @@ COST-TIERS is a list of provider names in cost order (cheapest first)."
   (let ((router (%make-model-router
                  :strategy strategy
                  :providers (or providers '())
+                 :model-costs (%default-model-cost-table)
                  :max-retries max-retries
                  :health-check-interval-seconds health-check-interval-seconds)))
     (when task-routing
       (dolist (pair task-routing)
         (setf (gethash (car pair) (model-router-task-routing router))
               (cdr pair))))
+    (when model-costs
+      (dolist (entry model-costs)
+        (let ((normalized (%normalize-model-cost-entry entry)))
+          (when normalized
+            (setf (gethash (car normalized) (model-router-model-costs router))
+                  (cdr normalized))))))
     (when cost-tiers
       (setf (model-router-cost-tiers router) cost-tiers))
     router))
@@ -80,16 +242,49 @@ COST-TIERS is a list of provider names in cost order (cheapest first)."
         ;; Fallback to first healthy provider
         (first (router-healthy-providers router)))))
 
-(defun %router-select-by-cost (router)
-  "Select cheapest healthy provider."
-  (let ((tiers (model-router-cost-tiers router))
-        (healthy (router-healthy-providers router)))
-    (if tiers
-        (or (loop for name in tiers
-                  for provider = (find name healthy :key #'provider-name :test #'string=)
-                  when provider return provider)
-            (first healthy))
-        (first healthy))))
+(defun %router-select-by-cost (router messages minimum-context-window expected-output-tokens)
+  "Select cheapest healthy provider that can satisfy MINIMUM-CONTEXT-WINDOW."
+  (let* ((healthy (router-healthy-providers router))
+         (costed
+           (loop for provider in healthy
+                 for provider-cost-model = (%router-provider-cost-model router provider)
+                 when provider-cost-model
+                   collect (list :provider provider
+                                 :cost-model provider-cost-model
+                                 :estimate (cost-estimate provider
+                                                          messages
+                                                          :output-tokens expected-output-tokens
+                                                          :cost-model provider-cost-model))))
+         (eligible
+           (remove-if (lambda (entry)
+                        (let ((window (cost-model-context-window
+                                       (getf entry :cost-model))))
+                          (< window minimum-context-window)))
+                      costed)))
+    (cond
+      ((plusp (length eligible))
+       (getf (car (sort eligible
+                        (lambda (left right)
+                          (let ((left-cost (getf (getf left :estimate) :total-cost-usd))
+                                (right-cost (getf (getf right :estimate) :total-cost-usd))
+                                (left-name (provider-name (getf left :provider)))
+                                (right-name (provider-name (getf right :provider))))
+                            (if (= left-cost right-cost)
+                                (string< left-name right-name)
+                                (< left-cost right-cost))))))
+             :provider))
+      ((and (zerop minimum-context-window)
+            (model-router-cost-tiers router))
+       (or (loop for name in (model-router-cost-tiers router)
+                 for provider = (find name healthy
+                                      :key #'provider-name
+                                      :test #'string=)
+                 when provider return provider)
+           (first healthy)))
+      ((zerop minimum-context-window)
+       (first healthy))
+      (t
+       nil))))
 
 (defun %router-select-fallback-chain (router)
   "Return ordered list of providers to try."
@@ -98,11 +293,17 @@ COST-TIERS is a list of provider names in cost order (cheapest first)."
     ;; Try healthy first, then unhealthy as last resort
     (append healthy unhealthy)))
 
-(defun router-select-provider (router &key task-type)
+(defun router-select-provider (router &key task-type
+                                            messages
+                                            (minimum-context-window 0)
+                                            (expected-output-tokens 0))
   "Select a provider based on router strategy."
   (case (model-router-strategy router)
     (:task-based (%router-select-by-task router task-type))
-    (:cost-aware (%router-select-by-cost router))
+    (:cost-aware (%router-select-by-cost router
+                                         messages
+                                         (max 0 minimum-context-window)
+                                         (max 0 expected-output-tokens)))
     (:fallback-chain (first (%router-select-fallback-chain router)))
     (otherwise (first (model-router-providers router)))))
 

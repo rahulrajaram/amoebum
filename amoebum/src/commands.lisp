@@ -2578,6 +2578,11 @@
 ;;; Phase 5 command handlers (I95-I102)
 ;;; ---------------------------------------------------------------------------
 
+(defvar *model-router* nil
+  "Global model router instance, set during configuration.")
+
+(defparameter +cost-default-interaction-count+ 5)
+
 (defun %models-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
   (let ((filter (gethash :PROVIDER arguments)))
@@ -2597,60 +2602,103 @@
         (make-slash-command-result
          :output "No model router configured. Set up providers in config."))))
 
-(defun %providers-command-mode (args-text)
-  (let* ((tokens (%tokenize-command-arguments (or args-text "")))
-         (action (string-downcase (or (first tokens) "toggle"))))
-    (cond
-      ((or (string= action "") (string= action "toggle")) :toggle)
-      ((or (string= action "on") (string= action "show")) :on)
-      ((or (string= action "off") (string= action "hide")) :off)
-      ((or (string= action "status") (string= action "list")) :status)
-      (t :invalid))))
+(defun %slash-message-text (message)
+  (cond
+    ((typep message 'pseudopod:message)
+     (with-output-to-string (out)
+       (dolist (part (pseudopod:message-content message))
+         (when (and (pseudopod:content-part-p part)
+                    (stringp (pseudopod:content-part-text part)))
+           (write-string (pseudopod:content-part-text part) out)
+           (write-char #\Space out)))))
+    ((stringp message)
+     message)
+    (t
+     (princ-to-string message))))
 
-(defun %providers-handler (_invocation arguments _context)
-  (declare (ignore _invocation _context))
-  (let* ((args-text (gethash :ARGS arguments))
-         (mode (%providers-command-mode args-text)))
-    (case mode
-      (:toggle
+(defun %cost-recent-interactions (messages count)
+  (let ((all '())
+        (pending-user nil))
+    (dolist (message messages)
+      (when (typep message 'pseudopod:message)
+        (let ((role (string-downcase (or (pseudopod:message-role message) ""))))
+          (cond
+            ((string= role "user")
+             (setf pending-user message))
+            ((and (string= role "assistant") pending-user)
+             (push (list :user pending-user :assistant message) all)
+             (setf pending-user nil))))))
+    (let ((ordered (nreverse all)))
+      (if (<= (length ordered) count)
+          ordered
+          (subseq ordered (- (length ordered) count))))))
+
+(defun %format-usd (amount)
+  (format nil "$~,6F" (coerce amount 'double-float)))
+
+(defun %cost-handler (_invocation arguments context)
+  (declare (ignore _invocation))
+  (let* ((chat-state (slash-command-context-chat-state context))
+         (raw-count (gethash :COUNT arguments))
+         (count (max 1 (or raw-count +cost-default-interaction-count+))))
+    (cond
+      ((null *model-router*)
        (make-slash-command-result
-        :output "Provider dashboard toggle requested."
-        :action :toggle-provider-dashboard
-        :payload :toggle))
-      (:on
+        :output "No model router configured. Set up providers in config."))
+      ((not (typep chat-state 'chat-ui-state))
        (make-slash-command-result
-        :output "Provider dashboard enabled."
-        :action :toggle-provider-dashboard
-        :payload :on))
-      (:off
-       (make-slash-command-result
-        :output "Provider dashboard hidden."
-        :action :toggle-provider-dashboard
-        :payload :off))
-      (:status
-       (let* ((indicator (provider-health-compact-indicator :force t))
-              (entries (provider-health-entries))
-              (label (if indicator
-                         (getf indicator :text)
-                         "[none]")))
-         (with-output-to-string (out)
-           (format out "Provider monitor: ~A~%" label)
-           (if entries
-               (dolist (entry entries)
-                 (format out
-                         "  ~A ~A req=~D err=~D rate=~,1f%% lat=~Dms~@[ error=~A~]~%"
-                         (provider-health-entry-name entry)
-                         (string-upcase
-                          (symbol-name (provider-health-entry-status entry)))
-                         (provider-health-entry-request-count entry)
-                         (provider-health-entry-error-count entry)
-                         (* 100.0d0 (provider-health-entry-error-rate entry))
-                         (provider-health-entry-last-latency-ms entry)
-                         (provider-health-entry-last-error-message entry)))
-               (format out "  No providers configured in model router.~%")))))
-      (otherwise
-       (make-slash-command-result
-        :output "Usage: /providers [toggle|on|off|status]")))))
+        :output "Cost estimation requires an active chat session."))
+      (t
+       (let* ((messages (chat-ui-state-messages chat-state))
+              (interactions (%cost-recent-interactions messages count)))
+         (if (null interactions)
+             (make-slash-command-result
+              :output "No completed user/assistant interactions to estimate yet.")
+             (let ((rows '())
+                   (total 0.0d0)
+                   (index 0))
+               (dolist (interaction interactions)
+                 (incf index)
+                 (let* ((user-message (getf interaction :user))
+                        (assistant-message (getf interaction :assistant))
+                        (input-messages (list user-message))
+                        (provider (or (pseudopod:router-select-provider
+                                       *model-router*
+                                       :messages input-messages)
+                                      (first (pseudopod:model-router-providers *model-router*))))
+                        (assistant-tokens
+                          (if provider
+                              (max 0
+                                   (pseudopod:estimate-provider-tokens
+                                    provider
+                                    (%slash-message-text assistant-message)))
+                              0))
+                        (estimate
+                          (if provider
+                              (pseudopod:cost-estimate provider
+                                                       input-messages
+                                                       :output-tokens assistant-tokens)
+                              (list :total-cost-usd 0.0d0
+                                    :input-tokens 0
+                                    :output-tokens assistant-tokens
+                                    :provider "n/a"
+                                    :model "n/a"))))
+                   (incf total (getf estimate :total-cost-usd 0.0d0))
+                   (push (format nil "~D. ~A (~A): in ~D tok, out ~D tok -> ~A"
+                                 index
+                                 (getf estimate :provider "n/a")
+                                 (getf estimate :model "n/a")
+                                 (getf estimate :input-tokens 0)
+                                 (getf estimate :output-tokens 0)
+                                 (%format-usd (getf estimate :total-cost-usd 0.0d0)))
+                         rows)))
+               (make-slash-command-result
+                :output (with-output-to-string (out)
+                          (format out "Estimated cost for last ~D interaction~:P:~%"
+                                  (length interactions))
+                          (dolist (row (nreverse rows))
+                            (format out "~A~%" row))
+                          (format out "Total: ~A" (%format-usd total)))))))))))
 
 (defun %index-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
@@ -3402,17 +3450,16 @@
     :handler #'%models-handler))
   (register-slash-command
    (make-slash-command
-    :name "providers"
-    :description "Toggle provider health dashboard or print provider monitor status."
-    :usage "/providers [toggle|on|off|status]"
+    :name "cost"
+    :description "Estimate cost of the most recent chat interactions."
+    :usage "/cost [count]"
     :parameters
     (list (make-slash-command-parameter
-           :name "args"
-           :type :string
+           :name "count"
+           :type :integer
            :required-p nil
-           :greedy-p t
-           :description "Optional action: toggle, on, off, or status."))
-    :handler #'%providers-handler))
+           :description "Number of recent interactions to estimate (default 5)."))
+    :handler #'%cost-handler))
   (register-slash-command
    (make-slash-command
     :name "index"

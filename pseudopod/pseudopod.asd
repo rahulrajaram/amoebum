@@ -41,6 +41,7 @@
    (:file "test/anthropic-streaming-test")
    (:file "test/openai-streaming-test")
    (:file "test/router-test")
+   (:file "test/cost-routing-test")
    (:file "test/file-read-test")
    (:file "test/structured-read-test")
    (:file "test/write-file-test")
