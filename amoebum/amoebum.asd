@@ -79,6 +79,7 @@
    (:file "test/asdf-extensions-smoke-test")
    (:file "test/profiler-smoke-test")
    (:file "test/provider-factory-test")
+   (:file "test/deftool-dangerous-permission-test")
    (:file "test/read-orchestration-test")
    (:file "test/write-safety-test")
    (:file "test/edit-validation-test")
