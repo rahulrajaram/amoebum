@@ -317,17 +317,24 @@
     (otherwise :context-red)))
 
 (defun %status-segment-specs (state)
-  (list
-   (list :text (format nil "branch ~A" (%safe-string (status-bar-state-branch-name state) "-"))
-         :role :meta)
-   (list :text (format nil "mode ~A" (%mode-string (status-bar-state-permission-mode state)))
-         :role :meta)
-   (list :text (%context-budget-segment-text state)
-         :role (%context-budget-role state))
-   (list :text (%stream-segment state)
-         :role :meta)
-   (list :text (format nil "model ~A" (%safe-string (status-bar-state-model-name state) "unknown"))
-         :role :meta)))
+  (let ((segments
+          (list
+           (list :text (format nil "branch ~A" (%safe-string (status-bar-state-branch-name state) "-"))
+                 :role :meta)
+           (list :text (format nil "mode ~A" (%mode-string (status-bar-state-permission-mode state)))
+                 :role :meta)
+           (list :text (%context-budget-segment-text state)
+                 :role (%context-budget-role state))
+           (list :text (%stream-segment state)
+                 :role :meta)
+           (list :text (format nil "model ~A" (%safe-string (status-bar-state-model-name state) "unknown"))
+                 :role :meta))))
+    (let ((provider-indicator (provider-health-compact-indicator)))
+      (if provider-indicator
+          (append segments
+                  (list (list :text (getf provider-indicator :text)
+                              :role (or (getf provider-indicator :role) :meta))))
+          segments))))
 
 (defun status-bar-segments (state)
   (check-type state status-bar-state)
@@ -387,7 +394,8 @@
         (context-usage-level (status-bar-state-context-used-tokens state)
                              (status-bar-state-context-max-tokens state))
         (status-bar-state-stream-status state)
-        (truncate (* 100 (status-bar-state-stream-tokens-per-second state)))))
+        (truncate (* 100 (status-bar-state-stream-tokens-per-second state)))
+        (provider-health-signature)))
 
 (defun make-status-bar-widget (state &key id key width)
   (ptui.ui.elements:make-element

@@ -1337,6 +1337,25 @@
            #:status-bar-line
            #:status-bar-render-key
            #:make-status-bar-widget
+           #:*model-router*
+           #:provider-health-entry
+           #:provider-health-entry-p
+           #:make-provider-health-entry
+           #:provider-health-entry-name
+           #:provider-health-entry-status
+           #:provider-health-entry-request-count
+           #:provider-health-entry-error-count
+           #:provider-health-entry-error-rate
+           #:provider-health-entry-last-latency-ms
+           #:provider-health-entry-last-error-message
+           #:provider-health-monitor-reset!
+           #:provider-health-refresh!
+           #:provider-health-entries
+           #:provider-health-last-updated-at
+           #:provider-health-compact-indicator
+           #:provider-health-signature
+           #:provider-health-row-elements
+           #:provider-health-panel
            #:chat-ui-state
            #:chat-ui-state-p
            #:make-chat-ui-state
@@ -1353,6 +1372,7 @@
            #:chat-ui-state-stream-tools
            #:chat-ui-state-stream-scroll-follow-p
            #:chat-ui-state-status-bar-state
+           #:chat-ui-state-provider-dashboard-visible-p
            #:chat-ui-state-conversation
            #:chat-ui-state-context-used-tokens
            #:chat-ui-state-context-window-limit
@@ -1372,8 +1392,6 @@
            #:render-chat-ui-buffer
            #:handle-chat-ui-event
            #:run-chat-ui
-           ;; Phase 5 (I94-I102)
-           #:*model-router*
            ;; Indexer (I96)
            #:symbol-entry
            #:symbol-entry-p

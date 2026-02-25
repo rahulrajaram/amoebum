@@ -2578,9 +2578,6 @@
 ;;; Phase 5 command handlers (I95-I102)
 ;;; ---------------------------------------------------------------------------
 
-(defvar *model-router* nil
-  "Global model router instance, set during configuration.")
-
 (defun %models-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
   (let ((filter (gethash :PROVIDER arguments)))
@@ -2599,6 +2596,61 @@
                         (getf p :requests) (getf p :errors) (getf p :last-latency-ms))))))
         (make-slash-command-result
          :output "No model router configured. Set up providers in config."))))
+
+(defun %providers-command-mode (args-text)
+  (let* ((tokens (%tokenize-command-arguments (or args-text "")))
+         (action (string-downcase (or (first tokens) "toggle"))))
+    (cond
+      ((or (string= action "") (string= action "toggle")) :toggle)
+      ((or (string= action "on") (string= action "show")) :on)
+      ((or (string= action "off") (string= action "hide")) :off)
+      ((or (string= action "status") (string= action "list")) :status)
+      (t :invalid))))
+
+(defun %providers-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let* ((args-text (gethash :ARGS arguments))
+         (mode (%providers-command-mode args-text)))
+    (case mode
+      (:toggle
+       (make-slash-command-result
+        :output "Provider dashboard toggle requested."
+        :action :toggle-provider-dashboard
+        :payload :toggle))
+      (:on
+       (make-slash-command-result
+        :output "Provider dashboard enabled."
+        :action :toggle-provider-dashboard
+        :payload :on))
+      (:off
+       (make-slash-command-result
+        :output "Provider dashboard hidden."
+        :action :toggle-provider-dashboard
+        :payload :off))
+      (:status
+       (let* ((indicator (provider-health-compact-indicator :force t))
+              (entries (provider-health-entries))
+              (label (if indicator
+                         (getf indicator :text)
+                         "[none]")))
+         (with-output-to-string (out)
+           (format out "Provider monitor: ~A~%" label)
+           (if entries
+               (dolist (entry entries)
+                 (format out
+                         "  ~A ~A req=~D err=~D rate=~,1f%% lat=~Dms~@[ error=~A~]~%"
+                         (provider-health-entry-name entry)
+                         (string-upcase
+                          (symbol-name (provider-health-entry-status entry)))
+                         (provider-health-entry-request-count entry)
+                         (provider-health-entry-error-count entry)
+                         (* 100.0d0 (provider-health-entry-error-rate entry))
+                         (provider-health-entry-last-latency-ms entry)
+                         (provider-health-entry-last-error-message entry)))
+               (format out "  No providers configured in model router.~%")))))
+      (otherwise
+       (make-slash-command-result
+        :output "Usage: /providers [toggle|on|off|status]")))))
 
 (defun %index-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
@@ -3348,6 +3400,19 @@
            :required-p nil
            :description "Optional provider name to inspect."))
     :handler #'%models-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "providers"
+    :description "Toggle provider health dashboard or print provider monitor status."
+    :usage "/providers [toggle|on|off|status]"
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Optional action: toggle, on, off, or status."))
+    :handler #'%providers-handler))
   (register-slash-command
    (make-slash-command
     :name "index"
