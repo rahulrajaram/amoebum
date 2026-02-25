@@ -828,6 +828,7 @@ Commits:~%~A"
                              :message-summary (car (%git-lines commit-message))
                              :message-source (getf message-data :source)
                              :fallback-reason (getf message-data :fallback-reason))))
+          (run-hooks :on-commit sha commit-message staged-paths)
           (%git-publish-lifecycle-event
            +event-type-git-commit+
            (make-commit-event :hash sha

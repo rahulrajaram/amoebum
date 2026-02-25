@@ -17,6 +17,13 @@
     "rg" "grep" "sed" "awk" "find" "ls"
     "docker" "kubectl" "helm"))
 
+(defparameter *hook-idle-threshold-seconds* 60
+  "Default idle threshold before :on-idle hooks fire.")
+(defparameter *hook-last-activity-second* 0
+  "Most recent second when user activity was observed in chat UI.")
+(defparameter *hook-last-idle-notified-second* nil
+  "Last idle-seconds value reported to :on-idle hooks.")
+
 (defun %make-chat-stream-tool-call-table ()
   (make-hash-table :test #'equal))
 
@@ -1233,6 +1240,36 @@ Falls back to the global *toolset* when stream-tools is nil."
     (and (config-p config)
          (config-permission-mode config))))
 
+(defun %chat-idle-hook-threshold-seconds ()
+  (let* ((cfg (%chat-config))
+         (value (and (config-p cfg)
+                     (config-value :hook-idle-threshold-seconds cfg))))
+    (if (and (integerp value)
+             (> value 0))
+        value
+        *hook-idle-threshold-seconds*)))
+
+(defun %chat-mark-activity ()
+  (setf *hook-last-activity-second* (get-universal-time)
+        *hook-last-idle-notified-second* nil)
+  t)
+
+(defun %run-chat-idle-hooks-if-needed ()
+  (let* ((now (get-universal-time))
+         (last-activity (if (and (integerp *hook-last-activity-second*)
+                                 (> *hook-last-activity-second* 0))
+                            *hook-last-activity-second*
+                            now))
+         (idle-seconds (max 0 (- now last-activity)))
+         (threshold (%chat-idle-hook-threshold-seconds)))
+    (when (and (integerp threshold)
+               (>= idle-seconds threshold)
+               (or (null *hook-last-idle-notified-second*)
+                   (> idle-seconds *hook-last-idle-notified-second*)))
+      (run-hooks :on-idle idle-seconds)
+      (setf *hook-last-idle-notified-second* idle-seconds)))
+  t)
+
 (defun %append-step-history-delta! (chat-state step-history)
   (let ((existing-count (length (chat-ui-state-messages chat-state))))
     (dolist (message (nthcdr existing-count (or step-history '())))
@@ -1257,6 +1294,12 @@ Falls back to the global *toolset* when stream-tools is nil."
                 :on-tool-call
                 (lambda (tool-call)
                   (values t (execute-tool tool-call context))))))
+        (run-hooks :on-step-complete
+                   (pseudopod:step-result-steps step-result)
+                   (max 0
+                        (- (length (or (pseudopod:step-result-history step-result) '()))
+                           (length (chat-ui-state-messages chat-state))))
+                   (length (or (pseudopod:step-result-tool-results step-result) '())))
         (%append-step-history-delta!
          chat-state
          (pseudopod:step-result-history step-result))
@@ -2729,6 +2772,7 @@ Falls back to the global *toolset* when stream-tools is nil."
     (declare (ignore agent-completion-count drained-event-count))
     (when (typep event 'ptui.core.events:key-event)
       (checkpoint-mark-activity)
+      (%chat-mark-activity)
       (let ((key (ptui.core.events:key-event-key event))
             (text (ptui.core.events:key-event-text? event)))
         (when (and (member key '(:escape :ctrl-c))
@@ -2750,6 +2794,7 @@ Falls back to the global *toolset* when stream-tools is nil."
     (%publish-status-bar-stream-summary-if-needed chat-state)
     (%sync-chat-context-usage! chat-state)
     (%emit-stream-budget-warning-if-needed chat-state)
+    (%run-chat-idle-hooks-if-needed)
     chat-state))
 
 (defun run-chat-ui (&key (backend :auto) (fps 20) initial-state)
@@ -2758,6 +2803,7 @@ Falls back to the global *toolset* when stream-tools is nil."
               initial-state
               (chat-ui-restore-latest-session (make-chat-ui-state)))))
     (checkpoint-mark-activity)
+    (%chat-mark-activity)
     (load-user-extensions)
     (ptui.engine.loop:run #'render-chat-ui-buffer
                           :backend backend

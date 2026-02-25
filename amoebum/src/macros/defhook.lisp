@@ -30,19 +30,19 @@
      :blocking nil
      :description "Runs after model responses are received.")
     (:on-error
-     :params (condition restarts)
+     :params (condition tool-name)
      :blocking t
      :description "Runs on conditions and may influence restart behavior.")
     (:on-idle
-     :params ()
+     :params (idle-seconds)
      :blocking nil
      :description "Runs while the assistant is idle.")
     (:on-commit
-     :params (message branch)
+     :params (commit-hash message files)
      :blocking nil
      :description "Runs after commit operations.")
     (:on-step-complete
-     :params (step-result)
+     :params (step-number messages-added tool-calls-made)
      :blocking nil
      :description "Runs when a tranche/step completes.")))
 
