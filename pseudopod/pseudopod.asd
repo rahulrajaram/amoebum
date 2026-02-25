@@ -12,6 +12,7 @@
    (:file "src/model/model-info")
    (:file "src/model/file-object")
    (:file "src/tooling/registry")
+   (:file "src/tooling/protocol")
    (:file "src/tooling/file-read")
    (:file "src/tooling/structured-read")
    (:file "src/tooling/write-file")
