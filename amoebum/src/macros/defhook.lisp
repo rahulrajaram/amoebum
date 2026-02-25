@@ -29,6 +29,14 @@
      :params (response)
      :blocking nil
      :description "Runs after model responses are received.")
+    (:pre-llm-send
+     :params (messages tools model)
+     :blocking t
+     :description "Runs before LLM calls; may return updated messages or :block.")
+    (:post-llm-receive
+     :params (response usage model)
+     :blocking nil
+     :description "Runs after LLM calls for logging and metrics.")
     (:on-error
      :params (condition tool-name)
      :blocking t
@@ -481,8 +489,28 @@
               (push (cons hook-id :async-dispatched) results))
             (let ((result (%invoke-hook-entry normalized entry args)))
               (push (cons hook-id result) results)
-              (when (and blocking (eq result :deny))
-                (return (values :deny (nreverse results))))))))))
+              (when (and blocking (or (eq result :deny)
+                                      (eq result :block)))
+                (return (values result (nreverse results))))))))))
+
+(defun hook-chain (hook-point &rest args)
+  (let* ((normalized (%normalize-hook-point hook-point))
+         (results '()))
+    (dolist (entry (%sort-hook-entries-ascending (%hook-entries normalized))
+             (values :continue (nreverse results)))
+      (let ((hook-id (hook-entry-hook-id entry)))
+        (if (hook-entry-async-p entry)
+            (progn
+              (%dispatch-async
+               (lambda ()
+                 (%invoke-hook-entry normalized entry args))
+               '())
+              (%record-hook-trace normalized hook-id :async-dispatched :elapsed-ms 0 :result :async-dispatched)
+              (push (cons hook-id :async-dispatched) results))
+            (let ((result (%invoke-hook-entry normalized entry args)))
+              (push (cons hook-id result) results)
+              (when (eq result :block)
+                (return (values :block (nreverse results))))))))))
 
 (defun hook-chain (hook-point &rest args)
   (let* ((normalized (%normalize-hook-point hook-point))
