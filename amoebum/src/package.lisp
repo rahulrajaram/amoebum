@@ -51,6 +51,7 @@
            #:event-p
            #:make-event
            #:event-type
+           #:event-type-p
            #:event-seq
            #:event-ts-mono
            #:event-timestamp
@@ -250,6 +251,62 @@
            #:make-session-checkpointed-event
            #:make-session-restored-event
            #:make-plan-step-status-event
+           #:+event-type-tool-started-event+
+           #:+event-type-tool-completed-event+
+           #:+event-type-tool-error-event+
+           #:+event-type-llm-request-event+
+           #:+event-type-llm-response-event+
+           #:+event-type-conversation-step-event+
+           #:+typed-event-types+
+           #:tool-started-event
+           #:tool-started-event-p
+           #:make-tool-started-event
+           #:tool-started-event-tool-name
+           #:tool-started-event-arguments
+           #:tool-started-event-timestamp
+           #:tool-started-event-event-type
+           #:tool-completed-event
+           #:tool-completed-event-p
+           #:make-tool-completed-event-type
+           #:tool-completed-event-tool-name
+           #:tool-completed-event-result
+           #:tool-completed-event-elapsed-ms
+           #:tool-completed-event-timestamp
+           #:tool-completed-event-event-type
+           #:tool-error-event
+           #:tool-error-event-p
+           #:make-tool-error-event-type
+           #:tool-error-event-tool-name
+           #:tool-error-event-condition
+           #:tool-error-event-restarts
+           #:tool-error-event-timestamp
+           #:tool-error-event-event-type
+           #:llm-request-event
+           #:llm-request-event-p
+           #:make-llm-request-event
+           #:llm-request-event-provider
+           #:llm-request-event-model
+           #:llm-request-event-message-count
+           #:llm-request-event-estimated-tokens
+           #:llm-request-event-timestamp
+           #:llm-request-event-event-type
+           #:llm-response-event
+           #:llm-response-event-p
+           #:make-llm-response-event
+           #:llm-response-event-provider
+           #:llm-response-event-model
+           #:llm-response-event-usage
+           #:llm-response-event-latency-ms
+           #:llm-response-event-timestamp
+           #:llm-response-event-event-type
+           #:conversation-step-event
+           #:conversation-step-event-p
+           #:make-conversation-step-event
+           #:conversation-step-event-step-number
+           #:conversation-step-event-role
+           #:conversation-step-event-content-length
+           #:conversation-step-event-timestamp
+           #:conversation-step-event-event-type
            #:sound-theme
            #:sound-theme-p
            #:make-sound-theme

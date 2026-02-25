@@ -7,6 +7,7 @@
   :serial t
   :components
   ((:file "src/package")
+   (:file "src/events/types")
    (:file "src/events")
    (:file "src/events/filters")
    (:file "src/config")
@@ -95,6 +96,7 @@
    (:file "test/method-combination-dispatch-test")
    (:file "test/restarts-round-trip-test")
    (:file "test/llm-restart-selection-test")
+   (:file "test/event-types-test")
    (:file "test/chat-snapshot-test")
    (:file "test/conversation-roundtrip-test"))
   :perform (asdf:test-op (op c)
