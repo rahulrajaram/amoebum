@@ -44,7 +44,11 @@
     (:on-step-complete
      :params (step-number messages-added tool-calls-made)
      :blocking nil
-     :description "Runs when a tranche/step completes.")))
+     :description "Runs when a tranche/step completes.")
+    (:on-stream-chunk
+     :params (chunk-text chunk-index total-tokens)
+     :blocking nil
+     :description "Runs on each streamed chunk; :block short-circuits hook-chain.")))
 
 (defparameter *hook-registry* (make-hash-table :test #'equal))
 (defparameter *hook-registration-counter* 0)
@@ -59,7 +63,7 @@
 
 (defstruct (hook-entry
             (:constructor %make-hook-entry
-                (&key hook-point hook-id handler (priority 100)
+                (&key hook-point hook-id handler (priority 0)
                  async-p source-file source-line docstring
                  (registered-at 0)
                  (max-ms +default-hook-max-ms+)
@@ -77,7 +81,7 @@
   hook-point
   hook-id
   handler
-  (priority 100 :type integer)
+  (priority 0 :type integer)
   async-p
   source-file
   source-line
@@ -217,7 +221,7 @@
              *hook-registry*)
     entries))
 
-(defun %sort-hook-entries (entries)
+(defun %sort-hook-entries-descending (entries)
   (sort entries
         (lambda (left right)
           (if (= (hook-entry-priority left)
@@ -231,8 +235,22 @@
               (> (hook-entry-priority left)
                  (hook-entry-priority right))))))
 
+(defun %sort-hook-entries-ascending (entries)
+  (sort entries
+        (lambda (left right)
+          (if (= (hook-entry-priority left)
+                 (hook-entry-priority right))
+              (if (= (hook-entry-registered-at left)
+                     (hook-entry-registered-at right))
+                  (string< (princ-to-string (hook-entry-hook-id left))
+                           (princ-to-string (hook-entry-hook-id right)))
+                  (< (hook-entry-registered-at left)
+                     (hook-entry-registered-at right)))
+              (< (hook-entry-priority left)
+                 (hook-entry-priority right))))))
+
 (defun list-hooks (&optional hook-point)
-  (%sort-hook-entries (%hook-entries hook-point)))
+  (%sort-hook-entries-descending (%hook-entries hook-point)))
 
 (defun clear-hooks (&optional hook-point)
   (if hook-point
@@ -252,7 +270,7 @@
         count)))
 
 (defun register-hook (hook-point hook-id handler
-                      &key (priority 100)
+                      &key (priority 0)
                         (async nil)
                         (max-ms +default-hook-max-ms+)
                         (on-error :log-and-continue)
@@ -466,6 +484,25 @@
               (when (and blocking (eq result :deny))
                 (return (values :deny (nreverse results))))))))))
 
+(defun hook-chain (hook-point &rest args)
+  (let* ((normalized (%normalize-hook-point hook-point))
+         (results '()))
+    (dolist (entry (%sort-hook-entries-ascending (%hook-entries normalized))
+             (values :continue (nreverse results)))
+      (let ((hook-id (hook-entry-hook-id entry)))
+        (if (hook-entry-async-p entry)
+            (progn
+              (%dispatch-async
+               (lambda ()
+                 (%invoke-hook-entry normalized entry args))
+               '())
+              (%record-hook-trace normalized hook-id :async-dispatched :elapsed-ms 0 :result :async-dispatched)
+              (push (cons hook-id :async-dispatched) results))
+            (let ((result (%invoke-hook-entry normalized entry args)))
+              (push (cons hook-id result) results)
+              (when (eq result :block)
+                (return (values :block (nreverse results))))))))))
+
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %normalize-parameter-names (parameters)
     (mapcar (lambda (parameter)
@@ -488,7 +525,7 @@
 
   (defun %parse-defhook-options-and-clauses (forms)
     (let ((docstring nil)
-          (options (list :priority 100
+          (options (list :priority 0
                          :async nil
                          :max-ms +default-hook-max-ms+
                          :on-error :log-and-continue

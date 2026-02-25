@@ -851,6 +851,7 @@
            #:hook-trace
            #:clear-hook-trace
            #:run-hooks
+           #:hook-chain
            #:malformed-key-binding
            #:malformed-key-binding-key-spec
            #:malformed-key-binding-reason

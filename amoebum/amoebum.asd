@@ -97,7 +97,7 @@
    (:file "test/restarts-round-trip-test")
    (:file "test/llm-restart-selection-test")
    (:file "test/event-types-test")
-   (:file "test/event-hooks-test")
+   (:file "test/stream-hooks-test")
    (:file "test/chat-snapshot-test")
    (:file "test/conversation-roundtrip-test")
    (:file "test/lifecycle-events-test"))
