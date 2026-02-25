@@ -122,3 +122,41 @@
       (setf amoebum:*toolset* original-toolset
             amoebum:*hook-registry* original-hooks
             amoebum:*event-bus* original-event-bus))))
+
+(test i216-parse-recovery-decision
+  (let ((decision
+          (amoebum:parse-recovery-decision
+           "{\"restart\":\"retry-tool\",\"args\":[{\"mode\":\"ok\"}]}")))
+    (is (eq (getf decision :restart) 'amoebum::retry-tool))
+    (is (= (length (getf decision :args)) 1)))
+  (let ((decision
+          (amoebum:parse-recovery-decision
+           "```json\n{\"restart\":\"skip_tool\"}\n```")))
+    (is (eq (getf decision :restart) 'amoebum::skip-tool))
+    (is (null (getf decision :args))))
+  (is (null (amoebum:parse-recovery-decision "not-json"))))
+
+(test i216-apply-user-recovery-decision-prompts-and-invokes
+  (let ((out (make-string-output-stream))
+        (invoked nil))
+    (restart-case
+        (let* ((in (make-string-input-stream "2\n"))
+               (io (make-two-way-stream in out))
+               (condition (make-condition 'amoebum:tool-error
+                                          :tool-name "i216-tool"
+                                          :message "forced i216 error")))
+          (restart-case
+              (progn
+                (amoebum:apply-user-recovery-decision nil condition :query-io io)
+                (setf invoked :none))
+            (retry-tool (&optional _)
+              (declare (ignore _))
+              (setf invoked :retry-tool))
+            (skip-tool ()
+              (setf invoked :skip-tool))))
+      (abort-tool ()
+        (setf invoked :abort-tool)))
+    (is (eq invoked :skip-tool))
+    (let ((printed (get-output-stream-string out)))
+      (is-true (search "Tool error:" printed :test #'char-equal))
+      (is-true (search "Choose restart" printed :test #'char-equal)))))
