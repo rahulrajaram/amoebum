@@ -99,10 +99,9 @@
    #:find-tool
    #:toolset-tools
    #:invoke-tool-call
-   ;; Tool execution protocol (I207)
    #:tool-execution-context
-   #:tool-execution-context-toolset
-   #:tool-execution-context-metadata
+   #:context-toolset
+   #:context-metadata
    #:execute-tool
    #:generate-result
    #:generate-result-p

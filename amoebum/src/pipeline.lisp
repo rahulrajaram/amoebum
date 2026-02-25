@@ -6,33 +6,18 @@
 (defparameter *pipeline-current-arguments* nil)
 (defparameter *pipeline-current-request-id* nil)
 
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  ;; I206 is implemented before I207 finalizes pseudopod's protocol module.
-  ;; Define a temporary base class in the pseudopod package when absent so
-  ;; amoebum-context can inherit from pseudopod's context lineage now.
-  (unless (find-symbol "TOOL-EXECUTION-CONTEXT" :pseudopod)
-    (intern "TOOL-EXECUTION-CONTEXT" :pseudopod))
-  (unless (find-class 'pseudopod::tool-execution-context nil)
-    (defclass pseudopod::tool-execution-context () ())))
-
-(defclass tool-execution-context (pseudopod::tool-execution-context)
-  ((toolset :initarg :toolset
-            :initform *toolset*
-            :accessor context-toolset)
-   (permission-mode :initarg :permission-mode
+(defclass tool-execution-context (pseudopod:tool-execution-context)
+  ((permission-mode :initarg :permission-mode
                     :initform nil
-                    :documentation "Resolved permission mode for the active tool call."
                     :accessor context-permission-mode)
    (event-bus :initarg :event-bus
               :initform nil
               :accessor context-event-bus)
    (hook-registry :initarg :hook-registry
                   :initform nil
-                  :documentation "Hook registry used for pre/post tool dispatch."
                   :accessor context-hook-registry)
    (metrics :initarg :metrics
             :initform (make-hash-table :test #'equal)
-            :documentation "Per-tool metrics table keyed by normalized tool name."
             :accessor context-metrics)
    (result-cache :initarg :result-cache
                  :initform (make-hash-table :test #'equal)
@@ -42,20 +27,21 @@
            :accessor context-logger))
   (:documentation "Execution context for execute-tool method combinations."))
 
-(defclass amoebum-context (tool-execution-context)
-  ((conversation :initarg :conversation
-                 :initform nil
-                 :documentation "Conversation state associated with this execution context."
-                 :accessor context-conversation))
+(defclass amoebum-context (tool-execution-context) ()
   (:documentation "Default amoebum tool execution context."))
 
-(defgeneric execute-tool (tool-call context)
-  (:documentation "Execute TOOL-CALL in CONTEXT via method-combination pipeline."))
+(defun context-toolset (context)
+  (pseudopod:context-toolset context))
+
+(defun (setf context-toolset) (value context)
+  (setf (pseudopod:context-toolset context) value))
+
+(defun execute-tool (tool-call context)
+  (pseudopod:execute-tool tool-call context))
 
 (defun make-amoebum-context (&key
                                (toolset *toolset*)
                                permission-mode
-                               conversation
                                event-bus
                                hook-registry
                                metrics
@@ -66,7 +52,6 @@
           (make-instance 'amoebum-context
                          :toolset toolset
                          :permission-mode permission-mode
-                         :conversation conversation
                          :event-bus event-bus
                          :hook-registry hook-registry
                          :metrics (or metrics (make-hash-table :test #'equal))
@@ -460,23 +445,27 @@
                (%copy-arguments-to-hash-table arguments))
    :extras (pseudopod:tool-call-extras call)))
 
-(defmethod execute-tool :around ((call pseudopod:tool-call)
-                                 (context tool-execution-context))
+(defmethod pseudopod:execute-tool :around ((call pseudopod:tool-call)
+                                           (context tool-execution-context))
   (let* ((*pipeline-current-tool-name* (%tool-call-name-string call))
          (*pipeline-current-arguments* (%decode-tool-call-arguments call))
          (*pipeline-current-request-id* (%tool-call-request-id call))
          (*pipeline-start-time-ms* nil)
          (*pipeline-current-result* nil)
          (timeout-seconds (%metadata-timeout-seconds *pipeline-current-tool-name*)))
-(restart-case
+    (restart-case
         (handler-case
-            #+sbcl
-            (if (and timeout-seconds (> timeout-seconds 0))
-                (sb-ext:with-timeout timeout-seconds
-                  (call-next-method))
-                (call-next-method))
-            #-sbcl
-            (call-next-method)
+            (let* ((raw-result
+                     #+sbcl
+                     (if (and timeout-seconds (> timeout-seconds 0))
+                         (sb-ext:with-timeout timeout-seconds
+                           (call-next-method))
+                         (call-next-method))
+                     #-sbcl
+                     (call-next-method))
+                   (guarded-result (apply-sandbox-output-guard raw-result)))
+              (setf *pipeline-current-result* guarded-result)
+              guarded-result)
           (error (condition)
             (let* ((tool-error
                      (%coerce-tool-error *pipeline-current-tool-name*
@@ -485,7 +474,7 @@
                                          timeout-seconds))
                    (elapsed-ms (%elapsed-milliseconds)))
               (%record-tool-metrics context *pipeline-current-tool-name* elapsed-ms :error)
-                     (publish (%effective-event-bus context)
+              (publish (%effective-event-bus context)
                        (make-tool-error-event
                         :tool-name *pipeline-current-tool-name*
                         :args *pipeline-current-arguments*
@@ -496,8 +485,8 @@
               (error tool-error))))
       (retry-tool (&optional (new-arguments *pipeline-current-arguments*))
         :report "Retry tool execution."
-        (execute-tool (%clone-tool-call-with-arguments call new-arguments)
-                      context))
+        (pseudopod:execute-tool (%clone-tool-call-with-arguments call new-arguments)
+                                context))
       (skip-tool ()
         :report "Skip this tool and continue."
         (format nil "Tool ~A skipped by pipeline restart." *pipeline-current-tool-name*))
@@ -510,8 +499,8 @@
                :message (format nil "Tool ~A aborted by pipeline restart."
                                 *pipeline-current-tool-name*))))))
 
-(defmethod execute-tool :before ((call pseudopod:tool-call)
-                                 (context tool-execution-context))
+(defmethod pseudopod:execute-tool :before ((call pseudopod:tool-call)
+                                           (context tool-execution-context))
   (let* ((tool-name *pipeline-current-tool-name*)
          (arguments (%call-arguments call))
          (effective-mode (%context-effective-permission-mode context)))
@@ -539,18 +528,8 @@
               :permission-mode effective-mode
               :request-id *pipeline-current-request-id*))))
 
-(defmethod execute-tool ((call pseudopod:tool-call)
-                         (context tool-execution-context))
-  (let* ((toolset (context-toolset context))
-         (arguments (%call-arguments call))
-         (prepared-call (%clone-tool-call-with-arguments call arguments))
-         (result (pseudopod:invoke-tool-call toolset prepared-call)))
-    (setf result (apply-sandbox-output-guard result))
-    (setf *pipeline-current-result* result)
-    result))
-
-(defmethod execute-tool :after ((call pseudopod:tool-call)
-                                (context tool-execution-context))
+(defmethod pseudopod:execute-tool :after ((call pseudopod:tool-call)
+                                          (context tool-execution-context))
   (declare (ignore call))
   (let* ((tool-name *pipeline-current-tool-name*)
          (arguments *pipeline-current-arguments*)

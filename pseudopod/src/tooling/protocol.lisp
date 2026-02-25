@@ -1,21 +1,19 @@
 (in-package :pseudopod)
 
 (defclass tool-execution-context ()
-  ((toolset
-    :initarg :toolset
-    :accessor tool-execution-context-toolset
-    :documentation "Tool registry used to resolve and execute tool calls.")
-   (metadata
-    :initarg :metadata
-    :initform nil
-    :accessor tool-execution-context-metadata
-    :documentation "Opaque extension metadata attached by higher layers."))
-  (:documentation "Base context passed to EXECUTE-TOOL specializations."))
+  ((toolset :initarg :toolset
+            :initform (make-toolset)
+            :accessor context-toolset)
+   (metadata :initarg :metadata
+             :initform nil
+             :accessor context-metadata))
+  (:documentation "Base execution context for tool-call method combinations."))
 
 (defgeneric execute-tool (tool-call context)
   (:documentation
-   "Execute TOOL-CALL in CONTEXT.
+   "Execute TOOL-CALL in CONTEXT through the tool execution pipeline."))
 
-Pseudopod defines the dispatch contract only. Consumers provide primary and
-optional :around/:before/:after methods to compose policy, observability, and
-dispatch behavior."))
+(defmethod execute-tool ((tool-call tool-call)
+                         (context tool-execution-context))
+  "Primary method delegates to INVOKE-TOOL-CALL in pseudopod."
+  (invoke-tool-call (context-toolset context) tool-call))
