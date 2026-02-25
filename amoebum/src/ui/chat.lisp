@@ -1217,6 +1217,52 @@ Falls back to the global *toolset* when stream-tools is nil."
            (pseudopod:toolset-p *toolset*)
            (pseudopod:toolset-tools *toolset*))))
 
+(defun %resolve-chat-toolset (chat-state)
+  (let ((stream-tools (chat-ui-state-stream-tools chat-state)))
+    (cond
+      ((pseudopod:toolset-p stream-tools)
+       stream-tools)
+      ((and (boundp '*toolset*)
+            (pseudopod:toolset-p *toolset*))
+       *toolset*)
+      (t
+       (pseudopod:make-toolset)))))
+
+(defun %chat-permission-mode ()
+  (let ((config (%chat-config)))
+    (and (config-p config)
+         (config-permission-mode config))))
+
+(defun %append-step-history-delta! (chat-state step-history)
+  (let ((existing-count (length (chat-ui-state-messages chat-state))))
+    (dolist (message (nthcdr existing-count (or step-history '())))
+      (when (pseudopod:message-p message)
+        (chat-ui-append-message chat-state message)))))
+
+(defun %start-step-loop-assistant-response (chat-state)
+  (let ((client (chat-ui-state-stream-client chat-state)))
+    (when (pseudopod:client-p client)
+      (let* ((toolset (%resolve-chat-toolset chat-state))
+             (context (make-amoebum-context
+                       :toolset toolset
+                       :permission-mode (%chat-permission-mode)
+                       :event-bus (%context-event-bus chat-state)))
+             (step-result
+               (pseudopod:step
+                client
+                :messages (copy-list (chat-ui-state-messages chat-state))
+                :tools (%resolve-chat-tools chat-state)
+                :toolset toolset
+                :max-steps +max-agentic-iterations+
+                :on-tool-call
+                (lambda (tool-call)
+                  (values t (execute-tool tool-call context))))))
+        (%append-step-history-delta!
+         chat-state
+         (pseudopod:step-result-history step-result))
+        (conversation-transition! (%ensure-chat-conversation-state chat-state)
+                                  :idle)))))
+
 (defun %resolve-chat-system-prompt (chat-state)
   (let* ((config (%chat-config))
          (project-root (and (config-p config)
@@ -1239,29 +1285,30 @@ Falls back to the global *toolset* when stream-tools is nil."
   (when (and (pseudopod:message-p user-message)
              (not (token-stream-active-p (chat-ui-state-stream-state chat-state))))
     (let ((runner (chat-ui-state-stream-runner chat-state)))
-      (when (functionp runner)
-        (let* ((prompt (%message-content->text user-message))
-               (history (copy-list (chat-ui-state-messages chat-state)))
-               (target-index (length history))
-               (stream-state (chat-ui-state-stream-state chat-state))
-               (system-prompt (%resolve-chat-system-prompt chat-state)))
-          (setf (chat-ui-state-stream-system-prompt chat-state) system-prompt)
-          (setf (chat-ui-state-stream-scroll-follow-p chat-state) t)
-          (conversation-transition! (%ensure-chat-conversation-state chat-state)
-                                    :streaming)
-          (chat-ui-add-message chat-state "assistant" "" :partial t)
-          (%clear-stream-tool-tracking! chat-state)
-          (token-stream-start
-           stream-state
-           (lambda (active-stream-state)
-             (funcall runner
-                      active-stream-state
-                      prompt
-                      history
-                      :system-prompt system-prompt
-                      :client (chat-ui-state-stream-client chat-state)
-                      :tools (%resolve-chat-tools chat-state)))
-           :target-message-index target-index))))))
+      (if (functionp runner)
+          (let* ((prompt (%message-content->text user-message))
+                 (history (copy-list (chat-ui-state-messages chat-state)))
+                 (target-index (length history))
+                 (stream-state (chat-ui-state-stream-state chat-state))
+                 (system-prompt (%resolve-chat-system-prompt chat-state)))
+            (setf (chat-ui-state-stream-system-prompt chat-state) system-prompt)
+            (setf (chat-ui-state-stream-scroll-follow-p chat-state) t)
+            (conversation-transition! (%ensure-chat-conversation-state chat-state)
+                                      :streaming)
+            (chat-ui-add-message chat-state "assistant" "" :partial t)
+            (%clear-stream-tool-tracking! chat-state)
+            (token-stream-start
+             stream-state
+             (lambda (active-stream-state)
+               (funcall runner
+                        active-stream-state
+                        prompt
+                        history
+                        :system-prompt system-prompt
+                        :client (chat-ui-state-stream-client chat-state)
+                        :tools (%resolve-chat-tools chat-state)))
+             :target-message-index target-index))
+          (%start-step-loop-assistant-response chat-state)))))
 
 (defun %styled-segments->text (segments)
   (with-output-to-string (out)

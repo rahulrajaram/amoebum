@@ -476,6 +476,90 @@
             amoebum:*event-bus* original-event-bus
             amoebum:*permission-rules* original-rules))))
 
+(test integration-chat-step-loop-routes-tool-calls-through-execute-tool
+  (let ((original-toolset amoebum:*toolset*)
+        (original-hooks amoebum:*hook-registry*)
+        (original-event-bus amoebum:*event-bus*)
+        (original-rules amoebum:*permission-rules*)
+        (original-mode (amoebum:config-permission-mode (amoebum:current-config))))
+    (unwind-protect
+        (progn
+          (setf amoebum:*toolset* (pseudopod:make-toolset)
+                amoebum:*hook-registry* (make-hash-table :test #'equal)
+                amoebum:*event-bus* (amoebum:make-event-bus :capacity 64)
+                amoebum:*permission-rules* nil)
+          (amoebum:setconfig :permission-mode :full-auto)
+          (let ((tool-execution-count 0)
+                (pre-hook-count 0)
+                (post-hook-count 0)
+                (callback-bound-p nil)
+                (callback-handled-p nil)
+                (callback-output nil))
+            (pseudopod:register-tool-function
+             amoebum:*toolset*
+             :name "i211-chat-step-tool"
+             :description "I211 chat step loop callback test tool."
+             :parameters (let ((schema (make-hash-table :test #'equal)))
+                           (setf (gethash "type" schema) "object")
+                           schema)
+             :fn (lambda (arguments &optional tool-call)
+                   (declare (ignore arguments tool-call))
+                   (incf tool-execution-count)
+                   "i211-ok"))
+            (amoebum:register-hook :pre-tool-use
+                                   'i211-pre-hook
+                                   (lambda (_tool-name _args)
+                                     (declare (ignore _tool-name _args))
+                                     (incf pre-hook-count)
+                                     :allow))
+            (amoebum:register-hook :post-tool-use
+                                   'i211-post-hook
+                                   (lambda (_tool-name _result _elapsed-ms)
+                                     (declare (ignore _tool-name _result _elapsed-ms))
+                                     (incf post-hook-count)
+                                     :ok))
+            (let* ((client (pseudopod:make-client :api-key "stub"))
+                   (chat-state (amoebum:make-chat-ui-state
+                                :stream-runner nil
+                                :stream-client client
+                                :stream-tools amoebum:*toolset*))
+                   (user-message (amoebum:chat-ui-add-message
+                                  chat-state
+                                  "user"
+                                  "Please run the tool.")))
+              (cl-letf (((symbol-function 'pseudopod:step)
+                         (lambda (_client &rest args &key messages on-tool-call &allow-other-keys)
+                           (declare (ignore _client))
+                           (setf callback-bound-p (functionp on-tool-call))
+                           (multiple-value-setq (callback-handled-p callback-output)
+                             (funcall on-tool-call
+                                      (pseudopod:make-tool-call
+                                       :id "i211-call"
+                                       :name "i211-chat-step-tool"
+                                       :arguments "{}")))
+                           (let ((assistant (pseudopod:make-message
+                                             :role "assistant"
+                                             :content "i211-complete")))
+                             (pseudopod::%make-step-result
+                              :steps 1
+                              :history (append messages (list assistant))
+                              :final-message assistant
+                              :last-message assistant
+                              :max-steps-reached nil
+                              :tool-results nil)))))
+                (amoebum::%start-streaming-assistant-response chat-state user-message)))
+            (is-true callback-bound-p)
+            (is (eq callback-handled-p t))
+            (is (string= "i211-ok" (or callback-output "")))
+            (is (= tool-execution-count 1))
+            (is (= pre-hook-count 1))
+            (is (= post-hook-count 1)))))
+      (setf amoebum:*toolset* original-toolset
+            amoebum:*hook-registry* original-hooks
+            amoebum:*event-bus* original-event-bus
+            amoebum:*permission-rules* original-rules)
+      (amoebum:setconfig :permission-mode original-mode))))
+
 (test integration-defwidget-render-dirty-rerender-cycle
   (setf *i82-widget-render-count* 0
         (gethash :label *i82-widget-state*) "before")
