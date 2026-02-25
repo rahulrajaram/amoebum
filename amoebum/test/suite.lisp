@@ -1010,7 +1010,7 @@
 
 (test phase5-slash-commands-registered
   "Phase 5 slash commands should be registered."
-  (dolist (cmd-name '("models" "index" "self-modify" "image"
+  (dolist (cmd-name '("models" "cost" "index" "self-modify" "image"
                       "extensions-asdf" "perf" "spawn" "approvals"))
     (is-true (amoebum:find-slash-command cmd-name)
              "Expected slash command /~A to be registered." cmd-name)))
