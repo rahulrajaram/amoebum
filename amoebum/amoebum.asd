@@ -82,6 +82,7 @@
    (:file "test/deftool-type-validation-test")
    (:file "test/provider-factory-test")
    (:file "test/deftool-dangerous-permission-test")
+   (:file "test/pipeline-context-test")
    (:file "test/read-orchestration-test")
    (:file "test/write-safety-test")
    (:file "test/edit-validation-test")
