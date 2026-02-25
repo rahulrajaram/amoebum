@@ -461,6 +461,10 @@
       (handler-case
           (progn
             (%mcp-server-start-connection server)
+            (let* ((bridge-symbol (find-symbol "AUTO-REGISTER-MCP-SERVER-TOOLS"
+                                               (find-package :amoebum))))
+              (when (and bridge-symbol (fboundp bridge-symbol))
+                (funcall (symbol-function bridge-symbol) server)))
             (when (eq (mcp-server-transport server) :stdio)
               (%mcp-server-start-monitor server)))
         (error (condition)
