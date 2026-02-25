@@ -2840,7 +2840,7 @@
 (defun %image-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
   (let* ((args-text (or (gethash :ARGS arguments) ""))
-         (tokens (%slash-tokenize args-text))
+         (tokens (%tokenize-command-arguments args-text))
          (action (string-downcase (or (first tokens) "list"))))
     (cond
       ((string= action "save")
@@ -2859,7 +2859,7 @@
 (defun %extensions-asdf-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
   (let* ((args-text (or (gethash :ARGS arguments) ""))
-         (tokens (%slash-tokenize args-text))
+         (tokens (%tokenize-command-arguments args-text))
          (action (string-downcase (or (first tokens) "list"))))
     (cond
       ((string= action "discover")
@@ -2884,24 +2884,28 @@
         :output "ASDF extensions: /extensions-asdf list|load|unload|discover")))))
 
 (defun %perf-handler (_invocation arguments _context)
+  (%profile-handler _invocation arguments _context))
+
+(defun %profile-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
   (let* ((args-text (or (gethash :ARGS arguments) ""))
-         (tokens (%slash-tokenize args-text))
+         (tokens (%tokenize-command-arguments args-text))
          (action (string-downcase (or (first tokens) "report"))))
     (cond
       ((string= action "start")
-       (make-slash-command-result :output "Profiling started."))
-      ((string= action "stop")
-       (make-slash-command-result :output "Profiling stopped."))
-      ((string= action "gc")
+       (start-profiling)
        (make-slash-command-result
-        :output (format nil "GC telemetry:~%  Dynamic space usage: ~,2F MB"
-                        (/ (sb-kernel:dynamic-usage) 1048576.0))))
-      ((string= action "dashboard")
-       (make-slash-command-result :output "Performance dashboard widget activated."))
+        :output "Profiling started. Run /profile stop to capture a report."))
+      ((string= action "stop")
+       (let ((report (stop-profiling)))
+         (make-slash-command-result
+          :output (render-profiling-report-table :report report))))
+      ((string= action "report")
+       (make-slash-command-result
+        :output (render-profiling-report-table :report (report-profiling))))
       (t
        (make-slash-command-result
-        :output "Profiling: /perf start|stop|report|gc|dashboard")))))
+        :output "Profiling: /profile start|stop|report")))))
 
 (defun %voice-usage ()
   "/voice [on|off|toggle|status|language <code>]")
@@ -3223,7 +3227,7 @@
 (defun %approvals-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
   (let* ((args-text (or (gethash :ARGS arguments) ""))
-         (tokens (%slash-tokenize args-text))
+         (tokens (%tokenize-command-arguments args-text))
          (action (string-downcase (or (first tokens) "status")))
          (policy-token (second tokens))
          (cfg (%current-config-safe))
@@ -3755,8 +3759,8 @@
   (register-slash-command
    (make-slash-command
     :name "perf"
-    :description "Show performance profiling dashboard or run a profile."
-    :usage "/perf [start|stop|report|gc|dashboard]"
+    :description "Backward-compatible alias for /profile commands."
+    :usage "/perf [start|stop|report]"
     :parameters
     (list (make-slash-command-parameter
            :name "args"
@@ -3765,6 +3769,19 @@
            :greedy-p t
            :description "Subcommand for profiling."))
     :handler #'%perf-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "profile"
+    :description "Control SBCL statistical profiling and show reports."
+    :usage "/profile [start|stop|report]"
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Subcommand for profiling."))
+    :handler #'%profile-handler))
   (register-slash-command
    (make-slash-command
     :name "voice"
