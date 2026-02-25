@@ -417,9 +417,13 @@
          (values ok detail sound-path))))))
 
 (defun %default-backends (cfg)
-  (list (make-sound-backend :config cfg)
-        (make-desktop-backend :config cfg)
-        (make-log-backend :config cfg)))
+  (let ((base-backends
+          (list (make-sound-backend :config cfg)
+                (make-desktop-backend :config cfg)
+                (make-log-backend :config cfg))))
+    (if (fboundp 'make-webhook-backends)
+        (append base-backends (funcall (symbol-function 'make-webhook-backends) :config cfg))
+        base-backends)))
 
 (defun %event-trigger (event)
   (let ((event-type (event-type event)))
