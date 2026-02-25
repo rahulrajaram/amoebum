@@ -1,7 +1,15 @@
 (in-package :amoebum)
 
 (defparameter +tool-restart-names+
-  '(retry-tool skip-tool use-value abort-tool))
+  '(retry-with-modified-args
+    use-alternative-tool
+    skip-tool-call
+    abort-step
+    ask-user
+    retry-tool
+    skip-tool
+    use-value
+    abort-tool))
 
 (defparameter *supervised-restart-selector*
   nil)

@@ -39,6 +39,80 @@
 (defun execute-tool (tool-call context)
   (pseudopod:execute-tool tool-call context))
 
+(defun %effective-pipeline-event-bus (event-bus)
+  (or event-bus
+      (and (boundp '*event-bus*) *event-bus*)
+      (current-event-bus)))
+
+(defun %make-restart-context (toolset permission-mode)
+  (make-amoebum-context
+   :toolset toolset
+   :permission-mode permission-mode
+   :event-bus (%effective-pipeline-event-bus nil)
+   :hook-registry (and (boundp '*hook-registry*) *hook-registry*)
+   :initialize-notifications-p nil))
+
+(defun %normalize-restart-arguments (arguments)
+  (%copy-arguments-to-hash-table arguments))
+
+(defun %make-restart-tool-call (tool-name arguments)
+  (pseudopod:make-tool-call
+   :id (format nil "restart-~A-~D"
+               (%pipeline-normalize-tool-name tool-name)
+               (get-universal-time))
+   :name (%pipeline-normalize-tool-name tool-name)
+   :arguments (%encode-json-arguments (%normalize-restart-arguments arguments))))
+
+(defun %execute-tool-with-restarts (tool-name arguments toolset permission-mode)
+  (let* ((normalized-tool-name (%pipeline-normalize-tool-name tool-name))
+         (normalized-arguments (%normalize-restart-arguments arguments))
+         (context (%make-restart-context toolset permission-mode))
+         (tool-call (%make-restart-tool-call normalized-tool-name normalized-arguments)))
+    (restart-case
+        (restart-case
+            (execute-tool tool-call context)
+          (retry-with-modified-args (new-arguments)
+            :report "Retry this tool with modified arguments."
+            (%execute-tool-with-restarts normalized-tool-name
+                                         new-arguments
+                                         toolset
+                                         permission-mode))
+          (use-alternative-tool (alternative-tool-name alternative-arguments)
+            :report "Switch to an alternative tool for this step."
+            (%execute-tool-with-restarts alternative-tool-name
+                                         (or alternative-arguments normalized-arguments)
+                                         toolset
+                                         permission-mode))
+          (retry-tool (&optional (new-arguments normalized-arguments))
+            :report "Compatibility alias for retry-with-modified-args."
+            (invoke-restart 'retry-with-modified-args new-arguments))
+          (use-value (value)
+            :report "Compatibility alias that returns a replacement value."
+            value))
+      (skip-tool-call ()
+        :report "Skip this tool call and continue."
+        (format nil "Tool ~A skipped by recovery policy." normalized-tool-name))
+      (abort-step ()
+        :report "Abort the current step and propagate failure."
+        (error 'amoebum-error
+               :message (format nil "Tool ~A aborted current step." normalized-tool-name)))
+      (ask-user ()
+        :report "Ask user for guidance before retrying."
+        (format nil "Tool ~A requires user guidance to continue."
+                normalized-tool-name))
+      (skip-tool ()
+        :report "Compatibility alias for skip-tool-call."
+        (invoke-restart 'skip-tool-call))
+      (abort-tool ()
+        :report "Compatibility alias for abort-step."
+        (invoke-restart 'abort-step)))))
+
+(defun execute-tool-with-restarts (tool-name arguments
+                                     &key (toolset *toolset*)
+                                       permission-mode)
+  "Invoke TOOL-NAME through execute-tool with recovery restarts."
+  (%execute-tool-with-restarts tool-name arguments toolset permission-mode))
+
 (defun make-amoebum-context (&key
                                (toolset *toolset*)
                                permission-mode
