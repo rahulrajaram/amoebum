@@ -807,23 +807,55 @@
            #:make-extension-load-record
            #:extension-load-record-path
            #:extension-load-record-scope
+           #:extension-load-record-name
+           #:extension-load-record-version
+           #:extension-load-record-dependencies
+           #:extension-load-record-entry-point
+           #:extension-load-record-manifest-path
            #:extension-load-record-status
            #:extension-load-record-message
            #:extension-load-record-timestamp
+           #:extension-registry-entry
+           #:extension-registry-entry-p
+           #:make-extension-registry-entry
+           #:extension-registry-entry-name
+           #:extension-registry-entry-version
+           #:extension-registry-entry-dependencies
+           #:extension-registry-entry-entry-point
+           #:extension-registry-entry-manifest-path
+           #:extension-registry-entry-extension-root
+           #:extension-registry-entry-scope
+           #:extension-registry-entry-enabled-p
+           #:extension-registry-entry-status
+           #:extension-registry-entry-loaded-at
+           #:extension-registry-entry-last-write-date
+           #:extension-registry-entry-message
            #:*extension-load-report*
            #:*loaded-extensions*
            #:*disabled-extensions*
+           #:*extension-registry*
+           #:*extension-watch-snapshot*
+           #:*extension-hot-reload-enabled-p*
+           #:*extension-hot-reload-interval-seconds*
+           #:*extension-hot-reload-thread*
+           #:*extension-hot-reload-running-p*
            #:*extensions-global-directory-override*
            #:*extensions-project-directory-override*
            #:discover-user-extension-files
            #:extension-disabled-p
            #:list-extension-report
            #:list-loaded-extensions
+           #:list-extension-registry
            #:extension-report-summary
            #:known-user-extension-paths
+           #:known-user-extension-names
            #:disable-user-extension
+           #:enable-user-extension
            #:load-user-extensions
            #:reload-user-extensions
+           #:check-extension-hot-reload
+           #:start-extension-hot-reload
+           #:stop-extension-hot-reload
            #:session-checkpoint
            #:session-checkpoint-p
            #:make-session-checkpoint
