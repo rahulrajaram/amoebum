@@ -2884,6 +2884,61 @@
        (make-slash-command-result
         :output "Profiling: /perf start|stop|report|gc|dashboard")))))
 
+(defun %voice-usage ()
+  "/voice [on|off|toggle|status|language <code>]")
+
+(defun %voice-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let* ((args-text (or (gethash :ARGS arguments) ""))
+         (tokens (%tokenize-command-arguments args-text))
+         (action (if tokens
+                     (string-downcase (first tokens))
+                     "toggle"))
+         (backend (ensure-asr-backend)))
+    (labels ((status-output ()
+               (format nil "Voice input ~:[disabled~;enabled~], listening=~:[no~;yes~], language=~A."
+                       (voice-input-mode-enabled-p)
+                       (listening-p backend)
+                       (whisper-asr-backend-language backend)))
+             (invalid-usage (&optional detail)
+               (make-slash-command-result
+                :echo-input-p t
+                :output (format nil "~@[~A~%~]Usage: ~A"
+                                detail
+                                (%voice-usage)))))
+      (cond
+        ((member action '("on" "enable") :test #'string=)
+         (enable-voice-input-mode :backend backend)
+         (make-slash-command-result :echo-input-p t :output (status-output)))
+        ((member action '("off" "disable") :test #'string=)
+         (disable-voice-input-mode :backend backend)
+         (make-slash-command-result :echo-input-p t :output (status-output)))
+        ((string= action "toggle")
+         (toggle-voice-input-mode :backend backend)
+         (make-slash-command-result :echo-input-p t :output (status-output)))
+        ((string= action "status")
+         (make-slash-command-result :echo-input-p t :output (status-output)))
+        ((member action '("language" "lang") :test #'string=)
+         (let ((language (second tokens)))
+           (if (or (null language)
+                   (%slash-blank-p language))
+               (invalid-usage "Missing language code.")
+               (progn
+                 (set-language backend language)
+                 (make-slash-command-result
+                  :echo-input-p t
+                  :output (status-output))))))
+        (t
+         (invalid-usage (format nil "Unknown /voice action ~S." action)))))))
+
+(defun %voice-arg-completer (_command _invocation index fragment _prefix-tokens)
+  (if (= index 0)
+      (let ((prefix (%slash-trim fragment)))
+        (loop for option in '("on" "off" "toggle" "status" "language")
+              when (%starts-with-ci-p prefix option)
+                collect option))
+      nil))
+
 (defun %mcp-auth-usage ()
   "/mcp-auth [list|set <server|default> <allow|deny|prompt>|clear <server|all>]")
 
@@ -3635,6 +3690,20 @@
            :greedy-p t
            :description "Subcommand for profiling."))
     :handler #'%perf-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "voice"
+    :description "Toggle Whisper voice input and language."
+    :usage (%voice-usage)
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Optional action: on, off, toggle, status, language <code>."))
+    :handler #'%voice-handler
+    :completer #'%voice-arg-completer))
   (register-slash-command
    (make-slash-command
     :name "spawn"
