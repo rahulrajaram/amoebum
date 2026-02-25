@@ -5,6 +5,13 @@
            #:defhook
            #:defkeys
            #:defskill
+           #:tool-definition-warning
+           #:unmapped-type-warning
+           #:missing-tool-description
+           #:duplicate-tool-name
+           #:dangerous-auto-permission
+           #:unknown-tool-reference
+           #:invalid-permission-mode
            #:*skill-registry*
            #:*skill-review-analyzer*
            #:skill-argument

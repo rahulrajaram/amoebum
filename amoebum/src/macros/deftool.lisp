@@ -1,22 +1,5 @@
 (in-package :amoebum)
 
-(define-condition deftool-definition-warning (style-warning)
-  ((tool-name :initarg :tool-name
-              :reader deftool-definition-warning-tool-name)
-   (parameter :initarg :parameter
-              :initform nil
-              :reader deftool-definition-warning-parameter)
-   (reason :initarg :reason
-           :reader deftool-definition-warning-reason))
-  (:report (lambda (condition stream)
-             (let ((tool (deftool-definition-warning-tool-name condition))
-                   (parameter (deftool-definition-warning-parameter condition))
-                   (reason (deftool-definition-warning-reason condition)))
-               (if parameter
-                   (format stream "DEFTTOOL ~S parameter ~S: ~A"
-                           tool parameter reason)
-                   (format stream "DEFTTOOL ~S: ~A" tool reason))))))
-
 (defparameter *toolset* (pseudopod:make-toolset))
 (defparameter *tool-metadata* (make-hash-table :test #'equal))
 (defparameter *tool-history* (make-hash-table :test #'equal))
@@ -34,6 +17,7 @@
     table))
 
 (defconstant +missing-tool-argument+ :amoebum/missing-tool-argument)
+(defparameter +allowed-permission-modes+ '(:auto :supervised :full-auto))
 
 (defstruct (tool-metadata
             (:constructor make-tool-metadata
@@ -138,7 +122,7 @@
                  (or (null description)
                      (zerop (length (string-trim '(#\Space #\Tab #\Newline #\Return)
                                                  description)))))
-        (warn 'deftool-definition-warning
+        (warn 'missing-tool-description
               :tool-name tool-name
               :parameter parameter-name
               :reason "Required parameter is missing :description.")))))
@@ -158,13 +142,17 @@
   (let ((normalized (%tool-name-string tool-name)))
     (if (gethash normalized *deftool-compile-time-tool-names*)
         (progn
-          (warn 'deftool-definition-warning
-                :tool-name normalized
-                :reason "Duplicate tool name seen during macroexpansion.")
+          (warn 'duplicate-tool-name
+                :tool-name normalized)
           t)
         (progn
           (setf (gethash normalized *deftool-compile-time-tool-names*) t)
           nil))))
+
+(defun %blank-string-p (value)
+  (or (null value)
+      (zerop (length (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                  (princ-to-string value))))))
 
 (defun %json-enum-value (value)
   (typecase value
@@ -378,6 +366,41 @@
     (t
      (list "string"))))
 
+(defun %normalized-schema-types (schema-type-field)
+  (remove-duplicates
+   (loop for raw in (cond
+                      ((null schema-type-field) '())
+                      ((listp schema-type-field) schema-type-field)
+                      (t (list schema-type-field)))
+         for normalized = (string-downcase (princ-to-string raw))
+         when (plusp (length normalized))
+           collect normalized)
+   :test #'string=))
+
+(defun %known-json-schema-type-p (type-name)
+  (member type-name
+          '("string" "integer" "number" "boolean" "array" "object" "null")
+          :test #'string=))
+
+(defun %expected-schema-types-for-type-spec (type-spec)
+  (cond
+    ((and (consp type-spec) (eq (first type-spec) 'member))
+     (list "string"))
+    ((and (consp type-spec) (eq (first type-spec) 'or))
+     (let ((collected '()))
+       (dolist (candidate (rest type-spec))
+         (let ((mapped (%expected-schema-types-for-type-spec candidate)))
+           (unless mapped
+             (return-from %expected-schema-types-for-type-spec nil))
+           (setf collected (nconc collected (copy-list mapped)))))
+       (remove-duplicates collected :test #'string=)))
+    ((and (consp type-spec) (eq (first type-spec) 'integer))
+     (list "integer"))
+    ((gethash type-spec *cl-type-schema-type-table*)
+     (list (gethash type-spec *cl-type-schema-type-table*)))
+    (t
+     nil)))
+
 (defun cl-type-to-json-schema (type-spec)
   (let ((schema (make-hash-table :test #'equal)))
     (cond
@@ -411,7 +434,7 @@
          (when (or (eq type-spec 'pathname)
                    (equal type-spec 'pathname))
            (setf (gethash "format" schema) "path"))
-         (when (and (consp type-spec) (eq (first type-spec) 'integer))
+             (when (and (consp type-spec) (eq (first type-spec) 'integer))
            (let ((lower (second type-spec))
                  (upper (third type-spec)))
              (when (integerp lower)
@@ -419,6 +442,24 @@
              (when (integerp upper)
                (setf (gethash "maximum" schema) upper)))))))
     schema))
+
+(defun %validate-type-to-schema-mapping (tool-name parameter-name type-spec)
+  (let* ((expected-types (%expected-schema-types-for-type-spec type-spec))
+         (schema (cl-type-to-json-schema type-spec))
+         (actual-types (%normalized-schema-types (gethash "type" schema)))
+         (known-types-p (every #'%known-json-schema-type-p actual-types))
+         (round-trip-p (and expected-types
+                            known-types-p
+                            (null (set-exclusive-or expected-types
+                                                    actual-types
+                                                    :test #'string=)))))
+    (unless round-trip-p
+      (warn 'unmapped-type-warning
+            :tool-name tool-name
+            :parameter parameter-name
+            :type-spec type-spec
+            :reason "Type does not round-trip cleanly through JSON schema mapping."))
+    round-trip-p))
 
 (defun %tool-schema-from-parameter-specs (parameter-specs)
   (let ((schema (make-hash-table :test #'equal))
@@ -559,6 +600,19 @@
              (bindings '())
              (validation-forms '()))
         (%record-deftool-name-for-validation tool-name)
+        (unless (member permission +allowed-permission-modes+ :test #'eq)
+          (error 'invalid-permission-mode
+                 :tool-name tool-name
+                 :permission permission
+                 :allowed-values +allowed-permission-modes+))
+        (when (and dangerous-p (eq permission :auto))
+          (warn 'dangerous-auto-permission
+                :tool-name tool-name
+                :reason "Dangerous tools should not default to :permission :auto."))
+        (when (%blank-string-p docstring)
+          (warn 'missing-tool-description
+                :tool-name tool-name
+                :reason "DEFTTOOL should include a non-empty docstring description."))
         (%validate-tool-parameter-specs tool-name normalized-parameters)
         (%validate-dangerous-permission-combination tool-name permission dangerous-p)
         (dolist (parameter normalized-parameters)
@@ -570,6 +624,7 @@
                  (argument-key (string-downcase (symbol-name parameter-name)))
                  (raw-symbol (%binding-symbol "%RAW" parameter-name))
                  (needs-check-symbol (%binding-symbol "%CHECK" parameter-name)))
+            (%validate-type-to-schema-mapping tool-name parameter-name parameter-type)
             (push `(,raw-symbol (%extract-tool-argument arguments ,argument-key))
                   bindings)
             (push `(,parameter-name
