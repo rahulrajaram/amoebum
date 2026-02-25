@@ -205,6 +205,21 @@
         (progn
           (setf amoebum:*event-bus* bus
                 amoebum:*permission-rules* nil)
+          ;; Ensure read-file tool is registered in the current toolset
+          (unless (pseudopod:find-tool amoebum:*toolset* "read-file")
+            (pseudopod:register-tool-function
+             amoebum:*toolset*
+             :name "read-file"
+             :description "Read file tool (stub for pipeline integration test)."
+             :parameters (let ((schema (make-hash-table :test #'equal)))
+                           (setf (gethash "type" schema) "object")
+                           schema)
+             :fn (lambda (arguments &optional tool-call)
+                   (declare (ignore tool-call))
+                   (amoebum:orchestrate-read
+                    (gethash "path" arguments)
+                    :offset (gethash "offset" arguments)
+                    :limit (gethash "limit" arguments)))))
           (amoebum:add-permission-rule :effect :allow
                                           :path (namestring dir)
                                           :tool :read-file)

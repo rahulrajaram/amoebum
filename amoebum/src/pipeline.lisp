@@ -5,6 +5,8 @@
 (defparameter *pipeline-current-tool-name* nil)
 (defparameter *pipeline-current-arguments* nil)
 (defparameter *pipeline-current-request-id* nil)
+(defvar *tool-error-llm-recovery-function* nil
+  "When non-nil, a function called with (condition tool-name arguments) to attempt LLM-driven recovery from tool errors.")
 
 (defclass tool-execution-context (pseudopod:tool-execution-context)
   ((permission-mode :initarg :permission-mode
@@ -62,6 +64,15 @@
                (get-universal-time))
    :name (%pipeline-normalize-tool-name tool-name)
    :arguments (%encode-json-arguments (%normalize-restart-arguments arguments))))
+
+(defun %handle-tool-error-via-llm (condition tool-name arguments)
+  "Delegate tool error recovery to the LLM recovery function.
+The recovery function should inspect the condition and available restarts,
+then invoke one of: retry-with-modified-args, use-alternative-tool,
+skip-tool-call, abort-step, or ask-user."
+  (when (functionp *tool-error-llm-recovery-function*)
+    (funcall *tool-error-llm-recovery-function*
+             condition tool-name arguments)))
 
 (defun %execute-tool-with-restarts (tool-name arguments toolset permission-mode)
   (let* ((normalized-tool-name (%pipeline-normalize-tool-name tool-name))

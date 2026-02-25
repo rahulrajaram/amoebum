@@ -48,7 +48,7 @@
              (is (typep (first warnings) 'amoebum::unknown-tool-reference))
              (is (string=
                   "missing-tool"
-                  (amoebum::unknown-tool-reference-tool-name (first warnings))))))
+                  (amoebum::unknown-tool-reference-reference (first warnings))))))
       (%restore-hash-table registry original))))
 
 (test defhook-cross-reference-allows-known-tool

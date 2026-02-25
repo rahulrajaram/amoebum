@@ -15,16 +15,13 @@
                 'pseudopod::tool-execution-context)))
 
 (test make-amoebum-context-populates-required-slots
-  (let* ((conversation (pseudopod:make-conversation :client nil))
-         (metrics (make-hash-table :test #'equal))
+  (let* ((metrics (make-hash-table :test #'equal))
          (hook-registry (list :hook-registry))
          (context (amoebum:make-amoebum-context
                    :permission-mode :supervised
-                   :conversation conversation
                    :metrics metrics
                    :hook-registry hook-registry)))
     (is-true (typep context 'amoebum:amoebum-context))
     (is (eq (amoebum:context-permission-mode context) :supervised))
-    (is (eq (amoebum::context-conversation context) conversation))
     (is (eq (amoebum:context-metrics context) metrics))
     (is (equal (amoebum:context-hook-registry context) hook-registry))))

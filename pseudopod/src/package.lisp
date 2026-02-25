@@ -7,6 +7,7 @@
    #:*default-model*
    #:*default-api-key-file*
    #:client
+   #:client-p
    #:make-client
    #:client-api-key
    #:client-base-url

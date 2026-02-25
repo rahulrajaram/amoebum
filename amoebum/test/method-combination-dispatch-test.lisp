@@ -59,8 +59,8 @@
                  (result (amoebum:execute-tool call context)))
             (is (string= result "primary-ok"))
             (is (equal (nreverse order) '(:log :before :primary :after)))
-            (is saw-retry)
-            (is saw-skip)))
+            (is-true saw-retry)
+            (is-true saw-skip)))
       (setf amoebum:*toolset* original-toolset
             amoebum:*hook-registry* original-hooks
             amoebum:*event-bus* original-event-bus))))

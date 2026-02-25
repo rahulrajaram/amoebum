@@ -40,11 +40,16 @@
           (%i215-register-tools toolset)
 
           (setf amoebum::*tool-error-llm-recovery-function*
-                (lambda (condition tool-name arguments restart-options)
+                (lambda (condition tool-name arguments)
                   (declare (ignore tool-name arguments))
                   (setf captured-context (amoebum:condition-to-llm-context condition)
-                        captured-restarts restart-options)
-                  "{\"restart\":\"retry-with-modified-args\",\"args\":{\"mode\":\"ok\"}}"))
+                        captured-restarts (mapcar (lambda (restart)
+                                                    (list :name (string-downcase
+                                                                 (symbol-name (restart-name restart)))))
+                                                  (compute-restarts condition)))
+                  (let ((restart (find-restart 'amoebum::retry-with-modified-args condition)))
+                    (when restart
+                      (invoke-restart restart (%i215-make-args "mode" "ok"))))))
           (let ((result
                   (amoebum:execute-tool-with-restarts
                    "i215-flaky"
@@ -58,9 +63,11 @@
                            captured-restarts)))
 
           (setf amoebum::*tool-error-llm-recovery-function*
-                (lambda (&rest _)
-                  (declare (ignore _))
-                  "not-json"))
+                (lambda (condition tool-name arguments)
+                  (declare (ignore tool-name arguments))
+                  (let ((restart (find-restart 'amoebum::ask-user condition)))
+                    (when restart
+                      (invoke-restart restart)))))
           (let ((result
                   (amoebum:execute-tool-with-restarts
                    "i215-flaky"

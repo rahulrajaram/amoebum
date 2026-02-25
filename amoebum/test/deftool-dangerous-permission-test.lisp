@@ -17,7 +17,7 @@
     (handler-bind
         ((warning
            (lambda (condition)
-             (when (and (typep condition 'amoebum::deftool-definition-warning)
+             (when (and (typep condition 'amoebum::dangerous-auto-permission)
                         (%warning-mentions-dangerous-auto-permission-p condition))
                (setf warning-seen t))
              (let ((restart (find-restart 'muffle-warning condition)))

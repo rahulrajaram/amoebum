@@ -527,33 +527,37 @@
                                   chat-state
                                   "user"
                                   "Please run the tool.")))
-              (cl-letf (((symbol-function 'pseudopod:step)
-                         (lambda (_client &rest args &key messages on-tool-call &allow-other-keys)
-                           (declare (ignore _client))
-                           (setf callback-bound-p (functionp on-tool-call))
-                           (multiple-value-setq (callback-handled-p callback-output)
-                             (funcall on-tool-call
-                                      (pseudopod:make-tool-call
-                                       :id "i211-call"
-                                       :name "i211-chat-step-tool"
-                                       :arguments "{}")))
-                           (let ((assistant (pseudopod:make-message
-                                             :role "assistant"
-                                             :content "i211-complete")))
-                             (pseudopod::%make-step-result
-                              :steps 1
-                              :history (append messages (list assistant))
-                              :final-message assistant
-                              :last-message assistant
-                              :max-steps-reached nil
-                              :tool-results nil)))))
-                (amoebum::%start-streaming-assistant-response chat-state user-message)))
+              (let ((original-step-fn (symbol-function 'pseudopod:step)))
+                (unwind-protect
+                    (progn
+                      (setf (symbol-function 'pseudopod:step)
+                            (lambda (_client &rest args &key messages on-tool-call &allow-other-keys)
+                              (declare (ignore _client args))
+                              (setf callback-bound-p (functionp on-tool-call))
+                              (multiple-value-setq (callback-handled-p callback-output)
+                                (funcall on-tool-call
+                                         (pseudopod:make-tool-call
+                                          :id "i211-call"
+                                          :name "i211-chat-step-tool"
+                                          :arguments "{}")))
+                              (let ((assistant (pseudopod:make-message
+                                                :role "assistant"
+                                                :content "i211-complete")))
+                                (pseudopod::%make-step-result
+                                 :steps 1
+                                 :history (append messages (list assistant))
+                                 :final-message assistant
+                                 :last-message assistant
+                                 :max-steps-reached nil
+                                 :tool-results nil))))
+                      (amoebum::%start-streaming-assistant-response chat-state user-message))
+                  (setf (symbol-function 'pseudopod:step) original-step-fn))))
             (is-true callback-bound-p)
             (is (eq callback-handled-p t))
             (is (string= "i211-ok" (or callback-output "")))
             (is (= tool-execution-count 1))
             (is (= pre-hook-count 1))
-            (is (= post-hook-count 1)))))
+            (is (= post-hook-count 1))))
       (setf amoebum:*toolset* original-toolset
             amoebum:*hook-registry* original-hooks
             amoebum:*event-bus* original-event-bus

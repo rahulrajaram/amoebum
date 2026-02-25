@@ -11,16 +11,6 @@
                      (defhook-definition-warning-hook-point condition)
                      (defhook-definition-warning-reason condition)))))
 
-(define-condition unknown-tool-reference (style-warning)
-  ((hook-point :initarg :hook-point
-               :reader unknown-tool-reference-hook-point)
-   (tool-name :initarg :tool-name
-              :reader unknown-tool-reference-tool-name))
-  (:report (lambda (condition stream)
-             (format stream
-                     "DEFHOOK ~S references unknown tool ~S at macroexpansion time."
-                     (unknown-tool-reference-hook-point condition)
-                     (unknown-tool-reference-tool-name condition)))))
 
 (defparameter +hook-point-definitions+
   '((:pre-tool-use
@@ -624,7 +614,7 @@
                        (unless (%known-deftool-reference-p tool-name)
                          (warn 'unknown-tool-reference
                                :hook-point hook-point
-                               :tool-name tool-name))
+                               :reference tool-name))
                        (push `(string= (string-downcase (princ-to-string ,tool-var))
                                        ,tool-name)
                              tests)))

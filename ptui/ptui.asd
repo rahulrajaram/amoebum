@@ -46,6 +46,7 @@
   :serial t
   :components
   ((:file "src/runtime/queue")
+   (:file "src/runtime/event-bus")
    (:file "src/runtime/event-filters")
    (:file "src/runtime/scheduler")))
 
@@ -173,6 +174,7 @@
    (:file "src/util/time")
    (:file "src/search/engine")
    (:file "src/runtime/queue")
+   (:file "src/runtime/event-bus")
    (:file "src/runtime/event-filters")
    (:file "src/runtime/scheduler")
    (:file "src/term/tty")

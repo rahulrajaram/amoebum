@@ -129,7 +129,7 @@
 
 (defun %validate-dangerous-permission-combination (tool-name permission dangerous-p)
   (when (and dangerous-p (eq permission :auto))
-    (warn 'deftool-definition-warning
+    (warn 'dangerous-auto-permission
           :tool-name tool-name
           :parameter :permission
           :reason "Dangerous tool declared with :permission :auto; use :supervised (the default).")))
