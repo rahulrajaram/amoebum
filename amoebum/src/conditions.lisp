@@ -134,6 +134,12 @@
 (defgeneric condition-to-llm-context (condition)
   (:documentation "Convert CONDITION to compact context text for LLM recovery."))
 
+(defun %condition-type-name (condition)
+  (let ((name (class-name (class-of condition))))
+    (if (symbolp name)
+        (string-downcase (symbol-name name))
+        (string-downcase (princ-to-string name)))))
+
 (defun %condition-message (condition)
   (with-output-to-string (stream)
     (princ condition stream)))
@@ -154,40 +160,102 @@
                         restarts))
         "none")))
 
-(defmethod condition-to-llm-context ((condition condition))
-  (format nil "Condition ~A: ~A. Available restarts: ~A."
-          (class-name (class-of condition))
+(defun %format-llm-condition-context (condition suggested-action)
+  (format nil
+          "Condition type: ~A~%Message: ~A~%Available restarts: ~A~%Suggested action: ~A"
+          (%condition-type-name condition)
           (%condition-message condition)
-          (%restart-summary condition)))
+          (%restart-summary condition)
+          suggested-action))
+
+(defmethod condition-to-llm-context ((condition condition))
+  (%format-llm-condition-context
+   condition
+   "Inspect the error context and choose the safest available restart; ask user if uncertainty remains."))
+
+(defmethod condition-to-llm-context ((condition amoebum-error))
+  (%format-llm-condition-context
+   condition
+   "Summarize the failure and recover conservatively; prefer skip or user confirmation over risky retries."))
 
 (defmethod condition-to-llm-context ((condition tool-error))
-  (format nil "Tool '~A' failed: ~A. Available recovery options: ~A."
-          (tool-error-tool-name condition)
-          (%condition-message condition)
-          (%restart-summary condition)))
+  (%format-llm-condition-context
+   condition
+   (format nil "Review tool '~A' inputs and retry only after fixing arguments or selecting a safer alternative."
+           (tool-error-tool-name condition))))
+
+(defmethod condition-to-llm-context ((condition tool-execution-error))
+  (%format-llm-condition-context
+   condition
+   (format nil "Tool '~A' failed during execution; retry if transient, otherwise skip and continue."
+           (tool-error-tool-name condition))))
 
 (defmethod condition-to-llm-context ((condition tool-permission-denied))
-  (format nil "Tool '~A' was denied by policy: ~A. Available recovery options: ~A."
-          (tool-error-tool-name condition)
-          (%condition-message condition)
-          (%restart-summary condition)))
+  (%format-llm-condition-context
+   condition
+   (format nil "Permission denied for '~A'; request approval, adjust permission mode, or choose a non-dangerous fallback."
+           (tool-error-tool-name condition))))
 
 (defmethod condition-to-llm-context ((condition tool-not-found))
-  (format nil "Tool '~A' is not registered. Available recovery options: ~A."
-          (tool-error-tool-name condition)
-          (%restart-summary condition)))
+  (%format-llm-condition-context
+   condition
+   (format nil "Tool '~A' is unavailable; choose an alternative tool or skip this step."
+           (tool-error-tool-name condition))))
+
+(defmethod condition-to-llm-context ((condition tool-not-found-error))
+  (%format-llm-condition-context
+   condition
+   (format nil "Tool '~A' is unavailable; use an alternate capability and preserve task continuity."
+           (tool-error-tool-name condition))))
 
 (defmethod condition-to-llm-context ((condition tool-timeout))
-  (format nil "Tool '~A' timed out after ~A seconds. Available recovery options: ~A."
-          (tool-error-tool-name condition)
-          (or (tool-timeout-seconds condition) "unknown")
-          (%restart-summary condition)))
+  (%format-llm-condition-context
+   condition
+   (format nil "Tool '~A' timed out after ~A seconds; retry with smaller scope or skip to avoid blocking."
+           (tool-error-tool-name condition)
+           (or (tool-timeout-seconds condition) "unknown"))))
+
+(defmethod condition-to-llm-context ((condition tool-timeout-error))
+  (%format-llm-condition-context
+   condition
+   (format nil "Timeout from tool '~A'; prefer reduced workload retries, then fallback/skip if repeated."
+           (tool-error-tool-name condition))))
 
 (defmethod condition-to-llm-context ((condition tool-argument-error))
-  (format nil "Tool '~A' received invalid arguments: ~A. Available recovery options: ~A."
-          (tool-error-tool-name condition)
-          (%condition-message condition)
-          (%restart-summary condition)))
+  (%format-llm-condition-context
+   condition
+   (format nil "Arguments for tool '~A' are invalid; correct schema/values before retry."
+           (tool-error-tool-name condition))))
+
+(defmethod condition-to-llm-context ((condition tool-missing-argument))
+  (%format-llm-condition-context
+   condition
+   (format nil "Supply required argument(s) for tool '~A' and retry."
+           (tool-error-tool-name condition))))
+
+(defmethod condition-to-llm-context ((condition tool-type-mismatch))
+  (%format-llm-condition-context
+   condition
+   (format nil "Argument type mismatch for tool '~A'; coerce or replace values with the expected type."
+           (tool-error-tool-name condition))))
+
+(defmethod condition-to-llm-context ((condition hook-execution-error))
+  (%format-llm-condition-context
+   condition
+   (format nil "Hook ~S at ~S failed; disable or bypass the hook, then continue with guarded execution."
+           (hook-execution-error-hook-id condition)
+           (hook-execution-error-hook-point condition))))
+
+(defmethod condition-to-llm-context ((condition context-overflow-error))
+  (%format-llm-condition-context
+   condition
+   "Context window exceeded; compress context, drop low-priority messages, then retry."))
+
+(defmethod condition-to-llm-context ((condition budget-exceeded-error))
+  (%format-llm-condition-context
+   condition
+   (format nil "~A budget exceeded; reduce scope/cost and continue with smaller operations."
+           (string-downcase (symbol-name (budget-exceeded-kind condition))))))
 
 (defun %argument-as-string (arguments key)
   (let ((value (and (hash-table-p arguments)
