@@ -49,6 +49,7 @@
                       (stream-scroll-follow-p t)
                       (stream-markdown-renderer (make-streaming-markdown-renderer))
                       (status-bar-state (make-status-bar-state))
+                      (provider-dashboard-visible-p nil)
                       (conversation nil)
                       (context-used-tokens 0)
                       (context-window-limit +default-context-window-limit+)
@@ -79,6 +80,7 @@
   (stream-markdown-renderer (make-streaming-markdown-renderer)
                             :type streaming-markdown-renderer)
   (status-bar-state (make-status-bar-state) :type status-bar-state)
+  (provider-dashboard-visible-p nil :type boolean)
   (conversation nil)
   (context-used-tokens 0 :type integer)
   (context-window-limit +default-context-window-limit+ :type integer)
@@ -2153,9 +2155,20 @@ Falls back to the global *toolset* when stream-tools is nil."
                (ptui.layout:layout-size-height
                 (ptui.widgets.core:widget-measure plan-presentation-widget))
                0))
+         (provider-widget
+           (when (chat-ui-state-provider-dashboard-visible-p chat-state)
+             (provider-health-panel
+              (list :entries (provider-health-entries)
+                    :updated-at (provider-health-last-updated-at)))))
+         (provider-height
+           (if provider-widget
+               (ptui.layout:layout-size-height
+                (ptui.widgets.core:widget-measure provider-widget))
+               0))
          (history-height (max 1 (- inner-height
                                    input-height
                                    header-height
+                                   provider-height
                                    picker-height
                                    tree-height
                                    plan-presentation-height
@@ -2203,12 +2216,15 @@ Falls back to the global *toolset* when stream-tools is nil."
               (chat-ui-state-status-bar-state chat-state)
               :id :chat-status-bar
               :width inner-width))
-           (content
+         (content
              (ptui.widgets.core:make-stack-widget
               (append
                (list
                (%chat-text-widget "amoebum chat" :chat-title :meta)
                 status-widget)
+               (if provider-widget
+                   (list provider-widget)
+                   '())
                (if tree-widget
                    (list tree-widget)
                    '())
@@ -2478,6 +2494,8 @@ Falls back to the global *toolset* when stream-tools is nil."
         (%chat-tree-signature (chat-ui-state-messages state))
         (tree-browser-render-key
          (%ensure-chat-tree-browser-state state))
+        (chat-ui-state-provider-dashboard-visible-p state)
+        (provider-health-signature)
         (fuzzy-picker-render-key
          (%ensure-chat-fuzzy-picker-state state))
         (%chat-plan-workspace-tree-key state)
@@ -2497,6 +2515,7 @@ Falls back to the global *toolset* when stream-tools is nil."
          (layout (chat-ui-state-cached-layout chat-state))
          (focus-id nil))
     (declare (ignore agent-completion-count drained-event-count stream-summary picker-state))
+    (provider-health-refresh!)
     (%sync-chat-context-usage! chat-state)
     (%emit-stream-budget-warning-if-needed chat-state)
     (let ((checkpoint
@@ -2570,6 +2589,17 @@ Falls back to the global *toolset* when stream-tools is nil."
               :keep-last-turns (slash-command-result-payload result)
               :trigger :manual)))
        (setf action-output (%format-compression-output compression))))
+    (:toggle-provider-dashboard
+     (let* ((payload (slash-command-result-payload result))
+            (current (chat-ui-state-provider-dashboard-visible-p chat-state))
+            (next
+              (case payload
+                ((:on t) t)
+                ((:off nil) nil)
+                (otherwise (not current)))))
+       (setf (chat-ui-state-provider-dashboard-visible-p chat-state) next
+             action-output (format nil "Provider dashboard ~:[hidden~;visible~]." next))
+       (provider-health-refresh! :force t)))
     (otherwise nil))
     (%sync-chat-context-usage! chat-state :allow-auto-compress-p nil)
     action-output))
