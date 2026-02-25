@@ -894,6 +894,23 @@
            #:complete-slash-command-input
            #:dispatch-slash-command
            #:register-builtin-slash-commands
+           #:*tts-run-command-function*
+           #:*tts-backend*
+           #:tts-backend
+           #:kokoro-tts-backend
+           #:make-kokoro-tts-backend
+           #:kokoro-tts-voice
+           #:speak-text
+           #:stop-speaking
+           #:speaking-p
+           #:set-voice
+           #:list-voices
+           #:ensure-tts-backend
+           #:speak-with-default-backend
+           #:speak-last-assistant-response
+           #:auto-speak-enabled-p
+           #:tts-post-receive-auto-speak-hook
+           #:enable-tts-post-receive-hook
            #:+hook-point-definitions+
            #:*hook-registry*
            #:register-hook

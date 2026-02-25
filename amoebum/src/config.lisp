@@ -37,6 +37,10 @@
     :notification-sound-task-complete nil
     :notification-sound-error nil
     :notification-sound-approval-needed nil
+    :tts-command "kokoro-tts"
+    :tts-python-module nil
+    :tts-voice "af_heart"
+    :tts-auto-speak nil
     :auto-checkpoint-idle-seconds 300
     :plan-mode nil))
 
@@ -131,6 +135,14 @@
 (defun %non-empty-string-p (value)
   (and (stringp value)
        (> (length (%trim-string value)) 0)))
+
+(defun %parse-boolean (value)
+  (let ((trimmed (string-downcase (%trim-string value))))
+    (cond
+      ((member trimmed '("1" "true" "t" "yes" "on") :test #'string=) t)
+      ((member trimmed '("0" "false" "nil" "no" "off") :test #'string=) nil)
+      (t
+       nil))))
 
 (defun %valid-config-value-p (key value)
   (case key
@@ -256,6 +268,18 @@
     (:notification-sound-approval-needed
      (or (null value)
          (%pathname-or-string-p value)))
+    (:tts-command
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:tts-python-module (or (eq value t) (eq value nil)))
+    (:tts-voice
+     (or (null value)
+         (and (stringp value)
+              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                 0))))
+    (:tts-auto-speak (or (eq value t) (eq value nil)))
     (:auto-checkpoint-idle-seconds
      (and (integerp value)
           (>= value 0)))
@@ -444,7 +468,11 @@
         (permission-mode (uiop:getenv "AMOEBUM_PERMISSION_MODE"))
         (approval-policy (uiop:getenv "AMOEBUM_APPROVAL_POLICY"))
         (sandbox-mode (uiop:getenv "AMOEBUM_SANDBOX_MODE"))
-        (swarm-delegation-mode (uiop:getenv "AMOEBUM_SWARM_DELEGATION_MODE")))
+        (swarm-delegation-mode (uiop:getenv "AMOEBUM_SWARM_DELEGATION_MODE"))
+        (tts-command (uiop:getenv "AMOEBUM_TTS_COMMAND"))
+        (tts-voice (uiop:getenv "AMOEBUM_TTS_VOICE"))
+        (tts-python-module (uiop:getenv "AMOEBUM_TTS_PYTHON_MODULE"))
+        (tts-auto-speak (uiop:getenv "AMOEBUM_TTS_AUTO_SPEAK")))
     (when (%non-empty-string-p model)
       (setf (gethash :model values) (%trim-string model)))
     (when (%non-empty-string-p permission-mode)
@@ -459,6 +487,16 @@
     (when (%non-empty-string-p swarm-delegation-mode)
       (setf (gethash :swarm-delegation-mode values)
             (%swarm-delegation-mode-keyword swarm-delegation-mode)))
+    (when (%non-empty-string-p tts-command)
+      (setf (gethash :tts-command values) (%trim-string tts-command)))
+    (when (%non-empty-string-p tts-voice)
+      (setf (gethash :tts-voice values) (%trim-string tts-voice)))
+    (when (%non-empty-string-p tts-python-module)
+      (setf (gethash :tts-python-module values)
+            (%parse-boolean tts-python-module)))
+    (when (%non-empty-string-p tts-auto-speak)
+      (setf (gethash :tts-auto-speak values)
+            (%parse-boolean tts-auto-speak)))
     values))
 
 (defun %starts-with-string-p (prefix string)

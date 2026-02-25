@@ -1860,6 +1860,9 @@
 (defun %notifications-usage ()
   "/notifications [list] | /notifications enable <backend> | /notifications disable <backend> | /notifications test-fire [event-type]")
 
+(defun %speak-usage ()
+  "/speak [last|on|off|status|stop|voice <name>]")
+
 (defun %sound-theme-label (theme-name)
   (if theme-name
       (string-downcase (symbol-name theme-name))
@@ -2085,6 +2088,81 @@
                                       (string-downcase (symbol-name event-type)))))))))
         (t
          (invalid-usage (format nil "Unknown /notifications action ~S." action-token)))))))
+
+(defun %render-tts-status ()
+  (let* ((cfg (%current-config-safe))
+         (auto-p (and (config-p cfg)
+                      (eq t (config-value :tts-auto-speak cfg))))
+         (backend *tts-backend*)
+         (active-voice
+           (when (and backend (typep backend 'kokoro-tts-backend))
+             (kokoro-tts-voice backend)))
+         (configured-voice (and (config-p cfg) (config-value :tts-voice cfg)))
+         (voice (or active-voice configured-voice *tts-default-voice*)))
+    (format nil "TTS auto-speak: ~:[off~;on~], voice: ~A, speaking: ~:[no~;yes~]."
+            auto-p
+            voice
+            (and backend (speaking-p backend)))))
+
+(defun %speak-handler (_invocation arguments context)
+  (declare (ignore _invocation))
+  (let* ((raw (or (gethash :ARGS arguments) ""))
+         (tokens (%tokenize-command-arguments raw))
+         (action-token (if tokens
+                           (string-downcase (first tokens))
+                           "last"))
+         (chat-state (slash-command-context-chat-state context)))
+    (labels ((invalid-usage (&optional details)
+               (make-slash-command-result
+                :echo-input-p t
+                :output (format nil "~@[~A~%~]Usage: ~A"
+                                details
+                                (%speak-usage)))))
+      (cond
+        ((member action-token '("last" "say" "speak") :test #'string=)
+         (multiple-value-bind (ok text)
+             (speak-last-assistant-response :chat-state chat-state)
+           (if ok
+               (make-slash-command-result
+                :echo-input-p t
+                :output (format nil "Speaking last assistant response (~D chars)."
+                                (length (or text ""))))
+               (make-slash-command-result
+                :echo-input-p t
+                :output "No assistant response available to speak yet."))))
+        ((member action-token '("on" "off") :test #'string=)
+         (let ((value (string= action-token "on")))
+           (setconfig :tts-auto-speak value)
+           (make-slash-command-result
+            :echo-input-p t
+            :output (format nil "TTS auto-speak ~:[disabled~;enabled~]." value))))
+        ((member action-token '("status" "show") :test #'string=)
+         (if (> (length tokens) 1)
+             (invalid-usage (format nil "Unexpected argument ~S." (second tokens)))
+             (make-slash-command-result
+              :echo-input-p t
+              :output (%render-tts-status))))
+        ((string= action-token "stop")
+         (let ((backend (or *tts-backend* (ensure-tts-backend))))
+           (stop-speaking backend)
+           (make-slash-command-result
+            :echo-input-p t
+            :output "TTS playback stopped.")))
+        ((string= action-token "voice")
+         (let ((voice-token (second tokens))
+               (extra (third tokens)))
+           (if (or (null voice-token) extra)
+               (invalid-usage "Usage: /speak voice <name>")
+               (let* ((trimmed (%slash-trim voice-token))
+                      (backend (or *tts-backend*
+                                   (ensure-tts-backend))))
+                 (setconfig :tts-voice trimmed)
+                 (set-voice backend trimmed)
+                 (make-slash-command-result
+                  :echo-input-p t
+                  :output (format nil "TTS voice set to ~A." trimmed))))))
+        (t
+         (invalid-usage (format nil "Unknown /speak action ~S." action-token)))))))
 
 (defun %hooks-usage ()
   "/hooks [list [hook-point]] | /hooks trace [limit] [hook-point]")
@@ -2447,6 +2525,24 @@
                collect option))
       (t
        nil))))
+
+(defun %speak-arg-completer (_command _invocation index fragment prefix-tokens)
+  (declare (ignore _command _invocation))
+  (let* ((prefix (%slash-trim fragment))
+         (action (and prefix-tokens (string-downcase (first prefix-tokens)))))
+    (cond
+      ((= index 0)
+       (loop for option in '("last" "on" "off" "status" "stop" "voice")
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      ((and (string= action "voice") (= index 1))
+       (let* ((backend (or *tts-backend* (ignore-errors (ensure-tts-backend))))
+              (voices (or (and backend (ignore-errors (list-voices backend)))
+                          (copy-list *tts-default-voices*))))
+         (loop for option in voices
+               when (%starts-with-ci-p prefix option)
+                 collect option)))
+      (t nil))))
 
 (defun %completion-arg-state (input)
   (let* ((trimmed (%slash-trim input))
@@ -3422,6 +3518,20 @@
            :description "Optional action: list, enable <backend>, disable <backend>, test-fire [event-type]."))
     :handler #'%notifications-handler
     :completer #'%notifications-arg-completer))
+  (register-slash-command
+   (make-slash-command
+    :name "speak"
+    :description "Speak the latest assistant response and manage TTS auto-speak."
+    :usage (%speak-usage)
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Optional action: last, on, off, status, stop, voice <name>."))
+    :handler #'%speak-handler
+    :completer #'%speak-arg-completer))
   (register-slash-command
    (make-slash-command
     :name "lint"
