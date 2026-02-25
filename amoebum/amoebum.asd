@@ -8,6 +8,7 @@
   :components
   ((:file "src/package")
    (:file "src/events")
+   (:file "src/events/types")
    (:file "src/events/filters")
    (:file "src/config")
    (:file "src/provider-factory")
@@ -96,7 +97,8 @@
    (:file "test/restarts-round-trip-test")
    (:file "test/llm-restart-selection-test")
    (:file "test/chat-snapshot-test")
-   (:file "test/conversation-roundtrip-test"))
+   (:file "test/conversation-roundtrip-test")
+   (:file "test/lifecycle-events-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (unless (uiop:symbol-call :amoebum/test :run-all)

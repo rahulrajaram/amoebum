@@ -98,7 +98,49 @@
            #:+event-type-session-checkpointed+
            #:+event-type-session-restored+
            #:+event-type-plan-step-status+
+           #:+event-type-git-commit+
+           #:+event-type-git-branch+
+           #:+event-type-agent-spawned+
+           #:+event-type-agent-completed+
+           #:+event-type-agent-error+
+           #:+lifecycle-event-types+
+           #:event-type-p
            #:+core-event-types+
+           #:commit-event
+           #:commit-event-p
+           #:make-commit-event
+           #:commit-event-hash
+           #:commit-event-message
+           #:commit-event-author
+           #:commit-event-files-changed
+           #:commit-event-event-type
+           #:branch-event
+           #:branch-event-p
+           #:make-branch-event
+           #:branch-event-old-branch
+           #:branch-event-new-branch
+           #:branch-event-action
+           #:branch-event-event-type
+           #:agent-spawned-event
+           #:agent-spawned-event-p
+           #:make-agent-spawned-event
+           #:agent-spawned-event-agent-id
+           #:agent-spawned-event-agent-type
+           #:agent-spawned-event-parent-id
+           #:agent-spawned-event-event-type
+           #:agent-completed-event
+           #:agent-completed-event-p
+           #:make-agent-completed-event
+           #:agent-completed-event-agent-id
+           #:agent-completed-event-result-status
+           #:agent-completed-event-elapsed-ms
+           #:agent-completed-event-event-type
+           #:agent-error-event
+           #:agent-error-event-p
+           #:make-agent-error-event
+           #:agent-error-event-agent-id
+           #:agent-error-event-condition
+           #:agent-error-event-event-type
            #:tool-invoked-payload
            #:tool-invoked-payload-p
            #:make-tool-invoked-payload
