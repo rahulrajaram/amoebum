@@ -983,6 +983,21 @@
                                              updated-message)))))
     (setf (chat-ui-state-stream-scroll-follow-p chat-state) t)))
 
+(defun %stream-target-assistant-response (chat-state)
+  (let* ((stream-state (chat-ui-state-stream-state chat-state))
+         (target-index (token-stream-state-target-message-index stream-state))
+         (messages (chat-ui-state-messages chat-state)))
+    (and (integerp target-index)
+         (>= target-index 0)
+         (< target-index (length messages))
+         (nth target-index messages))))
+
+(defun %emit-post-receive-hook (response)
+  (when response
+    (ignore-errors
+      (run-hooks :post-receive response)))
+  t)
+
 (defun %emit-stream-budget-warning-if-needed (chat-state)
   (let* ((stream-state (chat-ui-state-stream-state chat-state))
          (used-tokens (chat-ui-state-context-used-tokens chat-state))
@@ -1227,38 +1242,40 @@ Like %start-streaming-assistant-response but without adding a new user message."
           (when tool-call-entries
             (%set-assistant-message-tool-calls! chat-state tool-call-entries))
           (%finalize-streaming-assistant-message chat-state :partialp nil)
-          (cond
-            ;; Malformed tool calls (missing tool_call_id) — ask LLM to retry
-            ((and malformed-names
-                  (< (chat-ui-state-agentic-iteration-count chat-state)
-                     +max-agentic-iterations+))
-             ;; Append results for any valid tool calls that did execute
-             (when tool-call-entries
-               (%append-tool-result-messages! chat-state tool-call-entries))
-             (chat-ui-add-message chat-state "user"
-                                  (%malformed-tool-call-retry-message malformed-names))
-             (%clear-stream-tool-tracking! chat-state)
-             (incf (chat-ui-state-agentic-iteration-count chat-state))
-             (%start-agent-continuation-stream chat-state))
-            ;; Normal tool call continuation
-            ((and tool-call-entries
-                  (< (chat-ui-state-agentic-iteration-count chat-state)
-                     +max-agentic-iterations+))
-             (%append-tool-result-messages! chat-state tool-call-entries)
-             (%clear-stream-tool-tracking! chat-state)
-             (incf (chat-ui-state-agentic-iteration-count chat-state))
-             (%start-agent-continuation-stream chat-state))
-            ;; Max iterations reached
-            (tool-call-entries
-             (%append-tool-result-messages! chat-state tool-call-entries)
-             (%clear-stream-tool-tracking! chat-state)
-             (chat-ui-add-message chat-state "assistant"
-                                  "[Agentic loop stopped: max iterations reached]")
-             (conversation-transition! conversation :idle))
-            ;; Normal text-only response
-            (t
-             (%clear-stream-tool-tracking! chat-state)
-             (conversation-transition! conversation :idle)))))
+          (let ((assistant-response (%stream-target-assistant-response chat-state)))
+            (cond
+              ;; Malformed tool calls (missing tool_call_id) — ask LLM to retry
+              ((and malformed-names
+                    (< (chat-ui-state-agentic-iteration-count chat-state)
+                       +max-agentic-iterations+))
+               ;; Append results for any valid tool calls that did execute
+               (when tool-call-entries
+                 (%append-tool-result-messages! chat-state tool-call-entries))
+               (chat-ui-add-message chat-state "user"
+                                    (%malformed-tool-call-retry-message malformed-names))
+               (%clear-stream-tool-tracking! chat-state)
+               (incf (chat-ui-state-agentic-iteration-count chat-state))
+               (%start-agent-continuation-stream chat-state))
+              ;; Normal tool call continuation
+              ((and tool-call-entries
+                    (< (chat-ui-state-agentic-iteration-count chat-state)
+                       +max-agentic-iterations+))
+               (%append-tool-result-messages! chat-state tool-call-entries)
+               (%clear-stream-tool-tracking! chat-state)
+               (incf (chat-ui-state-agentic-iteration-count chat-state))
+               (%start-agent-continuation-stream chat-state))
+              ;; Max iterations reached
+              (tool-call-entries
+               (%append-tool-result-messages! chat-state tool-call-entries)
+               (%clear-stream-tool-tracking! chat-state)
+               (chat-ui-add-message chat-state "assistant"
+                                    "[Agentic loop stopped: max iterations reached]")
+               (conversation-transition! conversation :idle))
+              ;; Normal text-only response
+              (t
+               (%clear-stream-tool-tracking! chat-state)
+               (%emit-post-receive-hook assistant-response)
+               (conversation-transition! conversation :idle))))))
        (:cancelled
         (%finalize-streaming-assistant-message chat-state :partialp t)
         (%clear-stream-tool-tracking! chat-state)
@@ -1378,7 +1395,9 @@ Falls back to the global *toolset* when stream-tools is nil."
                 :max-steps +max-agentic-iterations+
                 :on-tool-call
                 (lambda (tool-call)
-                  (values t (execute-tool tool-call context))))))
+                  (values t (execute-tool tool-call context)))))
+             (response (or (pseudopod:step-result-final-message step-result)
+                           (pseudopod:step-result-last-message step-result))))
         (run-hooks :on-step-complete
                    (pseudopod:step-result-steps step-result)
                    (max 0
@@ -1388,6 +1407,7 @@ Falls back to the global *toolset* when stream-tools is nil."
         (%append-step-history-delta!
          chat-state
          (pseudopod:step-result-history step-result))
+        (%emit-post-receive-hook response)
         (conversation-transition! (%ensure-chat-conversation-state chat-state)
                                   :idle)))))
 

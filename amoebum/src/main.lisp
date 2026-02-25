@@ -236,6 +236,7 @@
                             #+sbcl (rest sb-ext:*posix-argv*)
                             #-sbcl nil)))
     (reload-config :cli-arguments effective-argv)
+    (enable-tts-post-receive-hook)
     (let ((options (%parse-cli-options effective-argv)))
       (if (getf options :json-mode-p)
           (apply #'run-cli-json effective-argv)
