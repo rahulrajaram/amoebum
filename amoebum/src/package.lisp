@@ -1603,6 +1603,24 @@
            #:profiler-stop
            #:profiler-report
            #:profiler-reset
+           ;; Profiling dashboard (I236)
+           #:profiling-report
+           #:profiling-report-p
+           #:make-profiling-report
+           #:profiling-report-top-functions
+           #:profiling-report-call-graph
+           #:profiling-report-total-samples
+           #:profiling-report-elapsed-ms
+           #:*profiling-enabled-p*
+           #:*tool-profiling-enabled-p*
+           #:*last-profiling-report*
+           #:start-profiling
+           #:stop-profiling
+           #:report-profiling
+           #:note-tool-profiling-sample
+           #:sort-profiling-top-functions
+           #:render-profiling-report-table
+           #:profiling-report-table-widget
            #:memory-statistics
            #:metrics-summary
            ;; Swarm integration (I83-I93)

@@ -572,6 +572,8 @@ skip-tool-call, abort-step, or ask-user."
                                          condition
                                          timeout-seconds))
                    (elapsed-ms (%elapsed-milliseconds)))
+              (ignore-errors
+                (note-tool-profiling-sample *pipeline-current-tool-name* elapsed-ms))
               (%record-tool-metrics context *pipeline-current-tool-name* elapsed-ms :error)
               (publish (%effective-event-bus context)
                        (make-tool-error-event
@@ -633,6 +635,8 @@ skip-tool-call, abort-step, or ask-user."
   (let* ((tool-name *pipeline-current-tool-name*)
          (arguments *pipeline-current-arguments*)
          (elapsed-ms (%elapsed-milliseconds)))
+    (ignore-errors
+      (note-tool-profiling-sample tool-name elapsed-ms))
     (%record-tool-metrics context tool-name elapsed-ms :ok)
     (%cache-tool-result context tool-name arguments *pipeline-current-result*)
     (%run-hook-dispatch context :post-tool-use tool-name *pipeline-current-result* elapsed-ms)
