@@ -100,7 +100,7 @@
    (:file "test/event-types-test")
    (:file "test/notification-dispatch-test")
    (:file "test/stream-hooks-test")
-   (:file "test/streaming-budget-test")
+   (:file "test/incremental-markdown-test")
    (:file "test/chat-snapshot-test")
    (:file "test/conversation-roundtrip-test")
    (:file "test/lifecycle-events-test"))

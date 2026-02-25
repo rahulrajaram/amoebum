@@ -505,6 +505,11 @@
                 t)
         (values line :assistant nil))))
 
+(defun %stream-markdown-default-role (segments)
+  (if (and (listp segments) segments)
+      (getf (first segments) :role :assistant)
+      :assistant))
+
 (defun %stream-markdown-fence-line-p (line)
   (let ((trimmed (string-trim '(#\Space #\Tab) line)))
     (and (>= (length trimmed) 3)
@@ -670,6 +675,29 @@
              (flush-buffer)
              (setf boldp (not boldp))
              (incf index 2))
+            ((and (not codep)
+                  (char= char #\[))
+             (let* ((label-end (position #\] line :start (1+ index)))
+                    (open-paren-p (and label-end
+                                       (< (1+ label-end) length)
+                                       (char= (char line (1+ label-end)) #\()))
+                    (url-end (and open-paren-p
+                                  (position #\) line :start (+ label-end 2)))))
+               (if (and label-end open-paren-p url-end)
+                   (let ((label (subseq line (1+ index) label-end)))
+                     (flush-buffer)
+                     (setf segments-rev
+                           (%stream-markdown-push-segment
+                            segments-rev
+                            label
+                            role
+                            :boldp (or headingp boldp)
+                            :italicp italicp
+                            :underlinep t))
+                     (setf index (1+ url-end)))
+                   (progn
+                     (write-char char buffer)
+                     (incf index)))))
             ((char= char #\`)
              (flush-buffer)
              (setf codep (not codep))
@@ -733,67 +761,160 @@
           :key (lambda (segment)
                  (ptui.text.width:string-width (getf segment :text "")))))
 
+(defun %stream-markdown-render-line-segments (raw-line in-fenced-code-p fenced-language)
+  (cond
+    ((%stream-markdown-fence-line-p raw-line)
+     (values (list (%stream-markdown-make-segment raw-line
+                                                  :assistant-code-fence
+                                                  :boldp t
+                                                  :dimp t))
+             (not in-fenced-code-p)
+             (if in-fenced-code-p
+                 nil
+                 (%stream-markdown-fence-language raw-line))))
+    (in-fenced-code-p
+     (values (%stream-markdown-code-line-segments raw-line fenced-language)
+             t
+             fenced-language))
+    (t
+     (multiple-value-bind (line-text line-role headingp)
+         (%stream-markdown-line-style raw-line)
+       (values (%stream-markdown-parse-inline line-text line-role :headingp headingp)
+               in-fenced-code-p
+               fenced-language)))))
+
+(defstruct (streaming-markdown-renderer
+            (:constructor make-streaming-markdown-renderer
+                (&key
+                  (width 0)
+                  (pending-line "")
+                  (logical-lines '())
+                  (wrapped-lines '())
+                  (in-fenced-code-p nil)
+                  (fenced-language nil))))
+  (width 0 :type integer)
+  (pending-line "" :type string)
+  (logical-lines '() :type list)
+  (wrapped-lines '() :type list)
+  (in-fenced-code-p nil :type boolean)
+  (fenced-language nil))
+
+(defun streaming-markdown-renderer-reset (renderer)
+  (check-type renderer streaming-markdown-renderer)
+  (setf (streaming-markdown-renderer-width renderer) 0
+        (streaming-markdown-renderer-pending-line renderer) ""
+        (streaming-markdown-renderer-logical-lines renderer) '()
+        (streaming-markdown-renderer-wrapped-lines renderer) '()
+        (streaming-markdown-renderer-in-fenced-code-p renderer) nil
+        (streaming-markdown-renderer-fenced-language renderer) nil)
+  renderer)
+
+(defun %stream-markdown-renderer-rewrap! (renderer width)
+  (let ((safe-width (max 1 (if (integerp width) width 1)))
+        (wrapped-lines '()))
+    (dolist (segments (streaming-markdown-renderer-logical-lines renderer))
+      (setf wrapped-lines
+            (append wrapped-lines
+                    (%stream-markdown-wrap-segments
+                     segments
+                     safe-width
+                     :default-role (%stream-markdown-default-role segments)))))
+    (setf (streaming-markdown-renderer-width renderer) safe-width
+          (streaming-markdown-renderer-wrapped-lines renderer) wrapped-lines)
+    renderer))
+
+(defun streaming-markdown-renderer-append-chunk (renderer chunk)
+  (check-type renderer streaming-markdown-renderer)
+  (let* ((chunk-text (if (stringp chunk) chunk (princ-to-string (or chunk "")))))
+    (when (plusp (length chunk-text))
+      (let* ((combined (concatenate 'string
+                                    (streaming-markdown-renderer-pending-line renderer)
+                                    chunk-text))
+             (start 0)
+             (length (length combined))
+             (safe-width (streaming-markdown-renderer-width renderer)))
+        (loop for index from 0 below length do
+          (when (char= (char combined index) #\Newline)
+            (let ((raw-line (subseq combined start index)))
+              (multiple-value-bind (segments next-fenced-p next-language)
+                  (%stream-markdown-render-line-segments
+                   raw-line
+                   (streaming-markdown-renderer-in-fenced-code-p renderer)
+                   (streaming-markdown-renderer-fenced-language renderer))
+                (setf (streaming-markdown-renderer-logical-lines renderer)
+                      (append (streaming-markdown-renderer-logical-lines renderer)
+                              (list segments))
+                      (streaming-markdown-renderer-in-fenced-code-p renderer) next-fenced-p
+                      (streaming-markdown-renderer-fenced-language renderer) next-language)
+                (when (> safe-width 0)
+                  (setf (streaming-markdown-renderer-wrapped-lines renderer)
+                        (append (streaming-markdown-renderer-wrapped-lines renderer)
+                                (%stream-markdown-wrap-segments
+                                 segments
+                                 safe-width
+                                 :default-role (%stream-markdown-default-role segments)))))))
+            (setf start (1+ index))))
+        (setf (streaming-markdown-renderer-pending-line renderer)
+              (subseq combined start length)))))
+  renderer)
+
+(defun streaming-markdown-renderer-render-lines (renderer width
+                                                 &key
+                                                   (partialp nil)
+                                                   (cursor-visible-p nil)
+                                                   (cursor-glyph +stream-cursor-glyph+))
+  (check-type renderer streaming-markdown-renderer)
+  (let* ((safe-width (max 1 (if (integerp width) width 1))))
+    (when (/= safe-width (streaming-markdown-renderer-width renderer))
+      (%stream-markdown-renderer-rewrap! renderer safe-width))
+    (let ((styled-lines
+            (mapcar #'copy-tree
+                    (streaming-markdown-renderer-wrapped-lines renderer))))
+      (let ((pending-line (streaming-markdown-renderer-pending-line renderer)))
+        (when (plusp (length pending-line))
+          (multiple-value-bind (pending-segments pending-fenced-p pending-language)
+              (%stream-markdown-render-line-segments
+               pending-line
+               (streaming-markdown-renderer-in-fenced-code-p renderer)
+               (streaming-markdown-renderer-fenced-language renderer))
+            (declare (ignore pending-fenced-p pending-language))
+            (setf styled-lines
+                  (append styled-lines
+                          (%stream-markdown-wrap-segments
+                           pending-segments
+                           safe-width
+                           :default-role (%stream-markdown-default-role pending-segments)))))))
+      (unless styled-lines
+        (setf styled-lines (list (list (%stream-markdown-make-segment "" :assistant)))))
+      (when (and partialp
+                 cursor-visible-p
+                 (stringp cursor-glyph)
+                 (plusp (length cursor-glyph)))
+        (let* ((cursor-segment (%stream-markdown-make-segment cursor-glyph :assistant
+                                                              :boldp t
+                                                              :invertp t))
+               (last-line (car (last styled-lines)))
+               (last-width (%stream-markdown-line-width last-line))
+               (cursor-width (ptui.text.width:string-width cursor-glyph)))
+          (if (and (> cursor-width 0)
+                   (> (+ last-width cursor-width) safe-width))
+              (setf styled-lines
+                    (append styled-lines (list (list cursor-segment))))
+              (setf (car (last styled-lines))
+                    (append last-line (list cursor-segment))))))
+      styled-lines)))
+
 (defun stream-markdown-styled-lines (text width
                                      &key
                                        (partialp nil)
                                        (cursor-visible-p nil)
                                        (cursor-glyph +stream-cursor-glyph+))
-  (let* ((safe-width (max 1 (if (integerp width) width 1)))
-         (raw-lines (%stream-markdown-split-lines text))
-         (styled-lines '())
-         (in-fenced-code-p nil)
-         (fenced-language nil))
-    (dolist (raw-line raw-lines)
-      (cond
-        ((%stream-markdown-fence-line-p raw-line)
-         (let* ((fence-segments
-                  (list (%stream-markdown-make-segment raw-line
-                                                       :assistant-code-fence
-                                                       :boldp t
-                                                       :dimp t)))
-                (wrapped
-                  (%stream-markdown-wrap-segments fence-segments safe-width
-                                                  :default-role :assistant-code-fence)))
-           (setf styled-lines (append styled-lines wrapped)))
-         (if in-fenced-code-p
-             (setf in-fenced-code-p nil
-                   fenced-language nil)
-             (setf in-fenced-code-p t
-                   fenced-language (%stream-markdown-fence-language raw-line))))
-        (in-fenced-code-p
-         (let* ((code-segments (%stream-markdown-code-line-segments raw-line fenced-language))
-                (wrapped
-                  (%stream-markdown-wrap-segments code-segments safe-width
-                                                  :default-role :assistant-code)))
-           (setf styled-lines (append styled-lines wrapped))))
-        (t
-         (multiple-value-bind (line-text line-role headingp)
-             (%stream-markdown-line-style raw-line)
-           (let* ((inline-segments
-                    (%stream-markdown-parse-inline line-text line-role :headingp headingp))
-                  (wrapped
-                    (%stream-markdown-wrap-segments inline-segments safe-width
-                                                    :default-role line-role)))
-             (setf styled-lines (append styled-lines wrapped)))))))
-    (unless styled-lines
-      (setf styled-lines (list (list (%stream-markdown-make-segment "" :assistant)))))
-    (when (and partialp
-               cursor-visible-p
-               (stringp cursor-glyph)
-               (plusp (length cursor-glyph)))
-      (let* ((cursor-segment (%stream-markdown-make-segment cursor-glyph :assistant
-                                                            :boldp t
-                                                            :invertp t))
-             (last-line (car (last styled-lines)))
-             (last-width (%stream-markdown-line-width last-line))
-             (cursor-width (ptui.text.width:string-width cursor-glyph)))
-        (if (and (> cursor-width 0)
-                 (> (+ last-width cursor-width) safe-width))
-            (setf styled-lines
-                  (append styled-lines (list (list cursor-segment))))
-            (setf (car (last styled-lines))
-                  (append last-line (list cursor-segment))))))
-    styled-lines))
+  (let ((renderer (make-streaming-markdown-renderer)))
+    (streaming-markdown-renderer-append-chunk renderer text)
+    (streaming-markdown-renderer-render-lines renderer width
+                                              :partialp partialp
+                                              :cursor-visible-p cursor-visible-p
+                                              :cursor-glyph cursor-glyph)))
 
 (defun stream-pseudopod-chat (stream-state prompt messages
                               &key
