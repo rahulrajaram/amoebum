@@ -74,6 +74,10 @@
     :initarg :path
     :initform nil
     :accessor log-backend-path)
+   (lock
+    :initarg :lock
+    :initform (bordeaux-threads:make-lock "amoebum-audit-log-lock")
+    :accessor log-backend-lock)
    (include-event-payload-p
     :initarg :include-event-payload-p
     :initform t
@@ -174,7 +178,7 @@
             arguments)))
 
 (defun %default-log-path ()
-  (merge-pathnames #P".amoebum/notifications.jsonl"
+  (merge-pathnames #P".amoebum/audit/events.jsonl"
                    (user-homedir-pathname)))
 
 (defun %notification-platform ()
