@@ -437,10 +437,33 @@
            #:make-log-backend
            #:preview-notification-sound
            #:dispatch-notification
+           #:dispatch-notification-manager
            #:make-notification-manager
            #:ensure-notification-manager
            #:stop-notification-manager
            #:stop-all-notification-managers
+           #:notification-dispatch-backend
+           #:notification-dispatch-backend-p
+           #:make-notification-dispatch-backend
+           #:notification-dispatch-backend-name
+           #:notification-dispatch-backend-backend
+           #:notification-dispatch-backend-enabled-p
+           #:notification-dispatch-backend-filter
+           #:notification-dispatch-backend-priority
+           #:notification-dispatcher
+           #:notification-dispatcher-p
+           #:make-notification-dispatcher
+           #:notification-dispatcher-backends
+           #:notification-dispatcher-event-bus
+           #:notification-dispatcher-subscription-id
+           #:*notification-dispatcher*
+           #:set-notification-dispatcher-backends
+           #:list-notification-dispatch-backends
+           #:find-notification-dispatch-backend
+           #:set-notification-dispatch-backend-enabled-p
+           #:ensure-notification-dispatcher
+           #:stop-notification-dispatcher
+           #:fire-notification-dispatch-test
            #:*toolset*
            #:*tool-metadata*
            #:*tool-history*

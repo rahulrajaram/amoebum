@@ -1857,6 +1857,9 @@
 (defun %sounds-usage ()
   "/sounds [list] | /sounds set <theme> | /sounds preview [category]")
 
+(defun %notifications-usage ()
+  "/notifications [list] | /notifications enable <backend> | /notifications disable <backend> | /notifications test-fire [event-type]")
+
 (defun %sound-theme-label (theme-name)
   (if theme-name
       (string-downcase (symbol-name theme-name))
@@ -1970,6 +1973,118 @@
                 :output (%preview-sound category cfg)))))
         (t
          (invalid-usage (format nil "Unknown /sounds action ~S." action-token)))))))
+
+(defun %notification-backend-label (backend-name)
+  (string-downcase (symbol-name backend-name)))
+
+(defun %notification-filter-label (filter)
+  (cond
+    ((eq filter :*)
+     "*")
+    ((listp filter)
+     (format nil "~{~A~^, ~}"
+             (mapcar (lambda (item)
+                       (string-downcase (symbol-name item)))
+                     filter)))
+    (t
+     (string-downcase (symbol-name filter)))))
+
+(defun %ensure-notification-dispatcher-for-command (context)
+  (let* ((cfg (or (slash-command-context-config context)
+                  (%current-config-safe)))
+         (bus (current-event-bus))
+         (manager (ensure-notification-manager :config cfg :event-bus bus)))
+    (or (and *notification-dispatcher*
+             (notification-dispatcher-p *notification-dispatcher*)
+             *notification-dispatcher*)
+        (ensure-notification-dispatcher :manager manager :event-bus bus))))
+
+(defun %render-notification-backend-list (dispatcher)
+  (let ((entries (list-notification-dispatch-backends dispatcher)))
+    (if (null entries)
+        "No notification dispatch backends configured."
+        (with-output-to-string (out)
+          (format out "Notification backends (~D):~%" (length entries))
+          (dolist (entry entries)
+            (format out "- ~A enabled=~A priority=~D filter=~A~%"
+                    (%notification-backend-label
+                     (notification-dispatch-backend-name entry))
+                    (if (notification-dispatch-backend-enabled-p entry)
+                        "yes"
+                        "no")
+                    (notification-dispatch-backend-priority entry)
+                    (%notification-filter-label
+                     (notification-dispatch-backend-filter entry))))))))
+
+(defun %parse-notification-event-type (token)
+  (when (and token (plusp (length (%slash-trim token))))
+    (%normalize-event-type token)))
+
+(defun %notifications-handler (_invocation arguments context)
+  (declare (ignore _invocation))
+  (let* ((raw (or (gethash :ARGS arguments) ""))
+         (tokens (%tokenize-command-arguments raw))
+         (action-token (if tokens
+                           (string-downcase (first tokens))
+                           "list"))
+         (dispatcher (%ensure-notification-dispatcher-for-command context)))
+    (labels ((invalid-usage (&optional details)
+               (make-slash-command-result
+                :echo-input-p t
+                :output (format nil "~@[~A~%~]Usage: ~A"
+                                details
+                                (%notifications-usage)))))
+      (cond
+        ((member action-token '("list" "ls") :test #'string=)
+         (if (> (length tokens) 1)
+             (invalid-usage (format nil "Unexpected argument ~S." (second tokens)))
+             (make-slash-command-result
+              :echo-input-p t
+              :output (%render-notification-backend-list dispatcher))))
+        ((member action-token '("enable" "disable") :test #'string=)
+         (let ((backend-token (second tokens))
+               (extra (third tokens)))
+           (cond
+             ((or (null backend-token) extra)
+              (invalid-usage (format nil "Usage: /notifications ~A <backend>"
+                                     action-token)))
+             (t
+              (handler-case
+                  (let* ((entry (set-notification-dispatch-backend-enabled-p
+                                 dispatcher
+                                 backend-token
+                                 (string= action-token "enable")))
+                         (status (if (notification-dispatch-backend-enabled-p entry)
+                                     "enabled"
+                                     "disabled")))
+                    (make-slash-command-result
+                     :echo-input-p t
+                     :output (format nil "Notification backend ~A is now ~A."
+                                     (%notification-backend-label
+                                      (notification-dispatch-backend-name entry))
+                                     status)))
+                (error (condition)
+                  (invalid-usage (princ-to-string condition))))))))
+        ((string= action-token "test-fire")
+         (let* ((event-type (or (%parse-notification-event-type (second tokens))
+                                +event-type-tool-error+))
+                (extra (third tokens)))
+           (if extra
+               (invalid-usage (format nil "Unexpected argument ~S." extra))
+               (multiple-value-bind (ok destination)
+                   (fire-notification-dispatch-test :dispatcher dispatcher
+                                                    :event-type event-type)
+                 (make-slash-command-result
+                  :echo-input-p t
+                  :output (if ok
+                              (format nil "Notification test dispatched via ~A for ~A."
+                                      (%notification-backend-label destination)
+                                      (string-downcase (symbol-name event-type)))
+                              (format nil "Notification test fallback exhausted (~A) for ~A."
+                                      destination
+                                      (string-downcase (symbol-name event-type)))))))))
+        (t
+         (invalid-usage (format nil "Unknown /notifications action ~S." action-token)))))))
 
 (defun %hooks-usage ()
   "/hooks [list [hook-point]] | /hooks trace [limit] [hook-point]")
@@ -2298,6 +2413,36 @@
                collect option))
       ((and (string= head "preview") (= index 1))
        (loop for option in category-options
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      (t
+       nil))))
+
+(defun %notifications-arg-completer (_command _invocation index fragment prefix-tokens)
+  (declare (ignore _command _invocation))
+  (let* ((head (and prefix-tokens (string-downcase (first prefix-tokens))))
+         (prefix (%slash-trim fragment))
+         (backends (mapcar (lambda (entry)
+                             (%notification-backend-label
+                              (notification-dispatch-backend-name entry)))
+                           (list-notification-dispatch-backends
+                            (or *notification-dispatcher*
+                                (ignore-errors
+                                  (%ensure-notification-dispatcher-for-command
+                                   (make-slash-command-context))))))))
+    (cond
+      ((= index 0)
+       (loop for option in '("list" "enable" "disable" "test-fire")
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      ((and (member head '("enable" "disable") :test #'string=) (= index 1))
+       (loop for option in backends
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      ((and (string= head "test-fire") (= index 1))
+       (loop for option in (mapcar (lambda (event-type)
+                                     (string-downcase (symbol-name event-type)))
+                                   +core-event-types+)
              when (%starts-with-ci-p prefix option)
                collect option))
       (t
@@ -3163,6 +3308,20 @@
            :description "Optional action: list, set <theme>, preview [category]."))
     :handler #'%sounds-handler
     :completer #'%sounds-arg-completer))
+  (register-slash-command
+   (make-slash-command
+    :name "notifications"
+    :description "Inspect dispatch backends, toggle them, and fire a dispatch test event."
+    :usage (%notifications-usage)
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Optional action: list, enable <backend>, disable <backend>, test-fire [event-type]."))
+    :handler #'%notifications-handler
+    :completer #'%notifications-arg-completer))
   (register-slash-command
    (make-slash-command
     :name "lint"

@@ -487,7 +487,7 @@
      :urgency urgency
      :timeout-ms (if (eq trigger :approval-needed) 0 5000))))
 
-(defun dispatch-notification (manager notification)
+(defun dispatch-notification-manager (manager notification)
   (dolist (backend (notification-manager-backends manager))
     (when (backend-enabled-p backend)
       (handler-case
@@ -558,6 +558,9 @@
                    :backends (or backends (%default-backends cfg)))))
     (%probe-backends! manager)
     (%subscribe-manager manager)
+    (when (fboundp 'ensure-notification-dispatcher)
+      (ignore-errors
+        (ensure-notification-dispatcher :manager manager :event-bus bus)))
     manager))
 
 (defun stop-notification-manager (&optional manager-or-bus)
@@ -576,6 +579,9 @@
       (dolist (backend (notification-manager-backends manager))
         (ignore-errors
           (notify-teardown backend)))
+      (when (fboundp 'stop-notification-dispatcher)
+        (ignore-errors
+          (stop-notification-dispatcher :event-bus bus)))
       (setf (notification-manager-subscription-ids manager) '())
       (when bus
         (remhash bus *notification-manager-registry*)))
