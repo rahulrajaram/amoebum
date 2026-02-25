@@ -99,6 +99,10 @@
    #:find-tool
    #:toolset-tools
    #:invoke-tool-call
+   #:tool-execution-context
+   #:context-toolset
+   #:context-metadata
+   #:execute-tool
    #:generate-result
    #:generate-result-p
    #:generate-result-id

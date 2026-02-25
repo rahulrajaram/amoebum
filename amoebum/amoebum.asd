@@ -91,6 +91,7 @@
    (:file "test/shell-env-test")
    (:file "test/shell-safety-test")
    (:file "test/defhook-cross-reference-test")
+   (:file "test/method-combination-dispatch-test")
    (:file "test/chat-snapshot-test")
    (:file "test/conversation-roundtrip-test"))
   :perform (asdf:test-op (op c)
