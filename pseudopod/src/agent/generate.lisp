@@ -138,19 +138,23 @@
                :max-steps-reached nil
                :tool-results (nreverse tool-results))))
           (dolist (tool-call tool-calls)
-            (when on-tool-call
-              (funcall on-tool-call tool-call))
-            (let* ((output (invoke-tool-call resolved-toolset tool-call))
-                   (result-record (%make-tool-result-record tool-call output))
-                   (tool-message (make-message
-                                  :role "tool"
-                                  :name (tool-call-name tool-call)
-                                  :tool-call-id (tool-call-id tool-call)
-                                  :content output)))
-              (push result-record tool-results)
-              (%push-message tool-message)
-              (when on-tool-result
-                (funcall on-tool-result result-record))))))
+            (multiple-value-bind (handled-p handled-output)
+                (if on-tool-call
+                    (funcall on-tool-call tool-call)
+                    (values nil nil))
+              (let* ((output (if (eq handled-p t)
+                                 handled-output
+                                 (invoke-tool-call resolved-toolset tool-call)))
+                     (result-record (%make-tool-result-record tool-call output))
+                     (tool-message (make-message
+                                    :role "tool"
+                                    :name (tool-call-name tool-call)
+                                    :tool-call-id (tool-call-id tool-call)
+                                    :content output)))
+                (push result-record tool-results)
+                (%push-message tool-message)
+                (when on-tool-result
+                  (funcall on-tool-result result-record)))))))
       (%make-step-result
        :steps steps
        :history (%finalize-history)
