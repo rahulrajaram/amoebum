@@ -380,6 +380,7 @@
            #:notification-source-event
            #:notification-timestamp
            #:notification-urgency
+           #:notification-icon-path
            #:notification-timeout-ms
            #:notification-backend
            #:backend-name
@@ -408,8 +409,11 @@
            #:*notification-command-prober*
            #:*notification-async-dispatch-p*
            #:*notification-manager-registry*
+           #:*desktop-notification-run-command-function*
            #:notification-command-available-p
            #:notification-run-command
+           #:desktop-notification-available-p
+           #:send-desktop-notification
            #:make-sound-backend
            #:make-desktop-backend
            #:make-log-backend

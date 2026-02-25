@@ -11,6 +11,7 @@
                    (timestamp 0)
                    (urgency :normal)
                    (icon nil)
+                   (icon-path nil)
                    (actions '())
                    (timeout-ms 5000))))
   (title "" :type string)
@@ -21,6 +22,7 @@
   (timestamp 0 :type integer)
   (urgency :normal :type keyword)
   icon
+  icon-path
   (actions '() :type list)
   (timeout-ms 5000 :type integer))
 
@@ -94,6 +96,10 @@
 (defparameter *notification-command-prober* nil)
 (defparameter *notification-async-dispatch-p* t)
 (defparameter *notification-manager-registry* (make-hash-table :test #'eq))
+
+;; Implemented in src/notifications/desktop.lisp (I222).
+(declaim (ftype function send-desktop-notification))
+(declaim (ftype function desktop-notification-available-p))
 
 (defstruct (notification-manager
             (:constructor %make-notification-manager
@@ -184,14 +190,6 @@
             (otherwise '()))))
     (find-if #'notification-command-available-p candidates)))
 
-(defun %detected-desktop-command ()
-  (let ((candidates
-          (case (%notification-platform)
-            (:linux '("notify-send"))
-            (:macos '("osascript"))
-            (otherwise '()))))
-    (find-if #'notification-command-available-p candidates)))
-
 (defun %json-escape (text)
   (with-output-to-string (out)
     (loop for char across (or text "") do
@@ -234,45 +232,6 @@
             (%json-string-or-null urgency-string)
             (%json-string-or-null payload-string))))
 
-(defun %normalize-urgency-for-desktop (urgency)
-  (case urgency
-    (:low "low")
-    (:critical "critical")
-    (otherwise "normal")))
-
-(defun %desktop-command-args (backend notification)
-  (let* ((command (or (desktop-backend-command backend)
-                      (%detected-desktop-command)))
-         (title (notification-title notification))
-         (body (notification-body notification))
-         (icon (or (notification-icon notification)
-                   (desktop-backend-default-icon backend))))
-    (cond
-      ((null command) nil)
-      ((string-equal command "notify-send")
-       (append (list "notify-send"
-                     (format nil "--app-name=~A" (desktop-backend-app-name backend))
-                     (format nil "--urgency=~A"
-                             (%normalize-urgency-for-desktop
-                              (notification-urgency notification)))
-                     (format nil "--expire-time=~D"
-                             (max 0 (notification-timeout-ms notification))))
-               (when icon
-                 (list (format nil "--icon=~A"
-                               (typecase icon
-                                 (pathname (namestring icon))
-                                 (string icon)
-                                 (t (princ-to-string icon))))))
-               (list title body)))
-      ((string-equal command "osascript")
-       (list "osascript"
-             "-e"
-             (format nil "display notification \"~A\" with title \"~A\""
-                     (%json-escape body)
-                     (%json-escape title))))
-      (t
-       (list command title body)))))
-
 (defmethod notify-available-p ((backend sound-backend))
   (let ((command (or (sound-backend-player-command backend)
                      (%detected-sound-player))))
@@ -281,11 +240,7 @@
          (notification-command-available-p command))))
 
 (defmethod notify-available-p ((backend desktop-backend))
-  (let ((command (or (desktop-backend-command backend)
-                     (%detected-desktop-command))))
-    (setf (desktop-backend-command backend) command)
-    (and command
-         (notification-command-available-p command))))
+  (desktop-notification-available-p backend))
 
 (defmethod notify-available-p ((backend log-backend))
   (handler-case
@@ -352,21 +307,7 @@
                (values nil stderr))))))))
 
 (defmethod notify-send ((backend desktop-backend) (notification notification))
-  (if (not (notify-available-p backend))
-      (values nil :backend-unavailable)
-      (let* ((arguments (%desktop-command-args backend notification))
-             (result (notification-run-command arguments))
-             (exit-code (getf result :exit-code))
-             (stderr (getf result :stderr)))
-        (if (zerop exit-code)
-            (values t nil)
-            (progn
-              (ptui.util.log:log-warn
-               "desktop backend command failed: command=~S exit=~S stderr=~S"
-               arguments
-               exit-code
-               stderr)
-              (values nil stderr))))))
+  (send-desktop-notification notification :backend backend))
 
 (defmethod notify-send ((backend log-backend) (notification notification))
   (let ((path (or (log-backend-path backend)
@@ -407,7 +348,7 @@
       (let ((raw (config-value :notification-events cfg)))
         (if raw
             (%normalize-trigger-list raw)
-            '(:task-complete :error :approval-needed)))))
+            '(:task-complete :error :approval-needed :long-running-complete)))))
 
 (defun make-sound-backend (&key config (enabled-p t) player-command sound-map theme)
   (let* ((cfg (or config (current-config)))
@@ -485,6 +426,7 @@
     (cond
       ((eq event-type +event-type-tool-completed+) :task-complete)
       ((eq event-type +event-type-tool-error+) :error)
+      ((eq event-type +event-type-agent-completed+) :long-running-complete)
       ((eq event-type +event-type-permission-prompted+) :approval-needed)
       (t nil))))
 
@@ -513,6 +455,11 @@
                               (or (tool-error-payload-tool-name payload) "unknown")
                               (or (tool-error-payload-condition payload) "unknown error"))
                       "An error occurred.")))
+      (:long-running-complete
+       (setf title "Long-Running Task Complete"
+             severity :info
+             urgency :normal
+             body "Long-running work completed."))
       (:approval-needed
        (setf title "Approval Needed"
              severity :warning
@@ -579,6 +526,10 @@
                          (%notification-event-handler manager event))
                        :priority 40)
             (subscribe bus +event-type-tool-error+
+                       (lambda (event)
+                         (%notification-event-handler manager event))
+                       :priority 40)
+            (subscribe bus +event-type-agent-completed+
                        (lambda (event)
                          (%notification-event-handler manager event))
                        :priority 40)
