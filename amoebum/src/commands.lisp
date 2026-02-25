@@ -1612,7 +1612,7 @@
         :output (format nil "Unsupported /agent action ~S." action))))))
 
 (defun %extensions-usage ()
-  "/extensions [list|reload|disable <all|name|path>]")
+  "/extensions [list|reload|enable <all|name|path>|disable <all|name|path>]")
 
 (defun %extension-scope-label (scope)
   (case scope
@@ -1639,10 +1639,13 @@
                   (getf summary :errors 0)
                   (getf summary :disabled 0))
           (dolist (entry report)
-            (format out "- [~A/~A] ~A~@[ -- ~A~]~%"
+            (format out "- [~A/~A] ~A~@[ name=~A~]~@[ version=~A~]~@[ entry=~A~]~@[ -- ~A~]~%"
                     (%extension-status-label (extension-load-record-status entry))
                     (%extension-scope-label (extension-load-record-scope entry))
                     (extension-load-record-path entry)
+                    (extension-load-record-name entry)
+                    (extension-load-record-version entry)
+                    (extension-load-record-entry-point entry)
                     (extension-load-record-message entry)))))))
 
 (defun %extensions-join (tokens)
@@ -1661,6 +1664,7 @@
         (setf targets
               (append (mapcar #'namestring global)
                       (mapcar #'namestring project)))))
+    (setf targets (append targets (known-user-extension-names)))
     (let ((seen (make-hash-table :test #'equal))
           (result '()))
       (labels ((remember (value)
@@ -1725,6 +1729,21 @@
                       :output (format nil "Disabled ~D extension(s). Reload to apply.~%~{~A~%~}"
                                       disabled-count
                                       disabled-paths)))))))
+        ((string= action-token "enable")
+         (let ((target (%extensions-join (rest tokens))))
+           (if (%slash-blank-p target)
+               (invalid-usage "Specify extension target or 'all'.")
+               (multiple-value-bind (enabled-paths enabled-count)
+                   (enable-user-extension target)
+                 (if (zerop enabled-count)
+                     (make-slash-command-result
+                      :echo-input-p t
+                      :output (format nil "No disabled extensions matched ~S." target))
+                     (make-slash-command-result
+                      :echo-input-p t
+                      :output (format nil "Enabled ~D extension(s). Reload to apply.~%~{~A~%~}"
+                                      enabled-count
+                                      enabled-paths)))))))
         (t
          (invalid-usage (format nil "Unknown /extensions action ~S." action-token)))))))
 
@@ -2463,10 +2482,10 @@
         (prefix (%slash-trim fragment)))
     (cond
       ((= index 0)
-       (loop for option in '("list" "reload" "disable")
+       (loop for option in '("list" "reload" "enable" "disable")
              when (%starts-with-ci-p prefix option)
                collect option))
-      ((and (string= head "disable") (= index 1))
+      ((and (member head '("enable" "disable") :test #'string=) (= index 1))
        (let ((targets (append '("all") (%extensions-known-targets))))
          (loop for option in targets
                when (%starts-with-ci-p prefix option)
@@ -3492,7 +3511,7 @@
   (register-slash-command
    (make-slash-command
     :name "extensions"
-    :description "List, reload, or disable user extensions."
+    :description "List, reload, enable, or disable user extensions."
     :usage (%extensions-usage)
     :parameters
     (list (make-slash-command-parameter
