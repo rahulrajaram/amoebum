@@ -11,6 +11,17 @@
                      (defhook-definition-warning-hook-point condition)
                      (defhook-definition-warning-reason condition)))))
 
+(define-condition unknown-tool-reference (style-warning)
+  ((hook-point :initarg :hook-point
+               :reader unknown-tool-reference-hook-point)
+   (tool-name :initarg :tool-name
+              :reader unknown-tool-reference-tool-name))
+  (:report (lambda (condition stream)
+             (format stream
+                     "DEFHOOK ~S references unknown tool ~S at macroexpansion time."
+                     (unknown-tool-reference-hook-point condition)
+                     (unknown-tool-reference-tool-name condition)))))
+
 (defparameter +hook-point-definitions+
   '((:pre-tool-use
      :params (tool-name args)
@@ -595,7 +606,12 @@
           `(and ,@(nreverse tests))
           t)))
 
-  (defun %compile-match-predicate (pattern tool-var args-var)
+  (defun %known-deftool-reference-p (tool-name)
+    (and (boundp '*deftool-compile-time-tool-names*)
+         (hash-table-p *deftool-compile-time-tool-names*)
+         (gethash tool-name *deftool-compile-time-tool-names*)))
+
+  (defun %compile-match-predicate (pattern tool-var args-var &key hook-point)
     (cond
       ((eq pattern t)
        t)
@@ -604,7 +620,11 @@
          (loop for (key value) on pattern by #'cddr
                do (case key
                     (:tool
-                     (let ((tool-name (string-downcase (princ-to-string value))))
+                     (let ((tool-name (%tool-name-string value)))
+                       (unless (%known-deftool-reference-p tool-name)
+                         (warn 'unknown-tool-reference
+                               :hook-point hook-point
+                               :tool-name tool-name))
                        (push `(string= (string-downcase (princ-to-string ,tool-var))
                                        ,tool-name)
                              tests)))
@@ -647,7 +667,10 @@
              (compiled-clauses
                (mapcar (lambda (clause)
                          (destructuring-bind (pattern body) clause
-                           `(,(%compile-match-predicate pattern tool-var args-var)
+                           `(,(%compile-match-predicate pattern
+                                                        tool-var
+                                                        args-var
+                                                        :hook-point normalized-hook-point)
                              ,@body)))
                        clauses))
              (source-file (or *compile-file-truename* *load-truename*)))
