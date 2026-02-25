@@ -394,7 +394,10 @@
            #:desktop-backend-app-name
            #:log-backend
            #:log-backend-path
+           #:log-backend-lock
            #:log-backend-include-event-payload-p
+           #:audit-log-write-event
+           #:audit-log-query
            #:notify-send
            #:notify-available-p
            #:notify-teardown
