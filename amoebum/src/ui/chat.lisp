@@ -1077,13 +1077,14 @@ Like %start-streaming-assistant-response but without adding a new user message."
         (token-stream-start
          stream-state
          (lambda (active-stream-state)
-           (funcall runner
-                    active-stream-state
-                    ""
-                    history
-                    :system-prompt system-prompt
-                    :client (chat-ui-state-stream-client chat-state)
-                    :tools (%resolve-chat-tools chat-state)))
+           (let ((*stream-chunk-hook-callback* (%make-stream-chunk-hook-callback)))
+             (funcall runner
+                      active-stream-state
+                      ""
+                      history
+                      :system-prompt system-prompt
+                      :client (chat-ui-state-stream-client chat-state)
+                      :tools (%resolve-chat-tools chat-state))))
          :target-message-index target-index)))))
 
 (defun %drain-stream-events (chat-state)
@@ -1281,6 +1282,16 @@ Falls back to the global *toolset* when stream-tools is nil."
         (chat-ui-state-stream-system-prompt chat-state)
         +chat-stream-default-system-prompt+)))
 
+(defun %make-stream-chunk-hook-callback ()
+  (let ((chunk-index 0)
+        (total-tokens 0))
+    (lambda (chunk)
+      (when (and (stringp chunk) (plusp (length chunk)))
+        (incf chunk-index)
+        (incf total-tokens (%token-stream-estimate-token-count chunk))
+        (hook-chain :on-stream-chunk chunk chunk-index total-tokens))
+      nil)))
+
 (defun %start-streaming-assistant-response (chat-state user-message)
   (when (and (pseudopod:message-p user-message)
              (not (token-stream-active-p (chat-ui-state-stream-state chat-state))))
@@ -1300,13 +1311,14 @@ Falls back to the global *toolset* when stream-tools is nil."
             (token-stream-start
              stream-state
              (lambda (active-stream-state)
-               (funcall runner
-                        active-stream-state
-                        prompt
-                        history
-                        :system-prompt system-prompt
-                        :client (chat-ui-state-stream-client chat-state)
-                        :tools (%resolve-chat-tools chat-state)))
+               (let ((*stream-chunk-hook-callback* (%make-stream-chunk-hook-callback)))
+                 (funcall runner
+                          active-stream-state
+                          prompt
+                          history
+                          :system-prompt system-prompt
+                          :client (chat-ui-state-stream-client chat-state)
+                          :tools (%resolve-chat-tools chat-state))))
              :target-message-index target-index))
           (%start-step-loop-assistant-response chat-state)))))
 

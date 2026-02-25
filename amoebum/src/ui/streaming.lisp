@@ -6,6 +6,8 @@
 (defparameter +stream-cursor-glyph+ "█")
 (defparameter +stream-cursor-blink-ms+ 450)
 (defparameter +stream-budget-warning-threshold-percent+ 90)
+;; Bound by chat.lisp while a stream is active to observe each incoming chunk.
+(defvar *stream-chunk-hook-callback* nil)
 
 (define-condition token-stream-cancelled (condition)
   ())
@@ -736,8 +738,12 @@
      :messages messages
      :tools tools
      :on-content (lambda (chunk)
+                   (when (functionp *stream-chunk-hook-callback*)
+                     (funcall *stream-chunk-hook-callback* chunk))
                    (token-stream-emit-chunk stream-state chunk))
      :on-reasoning (lambda (chunk)
+                     (when (functionp *stream-chunk-hook-callback*)
+                       (funcall *stream-chunk-hook-callback* chunk))
                      (token-stream-emit-chunk stream-state chunk))
      :on-tool-call-delta (lambda (chunk)
                            (token-stream-emit-tool-call-delta stream-state chunk))
