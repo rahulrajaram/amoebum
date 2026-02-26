@@ -29,20 +29,10 @@ binary_size_bytes() {
 
 strip_binary() {
   local path="$1"
-  if ! command -v strip >/dev/null 2>&1; then
-    echo "WARN: strip not found; skipping symbol stripping." >&2
-    return 0
-  fi
-  if strip --strip-unneeded "${path}" >/dev/null 2>&1; then
-    return 0
-  fi
-  if strip -x "${path}" >/dev/null 2>&1; then
-    return 0
-  fi
-  if strip "${path}" >/dev/null 2>&1; then
-    return 0
-  fi
-  echo "WARN: strip failed for ${path}; leaving binary unmodified." >&2
+  # SBCL save-lisp-and-die appends the Lisp heap after the ELF segments.
+  # strip and objcopy both remove this trailing data, destroying the image.
+  # Do not strip SBCL executables.
+  echo "Skipping strip (SBCL images embed heap after ELF — strip destroys it)"
   return 0
 }
 
