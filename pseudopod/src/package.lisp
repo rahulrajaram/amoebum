@@ -61,6 +61,7 @@
    #:message-tool-calls
    #:message-tool-call-id
    #:message-partial
+   #:message-reasoning-content
    #:message-to-hash
    #:hash-to-message
    #:model-info

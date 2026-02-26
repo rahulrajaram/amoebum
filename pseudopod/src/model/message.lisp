@@ -22,7 +22,8 @@
   (content nil :type list)
   (tool-calls nil :type list)
   (tool-call-id nil :type (or null string))
-  (partial nil))
+  (partial nil)
+  (reasoning-content nil :type (or null string)))
 
 (defun %copy-hash-table (table)
   (let ((copy (make-hash-table :test #'equal)))
@@ -190,14 +191,16 @@
     ((hash-table-p tool-calls) (list (hash-to-tool-call tool-calls)))
     (t (mapcar #'%coerce-tool-call (%sequence->list-safe tool-calls)))))
 
-(defun make-message (&key role content name tool-calls tool-call-id partial)
+(defun make-message (&key role content name tool-calls tool-call-id partial
+                          reasoning-content)
   (%make-message
    :role (%normalize-role (or role "user"))
    :name (and name (princ-to-string name))
    :content (%coerce-content content)
    :tool-calls (%coerce-tool-calls tool-calls)
    :tool-call-id (and tool-call-id (princ-to-string tool-call-id))
-   :partial partial))
+   :partial partial
+   :reasoning-content (and (stringp reasoning-content) reasoning-content)))
 
 (defun %serialize-content (content)
   (cond
@@ -228,9 +231,13 @@
                (message-tool-calls message)
                (plusp (length (message-tool-calls message)))
                (not (gethash "reasoning_content" hash)))
-      (let ((reasoning (%extract-reasoning-content (message-content message))))
-        (when (stringp reasoning)
-          (setf (gethash "reasoning_content" hash) reasoning))))
+      ;; Kimi K2.5 requires reasoning_content on assistant messages with
+      ;; tool_calls when thinking is enabled. Use stored value, fall back
+      ;; to extracting from content parts, default to empty string.
+      (let ((reasoning (or (message-reasoning-content message)
+                           (%extract-reasoning-content (message-content message)))))
+        (setf (gethash "reasoning_content" hash)
+              (or reasoning ""))))
     (when (message-partial message)
       (setf (gethash "partial" hash) (message-partial message)))
     hash))
@@ -259,4 +266,5 @@
    :content (%deserialize-content (gethash "content" hash))
    :tool-calls (%deserialize-tool-calls (gethash "tool_calls" hash))
    :tool-call-id (gethash "tool_call_id" hash)
-   :partial (gethash "partial" hash)))
+   :partial (gethash "partial" hash)
+   :reasoning-content (gethash "reasoning_content" hash)))
