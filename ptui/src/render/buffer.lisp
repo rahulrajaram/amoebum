@@ -2,7 +2,8 @@
   (:use :cl)
   (:export #:make-buffer #:buffer-clear #:buffer-draw-text
            #:buffer-fill-rect #:buffer-draw-border
-           #:buffer-subrect #:with-clip))
+           #:buffer-subrect #:with-clip
+           #:write-cell-if-visible))
 
 (in-package :ptui.render.buffer)
 

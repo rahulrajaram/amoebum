@@ -2,7 +2,7 @@
 |                                                                                    |
 |  ╭──────────────────────────────────────────────────────────────────────────────╮  |
 |  │amoebum chat                                                                  │  |
-|  │branch feat/chat-snapshot | mode full-auto | Tokens: 0/128000 (0%) | stream id│  |
+|  │branch main | mode full-auto | Tokens: 0/128000 (0%) | stream idle | model moo│  |
 |  │No conversation yet. Type below and press Enter.                              │  |
 |  │                                                                              │  |
 |  │                                                                              │  |
@@ -20,6 +20,20 @@
 |                                                                                    |
 |                                                                                    |
 --- attrs
+3,34:bold
+3,35:bold
+3,36:bold
+3,37:bold
+3,38:bold
+3,39:bold
+3,40:bold
+3,41:bold
+3,42:bold
+3,43:bold
+3,44:bold
+3,45:bold
+3,46:bold
+3,47:bold
 3,48:bold
 3,49:bold
 3,50:bold
@@ -27,20 +41,6 @@
 3,52:bold
 3,53:bold
 3,54:bold
-3,55:bold
-3,56:bold
-3,57:bold
-3,58:bold
-3,59:bold
-3,60:bold
-3,61:bold
-3,62:bold
-3,63:bold
-3,64:bold
-3,65:bold
-3,66:bold
-3,67:bold
-3,68:bold
 4,3:bold
 4,4:bold
 4,5:bold

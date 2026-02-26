@@ -2,12 +2,12 @@
 |                                                                                    |
 |  ╭──────────────────────────────────────────────────────────────────────────────╮  |
 |  │amoebum chat                                                                  │  |
-|  │branch feat/chat-snapshot | mode full-auto | Tokens: 0/128000 (0%) | stream id│  |
-|  │No conversation yet. Type below and press Enter.                              │  |
+|  │branch test/error | mode full-auto | Tokens: 25/128000 (0%) | stream idle | mo│  |
+|  │YOU> Explain the architecture.                                                │  |
 |  │                                                                              │  |
+|  │ASSISTANT> The system is composed of multiple layers...                       │  |
 |  │                                                                              │  |
-|  │                                                                              │  |
-|  │                                                                              │  |
+|  │SYSTEM> [Stream cancelled by user]                                            │  |
 |  │                                                                              │  |
 |  │                                                                              │  |
 |  │                                                                              │  |
@@ -20,6 +20,14 @@
 |                                                                                    |
 |                                                                                    |
 --- attrs
+3,40:bold
+3,41:bold
+3,42:bold
+3,43:bold
+3,44:bold
+3,45:bold
+3,46:bold
+3,47:bold
 3,48:bold
 3,49:bold
 3,50:bold
@@ -34,13 +42,6 @@
 3,59:bold
 3,60:bold
 3,61:bold
-3,62:bold
-3,63:bold
-3,64:bold
-3,65:bold
-3,66:bold
-3,67:bold
-3,68:bold
 4,3:bold
 4,4:bold
 4,5:bold
@@ -71,24 +72,40 @@
 4,30:bold
 4,31:bold
 4,32:bold
-4,33:bold
-4,34:bold
-4,35:bold
-4,36:bold
-4,37:bold
-4,38:bold
-4,39:bold
-4,40:bold
-4,41:bold
-4,42:bold
-4,43:bold
-4,44:bold
-4,45:bold
-4,46:bold
-4,47:bold
-4,48:bold
-4,49:bold
-4,50:bold
+8,3:bold
+8,4:bold
+8,5:bold
+8,6:bold
+8,7:bold
+8,8:bold
+8,9:bold
+8,10:bold
+8,11:bold
+8,12:bold
+8,13:bold
+8,14:bold
+8,15:bold
+8,16:bold
+8,17:bold
+8,18:bold
+8,19:bold
+8,20:bold
+8,21:bold
+8,22:bold
+8,23:bold
+8,24:bold
+8,25:bold
+8,26:bold
+8,27:bold
+8,28:bold
+8,29:bold
+8,30:bold
+8,31:bold
+8,32:bold
+8,33:bold
+8,34:bold
+8,35:bold
+8,36:bold
 14,3:bold,invert
 14,4:bold,invert
 14,5:bold,invert

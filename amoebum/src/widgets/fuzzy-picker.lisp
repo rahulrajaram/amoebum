@@ -255,6 +255,7 @@
 (defun %fuzzy-index-files (root rules)
   (let ((seen (make-hash-table :test #'equal))
         (results '()))
+    ;; Index regular files
     (dolist (candidate (%collect-files-recursive root))
       (when (%regular-file-p candidate)
         (let ((relative (%relative-path-text candidate root)))
@@ -262,6 +263,22 @@
                       (%fuzzy-ignored-p rules relative))
             (setf (gethash relative seen) t)
             (push relative results)))))
+    ;; Index directories (with trailing slash for visual distinction)
+    (labels ((walk-dirs (directory)
+               (dolist (subdir (or (ignore-errors (uiop:subdirectories directory)) '()))
+                 (let* ((relative-raw (%relative-path-text subdir root))
+                        (relative (if (and (plusp (length relative-raw))
+                                           (char= (char relative-raw
+                                                         (1- (length relative-raw)))
+                                                   #\/))
+                                      relative-raw
+                                      (concatenate 'string relative-raw "/"))))
+                   (unless (or (gethash relative seen)
+                               (%fuzzy-ignored-p rules relative))
+                     (setf (gethash relative seen) t)
+                     (push relative results))
+                   (walk-dirs subdir)))))
+      (walk-dirs root))
     (coerce (sort results #'string<) 'vector)))
 
 (defun ensure-fuzzy-picker-index! (state &key root)

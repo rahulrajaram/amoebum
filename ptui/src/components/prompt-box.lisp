@@ -42,7 +42,8 @@
                   (+ content-rows 2))))
 
 (defun make-prompt-box-widget (value &key id key (min-width 0) max-width (min-rows 1) max-rows
-                                     (scroll-offset nil) (border-style :rounded) on-event)
+                                     (scroll-offset nil) (cursor-position nil)
+                                     (border-style :rounded) on-event)
   (when on-event
     (check-type on-event function))
   (when (and max-width (< max-width 0))
@@ -64,6 +65,7 @@
                 :min-rows min-rows
                 :max-rows max-rows
                 :scroll-offset scroll-offset
+                :cursor-position cursor-position
                 :border-style border-style
                 :measure #'%prompt-box-measure
                 :on-event on-event)

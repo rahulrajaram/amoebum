@@ -2,7 +2,7 @@
 |                                                                                    |
 |  ╭──────────────────────────────────────────────────────────────────────────────╮  |
 |  │amoebum chat                                                                  │  |
-|  │branch feat/chat-snapshot | mode full-auto | Tokens: 0/128000 (0%) | stream id│  |
+|  │branch test/input | mode full-auto | Tokens: 0/128000 (0%) | stream idle | mod│  |
 |  │No conversation yet. Type below and press Enter.                              │  |
 |  │                                                                              │  |
 |  │                                                                              │  |
@@ -14,12 +14,20 @@
 |  │                                                                              │  |
 |  │                                                                              │  |
 |  │╭─────────────────────────────────────────────────────────────────────────────│  |
-|  ││                                                                             │  |
+|  ││Hello world                                                                  │  |
 |  │╰─────────────────────────────────────────────────────────────────────────────│  |
 |  ╰──────────────────────────────────────────────────────────────────────────────╯  |
 |                                                                                    |
 |                                                                                    |
 --- attrs
+3,40:bold
+3,41:bold
+3,42:bold
+3,43:bold
+3,44:bold
+3,45:bold
+3,46:bold
+3,47:bold
 3,48:bold
 3,49:bold
 3,50:bold
@@ -33,14 +41,6 @@
 3,58:bold
 3,59:bold
 3,60:bold
-3,61:bold
-3,62:bold
-3,63:bold
-3,64:bold
-3,65:bold
-3,66:bold
-3,67:bold
-3,68:bold
 4,3:bold
 4,4:bold
 4,5:bold
@@ -169,6 +169,16 @@
 14,80:bold,invert
 15,3:bold,invert
 15,4:bold,invert
+15,5:bold,invert
+15,6:bold,invert
+15,7:bold,invert
+15,8:bold,invert
+15,9:bold,invert
+15,10:bold,invert
+15,11:bold,invert
+15,12:bold,invert
+15,13:bold,invert
+15,14:bold,invert
 16,3:bold,invert
 16,4:bold,invert
 16,5:bold,invert

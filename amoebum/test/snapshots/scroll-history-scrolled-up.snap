@@ -2,16 +2,16 @@
 |                                                                                    |
 |  ╭──────────────────────────────────────────────────────────────────────────────╮  |
 |  │amoebum chat                                                                  │  |
-|  │branch feat/chat-snapshot | mode full-auto | Tokens: 0/128000 (0%) | stream id│  |
-|  │No conversation yet. Type below and press Enter.                              │  |
+|  │branch test/scroll | mode full-auto | Tokens: 381/128000 (0%) | stream idle | │  |
+|  │YOU> User message number 12 about topic 12.                                   │  |
 |  │                                                                              │  |
+|  │ASSISTANT> Assistant response to query 12. This is a detailed explanation.    │  |
 |  │                                                                              │  |
+|  │YOU> User message number 13 about topic 13.                                   │  |
 |  │                                                                              │  |
+|  │ASSISTANT> Assistant response to query 13. This is a detailed explanation.    │  |
 |  │                                                                              │  |
-|  │                                                                              │  |
-|  │                                                                              │  |
-|  │                                                                              │  |
-|  │                                                                              │  |
+|  │YOU> User message number 14 about topic 14.                                   │  |
 |  │                                                                              │  |
 |  │╭─────────────────────────────────────────────────────────────────────────────│  |
 |  ││                                                                             │  |
@@ -20,6 +20,13 @@
 |                                                                                    |
 |                                                                                    |
 --- attrs
+3,41:bold
+3,42:bold
+3,43:bold
+3,44:bold
+3,45:bold
+3,46:bold
+3,47:bold
 3,48:bold
 3,49:bold
 3,50:bold
@@ -36,11 +43,6 @@
 3,61:bold
 3,62:bold
 3,63:bold
-3,64:bold
-3,65:bold
-3,66:bold
-3,67:bold
-3,68:bold
 4,3:bold
 4,4:bold
 4,5:bold
@@ -84,11 +86,92 @@
 4,43:bold
 4,44:bold
 4,45:bold
-4,46:bold
-4,47:bold
-4,48:bold
-4,49:bold
-4,50:bold
+8,3:bold
+8,4:bold
+8,5:bold
+8,6:bold
+8,7:bold
+8,8:bold
+8,9:bold
+8,10:bold
+8,11:bold
+8,12:bold
+8,13:bold
+8,14:bold
+8,15:bold
+8,16:bold
+8,17:bold
+8,18:bold
+8,19:bold
+8,20:bold
+8,21:bold
+8,22:bold
+8,23:bold
+8,24:bold
+8,25:bold
+8,26:bold
+8,27:bold
+8,28:bold
+8,29:bold
+8,30:bold
+8,31:bold
+8,32:bold
+8,33:bold
+8,34:bold
+8,35:bold
+8,36:bold
+8,37:bold
+8,38:bold
+8,39:bold
+8,40:bold
+8,41:bold
+8,42:bold
+8,43:bold
+8,44:bold
+8,45:bold
+12,3:bold
+12,4:bold
+12,5:bold
+12,6:bold
+12,7:bold
+12,8:bold
+12,9:bold
+12,10:bold
+12,11:bold
+12,12:bold
+12,13:bold
+12,14:bold
+12,15:bold
+12,16:bold
+12,17:bold
+12,18:bold
+12,19:bold
+12,20:bold
+12,21:bold
+12,22:bold
+12,23:bold
+12,24:bold
+12,25:bold
+12,26:bold
+12,27:bold
+12,28:bold
+12,29:bold
+12,30:bold
+12,31:bold
+12,32:bold
+12,33:bold
+12,34:bold
+12,35:bold
+12,36:bold
+12,37:bold
+12,38:bold
+12,39:bold
+12,40:bold
+12,41:bold
+12,42:bold
+12,43:bold
+12,44:bold
+12,45:bold
 14,3:bold,invert
 14,4:bold,invert
 14,5:bold,invert

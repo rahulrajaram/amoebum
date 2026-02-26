@@ -2,17 +2,17 @@
 |                                                                                    |
 |  ╭──────────────────────────────────────────────────────────────────────────────╮  |
 |  │amoebum chat                                                                  │  |
-|  │branch feat/chat-snapshot | mode full-auto | Tokens: 0/128000 (0%) | stream id│  |
-|  │No conversation yet. Type below and press Enter.                              │  |
+|  │branch test/style | mode full-auto | Tokens: 41/128000 (0%) | stream idle | mo│  |
 |  │                                                                              │  |
+|  │           - First bullet item                                                │  |
+|  │           - Second bullet item                                               │  |
+|  │           - Third bullet item                                                │  |
 |  │                                                                              │  |
+|  │           Steps:                                                             │  |
 |  │                                                                              │  |
-|  │                                                                              │  |
-|  │                                                                              │  |
-|  │                                                                              │  |
-|  │                                                                              │  |
-|  │                                                                              │  |
-|  │                                                                              │  |
+|  │           1. Read the file                                                   │  |
+|  │           2. Parse the contents                                              │  |
+|  │           3. Write the output                                                │  |
 |  │╭─────────────────────────────────────────────────────────────────────────────│  |
 |  ││                                                                             │  |
 |  │╰─────────────────────────────────────────────────────────────────────────────│  |
@@ -20,6 +20,14 @@
 |                                                                                    |
 |                                                                                    |
 --- attrs
+3,40:bold
+3,41:bold
+3,42:bold
+3,43:bold
+3,44:bold
+3,45:bold
+3,46:bold
+3,47:bold
 3,48:bold
 3,49:bold
 3,50:bold
@@ -34,61 +42,6 @@
 3,59:bold
 3,60:bold
 3,61:bold
-3,62:bold
-3,63:bold
-3,64:bold
-3,65:bold
-3,66:bold
-3,67:bold
-3,68:bold
-4,3:bold
-4,4:bold
-4,5:bold
-4,6:bold
-4,7:bold
-4,8:bold
-4,9:bold
-4,10:bold
-4,11:bold
-4,12:bold
-4,13:bold
-4,14:bold
-4,15:bold
-4,16:bold
-4,17:bold
-4,18:bold
-4,19:bold
-4,20:bold
-4,21:bold
-4,22:bold
-4,23:bold
-4,24:bold
-4,25:bold
-4,26:bold
-4,27:bold
-4,28:bold
-4,29:bold
-4,30:bold
-4,31:bold
-4,32:bold
-4,33:bold
-4,34:bold
-4,35:bold
-4,36:bold
-4,37:bold
-4,38:bold
-4,39:bold
-4,40:bold
-4,41:bold
-4,42:bold
-4,43:bold
-4,44:bold
-4,45:bold
-4,46:bold
-4,47:bold
-4,48:bold
-4,49:bold
-4,50:bold
 14,3:bold,invert
 14,4:bold,invert
 14,5:bold,invert

@@ -2,12 +2,12 @@
 |                                                                                    |
 |  ╭──────────────────────────────────────────────────────────────────────────────╮  |
 |  │amoebum chat                                                                  │  |
-|  │branch feat/chat-snapshot | mode full-auto | Tokens: 0/128000 (0%) | stream id│  |
-|  │No conversation yet. Type below and press Enter.                              │  |
+|  │branch test/error | mode full-auto | Tokens: 37/128000 (0%) | stream idle | mo│  |
+|  │YOU> Continue the analysis.                                                   │  |
 |  │                                                                              │  |
+|  │SYSTEM> Warning: Token budget at 90% (10800/12000). Consider compacting.      │  |
 |  │                                                                              │  |
-|  │                                                                              │  |
-|  │                                                                              │  |
+|  │ASSISTANT> I will try to be concise. The remaining analysis shows...          │  |
 |  │                                                                              │  |
 |  │                                                                              │  |
 |  │                                                                              │  |
@@ -20,6 +20,14 @@
 |                                                                                    |
 |                                                                                    |
 --- attrs
+3,40:bold
+3,41:bold
+3,42:bold
+3,43:bold
+3,44:bold
+3,45:bold
+3,46:bold
+3,47:bold
 3,48:bold
 3,49:bold
 3,50:bold
@@ -34,13 +42,6 @@
 3,59:bold
 3,60:bold
 3,61:bold
-3,62:bold
-3,63:bold
-3,64:bold
-3,65:bold
-3,66:bold
-3,67:bold
-3,68:bold
 4,3:bold
 4,4:bold
 4,5:bold
@@ -68,27 +69,78 @@
 4,27:bold
 4,28:bold
 4,29:bold
-4,30:bold
-4,31:bold
-4,32:bold
-4,33:bold
-4,34:bold
-4,35:bold
-4,36:bold
-4,37:bold
-4,38:bold
-4,39:bold
-4,40:bold
-4,41:bold
-4,42:bold
-4,43:bold
-4,44:bold
-4,45:bold
-4,46:bold
-4,47:bold
-4,48:bold
-4,49:bold
-4,50:bold
+6,3:bold
+6,4:bold
+6,5:bold
+6,6:bold
+6,7:bold
+6,8:bold
+6,9:bold
+6,10:bold
+6,11:bold
+6,12:bold
+6,13:bold
+6,14:bold
+6,15:bold
+6,16:bold
+6,17:bold
+6,18:bold
+6,19:bold
+6,20:bold
+6,21:bold
+6,22:bold
+6,23:bold
+6,24:bold
+6,25:bold
+6,26:bold
+6,27:bold
+6,28:bold
+6,29:bold
+6,30:bold
+6,31:bold
+6,32:bold
+6,33:bold
+6,34:bold
+6,35:bold
+6,36:bold
+6,37:bold
+6,38:bold
+6,39:bold
+6,40:bold
+6,41:bold
+6,42:bold
+6,43:bold
+6,44:bold
+6,45:bold
+6,46:bold
+6,47:bold
+6,48:bold
+6,49:bold
+6,50:bold
+6,51:bold
+6,52:bold
+6,53:bold
+6,54:bold
+6,55:bold
+6,56:bold
+6,57:bold
+6,58:bold
+6,59:bold
+6,60:bold
+6,61:bold
+6,62:bold
+6,63:bold
+6,64:bold
+6,65:bold
+6,66:bold
+6,67:bold
+6,68:bold
+6,69:bold
+6,70:bold
+6,71:bold
+6,72:bold
+6,73:bold
+6,74:bold
 14,3:bold,invert
 14,4:bold,invert
 14,5:bold,invert

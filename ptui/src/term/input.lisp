@@ -112,15 +112,31 @@
       ;; Need more data to decide lone ESC vs sequence.
       ((= len 1)
        0)
-      ;; CSI arrows: ESC [ A/B/C/D
+      ;; CSI sequences: ESC [ ...
       ((= (aref pending 1) 91)
        (if (< len 3)
            0
          (case (aref pending 2)
+           ;; Arrows: ESC [ A/B/C/D
            (65 (%emit-key-event parser :up) 3)
            (66 (%emit-key-event parser :down) 3)
            (67 (%emit-key-event parser :right) 3)
            (68 (%emit-key-event parser :left) 3)
+           ;; Home/End: ESC [ H / ESC [ F
+           (72 (%emit-key-event parser :home) 3)
+           (70 (%emit-key-event parser :end) 3)
+           ;; Numeric CSI: ESC [ <digit> ~  (Home=1~, End=4~, PgUp=5~, PgDn=6~)
+           ((49 52 53 54)
+            (if (< len 4)
+                0
+                (if (= (aref pending 3) 126)
+                    (case (aref pending 2)
+                      (49 (%emit-key-event parser :home) 4)
+                      (52 (%emit-key-event parser :end) 4)
+                      (53 (%emit-key-event parser :pgup) 4)
+                      (54 (%emit-key-event parser :pgdown) 4)
+                      (otherwise (%emit-key-event parser :escape) 1))
+                    (progn (%emit-key-event parser :escape) 1))))
            (otherwise
             ;; Unknown CSI: consume ESC to avoid sticky prefix.
             (%emit-key-event parser :escape)
@@ -158,6 +174,21 @@
          1)
         ((= b0 3)
          (%emit-key-event parser :ctrl-c :ctrlp t)
+         1)
+        ((= b0 1)
+         (%emit-key-event parser :ctrl-a :ctrlp t)
+         1)
+        ((= b0 5)
+         (%emit-key-event parser :ctrl-e :ctrlp t)
+         1)
+        ((= b0 11)
+         (%emit-key-event parser :ctrl-k :ctrlp t)
+         1)
+        ((= b0 21)
+         (%emit-key-event parser :ctrl-u :ctrlp t)
+         1)
+        ((= b0 23)
+         (%emit-key-event parser :ctrl-w :ctrlp t)
          1)
         (t
          (multiple-value-bind (codepoint consumed status)

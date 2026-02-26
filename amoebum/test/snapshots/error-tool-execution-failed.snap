@@ -2,13 +2,13 @@
 |                                                                                    |
 |  ╭──────────────────────────────────────────────────────────────────────────────╮  |
 |  │amoebum chat                                                                  │  |
-|  │branch feat/chat-snapshot | mode full-auto | Tokens: 0/128000 (0%) | stream id│  |
-|  │No conversation yet. Type below and press Enter.                              │  |
+|  │branch test/error | mode full-auto | Tokens: 42/128000 (0%) | stream idle | mo│  |
+|  │YOU> Search for the function definition.                                      │  |
 |  │                                                                              │  |
+|  │TOOL> Error: search-files failed: ENOENT - directory '/nonexistent' does not e│  |
+|  │      st                                                                      │  |
 |  │                                                                              │  |
-|  │                                                                              │  |
-|  │                                                                              │  |
-|  │                                                                              │  |
+|  │ASSISTANT> The search failed because the directory does not exist.            │  |
 |  │                                                                              │  |
 |  │                                                                              │  |
 |  │                                                                              │  |
@@ -20,6 +20,14 @@
 |                                                                                    |
 |                                                                                    |
 --- attrs
+3,40:bold
+3,41:bold
+3,42:bold
+3,43:bold
+3,44:bold
+3,45:bold
+3,46:bold
+3,47:bold
 3,48:bold
 3,49:bold
 3,50:bold
@@ -34,13 +42,6 @@
 3,59:bold
 3,60:bold
 3,61:bold
-3,62:bold
-3,63:bold
-3,64:bold
-3,65:bold
-3,66:bold
-3,67:bold
-3,68:bold
 4,3:bold
 4,4:bold
 4,5:bold
@@ -81,14 +82,6 @@
 4,40:bold
 4,41:bold
 4,42:bold
-4,43:bold
-4,44:bold
-4,45:bold
-4,46:bold
-4,47:bold
-4,48:bold
-4,49:bold
-4,50:bold
 14,3:bold,invert
 14,4:bold,invert
 14,5:bold,invert

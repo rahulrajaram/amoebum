@@ -65,6 +65,7 @@
                       (frame-count 0)
                       (agentic-iteration-count 0)
                       (plan-selected-step-index nil)
+                      (cursor-position nil)
                       (approval-dialog-state (make-approval-dialog-state)))))
   runtime
   (messages '() :type list)
@@ -97,6 +98,7 @@
   (frame-count 0 :type fixnum)
   (agentic-iteration-count 0 :type fixnum)
   plan-selected-step-index
+  (cursor-position nil)
   (approval-dialog-state (make-approval-dialog-state) :type approval-dialog-state)
   (cached-tree-key nil)
   (cached-tree nil)
@@ -197,7 +199,7 @@
     (setf (chat-ui-state-history-search-active-p chat-state) nil
           (chat-ui-state-history-search-original-input chat-state) ""
           (chat-ui-state-history-search-signature chat-state) nil)
-    (setf (fuzzy-picker-state-context-label picker) "@ file"
+    (setf (fuzzy-picker-state-context-label picker) "@ file/dir"
           (fuzzy-picker-state-empty-message picker) "  [none] no matching files")
     (fuzzy-picker-deactivate! picker)
     t))
@@ -212,7 +214,7 @@
           (when step-p
             (fuzzy-picker-step! picker :batch-size most-positive-fixnum)))
         (progn
-          (setf (fuzzy-picker-state-context-label picker) "@ file"
+          (setf (fuzzy-picker-state-context-label picker) "@ file/dir"
                 (fuzzy-picker-state-empty-message picker) "  [none] no matching files")
           (fuzzy-picker-sync-input! picker
                                     (chat-ui-state-input-text chat-state)
@@ -532,13 +534,15 @@
                       :tool-calls tool-calls
                       :partial partial)))
 
-(defun chat-ui-set-input (state text)
+(defun chat-ui-set-input (state text &key cursor-position)
+  "Set the input text. CURSOR-POSITION: nil = end, integer = grapheme index."
   (let ((chat-state (ensure-chat-ui-state state)))
     (setf (chat-ui-state-input-text chat-state)
           (if (stringp text)
               text
               (princ-to-string text))
-          (chat-ui-state-prompt-scroll-offset chat-state) nil)
+          (chat-ui-state-prompt-scroll-offset chat-state) nil
+          (chat-ui-state-cursor-position chat-state) cursor-position)
     (%chat-sync-fuzzy-picker! chat-state :step-p nil)
     (chat-ui-state-input-text chat-state)))
 
@@ -2164,6 +2168,7 @@ Falls back to the global *toolset* when stream-tools is nil."
                  :min-rows 1
                  :max-rows 4
                  :scroll-offset (chat-ui-state-prompt-scroll-offset chat-state)
+                 :cursor-position (chat-ui-state-cursor-position chat-state)
                  :border-style :rounded))
          (input-height (ptui.layout:layout-size-height
                         (ptui.widgets.core:widget-measure input)))
@@ -2374,6 +2379,28 @@ Falls back to the global *toolset* when stream-tools is nil."
       (list "")
       (ptui.text.layout:wrap-by-width value (max 1 width))))
 
+(defun %cursor-to-line-col (cursor-pos lines)
+  "Given a grapheme-offset CURSOR-POS and list of wrapped LINES, return
+\(values line-index col-offset) as display coordinates."
+  (let ((remaining cursor-pos))
+    (loop for line in lines
+          for line-idx from 0
+          for line-len = (length line)
+          do (if (<= remaining line-len)
+                 ;; Cursor is on this line. If it's exactly at line-len and
+                 ;; there are more lines, it wraps to next line col 0.
+                 (if (and (= remaining line-len)
+                          (< (1+ line-idx) (length lines)))
+                     ;; Wrap to next line
+                     (return-from %cursor-to-line-col
+                       (values (1+ line-idx) 0))
+                     (return-from %cursor-to-line-col
+                       (values line-idx remaining)))
+                 (decf remaining line-len)))
+    ;; Past end — cursor on last line at end
+    (values (max 0 (1- (length lines)))
+            (if lines (length (car (last lines))) 0))))
+
 (defun %prompt-visible-lines (lines visible-rows scroll-offset)
   (let* ((row-count (max 0 visible-rows))
          (total (length lines))
@@ -2466,6 +2493,7 @@ Falls back to the global *toolset* when stream-tools is nil."
              (let* ((value (%element-prop element :value ""))
                     (border-style (%element-prop element :border-style :rounded))
                     (scroll-offset (%element-prop element :scroll-offset nil))
+                    (cursor-pos-raw (%element-prop element :cursor-position nil))
                     (inner-x (+ x 1))
                     (inner-y (+ y 1))
                     (inner-w (max 0 (- w 2)))
@@ -2476,7 +2504,7 @@ Falls back to the global *toolset* when stream-tools is nil."
                 buf rect :style line-cell :border-style border-style)
                (multiple-value-bind (visible-lines effective-offset max-offset)
                    (%prompt-visible-lines lines inner-h scroll-offset)
-                 (declare (ignore effective-offset max-offset))
+                 (declare (ignore max-offset))
                  (loop for line in visible-lines
                        for row from 0 do
                          (ptui.render.buffer:buffer-draw-text
@@ -2484,7 +2512,34 @@ Falls back to the global *toolset* when stream-tools is nil."
                           inner-x
                           (+ inner-y row)
                           (list (list (%fit-line-width line inner-w) line-cell))
-                          :max-width inner-w)))))
+                          :max-width inner-w))
+                 ;; Render block cursor
+                 (let* ((cursor-pos (%ensure-cursor-pos value cursor-pos-raw))
+                        (cursor-cell (%chat-cell-with-attrs line-cell :invertp t))
+                        (buf-cols (ptui.core.types:cell-buffer-cols buf))
+                        (buf-rows (ptui.core.types:cell-buffer-rows buf)))
+                   (multiple-value-bind (cursor-line cursor-col)
+                       (%cursor-to-line-col cursor-pos lines)
+                     (let ((visible-line (- cursor-line (or effective-offset 0))))
+                       (when (and (>= visible-line 0) (< visible-line inner-h))
+                         (let* ((cx (+ inner-x cursor-col))
+                                (cy (+ inner-y visible-line))
+                                (glyph
+                                  (let ((ln (nth cursor-line lines)))
+                                    (if (and ln (< cursor-col (length ln)))
+                                        (string (char ln cursor-col))
+                                        " "))))
+                           (when (and (>= cx 0) (< cx buf-cols)
+                                      (>= cy 0) (< cy buf-rows))
+                             (ptui.render.buffer:write-cell-if-visible
+                              buf cx cy
+                              (ptui.core.types:make-cell
+                               glyph
+                               (ptui.core.types:cell-fg cursor-cell)
+                               (ptui.core.types:cell-bg cursor-cell)
+                               (ptui.core.types:cell-attrs cursor-cell))
+                              (ptui.core.types:make-rect
+                               0 0 buf-cols buf-rows)))))))))))
             ((eq kind :spacer)
              nil)
             ((eq kind :box)
@@ -2530,6 +2585,7 @@ Falls back to the global *toolset* when stream-tools is nil."
   (list cols
         rows
         (chat-ui-state-input-text state)
+        (chat-ui-state-cursor-position state)
         (chat-ui-state-message-scrollback-lines state)
         (chat-ui-state-prompt-scroll-offset state)
         (%chat-tree-signature (chat-ui-state-messages state))
@@ -2600,6 +2656,98 @@ Falls back to the global *toolset* when stream-tools is nil."
         (with-output-to-string (out)
           (dolist (cluster (butlast clusters))
             (write-string cluster out))))))
+
+(defun %delete-word-backward (text)
+  "Delete the last word from TEXT, following readline Ctrl+W semantics:
+skip trailing whitespace, then delete back to the next whitespace boundary."
+  (when (or (null text) (zerop (length text)))
+    (return-from %delete-word-backward ""))
+  (let ((end (length text))
+        (pos (1- (length text))))
+    ;; Skip trailing whitespace
+    (loop while (and (>= pos 0)
+                     (member (char text pos) '(#\Space #\Tab #\Newline #\Return)
+                             :test #'char=))
+          do (decf pos))
+    ;; Delete back through non-whitespace (the word)
+    (loop while (and (>= pos 0)
+                     (not (member (char text pos) '(#\Space #\Tab #\Newline #\Return)
+                                  :test #'char=)))
+          do (decf pos))
+    (if (< pos 0)
+        ""
+        (subseq text 0 (1+ pos)))))
+
+;;; ---------------------------------------------------------------------------
+;;; Cursor-aware grapheme helpers
+;;; ---------------------------------------------------------------------------
+
+(defun %grapheme-length (text)
+  "Return the number of grapheme clusters in TEXT."
+  (if (or (null text) (zerop (length text)))
+      0
+      (length (ptui.text.grapheme:split-graphemes text))))
+
+(defun %grapheme-insert-at (text cursor-pos new-text)
+  "Insert NEW-TEXT at grapheme position CURSOR-POS in TEXT."
+  (let* ((clusters (ptui.text.grapheme:split-graphemes text))
+         (pos (min (max 0 cursor-pos) (length clusters))))
+    (with-output-to-string (out)
+      (loop for cluster in (subseq clusters 0 pos)
+            do (write-string cluster out))
+      (write-string new-text out)
+      (loop for cluster in (nthcdr pos clusters)
+            do (write-string cluster out)))))
+
+(defun %grapheme-delete-before (text cursor-pos)
+  "Delete grapheme before CURSOR-POS. Returns (values new-text new-cursor)."
+  (if (or (<= cursor-pos 0) (zerop (length text)))
+      (values text 0)
+      (let* ((clusters (ptui.text.grapheme:split-graphemes text))
+             (pos (min cursor-pos (length clusters))))
+        (values
+         (with-output-to-string (out)
+           (loop for cluster in (subseq clusters 0 (1- pos))
+                 do (write-string cluster out))
+           (loop for cluster in (nthcdr pos clusters)
+                 do (write-string cluster out)))
+         (1- pos)))))
+
+(defun %grapheme-delete-at (text cursor-pos)
+  "Delete grapheme at CURSOR-POS (Delete key). Returns new text."
+  (let* ((clusters (ptui.text.grapheme:split-graphemes text))
+         (pos (min cursor-pos (length clusters))))
+    (if (>= pos (length clusters))
+        text
+        (with-output-to-string (out)
+          (loop for cluster in (subseq clusters 0 pos)
+                do (write-string cluster out))
+          (loop for cluster in (nthcdr (1+ pos) clusters)
+                do (write-string cluster out))))))
+
+(defun %delete-word-backward-at (text cursor-pos)
+  "Delete word backward from CURSOR-POS. Returns (values new-text new-cursor)."
+  (if (or (<= cursor-pos 0) (zerop (length text)))
+      (values text 0)
+      (let* ((clusters (ptui.text.grapheme:split-graphemes text))
+             (pos (min cursor-pos (length clusters)))
+             (before (with-output-to-string (out)
+                       (loop for cluster in (subseq clusters 0 pos)
+                             do (write-string cluster out))))
+             (after-delete (%delete-word-backward before))
+             (new-cursor (%grapheme-length after-delete)))
+        (values
+         (with-output-to-string (out)
+           (write-string after-delete out)
+           (loop for cluster in (nthcdr pos clusters)
+                 do (write-string cluster out)))
+         new-cursor))))
+
+(defun %ensure-cursor-pos (text cursor-pos)
+  "Coerce NIL cursor-position to end-of-text grapheme count."
+  (if (null cursor-pos)
+      (%grapheme-length text)
+      cursor-pos))
 
 (defun %format-compression-output (compression)
   (if (getf compression :compressed-p)
@@ -2930,56 +3078,116 @@ Falls back to the global *toolset* when stream-tools is nil."
          (tree-browser-handle-key! tree-state key))))))
 
 (defun %handle-input-key (state key text)
-  (cond
-    ((eql key :ctrl-p)
-     (%chat-plan-move-selection! state -1))
-    ((eql key :ctrl-n)
-     (%chat-plan-move-selection! state 1))
-    ((eql key :ctrl-r)
-     (if (chat-ui-state-history-search-active-p state)
-         (%chat-deactivate-history-search! state :restore-input-p t)
-         (%chat-activate-history-search! state))
-     t)
-    ((and (eql key :text) (stringp text))
-     (chat-ui-set-input state
-                        (concatenate 'string
-                                     (chat-ui-state-input-text state)
-                                     text))
-     t)
-    ((eql key :ctrl-j)
-     (chat-ui-set-input state
-                        (concatenate 'string
-                                     (chat-ui-state-input-text state)
-                                     (string #\Newline)))
-     t)
-    ((eql key :tab)
-     (%handle-command-tab-completion state))
-    ((or (eql key :enter) (eql key :return))
-     ;; If interactive plan execution is awaiting approval and input is empty,
-     ;; approve the next step instead of submitting.
-     (if (and (plan-step-awaiting-approval-p)
-              (zerop (length (chat-ui-state-input-text state))))
-         (progn
-           (approve-next-plan-step)
-           t)
-         (let ((input (chat-ui-state-input-text state)))
-           (if (%handle-slash-command-input state input)
+  (let* ((input-text (chat-ui-state-input-text state))
+         (cur-pos (chat-ui-state-cursor-position state))
+         (pos (%ensure-cursor-pos input-text cur-pos)))
+    (cond
+      ((eql key :ctrl-p)
+       (%chat-plan-move-selection! state -1))
+      ((eql key :ctrl-n)
+       (%chat-plan-move-selection! state 1))
+      ((eql key :ctrl-r)
+       (if (chat-ui-state-history-search-active-p state)
+           (%chat-deactivate-history-search! state :restore-input-p t)
+           (%chat-activate-history-search! state))
+       t)
+      ((and (eql key :text) (stringp text))
+       (let ((new-text (%grapheme-insert-at input-text pos text))
+             (advance (%grapheme-length text)))
+         (chat-ui-set-input state new-text :cursor-position (+ pos advance)))
+       t)
+      ((eql key :ctrl-j)
+       (let ((new-text (%grapheme-insert-at input-text pos (string #\Newline))))
+         (chat-ui-set-input state new-text :cursor-position (1+ pos)))
+       t)
+      ((eql key :tab)
+       (%handle-command-tab-completion state))
+      ((or (eql key :enter) (eql key :return))
+       ;; If interactive plan execution is awaiting approval and input is empty,
+       ;; approve the next step instead of submitting.
+       (if (and (plan-step-awaiting-approval-p)
+                (zerop (length input-text)))
+           (progn
+             (approve-next-plan-step)
+             t)
+           (if (%handle-slash-command-input state input-text)
                t
-               (if (%handle-plan-mode-entry-instruction state input)
+               (if (%handle-plan-mode-entry-instruction state input-text)
                    t
                    (let ((submitted (chat-ui-submit-input state)))
                      (when submitted
                        (if (%handle-memory-candidate state submitted)
                            (conversation-transition! (%ensure-chat-conversation-state state)
                                                      :idle)
-                           (%start-streaming-assistant-response state submitted))))))))
-     t)
-    ((eql key :backspace)
-     (chat-ui-set-input state
-                        (%pop-last-grapheme (chat-ui-state-input-text state)))
-     t)
-    (t
-     nil)))
+                           (%start-streaming-assistant-response state submitted)))))))
+       t)
+      ((eql key :backspace)
+       (if (null cur-pos)
+           ;; Cursor at end — use fast path
+           (chat-ui-set-input state (%pop-last-grapheme input-text))
+           ;; Cursor in middle — grapheme-aware delete before
+           (multiple-value-bind (new-text new-pos)
+               (%grapheme-delete-before input-text pos)
+             (chat-ui-set-input state new-text :cursor-position new-pos)))
+       t)
+      ((eql key :delete)
+       ;; Delete grapheme at cursor position (forward delete)
+       (chat-ui-set-input state (%grapheme-delete-at input-text pos)
+                          :cursor-position pos)
+       t)
+      ((eql key :ctrl-w)
+       ;; Delete word backward from cursor position
+       (if (null cur-pos)
+           (chat-ui-set-input state (%delete-word-backward input-text))
+           (multiple-value-bind (new-text new-pos)
+               (%delete-word-backward-at input-text pos)
+             (chat-ui-set-input state new-text :cursor-position new-pos)))
+       t)
+      ((eql key :ctrl-u)
+       ;; Kill from start to cursor
+       (let* ((clusters (ptui.text.grapheme:split-graphemes input-text))
+              (after (with-output-to-string (out)
+                       (loop for cluster in (nthcdr pos clusters)
+                             do (write-string cluster out)))))
+         (chat-ui-set-input state after :cursor-position 0))
+       t)
+      ((eql key :ctrl-k)
+       ;; Kill from cursor to end
+       (let* ((clusters (ptui.text.grapheme:split-graphemes input-text))
+              (before (with-output-to-string (out)
+                        (loop for cluster in (subseq clusters 0 (min pos (length clusters)))
+                              do (write-string cluster out)))))
+         (chat-ui-set-input state before :cursor-position pos))
+       t)
+      ((eql key :ctrl-a)
+       ;; Beginning of input
+       (setf (chat-ui-state-cursor-position state) 0)
+       t)
+      ((eql key :ctrl-e)
+       ;; End of input
+       (setf (chat-ui-state-cursor-position state) nil)
+       t)
+      ((eql key :left)
+       (when (> pos 0)
+         (setf (chat-ui-state-cursor-position state) (1- pos)))
+       t)
+      ((eql key :right)
+       (let ((len (%grapheme-length input-text)))
+         (if (< pos len)
+             (let ((new-pos (1+ pos)))
+               (setf (chat-ui-state-cursor-position state)
+                     (if (= new-pos len) nil new-pos)))
+             ;; Already at end
+             (setf (chat-ui-state-cursor-position state) nil)))
+       t)
+      ((eql key :home)
+       (setf (chat-ui-state-cursor-position state) 0)
+       t)
+      ((eql key :end)
+       (setf (chat-ui-state-cursor-position state) nil)
+       t)
+      (t
+       nil))))
 
 (defun %handle-scroll-key (state key)
   (case key

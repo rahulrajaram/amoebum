@@ -2,7 +2,7 @@
 |                                                                                    |
 |  ╭──────────────────────────────────────────────────────────────────────────────╮  |
 |  │amoebum chat                                                                  │  |
-|  │branch feat/chat-snapshot | mode full-auto | Tokens: 0/128000 (0%) | stream id│  |
+|  │branch test/scroll | mode full-auto | Tokens: 0/128000 (0%) | stream idle | mo│  |
 |  │No conversation yet. Type below and press Enter.                              │  |
 |  │                                                                              │  |
 |  │                                                                              │  |
@@ -10,16 +10,23 @@
 |  │                                                                              │  |
 |  │                                                                              │  |
 |  │                                                                              │  |
-|  │                                                                              │  |
-|  │                                                                              │  |
-|  │                                                                              │  |
 |  │╭─────────────────────────────────────────────────────────────────────────────│  |
-|  ││                                                                             │  |
+|  ││Input line 5: editing a long prompt                                          │  |
+|  ││Input line 6: editing a long prompt                                          │  |
+|  ││Input line 7: editing a long prompt                                          │  |
+|  ││Input line 8: editing a long prompt                                          │  |
 |  │╰─────────────────────────────────────────────────────────────────────────────│  |
 |  ╰──────────────────────────────────────────────────────────────────────────────╯  |
 |                                                                                    |
 |                                                                                    |
 --- attrs
+3,41:bold
+3,42:bold
+3,43:bold
+3,44:bold
+3,45:bold
+3,46:bold
+3,47:bold
 3,48:bold
 3,49:bold
 3,50:bold
@@ -34,13 +41,6 @@
 3,59:bold
 3,60:bold
 3,61:bold
-3,62:bold
-3,63:bold
-3,64:bold
-3,65:bold
-3,66:bold
-3,67:bold
-3,68:bold
 4,3:bold
 4,4:bold
 4,5:bold
@@ -89,6 +89,156 @@
 4,48:bold
 4,49:bold
 4,50:bold
+11,3:bold,invert
+11,4:bold,invert
+11,5:bold,invert
+11,6:bold,invert
+11,7:bold,invert
+11,8:bold,invert
+11,9:bold,invert
+11,10:bold,invert
+11,11:bold,invert
+11,12:bold,invert
+11,13:bold,invert
+11,14:bold,invert
+11,15:bold,invert
+11,16:bold,invert
+11,17:bold,invert
+11,18:bold,invert
+11,19:bold,invert
+11,20:bold,invert
+11,21:bold,invert
+11,22:bold,invert
+11,23:bold,invert
+11,24:bold,invert
+11,25:bold,invert
+11,26:bold,invert
+11,27:bold,invert
+11,28:bold,invert
+11,29:bold,invert
+11,30:bold,invert
+11,31:bold,invert
+11,32:bold,invert
+11,33:bold,invert
+11,34:bold,invert
+11,35:bold,invert
+11,36:bold,invert
+11,37:bold,invert
+11,38:bold,invert
+11,39:bold,invert
+11,40:bold,invert
+11,41:bold,invert
+11,42:bold,invert
+11,43:bold,invert
+11,44:bold,invert
+11,45:bold,invert
+11,46:bold,invert
+11,47:bold,invert
+11,48:bold,invert
+11,49:bold,invert
+11,50:bold,invert
+11,51:bold,invert
+11,52:bold,invert
+11,53:bold,invert
+11,54:bold,invert
+11,55:bold,invert
+11,56:bold,invert
+11,57:bold,invert
+11,58:bold,invert
+11,59:bold,invert
+11,60:bold,invert
+11,61:bold,invert
+11,62:bold,invert
+11,63:bold,invert
+11,64:bold,invert
+11,65:bold,invert
+11,66:bold,invert
+11,67:bold,invert
+11,68:bold,invert
+11,69:bold,invert
+11,70:bold,invert
+11,71:bold,invert
+11,72:bold,invert
+11,73:bold,invert
+11,74:bold,invert
+11,75:bold,invert
+11,76:bold,invert
+11,77:bold,invert
+11,78:bold,invert
+11,79:bold,invert
+11,80:bold,invert
+12,3:bold,invert
+12,4:bold,invert
+12,5:bold,invert
+12,6:bold,invert
+12,7:bold,invert
+12,8:bold,invert
+12,9:bold,invert
+12,10:bold,invert
+12,11:bold,invert
+12,12:bold,invert
+12,13:bold,invert
+12,14:bold,invert
+12,15:bold,invert
+12,16:bold,invert
+12,17:bold,invert
+12,18:bold,invert
+12,19:bold,invert
+12,20:bold,invert
+12,21:bold,invert
+12,22:bold,invert
+12,23:bold,invert
+12,24:bold,invert
+12,25:bold,invert
+12,26:bold,invert
+12,27:bold,invert
+12,28:bold,invert
+12,29:bold,invert
+12,30:bold,invert
+12,31:bold,invert
+12,32:bold,invert
+12,33:bold,invert
+12,34:bold,invert
+12,35:bold,invert
+12,36:bold,invert
+12,37:bold,invert
+12,38:bold,invert
+13,3:bold,invert
+13,4:bold,invert
+13,5:bold,invert
+13,6:bold,invert
+13,7:bold,invert
+13,8:bold,invert
+13,9:bold,invert
+13,10:bold,invert
+13,11:bold,invert
+13,12:bold,invert
+13,13:bold,invert
+13,14:bold,invert
+13,15:bold,invert
+13,16:bold,invert
+13,17:bold,invert
+13,18:bold,invert
+13,19:bold,invert
+13,20:bold,invert
+13,21:bold,invert
+13,22:bold,invert
+13,23:bold,invert
+13,24:bold,invert
+13,25:bold,invert
+13,26:bold,invert
+13,27:bold,invert
+13,28:bold,invert
+13,29:bold,invert
+13,30:bold,invert
+13,31:bold,invert
+13,32:bold,invert
+13,33:bold,invert
+13,34:bold,invert
+13,35:bold,invert
+13,36:bold,invert
+13,37:bold,invert
+13,38:bold,invert
 14,3:bold,invert
 14,4:bold,invert
 14,5:bold,invert
@@ -125,50 +275,43 @@
 14,36:bold,invert
 14,37:bold,invert
 14,38:bold,invert
-14,39:bold,invert
-14,40:bold,invert
-14,41:bold,invert
-14,42:bold,invert
-14,43:bold,invert
-14,44:bold,invert
-14,45:bold,invert
-14,46:bold,invert
-14,47:bold,invert
-14,48:bold,invert
-14,49:bold,invert
-14,50:bold,invert
-14,51:bold,invert
-14,52:bold,invert
-14,53:bold,invert
-14,54:bold,invert
-14,55:bold,invert
-14,56:bold,invert
-14,57:bold,invert
-14,58:bold,invert
-14,59:bold,invert
-14,60:bold,invert
-14,61:bold,invert
-14,62:bold,invert
-14,63:bold,invert
-14,64:bold,invert
-14,65:bold,invert
-14,66:bold,invert
-14,67:bold,invert
-14,68:bold,invert
-14,69:bold,invert
-14,70:bold,invert
-14,71:bold,invert
-14,72:bold,invert
-14,73:bold,invert
-14,74:bold,invert
-14,75:bold,invert
-14,76:bold,invert
-14,77:bold,invert
-14,78:bold,invert
-14,79:bold,invert
-14,80:bold,invert
 15,3:bold,invert
 15,4:bold,invert
+15,5:bold,invert
+15,6:bold,invert
+15,7:bold,invert
+15,8:bold,invert
+15,9:bold,invert
+15,10:bold,invert
+15,11:bold,invert
+15,12:bold,invert
+15,13:bold,invert
+15,14:bold,invert
+15,15:bold,invert
+15,16:bold,invert
+15,17:bold,invert
+15,18:bold,invert
+15,19:bold,invert
+15,20:bold,invert
+15,21:bold,invert
+15,22:bold,invert
+15,23:bold,invert
+15,24:bold,invert
+15,25:bold,invert
+15,26:bold,invert
+15,27:bold,invert
+15,28:bold,invert
+15,29:bold,invert
+15,30:bold,invert
+15,31:bold,invert
+15,32:bold,invert
+15,33:bold,invert
+15,34:bold,invert
+15,35:bold,invert
+15,36:bold,invert
+15,37:bold,invert
+15,38:bold,invert
+15,39:bold,invert
 16,3:bold,invert
 16,4:bold,invert
 16,5:bold,invert
