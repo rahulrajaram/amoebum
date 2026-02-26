@@ -512,25 +512,6 @@
               (when (eq result :block)
                 (return (values :block (nreverse results))))))))))
 
-(defun hook-chain (hook-point &rest args)
-  (let* ((normalized (%normalize-hook-point hook-point))
-         (results '()))
-    (dolist (entry (%sort-hook-entries-ascending (%hook-entries normalized))
-             (values :continue (nreverse results)))
-      (let ((hook-id (hook-entry-hook-id entry)))
-        (if (hook-entry-async-p entry)
-            (progn
-              (%dispatch-async
-               (lambda ()
-                 (%invoke-hook-entry normalized entry args))
-               '())
-              (%record-hook-trace normalized hook-id :async-dispatched :elapsed-ms 0 :result :async-dispatched)
-              (push (cons hook-id :async-dispatched) results))
-            (let ((result (%invoke-hook-entry normalized entry args)))
-              (push (cons hook-id result) results)
-              (when (eq result :block)
-                (return (values :block (nreverse results))))))))))
-
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %normalize-parameter-names (parameters)
     (mapcar (lambda (parameter)

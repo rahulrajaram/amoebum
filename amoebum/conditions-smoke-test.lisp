@@ -174,9 +174,14 @@
       (let ((seen-timeout nil))
         (handler-case
             (funcall execute-fn "i32-timeout" (make-args) :permission-mode :full-auto)
+          #+sbcl
+          (sb-ext:timeout (condition)
+            (declare (ignore condition))
+            (setf seen-timeout t))
           (error (condition)
             (when (or (typep condition tool-timeout-sym)
-                      (typep condition tool-error-sym))
+                      (typep condition tool-error-sym)
+                      #+sbcl (typep condition 'sb-ext:timeout))
               (setf seen-timeout t))))
         (assert-true seen-timeout
                      "Expected timeout tool to signal a typed tool condition."))

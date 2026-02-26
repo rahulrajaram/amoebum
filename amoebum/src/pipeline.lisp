@@ -88,11 +88,16 @@ skip-tool-call, abort-step, or ask-user."
         ((tool-error
            (lambda (condition)
              (%run-on-error-hooks context condition normalized-tool-name)
-             (when (and (not (eq (%effective-permission-mode permission-mode) :supervised))
-                        (functionp *tool-error-llm-recovery-function*))
-               (%handle-tool-error-via-llm condition
-                                           normalized-tool-name
-                                           normalized-arguments)))))
+             (cond
+               ((and (eq (%effective-permission-mode permission-mode) :supervised)
+                     (functionp *supervised-restart-selector*))
+                (let ((decision (funcall *supervised-restart-selector* condition)))
+                  (when decision
+                    (%invoke-restart-decision condition decision))))
+               ((functionp *tool-error-llm-recovery-function*)
+                (%handle-tool-error-via-llm condition
+                                            normalized-tool-name
+                                            normalized-arguments))))))
       (restart-case
           (restart-case
               (execute-tool tool-call context)
@@ -544,6 +549,26 @@ skip-tool-call, abort-step, or ask-user."
                (%copy-arguments-to-hash-table arguments))
    :extras (pseudopod:tool-call-extras call)))
 
+(defun %post-tool-success (context)
+  "Record metrics, cache result, run post-hooks, and publish completed event.
+Called from :around after *pipeline-current-result* is set, because CLOS
+:after methods run before :around can assign the result variable."
+  (let* ((tool-name *pipeline-current-tool-name*)
+         (arguments *pipeline-current-arguments*)
+         (elapsed-ms (%elapsed-milliseconds)))
+    (ignore-errors
+      (note-tool-profiling-sample tool-name elapsed-ms))
+    (%record-tool-metrics context tool-name elapsed-ms :ok)
+    (%cache-tool-result context tool-name arguments *pipeline-current-result*)
+    (%run-hook-dispatch context :post-tool-use tool-name *pipeline-current-result* elapsed-ms)
+    (publish (%effective-event-bus context)
+             (make-tool-completed-event
+              :tool-name tool-name
+              :args arguments
+              :result *pipeline-current-result*
+              :elapsed-ms elapsed-ms
+              :request-id *pipeline-current-request-id*))))
+
 (defmethod pseudopod:execute-tool :around ((call pseudopod:tool-call)
                                            (context tool-execution-context))
   (let* ((*pipeline-current-tool-name* (%tool-call-name-string call))
@@ -564,6 +589,7 @@ skip-tool-call, abort-step, or ask-user."
                      (call-next-method))
                    (guarded-result (apply-sandbox-output-guard raw-result)))
               (setf *pipeline-current-result* guarded-result)
+              (%post-tool-success context)
               guarded-result)
           (error (condition)
             (let* ((tool-error
@@ -631,19 +657,8 @@ skip-tool-call, abort-step, or ask-user."
 
 (defmethod pseudopod:execute-tool :after ((call pseudopod:tool-call)
                                           (context tool-execution-context))
-  (declare (ignore call))
-  (let* ((tool-name *pipeline-current-tool-name*)
-         (arguments *pipeline-current-arguments*)
-         (elapsed-ms (%elapsed-milliseconds)))
-    (ignore-errors
-      (note-tool-profiling-sample tool-name elapsed-ms))
-    (%record-tool-metrics context tool-name elapsed-ms :ok)
-    (%cache-tool-result context tool-name arguments *pipeline-current-result*)
-    (%run-hook-dispatch context :post-tool-use tool-name *pipeline-current-result* elapsed-ms)
-    (publish (%effective-event-bus context)
-             (make-tool-completed-event
-              :tool-name tool-name
-              :args arguments
-              :result *pipeline-current-result*
-              :elapsed-ms elapsed-ms
-              :request-id *pipeline-current-request-id*))))
+  ;; Post-success work (metrics, cache, hooks, events) moved to
+  ;; %post-tool-success called from :around, because CLOS :after runs
+  ;; inside call-next-method before :around can set *pipeline-current-result*.
+  (declare (ignore call context))
+  (values))

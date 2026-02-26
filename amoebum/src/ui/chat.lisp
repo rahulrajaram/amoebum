@@ -1070,13 +1070,15 @@
       (let ((threshold-limit (%stream-budget-threshold-limit limit threshold-percent)))
         (when (> stream-tokens threshold-limit)
           (token-stream-abort stream-state :budget-exceeded)
-          (publish (%context-event-bus chat-state)
-                   (make-stream-budget-warning-event
-                    :used-tokens stream-tokens
-                    :limit-tokens limit
-                    :usage-percent (truncate (/ (* stream-tokens 100.0d0)
-                                                (max 1 limit)))
-                    :threshold-percent threshold-percent))
+          ;; Only publish if the warning-level event wasn't already emitted
+          (unless (token-stream-state-budget-warning-emitted-p stream-state)
+            (publish (%context-event-bus chat-state)
+                     (make-stream-budget-warning-event
+                      :used-tokens stream-tokens
+                      :limit-tokens limit
+                      :usage-percent (truncate (/ (* stream-tokens 100.0d0)
+                                                  (max 1 limit)))
+                      :threshold-percent threshold-percent)))
           t)))))
 
 (defun %collect-stream-tool-calls (chat-state)

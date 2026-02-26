@@ -1027,8 +1027,18 @@
                        :signal-failure-p nil
                        :rollback-directory rollback-root)
             (declare (ignore _))
-            (assert-true (equal '((1 . "step-1-mutated")) execution-results)
-                         "Expected rollback scenario to retain only completed result for step 1 mutation, got ~S."
+            ;; execute-approved-plan-steps returns results for all executed steps,
+            ;; including the failed step (whose result is the error condition).
+            (assert-true (= (length execution-results) 2)
+                         "Expected rollback scenario to return results for both executed steps, got ~S."
+                         execution-results)
+            (assert-true (and (eql (car (first execution-results)) 1)
+                              (string= (cdr (first execution-results)) "step-1-mutated"))
+                         "Expected first result to be step 1 with mutated value, got ~S."
+                         execution-results)
+            (assert-true (and (eql (car (second execution-results)) 2)
+                              (typep (cdr (second execution-results)) 'error))
+                         "Expected second result to be step 2 with error condition, got ~S."
                          execution-results)
             (assert-true failure-condition
                          "Expected rollback scenario to surface failure condition.")

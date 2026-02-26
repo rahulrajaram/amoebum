@@ -90,6 +90,10 @@
   "checkpoint-session + restore-session should preserve conversation."
   (let* ((old-override amoebum::*checkpoint-directory-override*)
          (old-bus amoebum::*event-bus*)
+         (old-toolset amoebum:*toolset*)
+         (old-tool-metadata amoebum::*tool-metadata*)
+         (old-tool-history amoebum::*tool-history*)
+         (old-memory-backend amoebum:*memory-backend*)
          (tmp-dir (%make-temp-directory "amoebum-serialization"))
          (bus (amoebum:make-event-bus)))
     (unwind-protect
@@ -116,7 +120,11 @@
                              (amoebum:conversation-history-entry-content
                               (first entries)))))))
       (setf amoebum::*checkpoint-directory-override* old-override
-            amoebum::*event-bus* old-bus)
+            amoebum::*event-bus* old-bus
+            amoebum:*toolset* old-toolset
+            amoebum::*tool-metadata* old-tool-metadata
+            amoebum::*tool-history* old-tool-history
+            amoebum:*memory-backend* old-memory-backend)
       (%delete-directory-tree-safe tmp-dir))))
 
 (test checkpoint-write-and-read-payload

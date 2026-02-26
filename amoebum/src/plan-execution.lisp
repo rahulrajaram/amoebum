@@ -832,6 +832,11 @@
             (when step
               (push (cons (plan-execution-step-index step) result) execution-results))
             (when done-p
+              ;; execute-next-approved-plan-step catches step errors internally
+              ;; and returns done-p=t with result set to the error condition.
+              ;; Re-signal so the outer handler-case can run rollback logic.
+              (when (typep result 'error)
+                (error result))
               (%drop-plan-execution-rollback-baseline state)
               (return (values state (nreverse execution-results) nil nil)))))
       (error (condition)

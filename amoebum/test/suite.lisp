@@ -747,6 +747,10 @@
          (old-project-root (amoebum:config-project-root config))
          (old-event-bus amoebum:*event-bus*)
          (old-checkpoint-override amoebum:*checkpoint-directory-override*)
+         (old-toolset amoebum:*toolset*)
+         (old-tool-metadata amoebum::*tool-metadata*)
+         (old-tool-history amoebum::*tool-history*)
+         (old-memory-backend amoebum:*memory-backend*)
          (tmp-root (%make-temp-directory "amoebum-i82-checkpoint"))
          (project-root (merge-pathnames #P"project/" tmp-root))
          (checkpoint-dir (merge-pathnames #P"checkpoints/" tmp-root))
@@ -804,7 +808,11 @@
           (is (= checkpointed-events 1))
           (is (= restored-events 1)))
       (setf amoebum:*event-bus* old-event-bus
-            amoebum:*checkpoint-directory-override* old-checkpoint-override)
+            amoebum:*checkpoint-directory-override* old-checkpoint-override
+            amoebum:*toolset* old-toolset
+            amoebum::*tool-metadata* old-tool-metadata
+            amoebum::*tool-history* old-tool-history
+            amoebum:*memory-backend* old-memory-backend)
       (amoebum:setconfig :project-root old-project-root)
       (%delete-directory-tree-safe tmp-root))))
 

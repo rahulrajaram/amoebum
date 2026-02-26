@@ -36,17 +36,23 @@
              "Expected DEFTTOOL to warn when :dangerous t is combined with :permission :auto.")))
 
 (test dangerous-tools-default-to-supervised-permission
-  (amoebum::reset-deftool-compile-validation-state)
-  (setf amoebum::*toolset* (pseudopod:make-toolset))
-  (clrhash amoebum::*tool-metadata*)
-  (eval
-   '(amoebum:deftool i203-dangerous-default-supervised
-     ((path pathname :description "Path to process" :required t))
-     "I203 dangerous default permission probe."
-     (:dangerous t)
-     path))
-  (let ((metadata (gethash "i203-dangerous-default-supervised" amoebum::*tool-metadata*)))
-    (is-true metadata
-             "Expected tool metadata to be registered for i203-dangerous-default-supervised.")
-    (is (eq (amoebum::tool-metadata-permission metadata) :supervised)
-        "Expected dangerous DEFTTOOL declaration to default permission to :supervised.")))
+  (let ((original-toolset amoebum:*toolset*)
+        (original-metadata (alexandria:copy-hash-table amoebum::*tool-metadata*)))
+    (unwind-protect
+         (progn
+           (amoebum::reset-deftool-compile-validation-state)
+           (setf amoebum::*toolset* (pseudopod:make-toolset))
+           (clrhash amoebum::*tool-metadata*)
+           (eval
+            '(amoebum:deftool i203-dangerous-default-supervised
+              ((path pathname :description "Path to process" :required t))
+              "I203 dangerous default permission probe."
+              (:dangerous t)
+              path))
+           (let ((metadata (gethash "i203-dangerous-default-supervised" amoebum::*tool-metadata*)))
+             (is-true metadata
+                      "Expected tool metadata to be registered for i203-dangerous-default-supervised.")
+             (is (eq (amoebum::tool-metadata-permission metadata) :supervised)
+                 "Expected dangerous DEFTTOOL declaration to default permission to :supervised.")))
+      (setf amoebum:*toolset* original-toolset
+            amoebum::*tool-metadata* original-metadata))))
