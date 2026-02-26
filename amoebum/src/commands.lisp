@@ -976,9 +976,12 @@
                      (make-slash-command-result
                       :output "Plan mode enabled. PLAN MODE -- read-only [LOCK mutating tools blocked]."))))))))))
 
-(defun %execute-handler (_invocation _arguments _context)
-  (declare (ignore _invocation _arguments _context))
-  (let* ((plan-state (current-plan-mode-state))
+(defun %execute-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let* ((args-text (or (and (hash-table-p arguments) (gethash :ARGS arguments)) ""))
+         (interactive-p (or (search "--interactive" args-text)
+                            (search "-i" args-text)))
+         (plan-state (current-plan-mode-state))
          (active-p (plan-mode-active-p plan-state))
          (captured-plan (plan-mode-state-last-plan-markdown plan-state))
          (available-step-indexes (plan-step-indexes plan-state))
@@ -1021,6 +1024,8 @@
               (step-count (length available-step-indexes))
               (next-step-index (plan-execution-next-step-index execution-state))
               (run-id (plan-execution-state-run-id execution-state)))
+         (when interactive-p
+           (setf (plan-execution-state-interactive-p execution-state) t))
          (plan-execution-append-output
           (format nil "LIVE> /execute accepted: run ~A with ~D approved step~:P."
                   run-id
@@ -1037,6 +1042,8 @@
                             step-count
                             (%format-step-index-list approved-step-indexes))
                     (format out " Execution run initialized: ~A." run-id)
+                    (when interactive-p
+                      (write-string " Interactive mode: each step requires approval." out))
                     (when next-step-index
                       (format out " Next approved step: ~D." next-step-index)))))))))
 

@@ -83,6 +83,7 @@
    (:file "src/swarm")
    (:file "src/widgets/swarm-panel")
    (:file "src/system-prompt")
+   (:file "src/ui/approval-dialog")
    (:file "src/ui/streaming")
    (:file "src/ui/status-bar")
    (:file "src/ui/chat")

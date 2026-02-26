@@ -31,7 +31,7 @@
                            finally (return (or maxw 0))))
          (content-width (max min-width line-width))
          (content-width (if max-width
-                            (min content-width max-width)
+                            max-width
                             content-width))
          (content-rows (max min-rows line-count))
          (content-rows (if max-rows

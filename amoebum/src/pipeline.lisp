@@ -413,31 +413,57 @@ skip-tool-call, abort-step, or ask-user."
                               (format nil "permission decision ~A" decision)))
          (actionable-reason (or (and (listp trace) (getf trace :actionable-reason))
                                 decision-reason)))
-    (unless (eq decision :allow)
-      (when (eq decision :prompt)
-        (%publish-permission-prompted context
-                                      tool-name
-                                      arguments
-                                      decision
-                                      :reason decision-reason
-                                      :reason-code reason-code))
-      (when (eq decision :deny)
-        (%publish-permission-blocked context
+    (cond
+      ((eq decision :allow) nil)  ; permitted
+      ((eq decision :prompt)
+       ;; Publish the event so the TUI can show the approval dialog,
+       ;; then block until the user resolves it.
+       (%publish-permission-prompted context
                                      tool-name
                                      arguments
                                      decision
                                      :reason decision-reason
-                                     :actionable-reason actionable-reason
-                                     :reason-code reason-code))
-      (error 'tool-permission-denied
-             :tool-name tool-name
-             :arguments arguments
-             :reason-code reason-code
-             :message (format nil "Permission decision ~A for tool ~S: ~A."
-                              decision
-                              tool-name
-                              actionable-reason)
-             :reason actionable-reason))))
+                                     :reason-code reason-code)
+       (let* ((pa (wait-for-pending-approval
+                   tool-name arguments
+                   :path (%coerce-path-string
+                          (%extract-path-argument arguments))
+                   :command (%coerce-command-string
+                             (%extract-command-argument arguments))
+                   :reason decision-reason
+                   :decision-id (%next-permission-decision-id)))
+              (user-decision (pending-approval-decision pa)))
+         ;; Handle "remember" — add a permanent rule
+         (when (pending-approval-remember-p pa)
+           (add-permission-rule :effect user-decision
+                                :tool tool-name
+                                :source :user-approval))
+         (unless (eq user-decision :allow)
+           (error 'tool-permission-denied
+                  :tool-name tool-name
+                  :arguments arguments
+                  :reason-code reason-code
+                  :message (format nil "User denied tool ~S." tool-name)
+                  :reason "denied by user"))))
+      (t
+       ;; :deny or any other non-allow decision
+       (when (eq decision :deny)
+         (%publish-permission-blocked context
+                                      tool-name
+                                      arguments
+                                      decision
+                                      :reason decision-reason
+                                      :actionable-reason actionable-reason
+                                      :reason-code reason-code))
+       (error 'tool-permission-denied
+              :tool-name tool-name
+              :arguments arguments
+              :reason-code reason-code
+              :message (format nil "Permission decision ~A for tool ~S: ~A."
+                               decision
+                               tool-name
+                               actionable-reason)
+              :reason actionable-reason)))))
 
 (defun %pipeline-monotonic-milliseconds ()
   (truncate (* 1000

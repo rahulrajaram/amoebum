@@ -72,7 +72,8 @@
                       rollback-baseline-directory
                       rollback-attempted-p
                       rollback-succeeded-p
-                      rollback-notes)))
+                      rollback-notes
+                      (interactive-p nil))))
   run-id
   (status :idle)
   created-at
@@ -93,7 +94,8 @@
   rollback-baseline-directory
   (rollback-attempted-p nil :type boolean)
   (rollback-succeeded-p nil :type boolean)
-  rollback-notes)
+  rollback-notes
+  (interactive-p nil :type boolean))
 
 (defparameter *plan-execution-state* (%make-plan-execution-state))
 (defparameter *plan-execution-git-command-runner* nil)
@@ -798,10 +800,39 @@
              :state state)
             (values state step condition t)))))))
 
+(defvar *plan-step-approval-lock* (bt:make-lock "plan-step-approval-lock"))
+(defvar *plan-step-approval-condvar* (bt:make-condition-variable :name "plan-step-approval-cv"))
+(defvar *plan-step-awaiting-approval-p* nil
+  "T when interactive plan execution is paused waiting for user approval of the next step.")
+(defvar *plan-step-approved-p* nil
+  "Set to T by the TUI when the user approves the next step.")
+
+(defun approve-next-plan-step ()
+  "Called by the TUI to approve the next step in interactive plan execution."
+  (bt:with-lock-held (*plan-step-approval-lock*)
+    (setf *plan-step-approved-p* t)
+    (bt:condition-notify *plan-step-approval-condvar*)))
+
+(defun plan-step-awaiting-approval-p ()
+  "Returns T if interactive plan execution is paused for user approval."
+  *plan-step-awaiting-approval-p*)
+
+(defun %wait-for-plan-step-approval ()
+  "Block until the user approves the next step."
+  (bt:with-lock-held (*plan-step-approval-lock*)
+    (setf *plan-step-awaiting-approval-p* t
+          *plan-step-approved-p* nil)
+    (loop until *plan-step-approved-p*
+          do (bt:condition-wait *plan-step-approval-condvar*
+                                *plan-step-approval-lock*))
+    (setf *plan-step-awaiting-approval-p* nil
+          *plan-step-approved-p* nil)))
+
 (defun execute-approved-plan-steps (executor &key
                                              (state (current-plan-execution-state))
                                              (rollback-on-failure-p t)
                                              (signal-failure-p t)
+                                             (interactive-p nil)
                                              rollback-directory)
   (check-type state plan-execution-state)
   (unless (functionp executor)
@@ -826,6 +857,22 @@
            :state state)))
     (handler-case
         (loop
+          with first-step-p = t
+          do
+          ;; In interactive mode, wait for user approval before each step
+          ;; (except the first step which is implicitly approved by /execute).
+          (when (and interactive-p (not first-step-p))
+            (let ((next-idx (plan-execution-next-step-index state)))
+              (when next-idx
+                (plan-execution-append-output
+                 (format nil "LIVE> [step ~D] Waiting for approval... (press Enter in TUI)"
+                         next-idx)
+                 :step-index next-idx
+                 :phase :execution
+                 :style :meta
+                 :state state)
+                (%wait-for-plan-step-approval))))
+          (setf first-step-p nil)
           (multiple-value-bind (_ step result done-p)
               (execute-next-approved-plan-step executor :state state)
             (declare (ignore _))

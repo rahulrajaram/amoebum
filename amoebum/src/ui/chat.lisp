@@ -64,7 +64,8 @@
                       (stream-status-publish-key nil)
                       (frame-count 0)
                       (agentic-iteration-count 0)
-                      (plan-selected-step-index nil))))
+                      (plan-selected-step-index nil)
+                      (approval-dialog-state (make-approval-dialog-state)))))
   runtime
   (messages '() :type list)
   (input-text "" :type string)
@@ -96,6 +97,7 @@
   (frame-count 0 :type fixnum)
   (agentic-iteration-count 0 :type fixnum)
   plan-selected-step-index
+  (approval-dialog-state (make-approval-dialog-state) :type approval-dialog-state)
   (cached-tree-key nil)
   (cached-tree nil)
   (cached-layout nil)
@@ -2143,6 +2145,15 @@ Falls back to the global *toolset* when stream-tools is nil."
            (when (and (typep tree-state 'tree-browser-state)
                       (tree-browser-state-active-p tree-state))
              (make-tree-browser-widget tree-state)))
+         (approval-state (chat-ui-state-approval-dialog-state chat-state))
+         (approval-widget
+           (when (approval-dialog-state-active-p approval-state)
+             (make-approval-dialog-widget
+              (list :tool-name (approval-dialog-state-tool-name approval-state)
+                    :command (approval-dialog-state-command approval-state)
+                    :path (approval-dialog-state-path approval-state)
+                    :reason (approval-dialog-state-reason approval-state)
+                    :selected-option (approval-dialog-state-selected-option approval-state)))))
          (inner-width (max 20 (- cols 4)))
          (inner-height (max 8 (- rows 4)))
          (input (ptui.components.prompt-box:make-prompt-box-widget
@@ -2165,6 +2176,10 @@ Falls back to the global *toolset* when stream-tools is nil."
                           (ptui.layout:layout-size-height
                            (ptui.widgets.core:widget-measure tree-widget))
                           0))
+         (approval-height (if approval-widget
+                              (ptui.layout:layout-size-height
+                               (ptui.widgets.core:widget-measure approval-widget))
+                              0))
          (stream-stop-hint-widget
            (when (token-stream-active-p (chat-ui-state-stream-state chat-state))
              (%chat-text-widget "Streaming... Press Ctrl-C to stop early."
@@ -2193,6 +2208,7 @@ Falls back to the global *toolset* when stream-tools is nil."
                                    provider-height
                                    picker-height
                                    tree-height
+                                   approval-height
                                    plan-presentation-height
                                    stream-stop-hint-height
                                    1)))
@@ -2254,6 +2270,9 @@ Falls back to the global *toolset* when stream-tools is nil."
                    (list plan-presentation-widget)
                    '())
                (list history-scroll)
+               (if approval-widget
+                   (list approval-widget)
+                   '())
                (if picker-widget
                    (list picker-widget)
                    '())
@@ -2835,6 +2854,31 @@ Falls back to the global *toolset* when stream-tools is nil."
     (%chat-deactivate-history-search! chat-state)
     t))
 
+(defun %handle-approval-dialog-key (chat-state key text)
+  "Route key events to the approval dialog when active.  Returns T if consumed."
+  (let ((dialog (chat-ui-state-approval-dialog-state chat-state)))
+    (when (approval-dialog-state-active-p dialog)
+      (or (and (eql key :text)
+               (approval-dialog-handle-text! dialog text))
+          (approval-dialog-handle-key! dialog key)))))
+
+(defun %sync-pending-approval-dialog! (chat-state)
+  "Poll *pending-approval* and activate the dialog if a new approval is waiting."
+  (let ((dialog (chat-ui-state-approval-dialog-state chat-state))
+        (pa *pending-approval*))
+    (cond
+      ;; A pending approval exists but dialog is not active yet — activate it
+      ((and pa (not (approval-dialog-state-active-p dialog)))
+       (approval-dialog-activate! dialog
+                                  (pending-approval-tool-name pa)
+                                  :command (pending-approval-command pa)
+                                  :path (pending-approval-path pa)
+                                  :reason (pending-approval-reason pa)
+                                  :decision-id (pending-approval-decision-id pa)))
+      ;; No pending approval but dialog is still active — deactivate
+      ((and (null pa) (approval-dialog-state-active-p dialog))
+       (approval-dialog-deactivate! dialog)))))
+
 (defun %handle-fuzzy-picker-key (chat-state key)
   (let ((picker (%ensure-chat-fuzzy-picker-state chat-state)))
     (when (fuzzy-picker-state-active-p picker)
@@ -2911,17 +2955,24 @@ Falls back to the global *toolset* when stream-tools is nil."
     ((eql key :tab)
      (%handle-command-tab-completion state))
     ((or (eql key :enter) (eql key :return))
-     (let ((input (chat-ui-state-input-text state)))
-       (if (%handle-slash-command-input state input)
-           t
-           (if (%handle-plan-mode-entry-instruction state input)
+     ;; If interactive plan execution is awaiting approval and input is empty,
+     ;; approve the next step instead of submitting.
+     (if (and (plan-step-awaiting-approval-p)
+              (zerop (length (chat-ui-state-input-text state))))
+         (progn
+           (approve-next-plan-step)
+           t)
+         (let ((input (chat-ui-state-input-text state)))
+           (if (%handle-slash-command-input state input)
                t
-               (let ((submitted (chat-ui-submit-input state)))
-                 (when submitted
-                   (if (%handle-memory-candidate state submitted)
-                       (conversation-transition! (%ensure-chat-conversation-state state)
-                                                 :idle)
-                       (%start-streaming-assistant-response state submitted)))))))
+               (if (%handle-plan-mode-entry-instruction state input)
+                   t
+                   (let ((submitted (chat-ui-submit-input state)))
+                     (when submitted
+                       (if (%handle-memory-candidate state submitted)
+                           (conversation-transition! (%ensure-chat-conversation-state state)
+                                                     :idle)
+                           (%start-streaming-assistant-response state submitted))))))))
      t)
     ((eql key :backspace)
      (chat-ui-set-input state
@@ -2950,6 +3001,8 @@ Falls back to the global *toolset* when stream-tools is nil."
          (kind (getf route :kind))
          (target (getf route :target)))
     (declare (ignore agent-completion-count voice-transcription-count drained-event-count))
+    ;; Poll for pending approvals from the pipeline thread.
+    (%sync-pending-approval-dialog! chat-state)
     (when (typep event 'ptui.core.events:key-event)
       (checkpoint-mark-activity)
       (%chat-mark-activity)
@@ -2958,13 +3011,14 @@ Falls back to the global *toolset* when stream-tools is nil."
         (when (and (member key '(:escape :ctrl-c))
                    (token-stream-active-p (chat-ui-state-stream-state chat-state)))
           (token-stream-request-cancel (chat-ui-state-stream-state chat-state)))
-        (unless (%handle-fuzzy-picker-key chat-state key)
-          (unless (%handle-tree-browser-key chat-state key)
-            (%handle-scroll-key chat-state key)
-            (when (or (eql target :chat-input)
-                      (eql kind :unhandled)
-                      (null target))
-              (%handle-input-key chat-state key text))))))
+        (unless (%handle-approval-dialog-key chat-state key text)
+          (unless (%handle-fuzzy-picker-key chat-state key)
+            (unless (%handle-tree-browser-key chat-state key)
+              (%handle-scroll-key chat-state key)
+              (when (or (eql target :chat-input)
+                        (eql kind :unhandled)
+                        (null target))
+                (%handle-input-key chat-state key text)))))))
     (when (and (ptui.ui.runtime:runtime-root runtime)
                (listp route))
       (ptui.widgets.core:dispatch-widget-event
@@ -2985,9 +3039,12 @@ Falls back to the global *toolset* when stream-tools is nil."
     (checkpoint-mark-activity)
     (%chat-mark-activity)
     (load-user-extensions)
-    (ptui.engine.loop:run #'render-chat-ui-buffer
-                          :backend backend
-                          :fps fps
-                          :initial-state (ensure-chat-ui-state resolved-state)
-                          :event-bus (current-event-bus)
-                          :on-event #'handle-chat-ui-event)))
+    (setf *approval-ui-active-p* t)
+    (unwind-protect
+        (ptui.engine.loop:run #'render-chat-ui-buffer
+                              :backend backend
+                              :fps fps
+                              :initial-state (ensure-chat-ui-state resolved-state)
+                              :event-bus (current-event-bus)
+                              :on-event #'handle-chat-ui-event)
+      (setf *approval-ui-active-p* nil))))

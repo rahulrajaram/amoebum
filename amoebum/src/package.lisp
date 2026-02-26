@@ -717,6 +717,42 @@
            #:plan-execution-next-step-index
            #:execute-next-approved-plan-step
            #:execute-approved-plan-steps
+           #:plan-step-awaiting-approval-p
+           #:approve-next-plan-step
+           ;; Approval dialog (interactive tool approval)
+           #:pending-approval
+           #:pending-approval-p
+           #:pending-approval-tool-name
+           #:pending-approval-arguments
+           #:pending-approval-path
+           #:pending-approval-command
+           #:pending-approval-reason
+           #:pending-approval-decision-id
+           #:pending-approval-decision
+           #:pending-approval-remember-p
+           #:*pending-approval*
+           #:*pending-approval-lock*
+           #:*pending-approval-condvar*
+           #:*approval-ui-active-p*
+           #:submit-pending-approval
+           #:wait-for-pending-approval
+           #:approval-dialog-state
+           #:approval-dialog-state-p
+           #:make-approval-dialog-state
+           #:approval-dialog-state-active-p
+           #:approval-dialog-state-selected-option
+           #:approval-dialog-state-tool-name
+           #:approval-dialog-state-command
+           #:approval-dialog-state-path
+           #:approval-dialog-state-reason
+           #:approval-dialog-state-decision-id
+           #:approval-dialog-activate!
+           #:approval-dialog-deactivate!
+           #:approval-dialog-move-selection!
+           #:approval-dialog-confirm!
+           #:approval-dialog-handle-key!
+           #:approval-dialog-handle-text!
+           #:make-approval-dialog-widget
            #:+event-type-agent-spawn+
            #:+event-type-agent-complete+
            #:+event-type-agent-cancelled+
