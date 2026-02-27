@@ -773,6 +773,20 @@
            #:agent-record-stdout
            #:agent-record-stderr
            #:agent-record-error-message
+           ;; Agent personas
+           #:persona-definition
+           #:persona-definition-p
+           #:persona-definition-name
+           #:persona-definition-description
+           #:persona-definition-capabilities
+           #:persona-definition-model
+           #:persona-definition-system-prompt
+           #:persona-definition-file-path
+           #:persona-definition-scope
+           #:parse-persona-file
+           #:discover-persona-files
+           #:find-persona-by-name
+           #:persona-manifest-lines
            #:*agent-registry*
            #:*agent-completion-queue*
            #:clear-agents

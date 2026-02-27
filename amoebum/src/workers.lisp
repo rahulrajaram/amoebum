@@ -92,6 +92,7 @@
   (:documentation
    "Spawn a background worker. TYPE is :shell, :agent, or :process.
     COMMAND is a string (shell) or task description (agent).
+    Accepts :persona and :system-prompt-override for agent workers.
     Returns a worker-record immediately."))
 
 (defgeneric supervisor-status (supervisor worker-id)
@@ -159,7 +160,8 @@
 
 (defmethod supervisor-spawn ((supervisor in-process-supervisor) type command
                              &key label timeout-seconds max-output-chars
-                                  cwd max-retries)
+                                  cwd max-retries
+                                  persona system-prompt-override)
   (let* ((worker-id (%next-worker-id type))
          (now (%worker-now))
          (worker (%make-worker-record
@@ -184,7 +186,9 @@
                             :timeout-seconds (or timeout-seconds 120)
                             :max-output-chars (or max-output-chars 8192)))
       (:agent
-       (%spawn-agent-worker worker command))
+       (%spawn-agent-worker worker command
+                            :persona persona
+                            :system-prompt-override system-prompt-override))
       (:process
        (%spawn-shell-worker worker command
                             :cwd cwd
@@ -242,11 +246,13 @@
                           :info :error)))))
      :name (format nil "amoebum-worker-~A" worker-id))))
 
-(defun %spawn-agent-worker (worker command)
+(defun %spawn-agent-worker (worker command &key persona system-prompt-override)
   (let* ((agent (spawn-agent (if (stringp command)
                                  command
                                  (princ-to-string command))
-                             :agent-type :task))
+                             :agent-type :task
+                             :persona persona
+                             :system-prompt (or system-prompt-override nil)))
          (agent-id (agent-record-id agent)))
     (%with-worker-lock
       (setf (worker-record-inner-id worker) agent-id
@@ -342,12 +348,15 @@
       (setf *worker-supervisor* (make-instance 'in-process-supervisor))))
 
 (defun spawn-worker (type command &rest args &key label timeout-seconds
-                                                   max-output-chars cwd max-retries)
+                                                   max-output-chars cwd max-retries
+                                                   persona system-prompt-override)
   "Spawn a background worker through the active supervisor.
    TYPE: :shell, :agent, or :process.
    COMMAND: shell command string or agent task description.
+   For :agent type, accepts :persona and :system-prompt-override.
    Returns a worker-record."
-  (declare (ignore label timeout-seconds max-output-chars cwd max-retries))
+  (declare (ignore label timeout-seconds max-output-chars cwd max-retries
+                   persona system-prompt-override))
   (apply #'supervisor-spawn (ensure-worker-supervisor) type command args))
 
 (defun worker-status (worker-id)

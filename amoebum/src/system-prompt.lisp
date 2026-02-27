@@ -372,7 +372,15 @@ Core behavior rules:
       (if tool-lines
           (dolist (line tool-lines)
             (format stream "~A~%" line))
-          (format stream "- none~%")))))
+          (format stream "- none~%"))
+      ;; Persona manifest
+      (let ((personas (ignore-errors
+                        (discover-persona-files :project-root root))))
+        (when personas
+          (format stream "~%Available Agent Personas~%")
+          (dolist (line (persona-manifest-lines personas))
+            (format stream "~A~%" line))
+          (format stream "~%Use spawn-agent-worker with :persona to leverage these.~%"))))))
 
 (defun %system-prompt-plan-mode-enabled-p ()
   (let ((cfg (ignore-errors (current-config))))
@@ -389,7 +397,8 @@ Core behavior rules:
                                     toolset
                                     global-layer-path
                                     project-layer-path
-                                    directory-layer-paths)
+                                    directory-layer-paths
+                                    base-layer-override)
   (let* ((layers (resolve-system-prompt-layers
                   :project-root project-root
                   :cwd cwd
@@ -401,6 +410,14 @@ Core behavior rules:
                            :cwd cwd
                            :toolset toolset))
          (plan-guidance (system-prompt-plan-mode-guidance)))
+    ;; Apply base-layer-override if provided
+    (when (and base-layer-override
+               (stringp base-layer-override)
+               (plusp (length base-layer-override)))
+      (let ((base-layer (first layers)))
+        (when base-layer
+          (setf (getf base-layer :content) base-layer-override
+                (getf base-layer :source) :persona-override))))
     (with-output-to-string (stream)
       (format stream "Amoebum system prompt hierarchy.~%")
       (format stream "Precedence: layer 4 overrides layer 3 overrides layer 2 overrides layer 1.~2%")
