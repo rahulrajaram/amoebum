@@ -13,6 +13,8 @@ ptui/dist/*.so
 .amoebum/session/
 .amoebum/plans/
 .amoebum/checkpoints/
+.amoebum/MEMORY.md
+amoebum/.amoebum/
 
 # Build output
 dist/
