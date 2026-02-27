@@ -61,6 +61,7 @@
                       (tree-browser-state nil)
                       (stream-tool-calls (%make-chat-stream-tool-call-table))
                       (stream-executed-tool-call-keys (%make-chat-stream-executed-table))
+                      (stream-completion-pending-p nil)
                       (stream-status-publish-key nil)
                       (frame-count 0)
                       (agentic-iteration-count 0)
@@ -94,6 +95,7 @@
   (tree-browser-state nil)
   (stream-tool-calls (%make-chat-stream-tool-call-table))
   (stream-executed-tool-call-keys (%make-chat-stream-executed-table))
+  (stream-completion-pending-p nil)
   (stream-status-publish-key nil)
   (frame-count 0 :type fixnum)
   (agentic-iteration-count 0 :type fixnum)
@@ -753,11 +755,13 @@
       (clrhash tool-calls))
     (when (hash-table-p executed)
       (clrhash executed))
+    (setf (chat-ui-state-stream-completion-pending-p chat-state) nil)
     chat-state))
 
 (defun %set-stream-tool-call-execution-status! (chat-state preview-key
                                                 &key executed-p execution-error
-                                                     result malformed-p)
+                                                     result malformed-p
+                                                     completed-p)
   (let* ((table (chat-ui-state-stream-tool-calls chat-state))
          (entry (and (hash-table-p table)
                      (gethash preview-key table))))
@@ -766,11 +770,80 @@
         (setf (getf entry :executed-p) t))
       (when execution-error
         (setf (getf entry :execution-error) execution-error))
+      (when completed-p
+        (setf (getf entry :completed-p) t))
       (when result
         (setf (getf entry :result) result))
       (when malformed-p
         (setf (getf entry :malformed-p) t)))
     entry))
+
+(defun %stream-tool-call-completion-pending-p (chat-state)
+  (let ((table (chat-ui-state-stream-tool-calls chat-state))
+        (pending nil))
+    (maphash
+     (lambda (_key entry)
+       (declare (ignore _key))
+       (when (and (listp entry)
+                  (getf entry :executed-p)
+                  (not (getf entry :completed-p)))
+         (setf pending t)))
+     table)
+    pending))
+
+(defun %set-tool-call-result! (chat-state event)
+  (let* ((tool-call (%stream-tool-call-from-event event))
+         (preview-entry (%update-stream-tool-call-preview! chat-state event))
+         (preview-key (and (listp preview-entry) (getf preview-entry :key))))
+    (%set-stream-tool-call-execution-status!
+     chat-state
+     preview-key
+     :result (or (getf event :result) "")
+     :execution-error (getf event :execution-error)
+     :completed-p t)))
+
+(defun %maybe-finalize-streaming-assistant-on-complete (chat-state)
+  (let* ((conversation (%ensure-chat-conversation-state chat-state))
+         (assistant-response (%stream-target-assistant-response chat-state))
+         (tool-call-entries (%collect-stream-tool-calls chat-state))
+         (malformed-names (%collect-malformed-tool-calls chat-state)))
+    (setf (chat-ui-state-stream-completion-pending-p chat-state) nil)
+    (when tool-call-entries
+      (%set-assistant-message-tool-calls! chat-state tool-call-entries))
+    (%finalize-streaming-assistant-message chat-state :partialp nil)
+    (cond
+      ;; Malformed tool calls (missing tool_call_id) — ask LLM to retry
+      ((and malformed-names
+            (< (chat-ui-state-agentic-iteration-count chat-state)
+               +max-agentic-iterations+))
+       ;; Append results for any valid tool calls that did execute
+       (when tool-call-entries
+         (%append-tool-result-messages! chat-state tool-call-entries))
+       (chat-ui-add-message chat-state "user"
+                            (%malformed-tool-call-retry-message malformed-names))
+       (%clear-stream-tool-tracking! chat-state)
+       (incf (chat-ui-state-agentic-iteration-count chat-state))
+       (%start-agent-continuation-stream chat-state))
+      ;; Normal tool call continuation
+      ((and tool-call-entries
+            (< (chat-ui-state-agentic-iteration-count chat-state)
+               +max-agentic-iterations+))
+       (%append-tool-result-messages! chat-state tool-call-entries)
+       (%clear-stream-tool-tracking! chat-state)
+       (incf (chat-ui-state-agentic-iteration-count chat-state))
+       (%start-agent-continuation-stream chat-state))
+      ;; Max iterations reached
+      (tool-call-entries
+       (%append-tool-result-messages! chat-state tool-call-entries)
+       (%clear-stream-tool-tracking! chat-state)
+       (chat-ui-add-message chat-state "assistant"
+                            "[Agentic loop stopped: max iterations reached]")
+       (conversation-transition! conversation :idle))
+      ;; Normal text-only response
+      (t
+       (%clear-stream-tool-tracking! chat-state)
+       (%emit-post-receive-hook assistant-response)
+       (conversation-transition! conversation :idle)))))
 
 (defun %stream-tool-call-execution-key (tool-call preview-key)
   (or (and (pseudopod:tool-call-p tool-call)
@@ -816,33 +889,46 @@
     (let* ((toolset (or (chat-ui-state-stream-tools chat-state) *toolset*))
            (config (%chat-config))
            (permission-mode (and (config-p config)
-                                 (config-permission-mode config))))
-      (let ((result-text nil))
-      (handler-case
-          (if (pseudopod:find-tool toolset (pseudopod:tool-call-name tool-call))
-              (let ((result (execute-tool tool-call
-                                          (make-amoebum-context
-                                           :toolset toolset
-                                           :permission-mode permission-mode
-                                           :event-bus (%context-event-bus chat-state)))))
-                (setf result-text (if (stringp result)
-                                      result
-                                      (princ-to-string (or result ""))))
-                (%set-stream-tool-call-execution-status!
-                 chat-state preview-key :result result-text))
-              (let ((err-msg (format nil "Unregistered tool ~A."
-                                     (or (pseudopod:tool-call-name tool-call)
-                                         "<unknown>"))))
-                (setf result-text err-msg)
-                (%set-stream-tool-call-execution-status!
-                 chat-state preview-key
-                 :execution-error err-msg :result err-msg)))
-        (error (condition)
-          (let ((err-msg (princ-to-string condition)))
-            (setf result-text err-msg)
-            (%set-stream-tool-call-execution-status!
-             chat-state preview-key
-             :execution-error err-msg :result err-msg))))))
+                                 (config-permission-mode config)))
+           (stream-state (chat-ui-state-stream-state chat-state))
+           (tool-name (and (pseudopod:tool-call-p tool-call)
+                           (pseudopod:tool-call-name tool-call)))
+           (worker (lambda ()
+                     (let ((result-text "")
+                           (execution-error nil))
+                       (if (and (typep stream-state 'token-stream-state)
+                                (token-stream-cancel-requested-p stream-state))
+                           (setf execution-error "Tool execution cancelled."
+                                 result-text execution-error)
+                           (handler-case
+                               (if (pseudopod:find-tool toolset tool-name)
+                                   (let ((result (execute-tool tool-call
+                                                               (make-amoebum-context
+                                                                :toolset toolset
+                                                                :permission-mode permission-mode
+                                                                :event-bus (%context-event-bus chat-state)
+                                                                :permission-cancel-thunk
+                                                                (lambda ()
+                                                                  (and (typep stream-state 'token-stream-state)
+                                                                       (token-stream-cancel-requested-p stream-state))))))
+                                     (setf result-text (if (stringp result)
+                                                          result
+                                                          (princ-to-string (or result "")))))
+                                 (let ((err-msg (format nil "Unregistered tool ~A."
+                                                       (or tool-name "<unknown>"))))
+                                   (setf execution-error err-msg
+                                         result-text err-msg)))
+                               (error (condition)
+                                 (setf execution-error (princ-to-string condition)
+                                       result-text execution-error))))
+                       (token-stream-emit-tool-call-result
+                        stream-state
+                        :tool-call tool-call
+                        :preview-key preview-key
+                        :execution-key execution-key
+                        :result result-text
+                        :execution-error execution-error)))))
+      (bt:make-thread worker :name (format nil "amoebum-tool-call-~A" execution-key)))
     t))
 
 (defun %stream-status-summary (chat-state)
@@ -1093,7 +1179,9 @@
     (maphash
      (lambda (key entry)
        (declare (ignore key))
-       (when (and (listp entry) (getf entry :executed-p))
+       (when (and (listp entry)
+                  (getf entry :executed-p)
+                  (getf entry :completed-p))
          (let ((tool-name (getf entry :tool-name))
                (tool-call-id (getf entry :tool-call-id))
                (arguments (getf entry :arguments))
@@ -1244,46 +1332,15 @@ Like %start-streaming-assistant-response but without adding a new user message."
                     :arguments arguments
                     :index index))
           (%execute-stream-tool-call! chat-state event)))
+       (:tool-call-result
+        (%set-tool-call-result! chat-state event)
+        (when (and (chat-ui-state-stream-completion-pending-p chat-state)
+                   (not (%stream-tool-call-completion-pending-p chat-state)))
+          (%maybe-finalize-streaming-assistant-on-complete chat-state)))
        (:complete
-        (let ((tool-call-entries (%collect-stream-tool-calls chat-state))
-              (malformed-names (%collect-malformed-tool-calls chat-state)))
-          (when tool-call-entries
-            (%set-assistant-message-tool-calls! chat-state tool-call-entries))
-          (%finalize-streaming-assistant-message chat-state :partialp nil)
-          (let ((assistant-response (%stream-target-assistant-response chat-state)))
-            (cond
-              ;; Malformed tool calls (missing tool_call_id) — ask LLM to retry
-              ((and malformed-names
-                    (< (chat-ui-state-agentic-iteration-count chat-state)
-                       +max-agentic-iterations+))
-               ;; Append results for any valid tool calls that did execute
-               (when tool-call-entries
-                 (%append-tool-result-messages! chat-state tool-call-entries))
-               (chat-ui-add-message chat-state "user"
-                                    (%malformed-tool-call-retry-message malformed-names))
-               (%clear-stream-tool-tracking! chat-state)
-               (incf (chat-ui-state-agentic-iteration-count chat-state))
-               (%start-agent-continuation-stream chat-state))
-              ;; Normal tool call continuation
-              ((and tool-call-entries
-                    (< (chat-ui-state-agentic-iteration-count chat-state)
-                       +max-agentic-iterations+))
-               (%append-tool-result-messages! chat-state tool-call-entries)
-               (%clear-stream-tool-tracking! chat-state)
-               (incf (chat-ui-state-agentic-iteration-count chat-state))
-               (%start-agent-continuation-stream chat-state))
-              ;; Max iterations reached
-              (tool-call-entries
-               (%append-tool-result-messages! chat-state tool-call-entries)
-               (%clear-stream-tool-tracking! chat-state)
-               (chat-ui-add-message chat-state "assistant"
-                                    "[Agentic loop stopped: max iterations reached]")
-               (conversation-transition! conversation :idle))
-              ;; Normal text-only response
-              (t
-               (%clear-stream-tool-tracking! chat-state)
-               (%emit-post-receive-hook assistant-response)
-               (conversation-transition! conversation :idle))))))
+        (if (%stream-tool-call-completion-pending-p chat-state)
+            (setf (chat-ui-state-stream-completion-pending-p chat-state) t)
+            (%maybe-finalize-streaming-assistant-on-complete chat-state)))
        (:cancelled
         (%finalize-streaming-assistant-message chat-state :partialp t)
         (%clear-stream-tool-tracking! chat-state)
@@ -2158,8 +2215,8 @@ Falls back to the global *toolset* when stream-tools is nil."
                     :path (approval-dialog-state-path approval-state)
                     :reason (approval-dialog-state-reason approval-state)
                     :selected-option (approval-dialog-state-selected-option approval-state)))))
-         (inner-width (max 20 (- cols 4)))
-         (inner-height (max 8 (- rows 4)))
+         (inner-width (max 20 (- cols 2)))
+         (inner-height (max 8 (- rows 2)))
          (input (ptui.components.prompt-box:make-prompt-box-widget
                  (chat-ui-state-input-text chat-state)
                  :id :chat-input
@@ -2172,7 +2229,7 @@ Falls back to the global *toolset* when stream-tools is nil."
                  :border-style :rounded))
          (input-height (ptui.layout:layout-size-height
                         (ptui.widgets.core:widget-measure input)))
-         (header-height 2)
+         (header-height 0)
          (picker-height (if picker-widget
                             (ptui.layout:layout-size-height
                              (ptui.widgets.core:widget-measure picker-widget))
@@ -2262,9 +2319,6 @@ Falls back to the global *toolset* when stream-tools is nil."
          (content
              (ptui.widgets.core:make-stack-widget
               (append
-               (list
-               (%chat-text-widget "amoebum chat" :chat-title :meta)
-                status-widget)
                (if provider-widget
                    (list provider-widget)
                    '())
@@ -2284,7 +2338,8 @@ Falls back to the global *toolset* when stream-tools is nil."
                (if stream-stop-hint-widget
                    (list stream-stop-hint-widget)
                    '())
-               (list input))
+               (list input)
+               (list status-widget))
               :id :chat-content
               :direction :column
               :gap 0)))
@@ -2292,7 +2347,7 @@ Falls back to the global *toolset* when stream-tools is nil."
        content
        :id :chat-root
        :padding 0
-       :borderp t))))
+       :borderp nil))))
 
 (defun %chat-template-cell (&key (fg :default) (bg :default) (boldp nil))
   (ptui.core.types:make-cell
@@ -2350,13 +2405,25 @@ Falls back to the global *toolset* when stream-tools is nil."
             (:tool
              (%chat-template-cell :fg (ptui.core.color:make-color-rgb 230 185 255)))
             (:prompt
-             (%chat-template-cell :fg (ptui.core.color:make-color-rgb 210 210 210)))
+             (%chat-template-cell :fg (ptui.core.color:make-color-rgb 255 255 255)))
+            (:prompt-border
+             (%chat-template-cell :fg (ptui.core.color:make-color-rgb 100 180 255)))
             (:context-green
-             (%chat-template-cell :fg (ptui.core.color:make-color-rgb 140 230 150) :boldp t))
+             (%chat-template-cell :fg (ptui.core.color:make-color-rgb 140 230 150)
+                                  :bg (ptui.core.color:make-color-rgb 128 0 0)
+                                  :boldp t))
             (:context-yellow
-             (%chat-template-cell :fg (ptui.core.color:make-color-rgb 245 210 120) :boldp t))
+             (%chat-template-cell :fg (ptui.core.color:make-color-rgb 245 210 120)
+                                  :bg (ptui.core.color:make-color-rgb 128 0 0)
+                                  :boldp t))
             (:context-red
-             (%chat-template-cell :fg (ptui.core.color:make-color-rgb 255 135 135) :boldp t))
+             (%chat-template-cell :fg (ptui.core.color:make-color-rgb 255 135 135)
+                                  :bg (ptui.core.color:make-color-rgb 128 0 0)
+                                  :boldp t))
+            (:status-bar
+             (%chat-template-cell :fg (ptui.core.color:make-color-rgb 220 220 220)
+                                  :bg (ptui.core.color:make-color-rgb 128 0 0)
+                                  :boldp t))
             (otherwise
              (%chat-template-cell :fg (ptui.core.color:make-color-rgb 175 175 175)))))
         (styled nil))
@@ -2377,7 +2444,8 @@ Falls back to the global *toolset* when stream-tools is nil."
 (defun %prompt-wrapped-lines (value width)
   (if (<= width 0)
       (list "")
-      (ptui.text.layout:wrap-by-width value (max 1 width))))
+      (ptui.text.layout:wrap-by-width value (max 1 width)
+                                       :preserve-spaces t)))
 
 (defun %cursor-to-line-col (cursor-pos lines)
   "Given a grapheme-offset CURSOR-POS and list of wrapped LINES, return
@@ -2400,6 +2468,24 @@ Falls back to the global *toolset* when stream-tools is nil."
     ;; Past end — cursor on last line at end
     (values (max 0 (1- (length lines)))
             (if lines (length (car (last lines))) 0))))
+
+(defun %line-col-to-cursor-pos (line-index col lines)
+  "Convert display coordinates (LINE-INDEX, COL) back to a grapheme offset."
+  (let ((pos 0))
+    (loop for i from 0 below (min line-index (length lines))
+          do (incf pos (length (nth i lines))))
+    (+ pos (min col (if (< line-index (length lines))
+                        (length (nth line-index lines))
+                        0)))))
+
+(defun %prompt-box-inner-width (state)
+  "Derive the inner text width of the prompt box from the cached buffer size.
+The prompt box has a 1-cell border on each side, and the outer layout has 1-col
+margins on each side."
+  (let ((buf (chat-ui-state-cached-buffer state)))
+    (if buf
+        (max 1 (- (ptui.core.types:cell-buffer-cols buf) 4))
+        80)))
 
 (defun %prompt-visible-lines (lines visible-rows scroll-offset)
   (let* ((row-count (max 0 visible-rows))
@@ -2498,10 +2584,11 @@ Falls back to the global *toolset* when stream-tools is nil."
                     (inner-y (+ y 1))
                     (inner-w (max 0 (- w 2)))
                     (inner-h (max 0 (- h 2)))
-                    (line-cell (chat-role-cell :prompt :focusp (eql id focus-id)))
+                    (line-cell (chat-role-cell :prompt))
+                    (border-cell (chat-role-cell :prompt-border))
                     (lines (%prompt-wrapped-lines value inner-w)))
                (ptui.render.buffer:buffer-draw-border
-                buf rect :style line-cell :border-style border-style)
+                buf rect :style border-cell :border-style border-style)
                (multiple-value-bind (visible-lines effective-offset max-offset)
                    (%prompt-visible-lines lines inner-h scroll-offset)
                  (declare (ignore max-offset))
@@ -2513,9 +2600,14 @@ Falls back to the global *toolset* when stream-tools is nil."
                           (+ inner-y row)
                           (list (list (%fit-line-width line inner-w) line-cell))
                           :max-width inner-w))
-                 ;; Render block cursor
+                 ;; Render block cursor with explicit bright colors for visibility
                  (let* ((cursor-pos (%ensure-cursor-pos value cursor-pos-raw))
-                        (cursor-cell (%chat-cell-with-attrs line-cell :invertp t))
+                        (cursor-cell
+                          (ptui.core.types:make-cell
+                           " "
+                           (ptui.core.color:make-color-rgb 0 0 0)
+                           (ptui.core.color:make-color-rgb 255 255 255)
+                           (ptui.core.types:make-attrs :boldp t)))
                         (buf-cols (ptui.core.types:cell-buffer-cols buf))
                         (buf-rows (ptui.core.types:cell-buffer-rows buf)))
                    (multiple-value-bind (cursor-line cursor-col)
@@ -2586,6 +2678,9 @@ Falls back to the global *toolset* when stream-tools is nil."
         rows
         (chat-ui-state-input-text state)
         (chat-ui-state-cursor-position state)
+        (approval-dialog-state-active-p (chat-ui-state-approval-dialog-state state))
+        (approval-dialog-state-selected-option (chat-ui-state-approval-dialog-state state))
+        (approval-dialog-state-tool-name (chat-ui-state-approval-dialog-state state))
         (chat-ui-state-message-scrollback-lines state)
         (chat-ui-state-prompt-scroll-offset state)
         (%chat-tree-signature (chat-ui-state-messages state))
@@ -2599,8 +2694,9 @@ Falls back to the global *toolset* when stream-tools is nil."
         (%stream-tree-key state)))
 
 (defun render-chat-ui-buffer (state size)
-  (let* ((chat-state (ensure-chat-ui-state state))
-         (runtime (chat-ui-state-runtime chat-state))
+  (let ((chat-state (ensure-chat-ui-state state)))
+    (%sync-pending-approval-dialog! chat-state)
+    (let* ((runtime (chat-ui-state-runtime chat-state))
          (cols (ptui.core.types:size-cols size))
          (rows (ptui.core.types:size-rows size))
          (agent-completion-count (%inject-agent-completions chat-state))
@@ -2627,10 +2723,10 @@ Falls back to the global *toolset* when stream-tools is nil."
       (setf tree (chat-ui-build-tree chat-state cols rows))
       (setf layout (ptui.layout:compute-layout
                     (%ui-tree-node tree)
-                    :x 2
-                    :y 1
-                    :width (max 4 (- cols 4))
-                    :height (max 4 (- rows 2))))
+                    :x 1
+                    :y 0
+                    :width (max 4 (- cols 2))
+                    :height (max 4 rows)))
       (ptui.ui.runtime:update-runtime runtime tree)
       (setf (chat-ui-state-cached-tree-key chat-state) tree-key
             (chat-ui-state-cached-tree chat-state) tree
@@ -2687,6 +2783,50 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
   (if (or (null text) (zerop (length text)))
       0
       (length (ptui.text.grapheme:split-graphemes text))))
+
+(defun %word-boundary-p (cluster)
+  "Return T if CLUSTER is a word-boundary character (whitespace or punctuation)."
+  (and (= (length cluster) 1)
+       (let ((ch (char cluster 0)))
+         (or (member ch '(#\Space #\Tab #\Newline #\Return) :test #'char=)
+             (member ch '(#\( #\) #\[ #\] #\{ #\} #\< #\>
+                          #\. #\, #\; #\: #\! #\? #\/ #\\
+                          #\- #\+ #\= #\* #\& #\| #\^ #\~
+                          #\' #\" #\` #\@ #\# #\$ #\%)
+                     :test #'char=)))))
+
+(defun %word-boundary-backward (text cursor-pos)
+  "Return the grapheme offset for the word boundary to the left of CURSOR-POS."
+  (let* ((clusters (ptui.text.grapheme:split-graphemes text))
+         (pos (min (max 0 cursor-pos) (length clusters))))
+    (when (<= pos 0)
+      (return-from %word-boundary-backward 0))
+    ;; Skip whitespace/punctuation backward
+    (loop while (and (> pos 0)
+                     (%word-boundary-p (nth (1- pos) clusters)))
+          do (decf pos))
+    ;; Skip word characters backward
+    (loop while (and (> pos 0)
+                     (not (%word-boundary-p (nth (1- pos) clusters))))
+          do (decf pos))
+    pos))
+
+(defun %word-boundary-forward (text cursor-pos)
+  "Return the grapheme offset for the word boundary to the right of CURSOR-POS."
+  (let* ((clusters (ptui.text.grapheme:split-graphemes text))
+         (len (length clusters))
+         (pos (min (max 0 cursor-pos) len)))
+    (when (>= pos len)
+      (return-from %word-boundary-forward len))
+    ;; Skip word characters forward
+    (loop while (and (< pos len)
+                     (not (%word-boundary-p (nth pos clusters))))
+          do (incf pos))
+    ;; Skip whitespace/punctuation forward
+    (loop while (and (< pos len)
+                     (%word-boundary-p (nth pos clusters)))
+          do (incf pos))
+    pos))
 
 (defun %grapheme-insert-at (text cursor-pos new-text)
   "Insert NEW-TEXT at grapheme position CURSOR-POS in TEXT."
@@ -3180,11 +3320,49 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
              ;; Already at end
              (setf (chat-ui-state-cursor-position state) nil)))
        t)
+      ((eql key :ctrl-left)
+       ;; Jump one word to the left
+       (let ((new-pos (%word-boundary-backward input-text pos)))
+         (setf (chat-ui-state-cursor-position state) new-pos))
+       t)
+      ((eql key :ctrl-right)
+       ;; Jump one word to the right
+       (let* ((new-pos (%word-boundary-forward input-text pos))
+              (len (%grapheme-length input-text)))
+         (setf (chat-ui-state-cursor-position state)
+               (if (>= new-pos len) nil new-pos)))
+       t)
       ((eql key :home)
        (setf (chat-ui-state-cursor-position state) 0)
        t)
       ((eql key :end)
        (setf (chat-ui-state-cursor-position state) nil)
+       t)
+      ((eql key :up)
+       (let* ((inner-w (%prompt-box-inner-width state))
+              (lines (%prompt-wrapped-lines input-text inner-w)))
+         (multiple-value-bind (cur-line cur-col)
+             (%cursor-to-line-col pos lines)
+           (when (> cur-line 0)
+             (let* ((prev-line (nth (1- cur-line) lines))
+                    (target-col (min cur-col (length prev-line)))
+                    (new-pos (%line-col-to-cursor-pos (1- cur-line) target-col lines)))
+               (setf (chat-ui-state-cursor-position state) new-pos)))))
+       t)
+      ((eql key :down)
+       (let* ((inner-w (%prompt-box-inner-width state))
+              (lines (%prompt-wrapped-lines input-text inner-w)))
+         (multiple-value-bind (cur-line cur-col)
+             (%cursor-to-line-col pos lines)
+           (when (< cur-line (1- (length lines)))
+             (let* ((next-line (nth (1+ cur-line) lines))
+                    (target-col (min cur-col (length next-line)))
+                    (new-pos (%line-col-to-cursor-pos (1+ cur-line) target-col lines)))
+               (setf (chat-ui-state-cursor-position state)
+                     (if (and (= (1+ cur-line) (1- (length lines)))
+                              (= target-col (length next-line)))
+                         nil  ;; at end of last line → nil cursor
+                         new-pos))))))
        t)
       (t
        nil))))
@@ -3222,11 +3400,15 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
         (unless (%handle-approval-dialog-key chat-state key text)
           (unless (%handle-fuzzy-picker-key chat-state key)
             (unless (%handle-tree-browser-key chat-state key)
-              (%handle-scroll-key chat-state key)
-              (when (or (eql target :chat-input)
-                        (eql kind :unhandled)
-                        (null target))
-                (%handle-input-key chat-state key text)))))))
+              ;; When input has text, let input handler take up/down for
+              ;; multi-line cursor movement; otherwise scroll history.
+              (let ((input-has-text (plusp (length (chat-ui-state-input-text chat-state)))))
+                (unless (and input-has-text (member key '(:up :down)))
+                  (%handle-scroll-key chat-state key))
+                (when (or (eql target :chat-input)
+                          (eql kind :unhandled)
+                          (null target))
+                  (%handle-input-key chat-state key text))))))))
     (when (and (ptui.ui.runtime:runtime-root runtime)
                (listp route))
       (ptui.widgets.core:dispatch-widget-event
@@ -3239,11 +3421,14 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
     (%run-chat-idle-hooks-if-needed)
     chat-state))
 
-(defun run-chat-ui (&key (backend :auto) (fps 20) initial-state)
+(defun run-chat-ui (&key (backend :auto) (fps 20) initial-state demo)
   (let ((resolved-state
           (if initial-state
               initial-state
-              (chat-ui-restore-latest-session (make-chat-ui-state)))))
+              (if demo
+                  (make-chat-ui-state :stream-runner #'demo-stream-runner
+                                      :stream-client nil)
+                  (chat-ui-restore-latest-session (make-chat-ui-state))))))
     (checkpoint-mark-activity)
     (%chat-mark-activity)
     (load-user-extensions)

@@ -125,18 +125,37 @@
            ;; Home/End: ESC [ H / ESC [ F
            (72 (%emit-key-event parser :home) 3)
            (70 (%emit-key-event parser :end) 3)
-           ;; Numeric CSI: ESC [ <digit> ~  (Home=1~, End=4~, PgUp=5~, PgDn=6~)
+           ;; Numeric CSI: ESC [ <digit> ...
+           ;; Handles: ESC [ N ~ (Home=1~, End=4~, PgUp=5~, PgDn=6~)
+           ;; and:     ESC [ 1 ; 5 <letter> (Ctrl+Arrow)
            ((49 52 53 54)
             (if (< len 4)
                 0
-                (if (= (aref pending 3) 126)
-                    (case (aref pending 2)
-                      (49 (%emit-key-event parser :home) 4)
-                      (52 (%emit-key-event parser :end) 4)
-                      (53 (%emit-key-event parser :pgup) 4)
-                      (54 (%emit-key-event parser :pgdown) 4)
-                      (otherwise (%emit-key-event parser :escape) 1))
-                    (progn (%emit-key-event parser :escape) 1))))
+                (cond
+                  ;; ESC [ N ~ — function keys
+                  ((= (aref pending 3) 126)
+                   (case (aref pending 2)
+                     (49 (%emit-key-event parser :home) 4)
+                     (52 (%emit-key-event parser :end) 4)
+                     (53 (%emit-key-event parser :pgup) 4)
+                     (54 (%emit-key-event parser :pgdown) 4)
+                     (otherwise (%emit-key-event parser :escape) 1)))
+                  ;; ESC [ 1 ; 5 <letter> — Ctrl+Arrow
+                  ((and (= (aref pending 2) 49)   ;; '1'
+                        (= (aref pending 3) 59))  ;; ';'
+                   (if (< len 6)
+                       0
+                       (if (= (aref pending 4) 53)  ;; '5' = Ctrl modifier
+                           (case (aref pending 5)
+                             (65 (%emit-key-event parser :ctrl-up :ctrlp t) 6)
+                             (66 (%emit-key-event parser :ctrl-down :ctrlp t) 6)
+                             (67 (%emit-key-event parser :ctrl-right :ctrlp t) 6)
+                             (68 (%emit-key-event parser :ctrl-left :ctrlp t) 6)
+                             (otherwise (%emit-key-event parser :escape) 1))
+                           ;; Other modifier (shift=2, alt=3, etc) — ignore
+                           (progn (%emit-key-event parser :escape) 1))))
+                  (t
+                   (%emit-key-event parser :escape) 1))))
            (otherwise
             ;; Unknown CSI: consume ESC to avoid sticky prefix.
             (%emit-key-event parser :escape)

@@ -286,6 +286,25 @@
            :tool-call-id (pseudopod:tool-call-id tool-call))))
   nil)
 
+(defun token-stream-emit-tool-call-result (stream-state
+                                          &key
+                                            tool-call
+                                            preview-key
+                                            execution-key
+                                            result
+                                            execution-error)
+  "Publish a completed tool call execution result for async tool workers." 
+  (when (pseudopod:tool-call-p tool-call)
+    (ptui.runtime.queue:queue-push
+     (token-stream-state-events stream-state)
+     (list :kind :tool-call-result
+           :tool-call tool-call
+           :preview-key preview-key
+           :execution-key execution-key
+           :result result
+           :execution-error execution-error)))
+  nil)
+
 (defun token-stream-mark-complete (stream-state)
   (ptui.runtime.queue:queue-push (token-stream-state-events stream-state)
                                  (list :kind :complete))
@@ -717,20 +736,52 @@
                                               role
                                               :boldp headingp))))))
 
+(defun %stream-markdown-space-grapheme-p (grapheme)
+  "Return T if GRAPHEME is a single space or tab character."
+  (and (= (length grapheme) 1)
+       (let ((ch (char grapheme 0)))
+         (or (char= ch #\Space)
+             (char= ch #\Tab)))))
+
+(defun %stream-markdown-strip-trailing-spaces (segments-rev)
+  "Remove trailing space-only text from reversed segment list."
+  (loop while segments-rev
+        for text = (getf (first segments-rev) :text "")
+        while (and (plusp (length text))
+                   (every (lambda (ch) (or (char= ch #\Space) (char= ch #\Tab))) text))
+        do (pop segments-rev))
+  segments-rev)
+
 (defun %stream-markdown-wrap-segments (segments width &key (default-role :assistant))
+  "Wrap styled segments into lines respecting word boundaries where possible."
   (let ((safe-width (max 1 (if (integerp width) width 1)))
         (lines-rev '())
         (line-segments-rev '())
-        (line-width 0))
-    (labels ((emit-line ()
-               (let ((line
-                       (if line-segments-rev
-                           (nreverse line-segments-rev)
-                           (list (%stream-markdown-make-segment "" default-role)))))
-                 (push line lines-rev)
-                 (setf line-segments-rev '()
-                       line-width 0)))
-             (append-grapheme (style-segment grapheme)
+        (line-width 0)
+        ;; Snapshot of line state at last word boundary (space)
+        (break-segments-rev nil)
+        (break-width 0)
+        (break-valid-p nil)
+        ;; Graphemes accumulated since last break point
+        (word-graphemes '())  ; list of (style-segment . grapheme)
+        (word-width 0))
+    (labels ((emit-line-from (segs-rev w)
+               ;; Strip trailing spaces
+               (let ((stripped (%stream-markdown-strip-trailing-spaces segs-rev)))
+                 (push (if stripped
+                           (nreverse stripped)
+                           (list (%stream-markdown-make-segment "" default-role)))
+                       lines-rev))
+               (setf line-segments-rev '()
+                     line-width 0
+                     break-segments-rev nil
+                     break-width 0
+                     break-valid-p nil
+                     word-graphemes '()
+                     word-width 0))
+             (emit-current-line ()
+               (emit-line-from line-segments-rev line-width))
+             (push-grapheme (style-segment grapheme)
                (setf line-segments-rev
                      (%stream-markdown-push-segment
                       line-segments-rev
@@ -745,14 +796,62 @@
       (dolist (segment segments)
         (let ((segment-text (getf segment :text "")))
           (dolist (grapheme (ptui.text.grapheme:split-graphemes segment-text))
-            (let ((grapheme-width (max 0 (ptui.text.width:grapheme-width grapheme))))
-              (when (and (> line-width 0)
-                         (> (+ line-width grapheme-width) safe-width))
-                (emit-line))
-              (append-grapheme segment grapheme)
-              (incf line-width grapheme-width)))))
+            (let* ((grapheme-width (max 0 (ptui.text.width:grapheme-width grapheme)))
+                   (breakp (%stream-markdown-space-grapheme-p grapheme)))
+              (cond
+                ;; Would overflow
+                ((and (> line-width 0)
+                      (> (+ line-width grapheme-width) safe-width))
+                 (cond
+                   ;; Space overflows — emit line, skip space
+                   (breakp
+                    (emit-current-line))
+                   ;; Have a word boundary — rewind to it
+                   ((and break-valid-p
+                         (> break-width 0)
+                         (<= (+ word-width grapheme-width) safe-width))
+                    (let ((saved-word (nreverse word-graphemes)))
+                      ;; Emit the line up to the break point
+                      (emit-line-from break-segments-rev break-width)
+                      ;; Re-add saved word graphemes
+                      (dolist (pair saved-word)
+                        (push-grapheme (car pair) (cdr pair))
+                        (incf line-width (max 0 (ptui.text.width:grapheme-width (cdr pair)))))
+                      ;; Track these as current word
+                      (setf word-graphemes (mapcar #'identity saved-word)
+                            word-width (reduce #'+ saved-word
+                                               :key (lambda (p)
+                                                      (max 0 (ptui.text.width:grapheme-width (cdr p))))
+                                               :initial-value 0))
+                      ;; Add current grapheme
+                      (push-grapheme segment grapheme)
+                      (incf line-width grapheme-width)
+                      (push (cons segment grapheme) word-graphemes)
+                      (incf word-width grapheme-width)))
+                   ;; No break point — hard break
+                   (t
+                    (emit-current-line)
+                    (push-grapheme segment grapheme)
+                    (incf line-width grapheme-width)
+                    (setf word-graphemes (list (cons segment grapheme))
+                          word-width grapheme-width))))
+                ;; Normal — fits on line
+                (t
+                 (push-grapheme segment grapheme)
+                 (incf line-width grapheme-width)
+                 (if breakp
+                     ;; Save snapshot at this word boundary
+                     (setf break-segments-rev (mapcar #'copy-list line-segments-rev)
+                           break-width line-width
+                           break-valid-p t
+                           word-graphemes '()
+                           word-width 0)
+                     ;; Non-space: accumulate in current word
+                     (progn
+                       (push (cons segment grapheme) word-graphemes)
+                       (incf word-width grapheme-width)))))))))
       (when (or line-segments-rev (null lines-rev))
-        (emit-line)))
+        (emit-current-line)))
     (nreverse lines-rev)))
 
 (defun %stream-markdown-line-width (segments)

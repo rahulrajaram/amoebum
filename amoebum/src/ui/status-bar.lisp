@@ -348,7 +348,7 @@
               segments)
         segments)))
 
-(defun status-bar-styled-segments (state)
+(defun status-bar-styled-segments (state &key width)
   (check-type state status-bar-state)
   (let ((segments '())
         (segment-specs (%status-segment-specs state)))
@@ -359,13 +359,29 @@
                           +plan-mode-lock-badge+)
                   :system)
             segments)
-      (push (cons " | " :meta) segments))
+      (push (cons " | " :status-bar) segments))
     (loop for spec in segment-specs
           for index from 0 do
             (when (> index 0)
-              (push (cons " | " :meta) segments))
-            (push (cons (getf spec :text) (or (getf spec :role) :meta)) segments))
-    (nreverse segments)))
+              (push (cons " | " :status-bar) segments))
+            (let ((role (getf spec :role)))
+              (push (cons (getf spec :text)
+                          (if (or (null role) (eq role :meta))
+                              :status-bar
+                              role))
+                    segments)))
+    (let ((result (nreverse segments)))
+      ;; Pad to full width so maroon background fills the line
+      (when (and width (> width 0))
+        (let* ((used (loop for seg in result
+                           sum (ptui.text.width:string-width (car seg))))
+               (remaining (- width used)))
+          (when (> remaining 0)
+            (setf result
+                  (append result
+                          (list (cons (make-string remaining :initial-element #\Space)
+                                      :status-bar)))))))
+      result)))
 
 (defun status-bar-line (state &key width)
   (check-type state status-bar-state)
@@ -403,6 +419,6 @@
    :id id
    :key key
    :props (list :text (status-bar-line state :width width)
-                :role :meta
-                :styled-segments (status-bar-styled-segments state))
+                :role :status-bar
+                :styled-segments (status-bar-styled-segments state :width width))
    :children '()))

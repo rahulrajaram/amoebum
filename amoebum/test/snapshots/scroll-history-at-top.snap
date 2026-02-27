@@ -1,48 +1,68 @@
 --- ptui-snapshot v1 84x20
+| YOU> User message number 1 about topic 1.                                          |
 |                                                                                    |
-|  ╭──────────────────────────────────────────────────────────────────────────────╮  |
-|  │amoebum chat                                                                  │  |
-|  │branch test/scroll | mode full-auto | Tokens: 381/128000 (0%) | stream idle | │  |
-|  │YOU> User message number 1 about topic 1.                                     │  |
-|  │                                                                              │  |
-|  │ASSISTANT> Assistant response to query 1. This is a detailed explanation.     │  |
-|  │                                                                              │  |
-|  │YOU> User message number 2 about topic 2.                                     │  |
-|  │                                                                              │  |
-|  │ASSISTANT> Assistant response to query 2. This is a detailed explanation.     │  |
-|  │                                                                              │  |
-|  │YOU> User message number 3 about topic 3.                                     │  |
-|  │                                                                              │  |
-|  │╭─────────────────────────────────────────────────────────────────────────────│  |
-|  ││                                                                             │  |
-|  │╰─────────────────────────────────────────────────────────────────────────────│  |
-|  ╰──────────────────────────────────────────────────────────────────────────────╯  |
+| ASSISTANT> Assistant response to query 1. This is a detailed explanation.          |
+|                                                                                    |
+| YOU> User message number 2 about topic 2.                                          |
+|                                                                                    |
+| ASSISTANT> Assistant response to query 2. This is a detailed explanation.          |
+|                                                                                    |
+| YOU> User message number 3 about topic 3.                                          |
+|                                                                                    |
+| ASSISTANT> Assistant response to query 3. This is a detailed explanation.          |
+|                                                                                    |
+| YOU> User message number 4 about topic 4.                                          |
+|                                                                                    |
+| ╭────────────────────────────────────────────────────────────────────────────────╮ |
+| │                                                                                │ |
+| ╰────────────────────────────────────────────────────────────────────────────────╯ |
+| branch test/scroll | mode full-auto | Tokens: 381/128000 (0%) | stream idle | mode |
 |                                                                                    |
 |                                                                                    |
 --- attrs
-3,41:bold
-3,42:bold
-3,43:bold
-3,44:bold
-3,45:bold
-3,46:bold
-3,47:bold
-3,48:bold
-3,49:bold
-3,50:bold
-3,51:bold
-3,52:bold
-3,53:bold
-3,54:bold
-3,55:bold
-3,56:bold
-3,57:bold
-3,58:bold
-3,59:bold
-3,60:bold
-3,61:bold
-3,62:bold
-3,63:bold
+0,1:bold
+0,2:bold
+0,3:bold
+0,4:bold
+0,5:bold
+0,6:bold
+0,7:bold
+0,8:bold
+0,9:bold
+0,10:bold
+0,11:bold
+0,12:bold
+0,13:bold
+0,14:bold
+0,15:bold
+0,16:bold
+0,17:bold
+0,18:bold
+0,19:bold
+0,20:bold
+0,21:bold
+0,22:bold
+0,23:bold
+0,24:bold
+0,25:bold
+0,26:bold
+0,27:bold
+0,28:bold
+0,29:bold
+0,30:bold
+0,31:bold
+0,32:bold
+0,33:bold
+0,34:bold
+0,35:bold
+0,36:bold
+0,37:bold
+0,38:bold
+0,39:bold
+0,40:bold
+0,41:bold
+4,1:bold
+4,2:bold
 4,3:bold
 4,4:bold
 4,5:bold
@@ -82,8 +102,8 @@
 4,39:bold
 4,40:bold
 4,41:bold
-4,42:bold
-4,43:bold
+8,1:bold
+8,2:bold
 8,3:bold
 8,4:bold
 8,5:bold
@@ -123,8 +143,8 @@
 8,39:bold
 8,40:bold
 8,41:bold
-8,42:bold
-8,43:bold
+12,1:bold
+12,2:bold
 12,3:bold
 12,4:bold
 12,5:bold
@@ -164,163 +184,86 @@
 12,39:bold
 12,40:bold
 12,41:bold
-12,42:bold
-12,43:bold
-14,3:bold,invert
-14,4:bold,invert
-14,5:bold,invert
-14,6:bold,invert
-14,7:bold,invert
-14,8:bold,invert
-14,9:bold,invert
-14,10:bold,invert
-14,11:bold,invert
-14,12:bold,invert
-14,13:bold,invert
-14,14:bold,invert
-14,15:bold,invert
-14,16:bold,invert
-14,17:bold,invert
-14,18:bold,invert
-14,19:bold,invert
-14,20:bold,invert
-14,21:bold,invert
-14,22:bold,invert
-14,23:bold,invert
-14,24:bold,invert
-14,25:bold,invert
-14,26:bold,invert
-14,27:bold,invert
-14,28:bold,invert
-14,29:bold,invert
-14,30:bold,invert
-14,31:bold,invert
-14,32:bold,invert
-14,33:bold,invert
-14,34:bold,invert
-14,35:bold,invert
-14,36:bold,invert
-14,37:bold,invert
-14,38:bold,invert
-14,39:bold,invert
-14,40:bold,invert
-14,41:bold,invert
-14,42:bold,invert
-14,43:bold,invert
-14,44:bold,invert
-14,45:bold,invert
-14,46:bold,invert
-14,47:bold,invert
-14,48:bold,invert
-14,49:bold,invert
-14,50:bold,invert
-14,51:bold,invert
-14,52:bold,invert
-14,53:bold,invert
-14,54:bold,invert
-14,55:bold,invert
-14,56:bold,invert
-14,57:bold,invert
-14,58:bold,invert
-14,59:bold,invert
-14,60:bold,invert
-14,61:bold,invert
-14,62:bold,invert
-14,63:bold,invert
-14,64:bold,invert
-14,65:bold,invert
-14,66:bold,invert
-14,67:bold,invert
-14,68:bold,invert
-14,69:bold,invert
-14,70:bold,invert
-14,71:bold,invert
-14,72:bold,invert
-14,73:bold,invert
-14,74:bold,invert
-14,75:bold,invert
-14,76:bold,invert
-14,77:bold,invert
-14,78:bold,invert
-14,79:bold,invert
-14,80:bold,invert
-15,3:bold,invert
-15,4:bold,invert
-16,3:bold,invert
-16,4:bold,invert
-16,5:bold,invert
-16,6:bold,invert
-16,7:bold,invert
-16,8:bold,invert
-16,9:bold,invert
-16,10:bold,invert
-16,11:bold,invert
-16,12:bold,invert
-16,13:bold,invert
-16,14:bold,invert
-16,15:bold,invert
-16,16:bold,invert
-16,17:bold,invert
-16,18:bold,invert
-16,19:bold,invert
-16,20:bold,invert
-16,21:bold,invert
-16,22:bold,invert
-16,23:bold,invert
-16,24:bold,invert
-16,25:bold,invert
-16,26:bold,invert
-16,27:bold,invert
-16,28:bold,invert
-16,29:bold,invert
-16,30:bold,invert
-16,31:bold,invert
-16,32:bold,invert
-16,33:bold,invert
-16,34:bold,invert
-16,35:bold,invert
-16,36:bold,invert
-16,37:bold,invert
-16,38:bold,invert
-16,39:bold,invert
-16,40:bold,invert
-16,41:bold,invert
-16,42:bold,invert
-16,43:bold,invert
-16,44:bold,invert
-16,45:bold,invert
-16,46:bold,invert
-16,47:bold,invert
-16,48:bold,invert
-16,49:bold,invert
-16,50:bold,invert
-16,51:bold,invert
-16,52:bold,invert
-16,53:bold,invert
-16,54:bold,invert
-16,55:bold,invert
-16,56:bold,invert
-16,57:bold,invert
-16,58:bold,invert
-16,59:bold,invert
-16,60:bold,invert
-16,61:bold,invert
-16,62:bold,invert
-16,63:bold,invert
-16,64:bold,invert
-16,65:bold,invert
-16,66:bold,invert
-16,67:bold,invert
-16,68:bold,invert
-16,69:bold,invert
-16,70:bold,invert
-16,71:bold,invert
-16,72:bold,invert
-16,73:bold,invert
-16,74:bold,invert
-16,75:bold,invert
-16,76:bold,invert
-16,77:bold,invert
-16,78:bold,invert
-16,79:bold,invert
-16,80:bold,invert
+15,2:bold
+17,1:bold
+17,2:bold
+17,3:bold
+17,4:bold
+17,5:bold
+17,6:bold
+17,7:bold
+17,8:bold
+17,9:bold
+17,10:bold
+17,11:bold
+17,12:bold
+17,13:bold
+17,14:bold
+17,15:bold
+17,16:bold
+17,17:bold
+17,18:bold
+17,19:bold
+17,20:bold
+17,21:bold
+17,22:bold
+17,23:bold
+17,24:bold
+17,25:bold
+17,26:bold
+17,27:bold
+17,28:bold
+17,29:bold
+17,30:bold
+17,31:bold
+17,32:bold
+17,33:bold
+17,34:bold
+17,35:bold
+17,36:bold
+17,37:bold
+17,38:bold
+17,39:bold
+17,40:bold
+17,41:bold
+17,42:bold
+17,43:bold
+17,44:bold
+17,45:bold
+17,46:bold
+17,47:bold
+17,48:bold
+17,49:bold
+17,50:bold
+17,51:bold
+17,52:bold
+17,53:bold
+17,54:bold
+17,55:bold
+17,56:bold
+17,57:bold
+17,58:bold
+17,59:bold
+17,60:bold
+17,61:bold
+17,62:bold
+17,63:bold
+17,64:bold
+17,65:bold
+17,66:bold
+17,67:bold
+17,68:bold
+17,69:bold
+17,70:bold
+17,71:bold
+17,72:bold
+17,73:bold
+17,74:bold
+17,75:bold
+17,76:bold
+17,77:bold
+17,78:bold
+17,79:bold
+17,80:bold
+17,81:bold
+17,82:bold

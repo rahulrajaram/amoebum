@@ -1,201 +1,105 @@
 --- ptui-snapshot v1 84x20
+| ASSISTANT> I need to run a shell command.                                          |
 |                                                                                    |
-|  ╭──────────────────────────────────────────────────────────────────────────────╮  |
-|  │amoebum chat                                                                  │  |
-|  │branch test/overlay | mode full-auto | Tokens: 8/128000 (0%) | stream idle | m│  |
-|  │ASSISTANT> I need to run a shell command.                                     │  |
-|  │╭─────────────────────────────────╮                                           │  |
-|  ││                                 │                                           │  |
-|  ││                                 │                                           │  |
-|  ││                                 │                                           │  |
-|  ││                                 │                                           │  |
-|  ││                                 │                                           │  |
-|  ││                                 │                                           │  |
-|  ││                                 │                                           │  |
-|  ││                                 │                                           │  |
-|  │╰─────────────────────────────────╯                                           │  |
-|  │╭─────────────────────────────────────────────────────────────────────────────│  |
-|  ││                                                                             │  |
-|  │╰─────────────────────────────────────────────────────────────────────────────│  |
-|  ╰──────────────────────────────────────────────────────────────────────────────╯  |
+|                                                                                    |
+|                                                                                    |
+| ╭─────────────────────────────────╮                                                |
+| │                                 │                                                |
+| │                                 │                                                |
+| │                                 │                                                |
+| │                                 │                                                |
+| │                                 │                                                |
+| │                                 │                                                |
+| │                                 │                                                |
+| │                                 │                                                |
+| ╰─────────────────────────────────╯                                                |
+| ╭────────────────────────────────────────────────────────────────────────────────╮ |
+| │                                                                                │ |
+| ╰────────────────────────────────────────────────────────────────────────────────╯ |
+| branch test/overlay | mode full-auto | Tokens: 8/128000 (0%) | stream idle | model |
+|                                                                                    |
 |                                                                                    |
 --- attrs
-3,42:bold
-3,43:bold
-3,44:bold
-3,45:bold
-3,46:bold
-3,47:bold
-3,48:bold
-3,49:bold
-3,50:bold
-3,51:bold
-3,52:bold
-3,53:bold
-3,54:bold
-3,55:bold
-3,56:bold
-3,57:bold
-3,58:bold
-3,59:bold
-3,60:bold
-3,61:bold
-3,62:bold
-15,3:bold,invert
-15,4:bold,invert
-15,5:bold,invert
-15,6:bold,invert
-15,7:bold,invert
-15,8:bold,invert
-15,9:bold,invert
-15,10:bold,invert
-15,11:bold,invert
-15,12:bold,invert
-15,13:bold,invert
-15,14:bold,invert
-15,15:bold,invert
-15,16:bold,invert
-15,17:bold,invert
-15,18:bold,invert
-15,19:bold,invert
-15,20:bold,invert
-15,21:bold,invert
-15,22:bold,invert
-15,23:bold,invert
-15,24:bold,invert
-15,25:bold,invert
-15,26:bold,invert
-15,27:bold,invert
-15,28:bold,invert
-15,29:bold,invert
-15,30:bold,invert
-15,31:bold,invert
-15,32:bold,invert
-15,33:bold,invert
-15,34:bold,invert
-15,35:bold,invert
-15,36:bold,invert
-15,37:bold,invert
-15,38:bold,invert
-15,39:bold,invert
-15,40:bold,invert
-15,41:bold,invert
-15,42:bold,invert
-15,43:bold,invert
-15,44:bold,invert
-15,45:bold,invert
-15,46:bold,invert
-15,47:bold,invert
-15,48:bold,invert
-15,49:bold,invert
-15,50:bold,invert
-15,51:bold,invert
-15,52:bold,invert
-15,53:bold,invert
-15,54:bold,invert
-15,55:bold,invert
-15,56:bold,invert
-15,57:bold,invert
-15,58:bold,invert
-15,59:bold,invert
-15,60:bold,invert
-15,61:bold,invert
-15,62:bold,invert
-15,63:bold,invert
-15,64:bold,invert
-15,65:bold,invert
-15,66:bold,invert
-15,67:bold,invert
-15,68:bold,invert
-15,69:bold,invert
-15,70:bold,invert
-15,71:bold,invert
-15,72:bold,invert
-15,73:bold,invert
-15,74:bold,invert
-15,75:bold,invert
-15,76:bold,invert
-15,77:bold,invert
-15,78:bold,invert
-15,79:bold,invert
-15,80:bold,invert
-16,3:bold,invert
-16,4:bold,invert
-17,3:bold,invert
-17,4:bold,invert
-17,5:bold,invert
-17,6:bold,invert
-17,7:bold,invert
-17,8:bold,invert
-17,9:bold,invert
-17,10:bold,invert
-17,11:bold,invert
-17,12:bold,invert
-17,13:bold,invert
-17,14:bold,invert
-17,15:bold,invert
-17,16:bold,invert
-17,17:bold,invert
-17,18:bold,invert
-17,19:bold,invert
-17,20:bold,invert
-17,21:bold,invert
-17,22:bold,invert
-17,23:bold,invert
-17,24:bold,invert
-17,25:bold,invert
-17,26:bold,invert
-17,27:bold,invert
-17,28:bold,invert
-17,29:bold,invert
-17,30:bold,invert
-17,31:bold,invert
-17,32:bold,invert
-17,33:bold,invert
-17,34:bold,invert
-17,35:bold,invert
-17,36:bold,invert
-17,37:bold,invert
-17,38:bold,invert
-17,39:bold,invert
-17,40:bold,invert
-17,41:bold,invert
-17,42:bold,invert
-17,43:bold,invert
-17,44:bold,invert
-17,45:bold,invert
-17,46:bold,invert
-17,47:bold,invert
-17,48:bold,invert
-17,49:bold,invert
-17,50:bold,invert
-17,51:bold,invert
-17,52:bold,invert
-17,53:bold,invert
-17,54:bold,invert
-17,55:bold,invert
-17,56:bold,invert
-17,57:bold,invert
-17,58:bold,invert
-17,59:bold,invert
-17,60:bold,invert
-17,61:bold,invert
-17,62:bold,invert
-17,63:bold,invert
-17,64:bold,invert
-17,65:bold,invert
-17,66:bold,invert
-17,67:bold,invert
-17,68:bold,invert
-17,69:bold,invert
-17,70:bold,invert
-17,71:bold,invert
-17,72:bold,invert
-17,73:bold,invert
-17,74:bold,invert
-17,75:bold,invert
-17,76:bold,invert
-17,77:bold,invert
-17,78:bold,invert
-17,79:bold,invert
-17,80:bold,invert
+15,2:bold
+17,1:bold
+17,2:bold
+17,3:bold
+17,4:bold
+17,5:bold
+17,6:bold
+17,7:bold
+17,8:bold
+17,9:bold
+17,10:bold
+17,11:bold
+17,12:bold
+17,13:bold
+17,14:bold
+17,15:bold
+17,16:bold
+17,17:bold
+17,18:bold
+17,19:bold
+17,20:bold
+17,21:bold
+17,22:bold
+17,23:bold
+17,24:bold
+17,25:bold
+17,26:bold
+17,27:bold
+17,28:bold
+17,29:bold
+17,30:bold
+17,31:bold
+17,32:bold
+17,33:bold
+17,34:bold
+17,35:bold
+17,36:bold
+17,37:bold
+17,38:bold
+17,39:bold
+17,40:bold
+17,41:bold
+17,42:bold
+17,43:bold
+17,44:bold
+17,45:bold
+17,46:bold
+17,47:bold
+17,48:bold
+17,49:bold
+17,50:bold
+17,51:bold
+17,52:bold
+17,53:bold
+17,54:bold
+17,55:bold
+17,56:bold
+17,57:bold
+17,58:bold
+17,59:bold
+17,60:bold
+17,61:bold
+17,62:bold
+17,63:bold
+17,64:bold
+17,65:bold
+17,66:bold
+17,67:bold
+17,68:bold
+17,69:bold
+17,70:bold
+17,71:bold
+17,72:bold
+17,73:bold
+17,74:bold
+17,75:bold
+17,76:bold
+17,77:bold
+17,78:bold
+17,79:bold
+17,80:bold
+17,81:bold
+17,82:bold

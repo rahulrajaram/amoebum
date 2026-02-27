@@ -34,6 +34,7 @@
 
 (defun %parse-cli-options (argv)
   (let ((json-mode-p nil)
+        (demo-mode-p nil)
         (command nil)
         (prompt nil)
         (resume nil)
@@ -45,6 +46,8 @@
           ((or (string= argument "--json")
                (string= argument "--non-interactive"))
            (setf json-mode-p t))
+          ((string= argument "--demo")
+           (setf demo-mode-p t))
           ((or (string= argument "--command")
                (string= argument "-c"))
            (multiple-value-bind (value consumed-index)
@@ -87,6 +90,7 @@
           ((uiop:string-prefix-p "--image=" argument)
            (push (%trim-cli-arg (subseq argument (length "--image="))) image-paths)))))
     (list :json-mode-p json-mode-p
+          :demo-mode-p demo-mode-p
           :command command
           :prompt prompt
           :resume resume
@@ -238,6 +242,11 @@
     (reload-config :cli-arguments effective-argv)
     (enable-tts-post-receive-hook)
     (let ((options (%parse-cli-options effective-argv)))
-      (if (getf options :json-mode-p)
-          (apply #'run-cli-json effective-argv)
-          (run-chat-ui :backend :auto :fps 20)))))
+      (cond
+        ((getf options :json-mode-p)
+         (apply #'run-cli-json effective-argv))
+        ((getf options :demo-mode-p)
+         (run-chat-ui :backend :auto :fps 20
+                      :demo t))
+        (t
+         (run-chat-ui :backend :auto :fps 20))))))

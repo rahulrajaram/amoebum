@@ -36,21 +36,52 @@
           (setf cursor end))))
     (%concat-clusters (nreverse selected))))
 
-(defun wrap-by-width (text max-width &key (engine :auto))
-  "Wrap TEXT into a list of lines, each bounded by MAX-WIDTH display cells."
+(defun %breakable-cluster-p (cluster)
+  "Return T if CLUSTER is a space or breakable whitespace (not newline)."
+  (and (= (length cluster) 1)
+       (let ((ch (char cluster 0)))
+         (or (char= ch #\Space)
+             (char= ch #\Tab)))))
+
+(defun wrap-by-width (text max-width &key (engine :auto) (preserve-spaces nil))
+  "Wrap TEXT into a list of lines, each bounded by MAX-WIDTH display cells.
+Prefers breaking at word boundaries (spaces). Falls back to character-level
+breaks for words longer than MAX-WIDTH. When PRESERVE-SPACES is T, trailing
+spaces are kept on wrapped lines (needed for cursor position mapping)."
   (check-type text string)
   (check-type max-width (integer 1 *))
   (let ((clusters (ptui.text.grapheme:split-graphemes text :engine engine))
         (line-clusters '())
         (line-width 0)
+        ;; Track last breakable position for word-boundary wrapping
+        (word-clusters '())   ; clusters since last break point
+        (word-width 0)        ; width of clusters since last break point
         (lines '()))
-    (labels ((flush-line ()
+    (labels ((%strip-trailing-spaces ()
+               ;; Remove trailing breakable clusters from line-clusters (reversed)
+               (loop while (and line-clusters
+                                (%breakable-cluster-p (first line-clusters)))
+                     do (let ((sp-w (ptui.text.width:grapheme-width
+                                     (first line-clusters) :engine engine)))
+                          (pop line-clusters)
+                          (decf line-width sp-w))))
+             (flush-line ()
+               (unless preserve-spaces (%strip-trailing-spaces))
                (push (%concat-clusters (nreverse line-clusters)) lines)
                (setf line-clusters '()
-                     line-width 0))
-             (append-cluster (cluster width)
+                     line-width 0
+                     word-clusters '()
+                     word-width 0))
+             (append-cluster (cluster width breakablep)
                (push cluster line-clusters)
-               (incf line-width width)))
+               (incf line-width width)
+               (if breakablep
+                   ;; Reset word tracking after a breakable cluster
+                   (setf word-clusters '()
+                         word-width 0)
+                   (progn
+                     (push cluster word-clusters)
+                     (incf word-width width)))))
       (if (null clusters)
           (setf lines (list ""))
           (progn
@@ -59,20 +90,43 @@
                 ((string= cluster (string #\Newline))
                  (flush-line))
                 (t
-                 (let ((width (ptui.text.width:grapheme-width cluster :engine engine)))
+                 (let* ((width (ptui.text.width:grapheme-width cluster :engine engine))
+                        (breakp (%breakable-cluster-p cluster)))
                    (cond
                      ((zerop width)
-                      (append-cluster cluster width))
+                      (append-cluster cluster width nil))
                      ((> width max-width)
-                      (when line-clusters
-                        (flush-line))
-                      (append-cluster cluster width)
+                      ;; Single cluster wider than line — force its own line
+                      (when line-clusters (flush-line))
+                      (append-cluster cluster width nil)
                       (flush-line))
                      ((> (+ line-width width) max-width)
-                      (flush-line)
-                      (append-cluster cluster width))
+                      ;; Would overflow. Try to break at word boundary.
+                      (cond
+                        ;; Space itself overflows — just break, skip the space
+                        (breakp
+                         (flush-line))
+                        ;; Word boundary available — rewind to it
+                        ((and word-clusters
+                              (> (- line-width word-width) 0)
+                              (<= (+ word-width width) max-width))
+                         (let ((saved-word (nreverse word-clusters)))
+                           ;; Remove word clusters from line-clusters
+                           (setf line-clusters (nthcdr (length saved-word) line-clusters))
+                           (decf line-width word-width)
+                           (flush-line)
+                           ;; Re-add the word clusters
+                           (dolist (wc saved-word)
+                             (let ((ww (ptui.text.width:grapheme-width wc :engine engine)))
+                               (append-cluster wc ww nil)))
+                           ;; Add the current cluster
+                           (append-cluster cluster width nil)))
+                        ;; No word boundary — hard break
+                        (t
+                         (flush-line)
+                         (append-cluster cluster width nil))))
                      (t
-                      (append-cluster cluster width)))))))
+                      (append-cluster cluster width breakp)))))))
             (flush-line))))
     (nreverse lines)))
 

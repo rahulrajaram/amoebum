@@ -12,6 +12,9 @@
   ((permission-mode :initarg :permission-mode
                     :initform nil
                     :accessor context-permission-mode)
+   (permission-cancel-thunk :initarg :permission-cancel-thunk
+                           :initform nil
+                           :accessor context-permission-cancel-thunk)
    (event-bus :initarg :event-bus
               :initform nil
               :accessor context-event-bus)
@@ -150,12 +153,14 @@ skip-tool-call, abort-step, or ask-user."
                                hook-registry
                                metrics
                                result-cache
+                               permission-cancel-thunk
                                logger
                                (initialize-notifications-p t))
   (let ((context
           (make-instance 'amoebum-context
                          :toolset toolset
                          :permission-mode permission-mode
+                         :permission-cancel-thunk permission-cancel-thunk
                          :event-bus event-bus
                          :hook-registry hook-registry
                          :metrics (or metrics (make-hash-table :test #'equal))
@@ -431,7 +436,8 @@ skip-tool-call, abort-step, or ask-user."
                    :command (%coerce-command-string
                              (%extract-command-argument arguments))
                    :reason decision-reason
-                   :decision-id (%next-permission-decision-id)))
+                   :decision-id (%next-permission-decision-id)
+                   :cancel-thunk (context-permission-cancel-thunk context)))
               (user-decision (pending-approval-decision pa)))
          ;; Handle "remember" — add a permanent rule
          (when (pending-approval-remember-p pa)

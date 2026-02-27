@@ -1419,6 +1419,7 @@
            #:token-stream-emit-tool-call-delta
            #:token-stream-emit-tool-call-started
            #:token-stream-emit-tool-call-argument-complete
+           #:token-stream-emit-tool-call-result
            #:token-stream-mark-complete
            #:token-stream-mark-cancelled
            #:token-stream-mark-failed
@@ -1437,6 +1438,7 @@
            #:streaming-markdown-renderer-render-lines
            #:stream-markdown-styled-lines
            #:stream-pseudopod-chat
+           #:demo-stream-runner
            #:+event-type-ui-stream-progress+
            #:status-bar-stream-payload
            #:status-bar-stream-payload-p

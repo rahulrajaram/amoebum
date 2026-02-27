@@ -87,6 +87,7 @@
    (:file "src/system-prompt")
    (:file "src/ui/approval-dialog")
    (:file "src/ui/streaming")
+   (:file "src/ui/demo")
    (:file "src/ui/status-bar")
    (:file "src/ui/chat")
    (:file "src/main"))

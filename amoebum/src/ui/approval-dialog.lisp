@@ -42,7 +42,8 @@ DECISION is :allow or :deny.  REMEMBER-P adds the rule permanently."
       (bt:condition-notify *pending-approval-condvar*))))
 
 (defun wait-for-pending-approval (tool-name arguments
-                                  &key path command reason decision-id)
+                                  &key path command reason decision-id
+                                       cancel-thunk)
   "Called from the pipeline thread.  Blocks until the TUI resolves the
 pending approval.  Returns the pending-approval struct with decision set.
 When no TUI is active (*approval-ui-active-p* is NIL), immediately returns
@@ -67,6 +68,10 @@ with :deny — this prevents blocking in headless/test mode."
                                     *pending-approval-lock*
                                     :timeout 1)  ; wake every 1s to check deadline
                  (when (> (get-internal-real-time) deadline)
+                   (setf (pending-approval-decision pa) :deny)
+                   (return))
+                 (when (and (functionp cancel-thunk)
+                            (funcall cancel-thunk))
                    (setf (pending-approval-decision pa) :deny)
                    (return))))
       (setf *pending-approval* nil))
