@@ -48,6 +48,16 @@ mkdir -p "$INSTALL_PREFIX" "$LIBEXEC_DIR"
 cp "$BINARY" "$LIBEXEC_DIR/amoebum-sbcl"
 chmod +x "$LIBEXEC_DIR/amoebum-sbcl"
 
+# Native shared library must be next to the binary for CFFI to find it
+NATIVE_SO="$REPO_ROOT/ptui/native/libptui_native.so"
+if [ -f "$NATIVE_SO" ]; then
+  cp "$NATIVE_SO" "$LIBEXEC_DIR/libptui_native.so"
+  echo "  [ok]   libptui_native.so → $LIBEXEC_DIR/"
+else
+  echo "  [warn] libptui_native.so not found at $NATIVE_SO"
+  echo "         Build it with: cd ptui/native && make"
+fi
+
 # Shell wrapper handles --help and forwards args past SBCL's runtime parser
 cat > "$INSTALL_PREFIX/amoebum" <<'WRAPPER'
 #!/usr/bin/env bash
