@@ -101,6 +101,77 @@
                                                  :shiftp shiftp
                                                  :text? text?)))
 
+(defun %digit-p (byte)
+  (and (<= 48 byte) (<= byte 57)))
+
+(defun %byte-digit (byte)
+  (- byte 48))
+
+(defun %map-csi-fn-key (n)
+  (case n
+    (11 :f1)
+    (12 :f2)
+    (13 :f3)
+    (14 :f4)
+    (15 :f5)
+    (16 :f6)
+    (17 :f7)
+    (18 :f8)
+    (19 :f9)
+    (20 :f10)
+    (21 :f11)
+    (22 :f12)
+    (t nil)))
+
+(defun %parse-csi-with-prefix (parser)
+  (let* ((pending (input-parser-pending parser))
+         (len (length pending))
+         (code 0)
+         (idx 2))
+    (when (< len 4)
+      (return-from %parse-csi-with-prefix 0))
+    (loop while (< idx len)
+          while (%digit-p (aref pending idx))
+          do
+            (setf code (+ (* code 10) (%byte-digit (aref pending idx))))
+            (incf idx))
+    (when (>= idx len)
+      (return-from %parse-csi-with-prefix 0))
+    (cond
+      ((and (= idx 3)
+            (< (+ idx 2) len)
+            (= (aref pending idx) 59)
+            (= (aref pending (1+ idx)) 53))
+       (let ((final (aref pending (+ idx 2))))
+         (cond
+           ((= final 65) (%emit-key-event parser :ctrl-up :ctrlp t) 6)
+           ((= final 66) (%emit-key-event parser :ctrl-down :ctrlp t) 6)
+           ((= final 67) (%emit-key-event parser :ctrl-right :ctrlp t) 6)
+           ((= final 68) (%emit-key-event parser :ctrl-left :ctrlp t) 6)
+           (t (%emit-key-event parser :escape) 1))))
+      ((= (aref pending idx) 126)
+       (case code
+         (1 (%emit-key-event parser :home) (1+ idx))
+         (4 (%emit-key-event parser :end) (1+ idx))
+         (5 (%emit-key-event parser :pgup) (1+ idx))
+         (6 (%emit-key-event parser :pgdown) (1+ idx))
+         (otherwise
+           (let ((fkey (%map-csi-fn-key code)))
+             (if fkey
+                 (progn (%emit-key-event parser fkey) (1+ idx))
+                 (progn (%emit-key-event parser :escape) 1))))))
+      ((and (< (+ idx 1) len)
+            (= (aref pending idx) 59)
+            (/= (aref pending (1+ idx)) 53))
+       (progn
+         (%emit-key-event parser :escape)
+         1))
+      ((= (aref pending idx) 59)
+       0)
+      (t
+       (%emit-key-event parser :escape)
+       1))))
+
 (defun %parse-escape-sequence (parser)
   (let* ((pending (input-parser-pending parser))
          (len (length pending)))
@@ -128,38 +199,7 @@
            ;; Numeric CSI: ESC [ <digit> ...
            ;; Handles: ESC [ N ~ (Home=1~, End=4~, PgUp=5~, PgDn=6~)
            ;; and:     ESC [ 1 ; 5 <letter> (Ctrl+Arrow)
-           ((49 52 53 54)
-            (if (< len 4)
-                0
-                (cond
-                  ;; ESC [ N ~ — function keys
-                  ((= (aref pending 3) 126)
-                   (case (aref pending 2)
-                     (49 (%emit-key-event parser :home) 4)
-                     (52 (%emit-key-event parser :end) 4)
-                     (53 (%emit-key-event parser :pgup) 4)
-                     (54 (%emit-key-event parser :pgdown) 4)
-                     (otherwise (%emit-key-event parser :escape) 1)))
-                  ;; ESC [ 1 ; 5 <letter> — Ctrl+Arrow
-                  ((and (= (aref pending 2) 49)   ;; '1'
-                        (= (aref pending 3) 59))  ;; ';'
-                   (if (< len 6)
-                       0
-                       (if (= (aref pending 4) 53)  ;; '5' = Ctrl modifier
-                           (case (aref pending 5)
-                             (65 (%emit-key-event parser :ctrl-up :ctrlp t) 6)
-                             (66 (%emit-key-event parser :ctrl-down :ctrlp t) 6)
-                             (67 (%emit-key-event parser :ctrl-right :ctrlp t) 6)
-                             (68 (%emit-key-event parser :ctrl-left :ctrlp t) 6)
-                             (otherwise (%emit-key-event parser :escape) 1))
-                           ;; Other modifier (shift=2, alt=3, etc) — ignore
-                           (progn (%emit-key-event parser :escape) 1))))
-                  (t
-                   (%emit-key-event parser :escape) 1))))
-           (otherwise
-            ;; Unknown CSI: consume ESC to avoid sticky prefix.
-            (%emit-key-event parser :escape)
-            1))))
+           (otherwise (%parse-csi-with-prefix parser)))))
       ;; Alt-modified byte (ESC + UTF-8 printable)
       (t
        (let ((b1 (aref pending 1)))
