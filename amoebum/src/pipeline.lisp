@@ -609,54 +609,59 @@ Called from :around after *pipeline-current-result* is set, because CLOS
          (*pipeline-start-time-ms* nil)
          (*pipeline-current-result* nil)
          (timeout-seconds (%metadata-timeout-seconds *pipeline-current-tool-name*)))
-    (restart-case
-        (handler-case
-            (let* ((raw-result
-                     #+sbcl
-                     (if (and timeout-seconds (> timeout-seconds 0))
-                         (sb-ext:with-timeout timeout-seconds
+    (flet ((%signal-tool-error (condition)
+             (let* ((tool-error
+                      (%coerce-tool-error *pipeline-current-tool-name*
+                                          *pipeline-current-arguments*
+                                          condition
+                                          timeout-seconds))
+                    (elapsed-ms (%elapsed-milliseconds)))
+               (ignore-errors
+                 (note-tool-profiling-sample *pipeline-current-tool-name* elapsed-ms))
+               (%record-tool-metrics context *pipeline-current-tool-name* elapsed-ms :error)
+               (publish (%effective-event-bus context)
+                        (make-tool-error-event
+                         :tool-name *pipeline-current-tool-name*
+                         :args *pipeline-current-arguments*
+                         :condition-reason-code (tool-error-reason-code tool-error)
+                         :condition (princ-to-string tool-error)
+                         :elapsed-ms elapsed-ms
+                         :request-id *pipeline-current-request-id*))
+               (error tool-error))))
+      (restart-case
+          (handler-case
+              (let* ((raw-result
+                       #+sbcl
+                       (if (and timeout-seconds (> timeout-seconds 0))
+                           (sb-ext:with-timeout timeout-seconds
+                             (call-next-method))
                            (call-next-method))
-                         (call-next-method))
-                     #-sbcl
-                     (call-next-method))
-                   (guarded-result (apply-sandbox-output-guard raw-result)))
-              (setf *pipeline-current-result* guarded-result)
-              (%post-tool-success context)
-              guarded-result)
-          (error (condition)
-            (let* ((tool-error
-                     (%coerce-tool-error *pipeline-current-tool-name*
-                                         *pipeline-current-arguments*
-                                         condition
-                                         timeout-seconds))
-                   (elapsed-ms (%elapsed-milliseconds)))
-              (ignore-errors
-                (note-tool-profiling-sample *pipeline-current-tool-name* elapsed-ms))
-              (%record-tool-metrics context *pipeline-current-tool-name* elapsed-ms :error)
-              (publish (%effective-event-bus context)
-                       (make-tool-error-event
-                        :tool-name *pipeline-current-tool-name*
-                        :args *pipeline-current-arguments*
-                        :condition-reason-code (tool-error-reason-code tool-error)
-                        :condition (princ-to-string tool-error)
-                        :elapsed-ms elapsed-ms
-                        :request-id *pipeline-current-request-id*))
-              (error tool-error))))
-      (retry-tool (&optional (new-arguments *pipeline-current-arguments*))
-        :report "Retry tool execution."
-        (pseudopod:execute-tool (%clone-tool-call-with-arguments call new-arguments)
-                                context))
-      (skip-tool ()
-        :report "Skip this tool and continue."
-        (format nil "Tool ~A skipped by pipeline restart." *pipeline-current-tool-name*))
-      (use-value (value)
-        :report "Provide a replacement value."
-        value)
-      (abort-tool ()
-        :report "Abort tool execution and propagate failure."
-        (error 'amoebum-error
-               :message (format nil "Tool ~A aborted by pipeline restart."
-                                *pipeline-current-tool-name*))))))
+                       #-sbcl
+                       (call-next-method))
+                     (guarded-result (apply-sandbox-output-guard raw-result)))
+                (setf *pipeline-current-result* guarded-result)
+                (%post-tool-success context)
+                guarded-result)
+            #+sbcl
+            (sb-ext:timeout (condition)
+              (%signal-tool-error condition))
+            (error (condition)
+              (%signal-tool-error condition)))
+        (retry-tool (&optional (new-arguments *pipeline-current-arguments*))
+          :report "Retry tool execution."
+          (pseudopod:execute-tool (%clone-tool-call-with-arguments call new-arguments)
+                                  context))
+        (skip-tool ()
+          :report "Skip this tool and continue."
+          (format nil "Tool ~A skipped by pipeline restart." *pipeline-current-tool-name*))
+        (use-value (value)
+          :report "Provide a replacement value."
+          value)
+        (abort-tool ()
+          :report "Abort tool execution and propagate failure."
+          (error 'amoebum-error
+                 :message (format nil "Tool ~A aborted by pipeline restart."
+                                  *pipeline-current-tool-name*)))))))
 
 (defmethod pseudopod:execute-tool :before ((call pseudopod:tool-call)
                                            (context tool-execution-context))
