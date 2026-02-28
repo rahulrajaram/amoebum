@@ -11,7 +11,10 @@
    #:use-memo
    #:use-callback
    ;; Event map (I278)
-   #:use-event-map))
+   #:use-event-map
+   ;; Context (I296)
+   #:provide-context
+   #:use-context))
 
 (in-package :ptui.ui.hooks)
 
@@ -204,3 +207,32 @@ Patterns: keyword (:enter, :backspace), (:text ch) for char match, :any catch-al
            (declare (ignorable key text))
            (cond
              ,@(mapcar #'%compile-event-clause clauses)))))))
+
+;;; ===================================================================
+;;; I296: Context — Shared State Bridge
+;;; ===================================================================
+
+(defun %context-key (runtime context-name)
+  "Build the runtime state-table key for a context value."
+  (list :context context-name))
+
+(defun provide-context (context-name value)
+  "Set a named context value in the current runtime.
+Child panels can read it with use-context."
+  (let ((rt (or ptui.ui.runtime:*current-runtime*
+               (when ptui.ui.runtime:*current-widget-context*
+                 (ptui.ui.runtime:widget-context-runtime
+                  ptui.ui.runtime:*current-widget-context*))
+               (error "provide-context called outside render context."))))
+    (ptui.ui.runtime:set-runtime-state rt (%context-key rt context-name) value)
+    value))
+
+(defun use-context (context-name)
+  "Read a named context value from the current runtime.
+Returns the value, or NIL if not provided."
+  (let ((rt (or ptui.ui.runtime:*current-runtime*
+               (when ptui.ui.runtime:*current-widget-context*
+                 (ptui.ui.runtime:widget-context-runtime
+                  ptui.ui.runtime:*current-widget-context*))
+               (error "use-context called outside render context."))))
+    (ptui.ui.runtime:runtime-state rt (%context-key rt context-name))))

@@ -95,6 +95,17 @@
   :components
   ((:file "src/layout/api")))
 
+(asdf:defsystem "ptui/constraints"
+  :description "PTUI constraint-based layout (specs + solver + constraint nodes)"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ("ptui/layout")
+  :serial t
+  :components
+  ((:file "src/layout/constraints")
+   (:file "src/layout/solver")
+   (:file "src/layout/constraint-layout")))
+
 (asdf:defsystem "ptui/layout/yoga"
   :description "PTUI optional Yoga adapter boundary (feature-gated)"
   :author "Ralph"
@@ -141,6 +152,25 @@
   :components
   ((:file "src/widgets/core")
    (:file "src/widgets/defwidget")))
+
+(asdf:defsystem "ptui/views"
+  :description "PTUI view primitives (list-view, text-input, status-bar)"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ("ptui/widgets" "ptui/hooks" "ptui/constraints")
+  :serial t
+  :components
+  ((:file "src/views/primitives")
+   (:file "src/views/paint")))
+
+(asdf:defsystem "ptui/panel"
+  :description "PTUI defpanel DSL macro"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ("ptui/views" "ptui/hooks" "ptui/constraints" "ptui/app")
+  :serial t
+  :components
+  ((:file "src/ui/panel")))
 
 (asdf:defsystem "ptui/components"
   :description "PTUI higher-level composable widgets"
@@ -220,7 +250,13 @@
    #+ptui-ncurses (:file "src/backend/ncurses")
    (:file "src/engine/loop")
    (:file "src/ui/hooks")
-   (:file "src/ui/app")))
+   (:file "src/ui/app")
+   (:file "src/layout/constraints")
+   (:file "src/layout/solver")
+   (:file "src/layout/constraint-layout")
+   (:file "src/views/primitives")
+   (:file "src/views/paint")
+   (:file "src/ui/panel")))
 
 (asdf:defsystem "ptui/components-standalone"
   :description "PTUI component library on top of ptui/standalone"
@@ -241,7 +277,7 @@
   :description "PTUI umbrella system"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui/core" "ptui/util" "ptui/search" "ptui/runtime" "ptui/term" "ptui/text" "ptui/layout" "ptui/ui" "ptui/widgets" "ptui/render" "ptui/backend" "ptui/engine" "ptui/hooks" "ptui/app")
+  :depends-on ("ptui/core" "ptui/util" "ptui/search" "ptui/runtime" "ptui/term" "ptui/text" "ptui/layout" "ptui/constraints" "ptui/ui" "ptui/widgets" "ptui/render" "ptui/backend" "ptui/engine" "ptui/hooks" "ptui/app" "ptui/views" "ptui/panel")
   :serial t
   :components ())
 
@@ -253,7 +289,8 @@
   :serial t
   :components
   ((:file "examples/metrics-dashboard")
-   (:file "examples/atop-dashboard")))
+   (:file "examples/atop-dashboard")
+   (:file "examples/panel-demo")))
 
 (asdf:defsystem "ptui/examples-standalone"
   :description "PTUI examples (standalone dependency)"
@@ -292,4 +329,7 @@
    (:file "test/list-selection-test")
    (:file "test/hooks-test")
    (:file "test/app-test")
-   (:file "test/event-routing-test")))
+   (:file "test/event-routing-test")
+   (:file "test/constraints-test")
+   (:file "test/views-test")
+   (:file "test/panel-test")))

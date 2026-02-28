@@ -3,7 +3,7 @@
   :author "amoebum"
   :license "MIT"
   :version "0.1.0"
-  :depends-on ("pseudopod" "ptui" "ptui/components" "sw4rm-sdk" "uiop" "cl-ppcre" "bordeaux-threads")
+  :depends-on ("pseudopod" "ptui" "ptui/panel" "ptui/components" "sw4rm-sdk" "uiop" "cl-ppcre" "bordeaux-threads")
   :serial t
   :components
   ((:file "src/package")
@@ -90,6 +90,15 @@
    (:file "src/ui/demo")
    (:file "src/ui/status-bar")
    (:file "src/ui/chat")
+   ;; I297-I304: defpanel sub-panels extracted from chat.lisp
+   (:file "src/ui/panels/message-history")
+   (:file "src/ui/panels/prompt-input")
+   (:file "src/ui/panels/approval-dialog")
+   (:file "src/ui/panels/fuzzy-picker")
+   (:file "src/ui/panels/tree-browser")
+   (:file "src/ui/panels/stream-effects")
+   (:file "src/ui/panels/chat-status-bar")
+   (:file "src/ui/panels/chat-panel")
    (:file "src/main"))
   :in-order-to ((asdf:test-op (asdf:test-op "amoebum/test"))))
 

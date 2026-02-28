@@ -907,43 +907,44 @@
            (stream-state (chat-ui-state-stream-state chat-state))
            (tool-name (and (pseudopod:tool-call-p tool-call)
                            (pseudopod:tool-call-name tool-call))))
-      (let ((worker (lambda ()
-                      (let ((result-text "")
-                            (execution-error nil))
-                        (if (and (typep stream-state 'token-stream-state)
-                                 (token-stream-cancel-requested-p stream-state))
-                            (setf execution-error "Tool execution cancelled."
-                                  result-text execution-error)
-                            (handler-case
-                                (if (pseudopod:find-tool toolset tool-name)
-                                    (let ((result (execute-tool
-                                                   tool-call
-                                                   (make-amoebum-context
-                                                    :toolset toolset
-                                                    :permission-mode permission-mode
-                                                    :event-bus (%context-event-bus chat-state)
-                                                    :permission-cancel-thunk
-                                                    (lambda ()
-                                                      (and (typep stream-state 'token-stream-state)
-                                                           (token-stream-cancel-requested-p stream-state)))))))
-                                      (setf result-text (if (stringp result)
-                                                           result
-                                                           (princ-to-string (or result "")))))
-                                    (let ((err-msg (format nil "Unregistered tool ~A."
-                                                          (or tool-name "<unknown>"))))
-                                      (setf execution-error err-msg
-                                            result-text err-msg)))
-                                (error (condition)
-                                  (setf execution-error (princ-to-string condition)
-                                        result-text execution-error)))))
-                        (token-stream-emit-tool-call-result
-                         stream-state
-                         :tool-call tool-call
-                         :preview-key preview-key
-                         :execution-key execution-key
-                         :result result-text
-                         :execution-error execution-error)))))
-      (bt:make-thread worker :name (format nil "amoebum-tool-call-~A" execution-key)))
+      (let ((worker
+              (lambda ()
+                (let ((result-text "")
+                      (execution-error nil))
+                  (if (and (typep stream-state 'token-stream-state)
+                           (token-stream-cancel-requested-p stream-state))
+                      (setf execution-error "Tool execution cancelled."
+                            result-text execution-error)
+                      (handler-case
+                          (if (pseudopod:find-tool toolset tool-name)
+                              (let ((result (execute-tool
+                                             tool-call
+                                             (make-amoebum-context
+                                              :toolset toolset
+                                              :permission-mode permission-mode
+                                              :event-bus (%context-event-bus chat-state)
+                                              :permission-cancel-thunk
+                                              (lambda ()
+                                                (and (typep stream-state 'token-stream-state)
+                                                     (token-stream-cancel-requested-p stream-state)))))))
+                                (setf result-text (if (stringp result)
+                                                     result
+                                                     (princ-to-string (or result "")))))
+                              (let ((err-msg (format nil "Unregistered tool ~A."
+                                                    (or tool-name "<unknown>"))))
+                                (setf execution-error err-msg
+                                      result-text err-msg)))
+                          (error (condition)
+                            (setf execution-error (princ-to-string condition)
+                                  result-text execution-error))))
+                  (token-stream-emit-tool-call-result
+                   stream-state
+                   :tool-call tool-call
+                   :preview-key preview-key
+                   :execution-key execution-key
+                   :result result-text
+                   :execution-error execution-error)))))
+        (bt:make-thread worker :name (format nil "amoebum-tool-call-~A" execution-key))))
     t))
 
 (defun %stream-status-summary (chat-state)
@@ -1533,7 +1534,14 @@ Falls back to the global *toolset* when stream-tools is nil."
     (let ((runner (chat-ui-state-stream-runner chat-state)))
       (if (functionp runner)
           (let* ((prompt (%message-content->text user-message))
-                 (history (copy-list (chat-ui-state-messages chat-state)))
+                 (history
+                   (remove-if
+                    (lambda (message)
+                      (and (pseudopod:message-p message)
+                           (string-equal (or (pseudopod:message-role message) "")
+                                         "assistant")
+                           (%blank-string-p (%message-content->text message))))
+                    (copy-list (chat-ui-state-messages chat-state))))
                  (target-index (length history))
                  (stream-state (chat-ui-state-stream-state chat-state))
                  (system-prompt (%resolve-chat-system-prompt chat-state)))
@@ -2218,6 +2226,8 @@ Falls back to the global *toolset* when stream-tools is nil."
                               (plan-execution-output-entry-timestamp entry))))))
 
 (defun chat-ui-build-tree (state cols rows)
+  ;; I306: DEPRECATED — replaced by chat-panel (defpanel) in src/ui/panels/chat-panel.lisp.
+  ;; Kept as fallback in render-chat-ui-buffer. Remove when chat-panel is validated end-to-end.
   (let* ((chat-state (ensure-chat-ui-state state))
          ( _ (progn
                (%sync-pending-approval-dialog! chat-state)
@@ -2721,55 +2731,60 @@ margins on each side."
 
 (defun render-chat-ui-buffer (state size)
   (let ((chat-state (ensure-chat-ui-state state)))
+    ;; Side effects that must run before tree construction
     (%sync-pending-approval-dialog! chat-state)
     (let* ((runtime (chat-ui-state-runtime chat-state))
-         (cols (ptui.core.types:size-cols size))
-         (rows (ptui.core.types:size-rows size))
-         (agent-completion-count (%inject-agent-completions chat-state))
-         (drained-event-count (%drain-stream-events chat-state))
-         (stream-summary (%publish-status-bar-stream-summary-if-needed chat-state))
-         (picker-state (%chat-sync-fuzzy-picker! chat-state))
-         (tree-key (%chat-tree-key chat-state cols rows))
-         (tree (chat-ui-state-cached-tree chat-state))
-         (layout (chat-ui-state-cached-layout chat-state))
-         (focus-id nil))
-    (declare (ignore agent-completion-count drained-event-count stream-summary picker-state))
-    (provider-health-refresh!)
-    (%sync-chat-context-usage! chat-state)
-    (%emit-stream-budget-warning-if-needed chat-state)
-    (let ((checkpoint
-            (maybe-auto-checkpoint
-             :conversation (%ensure-chat-conversation-state chat-state)
-             :config (%chat-config)
-             :busy-p (token-stream-active-p (chat-ui-state-stream-state chat-state)))))
-      (declare (ignore checkpoint)))
-    (incf (chat-ui-state-frame-count chat-state))
-    (unless (and tree layout
-                 (equal tree-key (chat-ui-state-cached-tree-key chat-state)))
-      (setf tree (chat-ui-build-tree chat-state cols rows))
-      (setf layout (ptui.layout:compute-layout
-                    (%ui-tree-node tree)
-                    :x 1
-                    :y 0
-                    :width (max 4 (- cols 2))
-                    :height (max 4 rows)))
-      (ptui.ui.runtime:update-runtime runtime tree)
-      (setf (chat-ui-state-cached-tree-key chat-state) tree-key
-            (chat-ui-state-cached-tree chat-state) tree
-            (chat-ui-state-cached-layout chat-state) layout
-            (chat-ui-state-cached-render-key chat-state) nil
-            (chat-ui-state-cached-buffer chat-state) nil))
-    (setf focus-id (ptui.ui.runtime:runtime-focus-id runtime))
-    (let* ((render-key (list tree-key focus-id))
-           (cached-render-key (chat-ui-state-cached-render-key chat-state))
-           (cached-buffer (chat-ui-state-cached-buffer chat-state)))
-      (if (and cached-buffer (equal render-key cached-render-key))
-          cached-buffer
-          (let ((buf (ptui.render.buffer:make-buffer cols rows)))
-            (%render-ui-element buf tree layout focus-id)
-            (setf (chat-ui-state-cached-render-key chat-state) render-key
-                  (chat-ui-state-cached-buffer chat-state) buf)
-            buf))))))
+           (ptui.ui.runtime:*current-runtime* runtime)
+           (cols (ptui.core.types:size-cols size))
+           (rows (ptui.core.types:size-rows size))
+           (agent-completion-count (%inject-agent-completions chat-state))
+           (drained-event-count (%drain-stream-events chat-state))
+           (stream-summary (%publish-status-bar-stream-summary-if-needed chat-state))
+           (picker-state (%chat-sync-fuzzy-picker! chat-state))
+           (tree-key (%chat-tree-key chat-state cols rows))
+           (tree (chat-ui-state-cached-tree chat-state))
+           (layout (chat-ui-state-cached-layout chat-state))
+           (focus-id nil))
+      (declare (ignore agent-completion-count drained-event-count stream-summary picker-state))
+      (provider-health-refresh!)
+      (%sync-chat-context-usage! chat-state)
+      (%emit-stream-budget-warning-if-needed chat-state)
+      (let ((checkpoint
+              (maybe-auto-checkpoint
+               :conversation (%ensure-chat-conversation-state chat-state)
+               :config (%chat-config)
+               :busy-p (token-stream-active-p (chat-ui-state-stream-state chat-state)))))
+        (declare (ignore checkpoint)))
+      (incf (chat-ui-state-frame-count chat-state))
+      (unless (and tree layout
+                   (equal tree-key (chat-ui-state-cached-tree-key chat-state)))
+        ;; I305: Use chat-panel (defpanel) when available, fall back to old tree builder
+        (setf tree (if (fboundp 'render-chat-panel)
+                       (render-chat-panel chat-state cols rows)
+                       (chat-ui-build-tree chat-state cols rows)))
+        (setf layout (ptui.layout:compute-layout
+                      (%ui-tree-node tree)
+                      :x 1
+                      :y 0
+                      :width (max 4 (- cols 2))
+                      :height (max 4 rows)))
+        (ptui.ui.runtime:update-runtime runtime tree)
+        (setf (chat-ui-state-cached-tree-key chat-state) tree-key
+              (chat-ui-state-cached-tree chat-state) tree
+              (chat-ui-state-cached-layout chat-state) layout
+              (chat-ui-state-cached-render-key chat-state) nil
+              (chat-ui-state-cached-buffer chat-state) nil))
+      (setf focus-id (ptui.ui.runtime:runtime-focus-id runtime))
+      (let* ((render-key (list tree-key focus-id))
+             (cached-render-key (chat-ui-state-cached-render-key chat-state))
+             (cached-buffer (chat-ui-state-cached-buffer chat-state)))
+        (if (and cached-buffer (equal render-key cached-render-key))
+            cached-buffer
+            (let ((buf (ptui.render.buffer:make-buffer cols rows)))
+              (%render-ui-element buf tree layout focus-id)
+              (setf (chat-ui-state-cached-render-key chat-state) render-key
+                    (chat-ui-state-cached-buffer chat-state) buf)
+              buf))))))
 
 (defun %pop-last-grapheme (text)
   (let ((clusters (ptui.text.grapheme:split-graphemes text)))
@@ -3178,20 +3193,21 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
 
 (defun %sync-pending-approval-dialog! (chat-state)
   "Poll *pending-approval* and activate the dialog if a new approval is waiting."
-  (let ((dialog (chat-ui-state-approval-dialog-state chat-state))
-        (pa *pending-approval*))
-    (cond
-      ;; A pending approval exists but dialog is not active yet — activate it
-      ((and pa (not (approval-dialog-state-active-p dialog)))
-       (approval-dialog-activate! dialog
-                                  (pending-approval-tool-name pa)
-                                  :command (pending-approval-command pa)
-                                  :path (pending-approval-path pa)
-                                  :reason (pending-approval-reason pa)
-                                  :decision-id (pending-approval-decision-id pa)))
-      ;; No pending approval but dialog is still active — deactivate
-      ((and (null pa) (approval-dialog-state-active-p dialog))
-       (approval-dialog-deactivate! dialog)))))
+  (let ((dialog (chat-ui-state-approval-dialog-state chat-state)))
+    (bt:with-lock-held (*pending-approval-lock*)
+      (let ((pa *pending-approval*))
+        (cond
+          ;; A pending approval exists but dialog is not active yet — activate it
+          ((and pa (not (approval-dialog-state-active-p dialog)))
+           (approval-dialog-activate! dialog
+                                      (pending-approval-tool-name pa)
+                                      :command (pending-approval-command pa)
+                                      :path (pending-approval-path pa)
+                                      :reason (pending-approval-reason pa)
+                                      :decision-id (pending-approval-decision-id pa)))
+          ;; No pending approval but dialog is still active — deactivate
+          ((and (null pa) (approval-dialog-state-active-p dialog))
+           (approval-dialog-deactivate! dialog)))))))
 
 (defun %handle-fuzzy-picker-key (chat-state key)
   (let ((picker (%ensure-chat-fuzzy-picker-state chat-state)))
@@ -3394,6 +3410,7 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
        nil))))
 
 (defun %handle-scroll-key (state key)
+  ;; I306: DEPRECATED — scroll keys now handled by chat-panel :keys :mode :default.
   (case key
     (:up (chat-ui-scroll-history state 1))
     (:down (chat-ui-scroll-history state -1))
