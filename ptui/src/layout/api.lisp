@@ -22,7 +22,10 @@
    #:layout-node-measure
    #:compute-layout
    #:layout-bound
-   #:layout->alist))
+   #:layout->alist
+   ;; Internal, exposed for constraint-layout extension
+   #:%measure-node
+   #:%place-node))
 
 (in-package :ptui.layout)
 
