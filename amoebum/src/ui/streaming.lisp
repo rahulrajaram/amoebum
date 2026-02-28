@@ -1021,7 +1021,7 @@
                                 client
                                 tools)
   (let ((resolved-client (or client (pseudopod:make-client))))
-    (let ((emit-stream-chunk
+    (let* ((emit-stream-chunk
             (lambda (chunk)
               (when (functionp *stream-chunk-hook-callback*)
                 (funcall *stream-chunk-hook-callback* chunk))

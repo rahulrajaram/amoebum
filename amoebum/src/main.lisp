@@ -101,7 +101,8 @@
   (let ((trimmed-session-id (%trim-cli-arg session-id))
         (trimmed-resume (%trim-cli-arg resume)))
     (or (when (> (length trimmed-session-id) 0)
-          (conversation-load-session trimmed-session-id))
+          (or (conversation-load-session trimmed-session-id)
+              (make-conversation-state :session-id trimmed-session-id)))
         (when (> (length trimmed-resume) 0)
           (if (or (string= trimmed-resume "latest")
                   (string= trimmed-resume "1")
@@ -308,4 +309,9 @@
             (run-chat-ui :backend :auto :fps 20
                          :demo t))
            (t
-            (run-chat-ui :backend :auto :fps 20))))))))
+            (let ((conversation (%resolve-cli-conversation
+                                 :session-id (getf options :session-id)
+                                 :resume (getf options :resume))))
+              (run-chat-ui :backend :auto :fps 20
+                           :initial-state (make-chat-ui-state
+                                           :conversation conversation))))))))))
