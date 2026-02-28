@@ -2475,7 +2475,78 @@ foo bar foo")
     (assert-true (> render-count 0)
                  "expected render to continue after handler error restart.")))
 
+(defun %ensure-fiveam-shim ()
+  (unless (find-package :fiveam)
+    (defpackage :fiveam
+      (:use :cl)))
+  (dolist (symbol '(#:def-suite #:in-suite #:test #:is #:signals #:run!))
+    (export (list symbol) :fiveam))
+  (let ((fiveam-package (find-package :fiveam)))
+    (unless (and (macro-function (find-symbol "DEF-SUITE" fiveam-package))
+                 (macro-function (find-symbol "IN-SUITE" fiveam-package))
+                 (macro-function (find-symbol "TEST" fiveam-package))
+                 (macro-function (find-symbol "IS" fiveam-package))
+                 (macro-function (find-symbol "SIGNALS" fiveam-package))
+                 (fboundp (find-symbol "RUN!" fiveam-package)))
+      (eval
+       '(progn
+          (in-package :fiveam)
+          (defparameter *fiveam-registry* (make-hash-table :test #'eq))
+          (defparameter *fiveam-active-suite* nil)
+
+          (defmacro def-suite (name &rest rest)
+            (declare (ignore rest))
+            `(progn
+               (setf (gethash ',name *fiveam-registry*) nil)
+               ',name))
+
+          (defmacro in-suite (name)
+            `(setf *fiveam-active-suite* ',name))
+
+          (defmacro test (name &body body)
+            `(push (cons ',name (lambda () ,@body))
+                   (gethash *fiveam-active-suite* *fiveam-registry*)))
+
+          (defmacro is (expr)
+            `(unless ,expr
+               (error "FiveAM shim assertion failed: ~S" ',expr)))
+
+          (defmacro signals (condition &body body)
+            `(handler-case
+                 (progn ,@body (error "Expected signal: ~S" ',condition))
+               (,condition ()
+                 nil)))
+
+          (defun run! (suite)
+            (let ((cases (gethash suite *fiveam-registry*)))
+              (dolist (case (reverse cases))
+                (funcall (cdr case))))
+            suite)
+          (in-package :ptui.test.run)))))
+
+(defun %ensure-text-test-suite-loaded ()
+  (%ensure-fiveam-shim)
+  (let* ((base (or *load-truename* *compile-file-truename* *load-pathname* *compile-file-pathname*))
+         (suite-file (and base
+                          (uiop:merge-pathnames* "text-test.lisp"
+                                                 (uiop:pathname-directory-pathname base))))
+         (loaded-package (and (find-package :ptui.test.text)
+                             (find-symbol "RUN-ALL" :ptui.test.text))))
+    (when (and suite-file (probe-file suite-file) (not loaded-package))
+      (load suite-file))
+    (or (and (find-package :ptui.test.text)
+             (find-symbol "RUN-ALL" :ptui.test.text))
+        (error "Text suite package or run-all symbol missing in ~A" suite-file))))
+
+(defun %run-text-suite-smoke ()
+  (let ((run-all (multiple-value-list (%ensure-text-test-suite-loaded))))
+    (funcall (first run-all))))
+
+(unless (assoc "TEXT-SUITE-SMOKE" *tests* :test #'string=)
+  (push (cons "TEXT-SUITE-SMOKE" #'%run-text-suite-smoke)
+        *tests*))
+
 ;; Script entry
 (multiple-value-bind (passed failed) (run-all-tests)
   (declare (ignore passed))
-  (uiop:quit (if (zerop failed) 0 1)))
+  (uiop:quit (if (zerop failed) 0 1))))
