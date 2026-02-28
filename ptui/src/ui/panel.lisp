@@ -2,6 +2,14 @@
   (:use :cl)
   (:export
    #:defpanel
+   #:defpanel-syntax-error
+   #:defpanel-syntax-warning
+   #:defpanel-syntax-error-panel-name
+   #:defpanel-syntax-error-section
+   #:defpanel-syntax-error-detail
+   #:defpanel-syntax-warning-panel-name
+   #:defpanel-syntax-warning-section
+   #:defpanel-syntax-warning-detail
    ;; Compilation helpers (exposed for testing)
    #:%compile-panel-state
    #:%compile-panel-data
@@ -12,23 +20,68 @@
 
 (in-package :ptui.ui.panel)
 
+(defparameter +panel-section-keywords+
+  '(:state :data :layout :keys :effects :context))
+
+(define-condition defpanel-syntax-error (error)
+  ((panel-name :initarg :panel-name
+               :reader defpanel-syntax-error-panel-name)
+   (section :initarg :section
+            :reader defpanel-syntax-error-section)
+   (detail :initarg :detail
+           :reader defpanel-syntax-error-detail))
+  (:report (lambda (condition stream)
+             (format stream "DEFPANEL ~S section ~S: ~A"
+                     (defpanel-syntax-error-panel-name condition)
+                     (defpanel-syntax-error-section condition)
+                     (defpanel-syntax-error-detail condition)))))
+
+(define-condition defpanel-syntax-warning (style-warning)
+  ((panel-name :initarg :panel-name
+               :reader defpanel-syntax-warning-panel-name)
+   (section :initarg :section
+            :reader defpanel-syntax-warning-section)
+   (detail :initarg :detail
+           :reader defpanel-syntax-warning-detail))
+  (:report (lambda (condition stream)
+             (format stream "DEFPANEL ~S section ~S warning: ~A"
+                     (defpanel-syntax-warning-panel-name condition)
+                     (defpanel-syntax-warning-section condition)
+                     (defpanel-syntax-warning-detail condition)))))
+
+(defun %signal-syntax-error (panel-name section detail)
+  (error 'defpanel-syntax-error
+         :panel-name panel-name
+         :section section
+         :detail detail))
+
+(defun %signal-syntax-warning (panel-name section detail)
+  (warn 'defpanel-syntax-warning
+        :panel-name panel-name
+        :section section
+        :detail detail))
+
 ;;; ===================================================================
 ;;; I288: defpanel State and Data Compilation
 ;;; ===================================================================
 
-(defun %parse-panel-sections (body)
+(defun %parse-panel-sections (body &optional panel-name)
   "Parse defpanel body into (values state data layout keys effects context).
 Each section is the cdr of the (:keyword ...) form, or NIL if absent."
   (let (state data layout keys effects context)
     (dolist (form body)
       (when (and (consp form) (keywordp (car form)))
-        (case (car form)
-          (:state (setf state (cdr form)))
-          (:data (setf data (cdr form)))
-          (:layout (setf layout (cdr form)))
-          (:keys (setf keys (cdr form)))
-          (:effects (setf effects (cdr form)))
-          (:context (setf context (cdr form))))))
+        (if (member (car form) +panel-section-keywords+)
+            (case (car form)
+              (:state (setf state (cdr form)))
+              (:data (setf data (cdr form)))
+              (:layout (setf layout (cdr form)))
+              (:keys (setf keys (cdr form)))
+              (:effects (setf effects (cdr form)))
+              (:context (setf context (cdr form))))
+            (%signal-syntax-error panel-name (car form)
+                                  (format nil "Unknown section keyword ~S."
+                                          (car form))))))
     (values state data layout keys effects context)))
 
 (defun %compile-state-binding (spec)
@@ -55,22 +108,86 @@ Returns (values bindings all-var-names all-setter-names)."
         (push form bindings)))
     (values (nreverse bindings) (nreverse var-names) (nreverse setter-names))))
 
-(defun %compile-data-binding (spec all-params all-state-vars)
+(defun %plist-contains-key-p (plist key)
+  (loop for tail on plist by #'cddr
+        while (consp tail)
+        thereis (eq (first tail) key)))
+
+(defun %collect-name-set (names)
+  (let ((seen (make-hash-table :test #'eq)))
+    (dolist (name names)
+      (setf (gethash name seen) t))
+    seen))
+
+(defun %known-symbol-p (symbol known-symbols)
+  (or (gethash symbol known-symbols)
+      (eq symbol t)
+      (eq symbol nil)
+      (keywordp symbol)
+      (boundp symbol)
+      (fboundp symbol)
+      (special-operator-p symbol)))
+
+(defun %collect-symbol-refs (form)
+  (cond
+    ((symbolp form) (list form))
+    ((atom form) '())
+    ((and (consp form) (eq (car form) 'quote)) '())
+    (t
+     (let ((tail (cdr form)))
+       (reduce #'append
+               (loop for part in tail collect (%collect-symbol-refs part))
+               :initial-value '())))))
+
+(defun %warn-unbound-when-vars (panel-name when-clause known-symbols)
+  (dolist (sym (%collect-symbol-refs when-clause))
+    (unless (%known-symbol-p sym known-symbols)
+      (%signal-syntax-warning panel-name :layout
+                              (format nil "Unbound :when symbol ~S."
+                                      sym)))))
+
+(defun %validate-layout-when-clauses (panel-name layout-forms known-symbols)
+  (when (and layout-forms (consp layout-forms))
+    (let ((container-form (first layout-forms)))
+      (when (and (consp container-form) (member (car container-form) '(:column :row)))
+        (dolist (region (cdr container-form))
+          (let ((when-clause (%region-when-clause region)))
+            (when when-clause
+              (%warn-unbound-when-vars panel-name when-clause known-symbols))))))))
+
+(defun %validate-layout-regions (panel-name layout-forms)
+  (when layout-forms
+    (let ((seen (make-hash-table :test #'eq)))
+      (dolist (region (cdr (first layout-forms)))
+        (let ((region-name (first region)))
+          (when (gethash region-name seen)
+            (%signal-syntax-error panel-name :layout
+                                  (format nil "Duplicate region name ~S in :layout."
+                                          region-name)))
+          (setf (gethash region-name seen) t))))))
+
+(defun %compile-data-binding (panel-name spec all-params all-state-vars)
   "Compile a single (:data (name expr &key deps)) into use-memo binding form.
 Returns (values var-sym use-memo-form)."
-  (destructuring-bind (name expr &key deps) spec
-    (let ((effective-deps (or deps (append all-params all-state-vars))))
-      (values name
-              `(,name (ptui.ui.hooks:use-memo ,name (:deps ,effective-deps)
-                        ,expr))))))
+  (destructuring-bind (name expr &rest options) spec
+    (let ((deps-provided-p (%plist-contains-key-p options :deps))
+          (deps (getf options :deps)))
+      (unless deps-provided-p
+        (%signal-syntax-warning panel-name :data
+                                (format nil "Data node ~S has no :deps."
+                                        name)))
+      (let ((effective-deps (or deps (append all-params all-state-vars))))
+        (values name
+                `(,name (ptui.ui.hooks:use-memo ,name (:deps ,effective-deps)
+                          ,expr)))))))
 
-(defun %compile-panel-data (data-specs all-params all-state-vars)
+(defun %compile-panel-data (panel-name data-specs all-params all-state-vars)
   "Compile all :data specs into let* binding clauses.
 Returns (values bindings data-var-names)."
   (let (bindings var-names)
     (dolist (spec data-specs)
       (multiple-value-bind (var form)
-          (%compile-data-binding spec all-params all-state-vars)
+          (%compile-data-binding panel-name spec all-params all-state-vars)
         (push var var-names)
         (push form bindings)))
     (values (nreverse bindings) (nreverse var-names))))
@@ -358,14 +475,16 @@ Returns a form that produces an event handler function, or NIL."
 ;;; I290: defpanel Macro Assembly
 ;;; ===================================================================
 
-(defun %validate-panel-names (state-specs data-specs)
+(defun %validate-panel-names (panel-name state-specs data-specs)
   "Validate no duplicate names across state and data sections."
   (let ((all-names (append (mapcar #'first state-specs)
                            (mapcar #'first data-specs)))
         (seen (make-hash-table :test #'eq)))
     (dolist (name all-names)
       (when (gethash name seen)
-        (error "defpanel: duplicate name ~S across :state/:data sections." name))
+        (%signal-syntax-error panel-name :state
+                              (format nil "Duplicate name ~S across :state/:data sections."
+                                      name)))
       (setf (gethash name seen) t))))
 
 (defmacro defpanel (name (&rest params) &body sections)
@@ -395,58 +514,57 @@ Example:
       (:up (decf scroll-offset))
       (:down (incf scroll-offset))))"
   (multiple-value-bind (state-specs data-specs layout-forms key-specs effects-specs context-specs)
-      (%parse-panel-sections sections)
-    (%validate-panel-names state-specs data-specs)
+      (%parse-panel-sections sections name)
+    (%validate-panel-names name state-specs data-specs)
     (multiple-value-bind (state-bindings state-vars setter-names)
         (%compile-panel-state state-specs)
       (declare (ignore setter-names))
-      (multiple-value-bind (data-bindings data-vars)
-          (%compile-panel-data data-specs
-                               (loop for p in params
-                                     unless (member p '(&key &optional &rest &body &allow-other-keys))
-                                     collect p)
-                               state-vars)
-        (declare (ignore data-vars))
-        (multiple-value-bind (context-provides context-consumes)
-            (%compile-panel-context context-specs)
-          (let* ((layout-form (%compile-layout-tree layout-forms))
-                 (keys-form (%compile-panel-keys key-specs))
-                 (effects-forms (%compile-panel-effects effects-specs))
-                 ;; Extract actual param names for defwidget (flatten &key etc.)
-                 (widget-params
-                   (loop for p in params
-                         unless (member p '(&key &optional &rest &body &allow-other-keys))
-                         collect p))
-                 ;; The inner form: layout wrapped with keys
-                 (inner-form (%wrap-with-keys keys-form layout-form))
-                 ;; Wrap with effects (before layout, after data)
-                 (effects-and-inner
-                   (if effects-forms
-                       `(progn ,@effects-forms ,inner-form)
-                       inner-form))
-                 ;; Wrap with data bindings
-                 (data-and-rest
-                   (if data-bindings
-                       `(let* (,@data-bindings)
-                          (declare (ignorable ,@(mapcar #'first data-bindings)))
-                          ,effects-and-inner)
-                       effects-and-inner))
-                 ;; Wrap with context consumes (let* bindings from use-context)
-                 (context-and-rest
-                   (if context-consumes
-                       `(let* (,@context-consumes)
-                          (declare (ignorable ,@(mapcar #'first context-consumes)))
-                          ,data-and-rest)
-                       data-and-rest))
-                 ;; Wrap with context provides (before everything else)
-                 (provides-and-rest
-                   (if context-provides
-                       `(progn ,@context-provides ,context-and-rest)
-                       context-and-rest)))
-            ;; Generate defwidget expansion
-            `(ptui.widgets.defwidget:defwidget ,name ,widget-params
-               (:memoize nil)
-               ,(%nest-state-bindings state-bindings provides-and-rest))))))))
+      (let ((widget-params
+              (loop for p in params
+                    unless (member p '(&key &optional &rest &body &allow-other-keys))
+                    collect p)))
+        (%validate-layout-regions name layout-forms)
+        (multiple-value-bind (data-bindings data-vars)
+            (%compile-panel-data name data-specs widget-params state-vars)
+          (%validate-layout-when-clauses
+           name
+           layout-forms
+           (%collect-name-set (append widget-params state-vars data-vars)))
+          (multiple-value-bind (context-provides context-consumes)
+              (%compile-panel-context context-specs)
+            (let* ((layout-form (%compile-layout-tree layout-forms))
+                   (keys-form (%compile-panel-keys key-specs))
+                   (effects-forms (%compile-panel-effects effects-specs))
+                   ;; The inner form: layout wrapped with keys
+                   (inner-form (%wrap-with-keys keys-form layout-form))
+                   ;; Wrap with effects (before layout, after data)
+                   (effects-and-inner
+                     (if effects-forms
+                         `(progn ,@effects-forms ,inner-form)
+                         inner-form))
+                   ;; Wrap with data bindings
+                   (data-and-rest
+                     (if data-bindings
+                         `(let* (,@data-bindings)
+                            (declare (ignorable ,@(mapcar #'first data-bindings)))
+                            ,effects-and-inner)
+                         effects-and-inner))
+                   ;; Wrap with context consumes (let* bindings from use-context)
+                   (context-and-rest
+                     (if context-consumes
+                         `(let* (,@context-consumes)
+                            (declare (ignorable ,@(mapcar #'first context-consumes)))
+                            ,data-and-rest)
+                         data-and-rest))
+                   ;; Wrap with context provides (before everything else)
+                   (provides-and-rest
+                     (if context-provides
+                         `(progn ,@context-provides ,context-and-rest)
+                         context-and-rest)))
+              ;; Generate defwidget expansion
+              `(ptui.widgets.defwidget:defwidget ,name ,widget-params
+                 (:memoize nil)
+                 ,(%nest-state-bindings state-bindings provides-and-rest)))))))))
 
 (defun %nest-state-bindings (bindings inner-form)
   "Nest multiple-value-bind forms from state compilation around INNER-FORM."

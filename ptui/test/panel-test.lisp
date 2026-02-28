@@ -443,8 +443,102 @@
             (let ((elem (render-context-consumer-panel)))
               ;; Check that the body text contains "dark"
               (let* ((child (first (ptui.ui.elements:ui-element-children elem)))
-                     (text (getf (ptui.ui.elements:ui-element-props child) :text)))
+                 (text (getf (ptui.ui.elements:ui-element-props child) :text)))
                 (is (search "DARK" (string-upcase text)))))))))))
+
+;;; ===================================================================
+;;; I315: defpanel Validation Tests
+;;; ===================================================================
+
+(test defpanel-duplicate-state-vars-signals-error
+  (signals ptui.ui.panel:defpanel-syntax-error
+    (macroexpand-1
+     '(ptui.ui.panel:defpanel duplicate-state-panel (title)
+        (:state
+          (count 0)
+          (count 1))
+        (:layout
+          (:column
+            (main :flex 1
+              (ptui.widgets.core:make-text-widget title))))))))
+
+(test defpanel-unknown-section-signals-error
+  (signals ptui.ui.panel:defpanel-syntax-error
+    (macroexpand-1
+     '(ptui.ui.panel:defpanel unknown-section-panel (title)
+        (:mystery (value 1))
+        (:layout
+          (:column
+            (main :flex 1
+              (ptui.widgets.core:make-text-widget title))))))))
+
+(test defpanel-duplicate-layout-region-names-signals-error
+  (signals ptui.ui.panel:defpanel-syntax-error
+    (macroexpand-1
+     '(ptui.ui.panel:defpanel duplicate-region-panel (title)
+        (:layout
+          (:column
+            (panel :fixed 1
+              (ptui.widgets.core:make-text-widget title))
+            (panel :flex 1
+              (ptui.widgets.core:make-text-widget title))))))))
+
+(test defpanel-missing-deps-warning
+  (let ((warned nil))
+    (handler-bind ((ptui.ui.panel:defpanel-syntax-warning
+                    (lambda (warning)
+                      (when (eq (ptui.ui.panel:defpanel-syntax-warning-section warning) :data)
+                        (setf warned t))
+                      (muffle-warning warning))))
+      (macroexpand-1
+       '(ptui.ui.panel:defpanel missing-deps-panel (title)
+          (:data
+            (display (concatenate 'string title "-value")))
+          (:layout
+            (:column
+              (main :flex 1
+                (ptui.widgets.core:make-text-widget title)))))))
+    (is-true warned)))
+
+(test defpanel-when-unbound-warning
+  (let ((warned nil))
+    (handler-bind ((ptui.ui.panel:defpanel-syntax-warning
+                    (lambda (warning)
+                      (when (eq (ptui.ui.panel:defpanel-syntax-warning-section warning) :layout)
+                        (setf warned t))
+                      (muffle-warning warning))))
+      (macroexpand-1
+       '(ptui.ui.panel:defpanel unbound-when-panel (title)
+          (:layout
+            (:column
+              (main :fixed 1 :when unbound-switch
+                (ptui.widgets.core:make-text-widget title)))))))
+    (is-true warned)))
+
+(test defpanel-valid-panel-does-not-signal
+  (let ((warned nil)
+        (errored nil))
+    (handler-bind ((ptui.ui.panel:defpanel-syntax-error
+                     (lambda (condition)
+                       (declare (ignore condition))
+                       (setf errored t))))
+      (handler-bind ((ptui.ui.panel:defpanel-syntax-warning
+                      (lambda (warning)
+                        (setf warned t)
+                        (muffle-warning warning))))
+        (macroexpand-1
+         '(ptui.ui.panel:defpanel valid-compile-panel (title count)
+            (:state
+              (selected 0 :type fixnum))
+            (:data
+              (display (format nil "~A: ~D" title count)
+                :deps (title count selected)))
+            (:layout
+              (:column
+                (main :flex 1
+                  (ptui.widgets.core:make-text-widget display)))))))
+      (is-false errored))
+    (is-false warned)))
 
 (defun run-all ()
   (run! 'panel-suite))
