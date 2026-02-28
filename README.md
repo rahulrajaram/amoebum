@@ -1,5 +1,9 @@
 # amoebum
 
+<p align="center">
+  <img src="docs/assets/amoebum-logo.png" alt="amoebum logo" width="320" />
+</p>
+
 This repo contains an experimental Common Lisp terminal UI kernel ("PTUI") being built against `PTUI_KERNEL_SPEC.md`.
 
 Licensing: see `LICENSE`.
