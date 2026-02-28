@@ -8,6 +8,43 @@ Licensing: see `LICENSE`.
 
 See `ptui/README.md` for system/module layout and how to load/run.
 
+## Installation
+
+### Prerequisites
+
+From a fresh Linux/macOS environment, install:
+
+1. `sbcl`
+2. `make`
+3. `quicklisp` (or provide `QUICKLISP_SETUP`)
+4. `yarli` (required for `./bin/amoebum` workflow)
+
+### Build from source
+
+From repo root:
+
+1. `make test`
+2. `make build`
+
+The binary is produced at `dist/amoebum`.
+
+### Optional local install
+
+To install wrapper + runtime into `~/.local/bin`:
+
+1. `./install.sh`
+
+You can override install location with `INSTALL_PREFIX`, for example:
+
+1. `INSTALL_PREFIX=/usr/local/bin ./install.sh`
+
+## Quick Start
+
+From repo root:
+
+1. `make check`
+2. `./bin/amoebum`
+
 ## Amoebum CLI
 
 Use the single entrypoint from repo root:
