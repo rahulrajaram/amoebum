@@ -160,12 +160,12 @@ Issues found:
 - `bin/yarli-codex.sh --help` returns a missing prompt-file error instead of usage.
 - `bin/yarli-codex-stdin.sh --help` exits with "No prompt provided via stdin." instead of usage.
 - `bin/yarli-lint-implementation-plan.sh --help` treats `--help` as file input.
-- `bin/yarli-verify-gate-parity.sh --help` treats `--help` as a missing file.
 - `bin/check-dist-ignore.sh --help` executes checks instead of printing help.
 - `bin/build-binary.sh --help` starts a real build instead of printing help.
 
 Fixed in this run:
 - `bin/yarli-sanitize-continuation.sh` now supports `-h/--help` and rejects unexpected args.
+- `bin/yarli-verify-gate-parity.sh` now supports `-h/--help` and falls back to `yarli.toml.example` when `yarli.toml` is absent.
 
 ## AI Agent Integration
 This repo is set up for Yarli-driven agent execution and includes wrappers:

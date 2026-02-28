@@ -4,10 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-PLAN_FILE="${1:-${REPO_ROOT}/IMPLEMENTATION_PLAN.md}"
-RUNTIME_SCRIPT="${2:-${REPO_ROOT}/bin/yarli-run-verification.sh}"
-YARLI_CONFIG="${3:-${REPO_ROOT}/yarli.toml}"
 EXPECTED_PACE_CMD="./bin/yarli-run-verification.sh"
+DEFAULT_CONFIG="${REPO_ROOT}/yarli.toml"
+FALLBACK_CONFIG="${REPO_ROOT}/yarli.toml.example"
 
 fail() {
   echo "VERIFY_GATE_PARITY_ERROR: $*" >&2
@@ -18,6 +17,52 @@ require_file() {
   local path="$1"
   [[ -f "${path}" ]] || fail "missing file: ${path}"
 }
+
+usage() {
+  cat <<'EOF'
+Usage:
+  bin/yarli-verify-gate-parity.sh [plan-file] [runtime-script] [yarli-config]
+
+Config resolution:
+  1) explicit [yarli-config] argument
+  2) ./yarli.toml (if present)
+  3) ./yarli.toml.example (fallback for CI/repo-only checks)
+EOF
+}
+
+resolve_config() {
+  local explicit_config="${1:-}"
+  if [[ -n "${explicit_config}" ]]; then
+    echo "${explicit_config}"
+    return
+  fi
+
+  if [[ -f "${DEFAULT_CONFIG}" ]]; then
+    echo "${DEFAULT_CONFIG}"
+    return
+  fi
+
+  if [[ -f "${FALLBACK_CONFIG}" ]]; then
+    echo "${FALLBACK_CONFIG}"
+    return
+  fi
+
+  fail "missing config file: ${DEFAULT_CONFIG} (or fallback ${FALLBACK_CONFIG})"
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ $# -gt 3 ]]; then
+  usage >&2
+  exit 2
+fi
+
+PLAN_FILE="${1:-${REPO_ROOT}/IMPLEMENTATION_PLAN.md}"
+RUNTIME_SCRIPT="${2:-${REPO_ROOT}/bin/yarli-run-verification.sh}"
+YARLI_CONFIG="$(resolve_config "${3:-}")"
 
 extract_plan_commands() {
   local plan_file="$1"

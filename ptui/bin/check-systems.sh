@@ -10,7 +10,7 @@ REPO_ROOT="$(cd "${ROOT_DIR}/.." && pwd)"
 # Enforce IMPLEMENTATION_PLAN.md open-tranche contract before expensive kernel checks.
 "${REPO_ROOT}/bin/yarli-lint-implementation-plan.sh" "${REPO_ROOT}/IMPLEMENTATION_PLAN.md"
 # Enforce verification command parity between plan and configured runtime policy.
-"${REPO_ROOT}/bin/yarli-verify-gate-parity.sh" "${REPO_ROOT}/IMPLEMENTATION_PLAN.md" "${REPO_ROOT}/bin/yarli-run-verification.sh" "${REPO_ROOT}/yarli.toml"
+"${REPO_ROOT}/bin/yarli-verify-gate-parity.sh" "${REPO_ROOT}/IMPLEMENTATION_PLAN.md" "${REPO_ROOT}/bin/yarli-run-verification.sh"
 
 # Ensure Quicklisp exists for external deps (cffi, bordeaux-threads, ...).
 "${ROOT_DIR}/bin/ensure-quicklisp.sh" >/dev/null
