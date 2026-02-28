@@ -1,93 +1,271 @@
 # amoebum
 
-This repo contains an experimental Common Lisp terminal UI kernel ("PTUI") being built against `PTUI_KERNEL_SPEC.md`.
+<p align="center">
+  <img src="docs/assets/amoebum-logo.png" alt="amoebum logo" width="320" />
+</p>
 
-Licensing: see `LICENSE`.
+A Common Lisp monorepo for terminal AI workflows: `amoebum`, `ptui`, `pseudopod`, and `sw4rm-sdk`.
 
-## PTUI
+## What is this?
+`amoebum` is a Common Lisp workspace for building and running terminal-first AI tooling. The repository combines a TUI kernel (`ptui`), an application/runtime layer (`amoebum`), an LLM provider client (`pseudopod`), and workflow/orchestration helpers (`sw4rm-sdk`).
 
-See `ptui/README.md` for system/module layout and how to load/run.
+The primary operator entrypoint is `bin/amoebum`, which sanitizes continuation state and launches `yarli run --stream`. The repo is designed for iterative tranche-based development, local verification loops, and reproducible terminal automation.
 
-## Amoebum CLI
+This README documents only behavior that is currently implemented in the repository as of February 28, 2026.
 
-Use the single entrypoint from repo root:
+## Features
+- Monorepo with separately loadable ASDF systems:
+  `amoebum`, `ptui`, `pseudopod`, `sw4rm-sdk`.
+- Terminal UI kernel (`ptui`) with component/runtime/render/backend layers.
+- AI workflow app (`amoebum`) with permissions, sandbox integration, tools, panels, and tests.
+- Provider client layer (`pseudopod`) with OpenAI-compatible and Anthropic provider support.
+- SW4RM-oriented SDK helpers and local registry/router components.
+- Yarli-oriented operational scripts for remediation, post-run memory sync, verification, and deterioration reporting.
 
-1. `./bin/amoebum`
+## Installation
+### Build from source (supported)
+Prerequisites:
+- `sbcl`
+- `quicklisp` (or set `QUICKLISP_SETUP`)
+- `yarli`
+- `jq`
+- `psql` (optional, for sanitize/reconciliation DB path)
+
+Build:
+```bash
+make build
+```
+
+Run tests:
+```bash
+make test
+```
+
+### Cargo install (not available)
+This repository is Common Lisp-based and does not provide a Cargo package.
+
+### Docker (not available)
+No Docker image or Dockerfile is currently provided in this repository.
+
+## Quick Start
+1. Clone the repository and `cd` into it.
+2. Ensure dependencies are installed (`sbcl`, `quicklisp`, `yarli`, `jq`).
+3. Run verification:
+```bash
+make check
+```
+4. Start the main workflow:
+```bash
+./bin/amoebum
+```
+
+## CLI Reference
+The outputs below are from actual `--help` executions in this repo.
+
+### `bin/amoebum --help`
+```text
+Usage:
+  bin/amoebum
 
 Behavior:
+  1) sanitize continuation state
+  2) run `yarli run --stream`
 
-1. Runs `./bin/yarli-sanitize-continuation.sh`
-2. Runs `yarli run --stream`
-3. Rejects any subcommands/arguments
+No subcommands or arguments are supported.
+```
 
-## Yarli Usage
+### `bin/yarli-sanitize-continuation.sh --help`
+```text
+Usage:
+  bin/yarli-sanitize-continuation.sh
 
-Run from repo root:
+Purpose:
+  Clears stale continuation state when IMPLEMENTATION_PLAN.md has zero open
+  tranches, and optionally reconciles related run rows/events in Postgres.
 
-1. `./bin/yarli-sanitize-continuation.sh`
-2. `yarli run --stream`
-3. If stream rendering is unavailable, Yarli falls back to headless mode and should continue emitting structured stderr progress.
+Notes:
+  - Reads settings from ./yarli.toml and objective from ./PROMPT.md.
+  - Requires no arguments.
+```
 
-Authority model:
+### `bin/yarli-remediate-run.sh --help`
+```text
+Usage:
+  bin/yarli-remediate-run.sh <run-id> [--dispatch-cmd <cmd>] [--template <path>] [--dry-run]
 
-1. `yarli.toml` is the execution authority for Yarli runtime behavior.
-2. `PROMPT.md` is intent-only (objective/context), not an operator runbook.
-3. `IMPLEMENTATION_PLAN.md` is tranche scope/state authority.
+Examples:
+  bin/yarli-remediate-run.sh 019c4f70-07a7-7703-bfa6-5d7a5f19948c
+  bin/yarli-remediate-run.sh 019c4f7007 --dispatch-cmd "bash -lc 'echo remediation stub'"
+```
 
-Run and task triage:
+### `bin/yarli-postrun-memory-sync.sh --help`
+```text
+Usage:
+  bin/yarli-postrun-memory-sync.sh --run-id <run-id|short-id>
+  bin/yarli-postrun-memory-sync.sh --latest
 
-1. `yarli run status <run-id>`
-2. `yarli run explain-exit <run-id>`
-3. `yarli task list <run-id>`
-4. `yarli task explain <task-id>`
-5. `yarli task annotate ...` to persist blocker details against a task (see `yarli task --help` for exact args).
-6. `./bin/yarli-remediate-run.sh <run-id>` to capture failure context in `.agent/remediation-<run-id>/` and dispatch a separate remediation run.
+Options:
+  --config <path>         Path to yarli.toml (default: ./yarli.toml)
+  --fallback-file <path>  Fallback memory log path (default: ./.agent/memory-log.md)
+  --dry-run               Print resolved payload/sink without writing
+  -h, --help              Show this help
+```
 
-Audit inspection:
+### `bin/yarli-deterioration-report.sh --help`
+```text
+Usage:
+  bin/yarli-deterioration-report.sh [--window-runs <n>] [--output <path>] [--dry-run]
+  bin/yarli-deterioration-report.sh --synthetic-profile <observe|retry|remediate|escalate> [--assert-action <class>]
 
-1. `yarli audit tail --lines 100`
-2. Expect policy decisions plus command execution entries (command key, exit code, stderr excerpt, duration) when command auditing is enabled.
+Options:
+  --config <path>            Path to yarli.toml (default: ./yarli.toml)
+  --window-runs <n>          Number of recent runs to analyze (default: 20)
+  --output <path>            Report file path (default: ./.agent/deterioration-report.md)
+  --audit-file <path>        Override audit file path (default: from yarli.toml)
+  --dry-run                  Print report to stdout without writing output file
+  --synthetic-profile <id>   Run synthetic classification probe only
+  --assert-action <class>    Expected class for synthetic or real classification
+  -h, --help                 Show this help
+```
 
-Post-run memory sync:
+### `bin/yarli-run-verification.sh --help`
+```text
+Usage:
+  bin/yarli-run-verification.sh
+  bin/yarli-run-verification.sh --print-commands
+```
 
-1. Run `./bin/yarli-postrun-memory-sync.sh --run-id <run-id>` after a finished run (`RunCompleted`, `RunFailed`, or `RunCancelled`).
-2. Haake write path is controlled by `yarli.toml` (`[memory.haake] enabled`, `command`, `project_dir`).
-3. If Haake is disabled or unavailable, entries are appended to `.agent/memory-log.md`.
+### External CLI used by this repo: `yarli`
+```text
+Usage: yarli [OPTIONS] <COMMAND>
 
-## Local Build and Check Commands
+Commands:
+  run
+  task
+  gate
+  worktree
+  merge
+  audit
+  plan
+  debug
+  migrate
+  init
+  info
+```
 
-1. `make test-ptui` runs PTUI tests through ASDF.
-2. `make test-amoebum` runs Amoebum tests through ASDF.
-3. `make test` runs `test-ptui` then `test-amoebum`.
-4. `make check-dist-ignore` verifies `dist/` is ignored and still gitignored.
-5. `make check` runs `make check-dist-ignore`, then `make test`, then `make build`.
-6. `make build` uses `bin/build-binary.sh` and resolves `QUICKLISP_SETUP` with fallback.
+### CLI Help-Text Audit Report (repo scripts)
+Commands scanned: 16 (`bin/*` entrypoints)
 
-Guard script:
+Issues found:
+- `bin/yarli-codex.sh --help` returns a missing prompt-file error instead of usage.
+- `bin/yarli-codex-stdin.sh --help` exits with "No prompt provided via stdin." instead of usage.
+- `bin/yarli-lint-implementation-plan.sh --help` treats `--help` as file input.
+- `bin/yarli-verify-gate-parity.sh --help` treats `--help` as a missing file.
+- `bin/check-dist-ignore.sh --help` executes checks instead of printing help.
+- `bin/build-binary.sh --help` starts a real build instead of printing help.
 
-- `./bin/check-dist-ignore.sh` checks `.gitignore` for `dist/` and validates `git check-ignore -q dist`.
+Fixed in this run:
+- `bin/yarli-sanitize-continuation.sh` now supports `-h/--help` and rejects unexpected args.
 
-Payload contract (`yarli_postrun_memory_v1`):
+## AI Agent Integration
+This repo is set up for Yarli-driven agent execution and includes wrappers:
+- `bin/yarli-codex.sh`
+- `bin/yarli-codex-stdin.sh`
+- `bin/yarli-claude-wrapper.sh`
 
-1. Required fields: `timestamp_utc`, `project_id`, `run_id`, `objective`, `outcome`, `run_state`.
-2. Verification fields: `verification_failed_gates`, `verification_passed`, task summary counters.
-3. Blocker/root-cause fields: `blocker_signatures`, `root_cause_task_id`, `root_cause_reason`, `root_cause_error`.
+`yarli.toml` controls CLI backend invocation under `[cli]`. Example (current repo default):
+```toml
+[cli]
+backend = "custom"
+prompt_mode = "arg"
+command = "codex"
+args = ["--dangerously-bypass-approvals-and-sandbox", "exec", "--json", "--model", "gpt-5.3-codex-spark", "--config", "model_reasoning_effort=high"]
+```
 
-Tagging convention:
+MCP-related code exists under `amoebum/src/mcp/*` (JSON-RPC client/server + tool bridge) for stdio/streamable-http server connectivity.
 
-1. Base tags: `yarli`, `postrun-observability`, `haake-postrun-memory-sync`.
-2. Outcome/state tags: `outcome-<success|failed>`, `run-state-<normalized-run-state>`.
+## gRPC API
+No repository-owned gRPC service definition is currently exposed (no `.proto` files in this repo).
 
-Deterioration pattern tracking:
+## REST API
+No repository-owned REST API server is currently exposed (no Axum/REST service module in this repo).
 
-1. Run `./bin/yarli-deterioration-report.sh --window-runs <n>` to analyze recent run/task/audit signals and append a report entry to `.agent/deterioration-report.md`.
-2. Report format is `YARLI_DETERIORATION_REPORT_V1` with window summary, thresholded classification, `Trend Comparison` deltas (`previous_*`, `delta_*`), top signals, and a per-run trend table.
-3. Use `--dry-run` to inspect generated output without writing.
-4. Use `--synthetic-profile <observe|retry|remediate|escalate> --assert-action <class>` for deterministic classification probes.
+## Configuration
+Primary config files:
+- `yarli.toml` (runtime orchestration and CLI backend settings)
+- `PROMPT.md` (run objective/context)
+- `IMPLEMENTATION_PLAN.md` (tranche execution ledger)
 
-Alert/action classes:
+Common environment variables read by code/scripts include:
+- `QUICKLISP_SETUP`
+- `AMOEBUM_STRIP_BINARY`, `AMOEBUM_UPX`
+- `AMOEBUM_MODEL`, `AMOEBUM_PERMISSION_MODE`, `AMOEBUM_APPROVAL_POLICY`, `AMOEBUM_SANDBOX_MODE`, `AMOEBUM_SWARM_DELEGATION_MODE`
+- `AMOEBUM_EVENT_JOURNAL`, `AMOEBUM_EVENT_JOURNAL_DIR`
+- `AMOEBUM_TTS_COMMAND`, `AMOEBUM_TTS_VOICE`, `AMOEBUM_TTS_PYTHON_MODULE`, `AMOEBUM_TTS_AUTO_SPEAK`
+- `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
+- `PTUI_EXIT_AFTER_MS`, `PTUI_MAX_IDLE_SLEEP_MS`, `PTUI_LOG_LEVEL`, `PTUI_NATIVE_LIB`, `PTUI_DASHBOARD_MODE`
+- `SW4RM_*` service address and tuning variables (see `sw4rm-sdk/src/config.lisp`)
 
-1. `observe`: continue normal execution and monitor trends.
-2. `retry`: retry transient failures before broader changes.
-3. `remediate`: run targeted remediation (for example `./bin/yarli-remediate-run.sh <run-id>`) before advancing.
-4. `escalate`: pause auto-advance and require operator review.
+## Architecture
+High-level structure:
+
+```text
+bin/amoebum
+  -> bin/yarli-sanitize-continuation.sh
+  -> yarli run --stream
+      -> amoebum (app/runtime/tools/panels)
+          -> ptui (terminal UI kernel)
+          -> pseudopod (provider clients)
+          -> sw4rm-sdk (workflow/registry/router helpers)
+```
+
+Subsystem locations:
+- `amoebum/` application layer, tools, panels, tests
+- `ptui/` terminal UI kernel and component systems
+- `pseudopod/` provider and model client logic
+- `sw4rm-sdk/` orchestration and registry/router helpers
+
+## Security
+Security controls present in current codebase:
+- Permission modes (`:supervised`, `:auto-edit`, `:full-auto`, `:yolo`, `:no-confirm`)
+- Approval policies (`:untrusted`, `:on-failure`, `:on-request`, `:never`)
+- Sandbox policies (`:strict`, `:off`)
+- Sandbox modes (`:read-only`, `:workspace-write`, `:danger-full-access`)
+
+Current defaults in `amoebum/src/config.lisp`:
+- permission mode: `:supervised`
+- approval policy: `:on-request`
+- sandbox policy: `:strict`
+- sandbox mode: `:workspace-write`
+
+## Examples
+Run the main entrypoint:
+```bash
+./bin/amoebum
+```
+
+Run full checks:
+```bash
+make check
+```
+
+Run only PTUI tests:
+```bash
+make test-ptui
+```
+
+Run only Amoebum tests:
+```bash
+make test-amoebum
+```
+
+Inspect run/task state with Yarli:
+```bash
+yarli run list
+yarli run status <run-id>
+yarli task list <run-id>
+yarli task explain <task-id>
+```
+
+## License
+MIT. See `LICENSE`.

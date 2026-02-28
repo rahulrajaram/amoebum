@@ -9,6 +9,32 @@ CONTINUATION_FILE="${REPO_ROOT}/.yarli/continuation.json"
 CONFIG_FILE="${REPO_ROOT}/yarli.toml"
 PROMPT_FILE="${REPO_ROOT}/PROMPT.md"
 
+usage() {
+  cat <<'EOF'
+Usage:
+  bin/yarli-sanitize-continuation.sh
+
+Purpose:
+  Clears stale continuation state when IMPLEMENTATION_PLAN.md has zero open
+  tranches, and optionally reconciles related run rows/events in Postgres.
+
+Notes:
+  - Reads settings from ./yarli.toml and objective from ./PROMPT.md.
+  - Requires no arguments.
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ $# -ne 0 ]]; then
+  echo "YARLI_CONTINUATION_SANITIZE_ERROR: no arguments supported" >&2
+  usage >&2
+  exit 2
+fi
+
 db_url="$(sed -n 's/^[[:space:]]*database_url[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "${CONFIG_FILE}" | head -n1)"
 run_objective="$(sed -n 's/^[[:space:]]*objective[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "${PROMPT_FILE}" | head -n1)"
 
