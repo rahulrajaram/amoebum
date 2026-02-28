@@ -332,4 +332,5 @@
    (:file "test/event-routing-test")
    (:file "test/constraints-test")
    (:file "test/views-test")
+   (:file "test/input-test")
    (:file "test/panel-test")))

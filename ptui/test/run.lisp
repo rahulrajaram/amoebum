@@ -2475,6 +2475,9 @@ foo bar foo")
     (assert-true (> render-count 0)
                  "expected render to continue after handler error restart.")))
 
+(deftest ptui-input-parser-and-caps-suite
+  (ptui.test.input:run-all))
+
 ;; Script entry
 (multiple-value-bind (passed failed) (run-all-tests)
   (declare (ignore passed))
