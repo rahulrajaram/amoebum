@@ -857,8 +857,11 @@
                         "call:"
                         (pseudopod:tool-call-name tool-call)
                         ":"
-                        (or (pseudopod:tool-call-arguments tool-call) "")))
-      preview-key))
+                        (let ((arguments (pseudopod:tool-call-arguments tool-call)))
+                          (if (stringp arguments)
+                              arguments
+                              (princ-to-string (or arguments "")))))
+      preview-key)))
 
 (defun %tool-call-has-id-p (tool-call)
   "Return T if TOOL-CALL has a non-empty tool-call-id."
@@ -889,45 +892,46 @@
     (let* ((toolset (or (chat-ui-state-stream-tools chat-state) *toolset*))
            (config (%chat-config))
            (permission-mode (and (config-p config)
-                                 (config-permission-mode config)))
+                                (config-permission-mode config)))
            (stream-state (chat-ui-state-stream-state chat-state))
            (tool-name (and (pseudopod:tool-call-p tool-call)
-                           (pseudopod:tool-call-name tool-call)))
-           (worker (lambda ()
-                     (let ((result-text "")
-                           (execution-error nil))
-                       (if (and (typep stream-state 'token-stream-state)
-                                (token-stream-cancel-requested-p stream-state))
-                           (setf execution-error "Tool execution cancelled."
-                                 result-text execution-error)
-                           (handler-case
-                               (if (pseudopod:find-tool toolset tool-name)
-                                   (let ((result (execute-tool tool-call
-                                                               (make-amoebum-context
-                                                                :toolset toolset
-                                                                :permission-mode permission-mode
-                                                                :event-bus (%context-event-bus chat-state)
-                                                                :permission-cancel-thunk
-                                                                (lambda ()
-                                                                  (and (typep stream-state 'token-stream-state)
-                                                                       (token-stream-cancel-requested-p stream-state))))))
-                                     (setf result-text (if (stringp result)
-                                                          result
-                                                          (princ-to-string (or result "")))))
-                                 (let ((err-msg (format nil "Unregistered tool ~A."
-                                                       (or tool-name "<unknown>"))))
-                                   (setf execution-error err-msg
-                                         result-text err-msg)))
-                               (error (condition)
-                                 (setf execution-error (princ-to-string condition)
-                                       result-text execution-error))))
-                       (token-stream-emit-tool-call-result
-                        stream-state
-                        :tool-call tool-call
-                        :preview-key preview-key
-                        :execution-key execution-key
-                        :result result-text
-                        :execution-error execution-error)))))
+                           (pseudopod:tool-call-name tool-call))))
+      (let ((worker (lambda ()
+                      (let ((result-text "")
+                            (execution-error nil))
+                        (if (and (typep stream-state 'token-stream-state)
+                                 (token-stream-cancel-requested-p stream-state))
+                            (setf execution-error "Tool execution cancelled."
+                                  result-text execution-error)
+                            (handler-case
+                                (if (pseudopod:find-tool toolset tool-name)
+                                    (let ((result (execute-tool
+                                                   tool-call
+                                                   (make-amoebum-context
+                                                    :toolset toolset
+                                                    :permission-mode permission-mode
+                                                    :event-bus (%context-event-bus chat-state)
+                                                    :permission-cancel-thunk
+                                                    (lambda ()
+                                                      (and (typep stream-state 'token-stream-state)
+                                                           (token-stream-cancel-requested-p stream-state)))))))
+                                      (setf result-text (if (stringp result)
+                                                           result
+                                                           (princ-to-string (or result "")))))
+                                    (let ((err-msg (format nil "Unregistered tool ~A."
+                                                          (or tool-name "<unknown>"))))
+                                      (setf execution-error err-msg
+                                            result-text err-msg)))
+                                (error (condition)
+                                  (setf execution-error (princ-to-string condition)
+                                        result-text execution-error)))))
+                        (token-stream-emit-tool-call-result
+                         stream-state
+                         :tool-call tool-call
+                         :preview-key preview-key
+                         :execution-key execution-key
+                         :result result-text
+                         :execution-error execution-error)))))
       (bt:make-thread worker :name (format nil "amoebum-tool-call-~A" execution-key)))
     t))
 
@@ -2196,6 +2200,9 @@ Falls back to the global *toolset* when stream-tools is nil."
 
 (defun chat-ui-build-tree (state cols rows)
   (let* ((chat-state (ensure-chat-ui-state state))
+         ( _ (progn
+               (%sync-pending-approval-dialog! chat-state)
+               chat-state))
          (plan-state (current-plan-mode-state))
          (picker-state (%chat-sync-fuzzy-picker! chat-state))
          (tree-state (%ensure-chat-tree-browser-state chat-state))
@@ -2743,7 +2750,7 @@ margins on each side."
             (%render-ui-element buf tree layout focus-id)
             (setf (chat-ui-state-cached-render-key chat-state) render-key
                   (chat-ui-state-cached-buffer chat-state) buf)
-            buf)))))
+            buf))))))
 
 (defun %pop-last-grapheme (text)
   (let ((clusters (ptui.text.grapheme:split-graphemes text)))

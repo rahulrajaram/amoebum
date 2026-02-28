@@ -1039,6 +1039,11 @@
                            (token-stream-emit-tool-call-delta stream-state chunk))
      :on-tool-call-started (lambda (tool-call)
                              (token-stream-emit-tool-call-started stream-state tool-call))
+     :on-tool-call (lambda (tool-call)
+                     ;; Fallback for providers that only emit finalized tool calls.
+                     ;; Trigger the same execution path as fully streamed call deltas.
+                     (token-stream-emit-tool-call-started stream-state tool-call)
+                     (token-stream-emit-tool-call-argument-complete stream-state tool-call))
      :on-tool-call-argument-complete
      (lambda (tool-call)
        (token-stream-emit-tool-call-argument-complete stream-state tool-call)))))
