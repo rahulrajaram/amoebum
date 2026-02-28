@@ -53,6 +53,6 @@ fi
 
 sbcl --non-interactive \
   --load "${QL_SETUP}" \
-  --eval "(ql:quickload '(:cffi :bordeaux-threads))" \
+  --eval "(ql:quickload '(:cffi :bordeaux-threads :cl-ppcre))" \
   --eval "(when (string= (or (sb-ext:posix-getenv \"PTUI_ENABLE_NCURSES\") \"\") \"1\") (ql:quickload '(:cl-charms)))" \
   --eval "(quit)"
