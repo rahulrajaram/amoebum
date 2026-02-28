@@ -114,6 +114,24 @@
   ((:file "src/ui/elements")
    (:file "src/ui/runtime")))
 
+(asdf:defsystem "ptui/hooks"
+  :description "PTUI React-like hooks (use-state/use-effect/use-memo)"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ("ptui/widgets")
+  :serial t
+  :components
+  ((:file "src/ui/hooks")))
+
+(asdf:defsystem "ptui/app"
+  :description "PTUI app shell (defapp macro with lifecycle/interceptors)"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ("ptui/hooks" "ptui/widgets" "ptui/engine" "ptui/render")
+  :serial t
+  :components
+  ((:file "src/ui/app")))
+
 (asdf:defsystem "ptui/widgets"
   :description "PTUI reusable widget primitives"
   :author "Ralph"
@@ -200,7 +218,9 @@
    (:file "src/backend/protocol")
    (:file "src/backend/ansi")
    #+ptui-ncurses (:file "src/backend/ncurses")
-   (:file "src/engine/loop")))
+   (:file "src/engine/loop")
+   (:file "src/ui/hooks")
+   (:file "src/ui/app")))
 
 (asdf:defsystem "ptui/components-standalone"
   :description "PTUI component library on top of ptui/standalone"
@@ -221,7 +241,7 @@
   :description "PTUI umbrella system"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui/core" "ptui/util" "ptui/search" "ptui/runtime" "ptui/term" "ptui/text" "ptui/layout" "ptui/ui" "ptui/widgets" "ptui/render" "ptui/backend" "ptui/engine")
+  :depends-on ("ptui/core" "ptui/util" "ptui/search" "ptui/runtime" "ptui/term" "ptui/text" "ptui/layout" "ptui/ui" "ptui/widgets" "ptui/render" "ptui/backend" "ptui/engine" "ptui/hooks" "ptui/app")
   :serial t
   :components ())
 
@@ -269,4 +289,7 @@
    (:file "test/ansi-parser-test")
    (:file "test/queue-test")
    (:file "test/scheduler-test")
-   (:file "test/list-selection-test")))
+   (:file "test/list-selection-test")
+   (:file "test/hooks-test")
+   (:file "test/app-test")
+   (:file "test/event-routing-test")))

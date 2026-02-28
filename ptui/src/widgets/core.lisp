@@ -173,14 +173,46 @@
               for hit = (%find-node-by-id child target-id)
               when hit do (return hit)))))
 
-(defun dispatch-widget-event (root route)
-  "Dispatch ROUTE (:target/:event) into ROOT widget tree and invoke handler when present."
+(defun %find-path-to-node (element target-id &optional path)
+  "Return list of nodes from ROOT to TARGET-ID (inclusive), or NIL."
+  (when element
+    (let ((current-path (append path (list element))))
+      (if (equal (%node-id element) target-id)
+          current-path
+          (loop for child in (ptui.ui.elements:ui-element-children element)
+                for result = (%find-path-to-node child target-id current-path)
+                when result do (return result))))))
+
+(defun dispatch-widget-event (root route &key (bubble nil))
+  "Dispatch ROUTE (:target/:event) into ROOT widget tree and invoke handler.
+When BUBBLE is T, if the target handler returns :BUBBLE, propagate up to parent.
+Supports :on-event-capture prop for capture phase (top-down, before bubble)."
   (check-type root ptui.ui.elements:ui-element)
   (check-type route list)
   (let* ((target (getf route :target))
-         (event (getf route :event))
-         (node (and target (%find-node-by-id root target))))
-    (when node
-      (let ((handler (%prop node :on-event nil)))
-        (when handler
-          (funcall handler event node))))))
+         (event (getf route :event)))
+    (if (not bubble)
+        ;; Original non-bubbling dispatch
+        (let ((node (and target (%find-node-by-id root target))))
+          (when node
+            (let ((handler (%prop node :on-event nil)))
+              (when handler
+                (funcall handler event node)))))
+        ;; I279: Bubbling dispatch with capture phase
+        (let ((path (and target (%find-path-to-node root target))))
+          (when path
+            ;; Capture phase: top-down
+            (dolist (node path)
+              (let ((capture-handler (%prop node :on-event-capture nil)))
+                (when capture-handler
+                  (let ((result (funcall capture-handler event node)))
+                    (when (and result (not (eq result :bubble)))
+                      (return-from dispatch-widget-event result))))))
+            ;; Bubble phase: bottom-up from target
+            (dolist (node (reverse path))
+              (let ((handler (%prop node :on-event nil)))
+                (when handler
+                  (let ((result (funcall handler event node)))
+                    (unless (eq result :bubble)
+                      (return-from dispatch-widget-event result)))))))
+          nil))))

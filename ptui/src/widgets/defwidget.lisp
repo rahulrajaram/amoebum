@@ -470,7 +470,10 @@
            (spacer-sym (intern "SPACER" widget-package))
            (when-widget-sym (intern "WHEN-WIDGET" widget-package))
            (map-widget-sym (intern "MAP-WIDGET" widget-package))
-          (arity (length lambda-list)))
+          (arity (length lambda-list))
+          ;; I270: detect :key or :id in lambda-list for instance-key
+          (key-prop (find :key lambda-list :test #'string-equal :key #'symbol-name))
+          (id-prop (find :id lambda-list :test #'string-equal :key #'symbol-name)))
       `(progn
          (defun ,render-name ,lambda-list
            ,@(when docstring (list docstring))
@@ -494,11 +497,20 @@
                              nil))
                       (,map-widget-sym (fn sequence)
                         `(mapcar ,fn ,sequence)))
-             (ptui.widgets.defwidget::%finalize-widget-result
-              ',name
-              (progn ,@body)
-              ,focusable-specified-p
-              ,focusable)))
+             ;; I270: Bind widget context around body for hooks support
+             (let ((ptui.ui.runtime:*current-widget-context*
+                     (ptui.ui.runtime::%make-widget-context
+                      ',name
+                      ,(cond
+                         (key-prop key-prop)
+                         (id-prop id-prop)
+                         (t `',name))
+                      ptui.ui.runtime:*current-runtime*)))
+               (ptui.widgets.defwidget::%finalize-widget-result
+                ',name
+                (progn ,@body)
+                ,focusable-specified-p
+                ,focusable))))
          (defun ,name ,lambda-list
            (ptui.widgets.defwidget::%invoke-widget
             ',name
