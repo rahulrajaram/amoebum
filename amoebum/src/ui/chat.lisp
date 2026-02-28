@@ -1361,6 +1361,14 @@ Like %start-streaming-assistant-response but without adding a new user message."
         (%clear-stream-tool-tracking! chat-state)
         (conversation-transition! conversation :idle))
        (:failed
+        (let ((stream-state (chat-ui-state-stream-state chat-state)))
+          (let* ((summary (token-stream-progress-summary stream-state))
+                 (error-message (getf summary :error-message)))
+            (when (and (stringp error-message)
+                       (plusp (length error-message)))
+              (%append-streaming-assistant-chunk
+               chat-state
+               (format nil "\n[stream failed: ~A]\n" error-message)))))
         (%finalize-streaming-assistant-message chat-state :partialp t)
         (%clear-stream-tool-tracking! chat-state)
         (conversation-transition! conversation :error-recovery))

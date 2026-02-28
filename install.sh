@@ -10,10 +10,108 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
 GIT_DIR="$(git rev-parse --git-dir)"
 INSTALL_PREFIX="${INSTALL_PREFIX:-$HOME/.local/bin}"
 LIBEXEC_DIR="${INSTALL_PREFIX}/../libexec/amoebum"
+INSTALL_RUNTIME="$LIBEXEC_DIR/amoebum-sbcl"
+INSTALL_WRAPPER="$INSTALL_PREFIX/amoebum"
+NATIVE_SO="$REPO_ROOT/ptui/native/libptui_native.so"
+AMOEBUM_INSTALL_LOG_DIR="${AMOEBUM_INSTALL_LOG_DIR:-$HOME/.local/var/log/amoebum}"
+AMOEBUM_INSTALL_LOG_FILE="${AMOEBUM_INSTALL_LOG_FILE:-}"
+AMOEBUM_INSTALL_LOG="${AMOEBUM_INSTALL_LOG:-1}"
+
+# Always capture a fresh per-run install log unless explicitly disabled.
+if [ -z "$AMOEBUM_INSTALL_LOG_FILE" ]; then
+  LOG_TS="$(date +%Y%m%d-%H%M%S)"
+  AMOEBUM_INSTALL_LOG_FILE="$AMOEBUM_INSTALL_LOG_DIR/install-${LOG_TS}.log"
+fi
+if [ "$AMOEBUM_INSTALL_LOG" != "0" ]; then
+  mkdir -p "$AMOEBUM_INSTALL_LOG_DIR"
+  touch "$AMOEBUM_INSTALL_LOG_FILE"
+fi
+
+log_ok() {
+  echo "  [ok]   $1"
+}
+
+log_warn() {
+  echo "  [warn] $1"
+}
+
+log_fail() {
+  echo "  [fail] $1" >&2
+}
+
+install_atomically() {
+  local src="$1"
+  local dst="$2"
+  local mode="${3:-}"
+  local tmp
+
+  tmp="${dst}.tmp.$$.$RANDOM"
+  cp "$src" "$tmp"
+  if [ -n "$mode" ]; then
+    chmod "$mode" "$tmp"
+  fi
+  mv -f "$tmp" "$dst"
+}
+
+run_with_timeout() {
+  local secs="$1"
+  shift
+  local out_file pid rc start now
+  local cmd_desc
+
+  cmd_desc="$*"
+  out_file="$(mktemp)"
+  [ "$AMOEBUM_INSTALL_LOG" != "0" ] && echo "[run_with_timeout] start: timeout=${secs}s cmd: $cmd_desc" >> "$AMOEBUM_INSTALL_LOG_FILE"
+
+  # Prefer system timeout when available.
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@" >"$out_file" 2>&1
+    rc=$?
+    cat "$out_file"
+    [ "$AMOEBUM_INSTALL_LOG" != "0" ] && cat "$out_file" >> "$AMOEBUM_INSTALL_LOG_FILE"
+    [ "$AMOEBUM_INSTALL_LOG" != "0" ] && echo "[run_with_timeout] done rc=$rc" >> "$AMOEBUM_INSTALL_LOG_FILE"
+    rm -f "$out_file"
+    return "$rc"
+  fi
+
+  ("$@" >"$out_file" 2>&1) &
+  pid="$!"
+  start="$(date +%s)"
+
+  while kill -0 "$pid" 2>/dev/null; do
+    now="$(date +%s)"
+    if [ $((now - start)) -ge "$secs" ]; then
+      kill "$pid" 2>/dev/null || true
+      sleep 1
+      kill -9 "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      echo "[timeout] command exceeded ${secs}s: $cmd_desc" >&2
+      [ "$AMOEBUM_INSTALL_LOG" != "0" ] && echo "[timeout] command exceeded ${secs}s: $cmd_desc" >> "$AMOEBUM_INSTALL_LOG_FILE"
+      cat "$out_file"
+      [ "$AMOEBUM_INSTALL_LOG" != "0" ] && cat "$out_file" >> "$AMOEBUM_INSTALL_LOG_FILE"
+      rm -f "$out_file"
+      return 124
+    fi
+    sleep 0.1
+  done
+
+  wait "$pid"
+  rc=$?
+  cat "$out_file"
+  [ "$AMOEBUM_INSTALL_LOG" != "0" ] && cat "$out_file" >> "$AMOEBUM_INSTALL_LOG_FILE"
+  [ "$AMOEBUM_INSTALL_LOG" != "0" ] && echo "[run_with_timeout] done rc=$rc" >> "$AMOEBUM_INSTALL_LOG_FILE"
+  rm -f "$out_file"
+  return "$rc"
+}
+
+if [ "$AMOEBUM_INSTALL_LOG" != "0" ]; then
+  # Tee all install output to a persisted log file for post-hoc diagnosis.
+  exec > >(tee -a "$AMOEBUM_INSTALL_LOG_FILE") 2> >(tee -a "$AMOEBUM_INSTALL_LOG_FILE" >&2)
+fi
 
 echo "╔══════════════════════════════════════╗"
 echo "║       amoebum install                ║"
-echo "╚══════════════════════════════════════╝"
+echo "╚══════════════════════════════════════╗"
 echo ""
 
 # ── 1. Build binary ──────────────────────────────────────────────────────
@@ -22,7 +120,7 @@ echo "1. Building amoebum binary..."
 echo ""
 
 if ! command -v sbcl >/dev/null 2>&1; then
-  echo "  [FAIL] sbcl not found. Install SBCL first:" >&2
+  log_fail "sbcl not found. Install SBCL first:"
   echo "         apt install sbcl  OR  brew install sbcl" >&2
   exit 1
 fi
@@ -31,10 +129,11 @@ bash "$REPO_ROOT/bin/build-binary.sh"
 
 BINARY="$REPO_ROOT/dist/amoebum"
 if [ ! -f "$BINARY" ]; then
-  echo "  [FAIL] Binary not found at $BINARY" >&2
+  log_fail "Binary not found at $BINARY"
   exit 1
 fi
-echo "  [ok]   Binary built: $BINARY ($(du -h "$BINARY" | cut -f1))"
+BINARY_SIZE="$(du -h "$BINARY" | cut -f1)"
+log_ok "Binary built: $BINARY ($BINARY_SIZE)"
 echo ""
 
 # ── 2. Install binary ────────────────────────────────────────────────────
@@ -44,25 +143,31 @@ echo ""
 
 mkdir -p "$INSTALL_PREFIX" "$LIBEXEC_DIR"
 
-# The SBCL image goes into libexec (it's large and not user-facing)
-cp "$BINARY" "$LIBEXEC_DIR/amoebum-sbcl"
-chmod +x "$LIBEXEC_DIR/amoebum-sbcl"
+# Install runtime atomically to avoid stale/racy runtime reads.
+install_atomically "$BINARY" "$INSTALL_RUNTIME" "+x"
+log_ok "$INSTALL_RUNTIME"
 
-# Native shared library must be next to the binary for CFFI to find it
-NATIVE_SO="$REPO_ROOT/ptui/native/libptui_native.so"
+# Native shared library must be next to the binary for CFFI to find it.
 if [ -f "$NATIVE_SO" ]; then
-  cp "$NATIVE_SO" "$LIBEXEC_DIR/libptui_native.so"
-  echo "  [ok]   libptui_native.so → $LIBEXEC_DIR/"
+  install_atomically "$NATIVE_SO" "$LIBEXEC_DIR/libptui_native.so"
+  log_ok "libptui_native.so → $LIBEXEC_DIR/"
 else
-  echo "  [warn] libptui_native.so not found at $NATIVE_SO"
-  echo "         Build it with: cd ptui/native && make"
+  log_warn "libptui_native.so not found at $NATIVE_SO"
+  log_warn "         Build it with: cd ptui/native && make"
 fi
 
-# Shell wrapper handles --help and forwards args past SBCL's runtime parser
-cat > "$INSTALL_PREFIX/amoebum" <<'WRAPPER'
+# Install wrapper atomically so file replacement never leaves a partial script.
+TMP_WRAPPER="$INSTALL_WRAPPER.tmp.$$.$RANDOM"
+cat > "$TMP_WRAPPER" <<'WRAPPER'
 #!/usr/bin/env bash
 # amoebum — wrapper that forwards args to the SBCL image
-SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+if command -v readlink >/dev/null 2>&1; then
+  if RESOLVED_PATH="$(readlink -f "$SCRIPT_PATH" 2>/dev/null)"; then
+    SCRIPT_PATH="$RESOLVED_PATH"
+  fi
+fi
+SELF_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 AMOEBUM_BIN="${SELF_DIR}/../libexec/amoebum/amoebum-sbcl"
 
 if [ ! -x "$AMOEBUM_BIN" ]; then
@@ -73,23 +178,22 @@ fi
 
 # SBCL intercepts --help/--version before the Lisp toplevel runs.
 # Use end-of-runtime-options to pass all args to the amoebum main function.
+if [ -n "${AMOEBUM_RUNTIME_LOG_FILE:-}" ]; then
+  mkdir -p "$(dirname "$AMOEBUM_RUNTIME_LOG_FILE")"
+  printf '%s wrapper invoke: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$AMOEBUM_RUNTIME_LOG_FILE"
+  exec "$AMOEBUM_BIN" --end-runtime-options "$@" \
+    > >(tee -a "$AMOEBUM_RUNTIME_LOG_FILE") \
+    2> >(tee -a "$AMOEBUM_RUNTIME_LOG_FILE" >&2)
+fi
 exec "$AMOEBUM_BIN" --end-runtime-options "$@"
 WRAPPER
-chmod +x "$INSTALL_PREFIX/amoebum"
+chmod +x "$TMP_WRAPPER"
+mv -f "$TMP_WRAPPER" "$INSTALL_WRAPPER"
+log_ok "$INSTALL_WRAPPER (wrapper)"
 
-echo "  [ok]   $LIBEXEC_DIR/amoebum-sbcl"
-echo "  [ok]   $INSTALL_PREFIX/amoebum (wrapper)"
-
-# Check if INSTALL_PREFIX is on PATH
-if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_PREFIX"; then
-  echo ""
-  echo "  [warn] $INSTALL_PREFIX is not on your PATH."
-  echo "         Add to your shell profile:"
-  echo "           export PATH=\"$INSTALL_PREFIX:\$PATH\""
-fi
 echo ""
 
-# ── 3. Install commithooks ───────────────────────────────────────────────
+# ── 3. Install commithooks ────────────────────────────────────────────────
 
 echo "3. Installing commithooks..."
 echo ""
@@ -97,44 +201,79 @@ echo ""
 COMMITHOOKS="${COMMITHOOKS_DIR:-$HOME/Documents/commithooks}"
 
 if [ ! -d "$COMMITHOOKS/lib" ] || [ ! -f "$COMMITHOOKS/lib/common.sh" ]; then
-  echo "  [skip] Commithooks source not found at $COMMITHOOKS"
-  echo "         Clone it to enable git hooks:"
-  echo "           git clone https://github.com/rahulrajaram/commithooks.git ~/Documents/commithooks"
-  echo "         Then re-run ./install.sh"
+  log_warn "Commithooks source not found at $COMMITHOOKS"
+  log_warn "       Clone it to enable git hooks:"
+  log_warn "         git clone https://github.com/rahulrajaram/commithooks.git ~/Documents/commithooks"
+  log_warn "       Then re-run ./install.sh"
 else
   # Copy dispatchers
   for hook in pre-commit commit-msg pre-push post-checkout post-merge; do
     src="$COMMITHOOKS/$hook"
     dst="$GIT_DIR/hooks/$hook"
-    [ -f "$src" ] || { echo "  [skip] $hook (not in source)"; continue; }
+    [ -f "$src" ] || { log_warn "$hook (not in source)"; continue; }
     cp "$src" "$dst"
     chmod +x "$dst"
-    echo "  [ok]   $hook → .git/hooks/"
+    log_ok "$hook → .git/hooks/"
   done
 
   # Copy library
   rm -rf "${GIT_DIR:?}/lib"
   cp -r "$COMMITHOOKS/lib" "$GIT_DIR/lib"
-  echo "  [ok]   lib/ → .git/lib/ ($(ls "$GIT_DIR/lib/" | wc -l) modules)"
+  log_ok "lib/ → .git/lib/ ($(ls "$GIT_DIR/lib/" | wc -l) modules)"
 
   # Unset core.hooksPath if set
   if git config --get core.hooksPath >/dev/null 2>&1; then
     git config --unset core.hooksPath
-    echo "  [ok]   Unset core.hooksPath"
+    log_ok "Unset core.hooksPath"
   fi
 fi
 echo ""
 
-# ── 4. Verify ─────────────────────────────────────────────────────────────
+# ── 4. Verify consistency ────────────────────────────────────────────────
 
-echo "4. Verifying..."
+echo "4. Verifying consistency..."
 echo ""
-VERIFY_OUTPUT=$("$INSTALL_PREFIX/amoebum" --json --prompt "ping" 2>&1 || true)
+
+if ! [ -x "$INSTALL_RUNTIME" ]; then
+  log_fail "Installed runtime is not executable: $INSTALL_RUNTIME"
+  exit 1
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+  DIST_HASH="$(sha256sum "$BINARY" | awk '{print $1}')"
+  INSTALL_HASH="$(sha256sum "$INSTALL_RUNTIME" | awk '{print $1}')"
+  if [ "$DIST_HASH" != "$INSTALL_HASH" ]; then
+    log_fail "Runtime hash mismatch!"
+    log_warn "  dist:    $DIST_HASH"
+    log_warn "  install: $INSTALL_HASH"
+    exit 1
+  fi
+  log_ok "Runtime hash matches source-built image: $INSTALL_HASH"
+fi
+
+if [ ! -f "$INSTALL_WRAPPER" ]; then
+  log_fail "Wrapper missing: $INSTALL_WRAPPER"
+  exit 1
+fi
+
+VERIFY_OUTPUT=$(run_with_timeout 8 "$INSTALL_PREFIX/amoebum" --json --prompt "ping" 2>&1 || true)
 if echo "$VERIFY_OUTPUT" | grep -q '"ok":true'; then
-  echo "  [ok]   amoebum responds to --json --prompt"
+  log_ok "amoebum responds to --json --prompt"
 else
-  echo "  [warn] Verification returned unexpected output"
-  echo "         $VERIFY_OUTPUT" | head -3
+  log_warn "Verification returned unexpected output"
+  echo "         $VERIFY_OUTPUT" | sed -n '1,2p'
+fi
+
+if bash -n "$INSTALL_WRAPPER"; then
+  log_ok "Wrapper syntax check passed"
+else
+  log_warn "Wrapper syntax check failed"
+fi
+
+if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_PREFIX"; then
+  log_warn "$INSTALL_PREFIX is not on your PATH."
+  log_warn "Add to your shell profile:"
+  log_warn "  export PATH=\"$INSTALL_PREFIX:\\$PATH\""
 fi
 echo ""
 
@@ -142,9 +281,12 @@ echo ""
 
 echo "Done."
 echo ""
-echo "  Binary:   $INSTALL_PREFIX/amoebum"
-echo "  Image:    $LIBEXEC_DIR/amoebum-sbcl ($(du -h "$LIBEXEC_DIR/amoebum-sbcl" | cut -f1))"
-echo "  Hooks:    $(ls "$GIT_DIR/hooks/" 2>/dev/null | grep -cv '\.sample$' || echo 0) active"
+echo "  Binary:   $INSTALL_WRAPPER"
+echo "  Image:    $INSTALL_RUNTIME ($(du -h "$INSTALL_RUNTIME" | cut -f1))"
+echo "  Hooks:    $(ls "$GIT_DIR/hooks/" 2>/dev/null | grep -cv '\\.sample$' || echo 0) active"
+if [ "$AMOEBUM_INSTALL_LOG" != "0" ]; then
+  echo "  Log:      $AMOEBUM_INSTALL_LOG_FILE"
+fi
 echo ""
 echo "  Run:      amoebum          # launch TUI"
 echo "            amoebum --json   # JSON/headless mode"

@@ -1021,29 +1021,61 @@
                                 client
                                 tools)
   (let ((resolved-client (or client (pseudopod:make-client))))
-    (pseudopod:stream-chat-completion*
-     resolved-client
-     prompt
-     :system-prompt system-prompt
-     :messages messages
-     :tools tools
-     :on-content (lambda (chunk)
-                   (when (functionp *stream-chunk-hook-callback*)
-                     (funcall *stream-chunk-hook-callback* chunk))
-                   (token-stream-emit-chunk stream-state chunk))
-     :on-reasoning (lambda (chunk)
-                     (when (functionp *stream-chunk-hook-callback*)
-                       (funcall *stream-chunk-hook-callback* chunk))
-                     (token-stream-emit-chunk stream-state chunk))
-     :on-tool-call-delta (lambda (chunk)
-                           (token-stream-emit-tool-call-delta stream-state chunk))
-     :on-tool-call-started (lambda (tool-call)
-                             (token-stream-emit-tool-call-started stream-state tool-call))
-     :on-tool-call (lambda (tool-call)
-                     ;; Fallback for providers that only emit finalized tool calls.
-                     ;; Trigger the same execution path as fully streamed call deltas.
-                     (token-stream-emit-tool-call-started stream-state tool-call)
-                     (token-stream-emit-tool-call-argument-complete stream-state tool-call))
-     :on-tool-call-argument-complete
-     (lambda (tool-call)
-       (token-stream-emit-tool-call-argument-complete stream-state tool-call)))))
+    (let ((emit-stream-chunk
+            (lambda (chunk)
+              (when (functionp *stream-chunk-hook-callback*)
+                (funcall *stream-chunk-hook-callback* chunk))
+              (token-stream-emit-chunk stream-state chunk)))
+          (emit-fallback-tool-calls
+            (lambda (message)
+              (let ((tool-calls (and (pseudopod:message-p message)
+                                     (pseudopod:message-tool-calls message))))
+                (dolist (tool-call tool-calls)
+                  (token-stream-emit-tool-call-started stream-state tool-call)
+                  (token-stream-emit-tool-call-argument-complete stream-state
+                                                                 tool-call)))))
+          (emit-fallback-error
+            (lambda (condition)
+              (funcall emit-stream-chunk
+                       (format nil "\n[streaming error: ~A. Falling back to non-stream mode]\n"
+                               condition)))))
+    (handler-case
+        (pseudopod:stream-chat-completion*
+         resolved-client
+         prompt
+         :system-prompt system-prompt
+         :messages messages
+         :tools tools
+         :on-content (lambda (chunk)
+                       (funcall emit-stream-chunk chunk))
+         :on-reasoning (lambda (chunk)
+                         (funcall emit-stream-chunk chunk))
+         :on-tool-call-delta (lambda (chunk)
+                               (token-stream-emit-tool-call-delta stream-state chunk))
+         :on-tool-call-started
+         (lambda (tool-call)
+           (token-stream-emit-tool-call-started stream-state tool-call))
+         :on-tool-call (lambda (tool-call)
+                         ;; Fallback for providers that only emit finalized tool calls.
+                         ;; Trigger the same execution path as fully streamed call deltas.
+                         (token-stream-emit-tool-call-started stream-state tool-call)
+                         (token-stream-emit-tool-call-argument-complete stream-state
+                                                                        tool-call))
+         :on-tool-call-argument-complete
+         (lambda (tool-call)
+           (token-stream-emit-tool-call-argument-complete stream-state tool-call)))
+      (token-stream-cancelled ()
+        (error 'token-stream-cancelled))
+        (error (condition)
+        (funcall emit-fallback-error condition)
+        (token-stream-check-cancel stream-state)
+        (let* ((message (pseudopod:chat-completion* resolved-client
+                                                 prompt
+                                                 :system-prompt system-prompt
+                                                 :messages messages
+                                                 :tools tools))
+               (content (and (pseudopod:message-p message)
+                             (pseudopod:message-content message))))
+          (unless (%token-stream-blank-string-p content)
+            (funcall emit-stream-chunk content))
+          (funcall emit-fallback-tool-calls message)))))))
