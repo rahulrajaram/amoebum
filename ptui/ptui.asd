@@ -325,6 +325,7 @@
    (:file "test/event-filters-test")
    (:file "test/ansi-parser-test")
    (:file "test/queue-test")
+   (:file "test/search-test")
    (:file "test/scheduler-test")
    (:file "test/list-selection-test")
    (:file "test/hooks-test")
