@@ -101,12 +101,7 @@
   (agentic-iteration-count 0 :type fixnum)
   plan-selected-step-index
   (cursor-position nil)
-  (approval-dialog-state (make-approval-dialog-state) :type approval-dialog-state)
-  (cached-tree-key nil)
-  (cached-tree nil)
-  (cached-layout nil)
-  (cached-render-key nil)
-  (cached-buffer nil))
+  (approval-dialog-state (make-approval-dialog-state) :type approval-dialog-state))
 
 (defun %chat-config ()
   (ignore-errors (current-config)))
@@ -1666,50 +1661,6 @@ Falls back to the global *toolset* when stream-tools is nil."
    :props (list :text text :role role :styled-segments styled-segments)
    :children '()))
 
-(defun %clamp-layout-size (size avail-width avail-height)
-  (let ((w (ptui.layout:layout-size-width size))
-        (h (ptui.layout:layout-size-height size)))
-    (ptui.layout:make-layout-size
-     (if avail-width
-         (min w (max 0 avail-width))
-         w)
-     (if avail-height
-         (min h (max 0 avail-height))
-         h))))
-
-(defun %element-prop (element key &optional default)
-  (getf (ptui.ui.elements:ui-element-props element) key default))
-
-(defun %element-id (element)
-  (or (ptui.ui.elements:ui-element-id element)
-      (ptui.ui.elements:ui-element-key element)))
-
-(defun %ui-tree-node (element)
-  (let ((id (%element-id element))
-        (type (ptui.ui.elements:ui-element-type element))
-        (children (mapcar #'%ui-tree-node
-                          (ptui.ui.elements:ui-element-children element))))
-    (ptui.layout:make-layout-node
-     :id id
-     :direction (if (eql type :stack)
-                    (%element-prop element :direction :column)
-                    :column)
-     :gap (if (eql type :stack)
-              (%element-prop element :gap 0)
-              0)
-     :measure (lambda (avail-width avail-height)
-                (%clamp-layout-size
-                 (ptui.widgets.core:widget-measure element)
-                 avail-width
-                 avail-height))
-     :children children)))
-
-(defun %chat-tree-signature (messages)
-  (mapcar (lambda (message)
-            (list (%normalize-chat-role (pseudopod:message-role message))
-                  (%message-content->text message)))
-          messages))
-
 (defun %compute-scroll-offset (total-lines viewport-height scrollback-lines)
   (let* ((max-scrollback (max 0 (- total-lines viewport-height)))
          (bounded-scrollback (max 0 (min max-scrollback scrollback-lines)))
@@ -2225,166 +2176,6 @@ Falls back to the global *toolset* when stream-tools is nil."
                               (plan-execution-output-entry-phase entry)
                               (plan-execution-output-entry-timestamp entry))))))
 
-(defun chat-ui-build-tree (state cols rows)
-  ;; I306: DEPRECATED — replaced by chat-panel (defpanel) in src/ui/panels/chat-panel.lisp.
-  ;; Kept as fallback in render-chat-ui-buffer. Remove when chat-panel is validated end-to-end.
-  (let* ((chat-state (ensure-chat-ui-state state))
-         ( _ (progn
-               (%sync-pending-approval-dialog! chat-state)
-               chat-state))
-         (plan-state (current-plan-mode-state))
-         (picker-state (%chat-sync-fuzzy-picker! chat-state))
-         (tree-state (%ensure-chat-tree-browser-state chat-state))
-         (picker-widget
-           (when (fuzzy-picker-state-active-p picker-state)
-             (make-fuzzy-picker-widget picker-state)))
-         (tree-widget
-           (when (and (typep tree-state 'tree-browser-state)
-                      (tree-browser-state-active-p tree-state))
-             (make-tree-browser-widget tree-state)))
-         (approval-state (chat-ui-state-approval-dialog-state chat-state))
-         (approval-widget
-           (when (approval-dialog-state-active-p approval-state)
-             (make-approval-dialog-widget
-              (list :tool-name (approval-dialog-state-tool-name approval-state)
-                    :command (approval-dialog-state-command approval-state)
-                    :path (approval-dialog-state-path approval-state)
-                    :reason (approval-dialog-state-reason approval-state)
-                    :selected-option (approval-dialog-state-selected-option approval-state)))))
-         (inner-width (max 20 (- cols 2)))
-         (inner-height (max 8 (- rows 2)))
-         (input (ptui.components.prompt-box:make-prompt-box-widget
-                 (chat-ui-state-input-text chat-state)
-                 :id :chat-input
-                 :min-width 18
-                 :max-width inner-width
-                 :min-rows 1
-                 :max-rows 4
-                 :scroll-offset (chat-ui-state-prompt-scroll-offset chat-state)
-                 :cursor-position (chat-ui-state-cursor-position chat-state)
-                 :border-style :rounded))
-         (input-height (ptui.layout:layout-size-height
-                        (ptui.widgets.core:widget-measure input)))
-         (header-height 0)
-         (picker-height (if picker-widget
-                            (ptui.layout:layout-size-height
-                             (ptui.widgets.core:widget-measure picker-widget))
-                            0))
-         (tree-height (if tree-widget
-                          (ptui.layout:layout-size-height
-                           (ptui.widgets.core:widget-measure tree-widget))
-                          0))
-         (approval-height (if approval-widget
-                              (ptui.layout:layout-size-height
-                               (ptui.widgets.core:widget-measure approval-widget))
-                              0))
-         (stream-stop-hint-widget
-           (when (token-stream-active-p (chat-ui-state-stream-state chat-state))
-             (%chat-text-widget "Streaming... Press Ctrl-C to stop early."
-                                :chat-stream-stop-hint
-                                :meta)))
-         (plan-presentation-widget (%chat-plan-presentation-widget plan-state chat-state))
-         (stream-stop-hint-height (if stream-stop-hint-widget 1 0))
-         (plan-presentation-height
-           (if plan-presentation-widget
-               (ptui.layout:layout-size-height
-                (ptui.widgets.core:widget-measure plan-presentation-widget))
-               0))
-         (provider-widget
-           (when (chat-ui-state-provider-dashboard-visible-p chat-state)
-             (provider-health-panel
-              (list :entries (provider-health-entries)
-                    :updated-at (provider-health-last-updated-at)))))
-         (provider-height
-           (if provider-widget
-               (ptui.layout:layout-size-height
-                (ptui.widgets.core:widget-measure provider-widget))
-               0))
-         (history-height (max 1 (- inner-height
-                                   input-height
-                                   header-height
-                                   provider-height
-                                   picker-height
-                                   tree-height
-                                   approval-height
-                                   plan-presentation-height
-                                   stream-stop-hint-height
-                                   1)))
-         (message-lines (%message-line-entries chat-state
-                                               (chat-ui-state-messages chat-state)
-                                               inner-width))
-         (message-widgets
-           (mapcar (lambda (entry)
-                     (%chat-text-widget (getf entry :text)
-                                        (getf entry :id)
-                                        (getf entry :role)
-                                        :styled-segments (getf entry :styled-segments)))
-                   message-lines))
-         (history-stack (ptui.widgets.core:make-stack-widget
-                         message-widgets
-                         :id :chat-history-stack
-                         :direction :column
-                         :gap 0))
-         (history-total-lines
-           (ptui.layout:layout-size-height
-            (ptui.widgets.core:widget-measure history-stack)))
-         (history-offset 0)
-         (scrollback 0)
-         (max-scrollback 0))
-    (multiple-value-setq (history-offset scrollback max-scrollback)
-      (%compute-scroll-offset history-total-lines
-                              history-height
-                              (chat-ui-state-message-scrollback-lines chat-state)))
-    (setf (chat-ui-state-message-scrollback-lines chat-state) scrollback
-          (chat-ui-state-max-message-scrollback-lines chat-state) max-scrollback)
-    (when (token-stream-active-p (chat-ui-state-stream-state chat-state))
-      (setf (chat-ui-state-stream-scroll-follow-p chat-state)
-            (zerop scrollback)))
-    (let* ((history-scroll
-             (ptui.widgets.core:make-scroll-widget
-              history-stack
-              :id :chat-history-scroll
-              :viewport-width inner-width
-              :viewport-height history-height
-              :offset history-offset))
-           (status-widget
-             (make-status-bar-widget
-              (chat-ui-state-status-bar-state chat-state)
-              :id :chat-status-bar
-              :width inner-width))
-         (content
-             (ptui.widgets.core:make-stack-widget
-              (append
-               (if provider-widget
-                   (list provider-widget)
-                   '())
-               (if tree-widget
-                   (list tree-widget)
-                   '())
-               (if plan-presentation-widget
-                   (list plan-presentation-widget)
-                   '())
-               (list history-scroll)
-               (if approval-widget
-                   (list approval-widget)
-                   '())
-               (if picker-widget
-                   (list picker-widget)
-                   '())
-               (if stream-stop-hint-widget
-                   (list stream-stop-hint-widget)
-                   '())
-               (list input)
-               (list status-widget))
-              :id :chat-content
-              :direction :column
-              :gap 0)))
-      (ptui.widgets.core:make-box-widget
-       content
-       :id :chat-root
-       :padding 0
-       :borderp nil))))
-
 (defun %chat-template-cell (&key (fg :default) (bg :default) (boldp nil))
   (ptui.core.types:make-cell
    " "
@@ -2514,15 +2305,6 @@ Falls back to the global *toolset* when stream-tools is nil."
                         (length (nth line-index lines))
                         0)))))
 
-(defun %prompt-box-inner-width (state)
-  "Derive the inner text width of the prompt box from the cached buffer size.
-The prompt box has a 1-cell border on each side, and the outer layout has 1-col
-margins on each side."
-  (let ((buf (chat-ui-state-cached-buffer state)))
-    (if buf
-        (max 1 (- (ptui.core.types:cell-buffer-cols buf) 4))
-        80)))
-
 (defun %prompt-visible-lines (lines visible-rows scroll-offset)
   (let* ((row-count (max 0 visible-rows))
          (total (length lines))
@@ -2570,221 +2352,6 @@ margins on each side."
                                  :strikep (and plist-segment (getf segment :strikep))))
            result))))
     (nreverse result)))
-
-(defun %render-ui-element (buf element layout focus-id &key (dx 0) (dy 0))
-  (let* ((id (%element-id element))
-         (bounds (and id (ptui.layout:layout-bound layout id))))
-    (when bounds
-      (let* ((kind (ptui.ui.elements:ui-element-type element))
-             (x (+ dx (ptui.layout:layout-bounds-x bounds)))
-             (y (+ dy (ptui.layout:layout-bounds-y bounds)))
-             (w (ptui.layout:layout-bounds-width bounds))
-             (h (ptui.layout:layout-bounds-height bounds))
-             (rect (ptui.core.types:make-rect x y w h)))
-        (flet ((render-children (&key (child-dx dx)
-                                      (child-dy dy)
-                                      (clip-rect rect))
-                 (ptui.render.buffer:with-clip (buf clip-rect)
-                   (dolist (child (ptui.ui.elements:ui-element-children element))
-                     (%render-ui-element buf child layout focus-id
-                                         :dx child-dx
-                                         :dy child-dy)))))
-          (cond
-            ((eq kind :text)
-             (let* ((text (%element-prop element :text ""))
-                    (role (%element-prop element :role :meta))
-                    (styled-segments (%element-prop element :styled-segments nil))
-                    (line (%fit-line-width text w))
-                    (focusp (eql id focus-id))
-                    (cell (chat-role-cell role :focusp focusp)))
-               (ptui.render.buffer:buffer-draw-text
-                buf
-                x
-                y
-                (if (and (listp styled-segments) styled-segments)
-                    (%styled-text-segments styled-segments :focusp focusp)
-                    (list (list line cell)))
-                :max-width w)))
-            ((eq kind :input)
-             (let* ((value (%element-prop element :value ""))
-                    (line (%fit-line-width value w))
-                    (cell (chat-role-cell :prompt :focusp (eql id focus-id))))
-               (ptui.render.buffer:buffer-draw-text
-                buf x y (list (list line cell)) :max-width w)))
-            ((eq kind :prompt-box)
-             (let* ((value (%element-prop element :value ""))
-                    (border-style (%element-prop element :border-style :rounded))
-                    (scroll-offset (%element-prop element :scroll-offset nil))
-                    (cursor-pos-raw (%element-prop element :cursor-position nil))
-                    (inner-x (+ x 1))
-                    (inner-y (+ y 1))
-                    (inner-w (max 0 (- w 2)))
-                    (inner-h (max 0 (- h 2)))
-                    (line-cell (chat-role-cell :prompt))
-                    (border-cell (chat-role-cell :prompt-border))
-                    (lines (%prompt-wrapped-lines value inner-w)))
-               (ptui.render.buffer:buffer-draw-border
-                buf rect :style border-cell :border-style border-style)
-               (multiple-value-bind (visible-lines effective-offset max-offset)
-                   (%prompt-visible-lines lines inner-h scroll-offset)
-                 (declare (ignore max-offset))
-                 (loop for line in visible-lines
-                       for row from 0 do
-                         (ptui.render.buffer:buffer-draw-text
-                          buf
-                          inner-x
-                          (+ inner-y row)
-                          (list (list (%fit-line-width line inner-w) line-cell))
-                          :max-width inner-w))
-                 ;; Render block cursor with explicit bright colors for visibility
-                 (let* ((cursor-pos (%ensure-cursor-pos value cursor-pos-raw))
-                        (cursor-cell
-                          (ptui.core.types:make-cell
-                           " "
-                           (ptui.core.color:make-color-rgb 0 0 0)
-                           (ptui.core.color:make-color-rgb 255 255 255)
-                           (ptui.core.types:make-attrs :boldp t)))
-                        (buf-cols (ptui.core.types:cell-buffer-cols buf))
-                        (buf-rows (ptui.core.types:cell-buffer-rows buf)))
-                   (multiple-value-bind (cursor-line cursor-col)
-                       (%cursor-to-line-col cursor-pos lines)
-                     (let ((visible-line (- cursor-line (or effective-offset 0))))
-                       (when (and (>= visible-line 0) (< visible-line inner-h))
-                         (let* ((cx (+ inner-x cursor-col))
-                                (cy (+ inner-y visible-line))
-                                (glyph
-                                  (let ((ln (nth cursor-line lines)))
-                                    (if (and ln (< cursor-col (length ln)))
-                                        (string (char ln cursor-col))
-                                        " "))))
-                           (when (and (>= cx 0) (< cx buf-cols)
-                                      (>= cy 0) (< cy buf-rows))
-                             (ptui.render.buffer:write-cell-if-visible
-                              buf cx cy
-                              (ptui.core.types:make-cell
-                               glyph
-                               (ptui.core.types:cell-fg cursor-cell)
-                               (ptui.core.types:cell-bg cursor-cell)
-                               (ptui.core.types:cell-attrs cursor-cell))
-                              (ptui.core.types:make-rect
-                               0 0 buf-cols buf-rows)))))))))))
-            ((eq kind :spacer)
-             nil)
-            ((eq kind :box)
-             (let* ((padding (%element-prop element :padding 0))
-                    (borderp (%element-prop element :borderp nil))
-                    (border (if borderp 1 0))
-                    (inset (+ border padding))
-                    (inner-rect (ptui.core.types:make-rect
-                                 (+ x inset)
-                                 (+ y inset)
-                                 (max 0 (- w (* 2 inset)))
-                                 (max 0 (- h (* 2 inset)))))
-                    (child (first (ptui.ui.elements:ui-element-children element))))
-               (when borderp
-                 (ptui.render.buffer:buffer-draw-border buf rect))
-               (when child
-                 (let* ((child-id (%element-id child))
-                        (child-bounds
-                          (and child-id (ptui.layout:layout-bound layout child-id))))
-                   (when child-bounds
-                     (let ((delta-x (- (ptui.core.types:rect-x inner-rect)
-                                       (ptui.layout:layout-bounds-x child-bounds)))
-                           (delta-y (- (ptui.core.types:rect-y inner-rect)
-                                       (ptui.layout:layout-bounds-y child-bounds))))
-                       (ptui.render.buffer:with-clip (buf inner-rect)
-                         (%render-ui-element buf child layout focus-id
-                                             :dx delta-x
-                                             :dy delta-y))))))))
-            ((eq kind :stack)
-             (render-children))
-            ((eq kind :scroll)
-             (let* ((offset (%element-prop element :offset 0))
-                    (child (first (ptui.ui.elements:ui-element-children element))))
-               (when child
-                 (ptui.render.buffer:with-clip (buf rect)
-                   (%render-ui-element buf child layout focus-id
-                                       :dx dx
-                                       :dy (- dy offset))))))
-            (t
-             (render-children))))))))
-
-(defun %chat-tree-key (state cols rows)
-  (list cols
-        rows
-        (chat-ui-state-input-text state)
-        (chat-ui-state-cursor-position state)
-        (approval-dialog-state-active-p (chat-ui-state-approval-dialog-state state))
-        (approval-dialog-state-selected-option (chat-ui-state-approval-dialog-state state))
-        (approval-dialog-state-tool-name (chat-ui-state-approval-dialog-state state))
-        (chat-ui-state-message-scrollback-lines state)
-        (chat-ui-state-prompt-scroll-offset state)
-        (%chat-tree-signature (chat-ui-state-messages state))
-        (tree-browser-render-key
-         (%ensure-chat-tree-browser-state state))
-        (chat-ui-state-provider-dashboard-visible-p state)
-        (provider-health-signature)
-        (fuzzy-picker-render-key
-         (%ensure-chat-fuzzy-picker-state state))
-        (%chat-plan-workspace-tree-key state)
-        (%stream-tree-key state)))
-
-(defun render-chat-ui-buffer (state size)
-  (let ((chat-state (ensure-chat-ui-state state)))
-    ;; Side effects that must run before tree construction
-    (%sync-pending-approval-dialog! chat-state)
-    (let* ((runtime (chat-ui-state-runtime chat-state))
-           (ptui.ui.runtime:*current-runtime* runtime)
-           (cols (ptui.core.types:size-cols size))
-           (rows (ptui.core.types:size-rows size))
-           (agent-completion-count (%inject-agent-completions chat-state))
-           (drained-event-count (%drain-stream-events chat-state))
-           (stream-summary (%publish-status-bar-stream-summary-if-needed chat-state))
-           (picker-state (%chat-sync-fuzzy-picker! chat-state))
-           (tree-key (%chat-tree-key chat-state cols rows))
-           (tree (chat-ui-state-cached-tree chat-state))
-           (layout (chat-ui-state-cached-layout chat-state))
-           (focus-id nil))
-      (declare (ignore agent-completion-count drained-event-count stream-summary picker-state))
-      (provider-health-refresh!)
-      (%sync-chat-context-usage! chat-state)
-      (%emit-stream-budget-warning-if-needed chat-state)
-      (let ((checkpoint
-              (maybe-auto-checkpoint
-               :conversation (%ensure-chat-conversation-state chat-state)
-               :config (%chat-config)
-               :busy-p (token-stream-active-p (chat-ui-state-stream-state chat-state)))))
-        (declare (ignore checkpoint)))
-      (incf (chat-ui-state-frame-count chat-state))
-      (unless (and tree layout
-                   (equal tree-key (chat-ui-state-cached-tree-key chat-state)))
-        ;; I305: Use chat-panel (defpanel) when available, fall back to old tree builder
-        (setf tree (if (fboundp 'render-chat-panel)
-                       (render-chat-panel chat-state cols rows)
-                       (chat-ui-build-tree chat-state cols rows)))
-        (setf layout (ptui.layout:compute-layout
-                      (%ui-tree-node tree)
-                      :x 1
-                      :y 0
-                      :width (max 4 (- cols 2))
-                      :height (max 4 rows)))
-        (ptui.ui.runtime:update-runtime runtime tree)
-        (setf (chat-ui-state-cached-tree-key chat-state) tree-key
-              (chat-ui-state-cached-tree chat-state) tree
-              (chat-ui-state-cached-layout chat-state) layout
-              (chat-ui-state-cached-render-key chat-state) nil
-              (chat-ui-state-cached-buffer chat-state) nil))
-      (setf focus-id (ptui.ui.runtime:runtime-focus-id runtime))
-      (let* ((render-key (list tree-key focus-id))
-             (cached-render-key (chat-ui-state-cached-render-key chat-state))
-             (cached-buffer (chat-ui-state-cached-buffer chat-state)))
-        (if (and cached-buffer (equal render-key cached-render-key))
-            cached-buffer
-            (let ((buf (ptui.render.buffer:make-buffer cols rows)))
-              (%render-ui-element buf tree layout focus-id)
-              (setf (chat-ui-state-cached-render-key chat-state) render-key
-                    (chat-ui-state-cached-buffer chat-state) buf)
-              buf))))))
 
 (defun %pop-last-grapheme (text)
   (let ((clusters (ptui.text.grapheme:split-graphemes text)))
@@ -3183,14 +2750,6 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
     (%chat-deactivate-history-search! chat-state)
     t))
 
-(defun %handle-approval-dialog-key (chat-state key text)
-  "Route key events to the approval dialog when active.  Returns T if consumed."
-  (let ((dialog (chat-ui-state-approval-dialog-state chat-state)))
-    (when (approval-dialog-state-active-p dialog)
-      (or (and (eql key :text)
-               (approval-dialog-handle-text! dialog text))
-          (approval-dialog-handle-key! dialog key)))))
-
 (defun %sync-pending-approval-dialog! (chat-state)
   "Poll *pending-approval* and activate the dialog if a new approval is waiting."
   (let ((dialog (chat-ui-state-approval-dialog-state chat-state)))
@@ -3209,261 +2768,6 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
           ((and (null pa) (approval-dialog-state-active-p dialog))
            (approval-dialog-deactivate! dialog)))))))
 
-(defun %handle-fuzzy-picker-key (chat-state key)
-  (let ((picker (%ensure-chat-fuzzy-picker-state chat-state)))
-    (when (fuzzy-picker-state-active-p picker)
-      (fuzzy-picker-step! picker)
-      (case key
-        (:up
-         (fuzzy-picker-move-selection! picker -1)
-         t)
-        (:down
-         (fuzzy-picker-move-selection! picker 1)
-         t)
-        (:pgup
-         (fuzzy-picker-move-selection! picker -5)
-         t)
-        ((:pgdn :pgdown)
-         (fuzzy-picker-move-selection! picker 5)
-         t)
-        (:home
-         (fuzzy-picker-home-selection! picker)
-         t)
-        (:end
-         (fuzzy-picker-end-selection! picker)
-         t)
-        (:escape
-         (if (chat-ui-state-history-search-active-p chat-state)
-             (%chat-deactivate-history-search! chat-state :restore-input-p t)
-             (fuzzy-picker-deactivate! picker))
-         t)
-        ((:enter :return)
-         (if (chat-ui-state-history-search-active-p chat-state)
-             (%chat-apply-history-picker-selection! chat-state)
-             (%chat-apply-fuzzy-picker-selection! chat-state)))
-        (otherwise
-         nil)))))
-
-(defun %handle-tree-browser-key (chat-state key)
-  (let ((tree-state (%ensure-chat-tree-browser-state chat-state)))
-    (when (and (typep tree-state 'tree-browser-state)
-               (zerop (length (chat-ui-state-input-text chat-state)))
-               (member key '(:up :down :left :right :enter :return :escape)))
-      (cond
-        ((eql key :escape)
-         (when (tree-browser-state-active-p tree-state)
-           (setf (tree-browser-state-active-p tree-state) nil)
-           t))
-        (t
-         (unless (tree-browser-state-active-p tree-state)
-           (setf (tree-browser-state-active-p tree-state) t))
-         (tree-browser-handle-key! tree-state key))))))
-
-(defun %handle-input-key (state key text)
-  (let* ((input-text (chat-ui-state-input-text state))
-         (cur-pos (chat-ui-state-cursor-position state))
-         (pos (%ensure-cursor-pos input-text cur-pos)))
-    (cond
-      ((eql key :ctrl-p)
-       (%chat-plan-move-selection! state -1))
-      ((eql key :ctrl-n)
-       (%chat-plan-move-selection! state 1))
-      ((eql key :ctrl-r)
-       (if (chat-ui-state-history-search-active-p state)
-           (%chat-deactivate-history-search! state :restore-input-p t)
-           (%chat-activate-history-search! state))
-       t)
-      ((and (eql key :text) (stringp text))
-       (let ((new-text (%grapheme-insert-at input-text pos text))
-             (advance (%grapheme-length text)))
-         (chat-ui-set-input state new-text :cursor-position (+ pos advance)))
-       t)
-      ((eql key :ctrl-j)
-       (let ((new-text (%grapheme-insert-at input-text pos (string #\Newline))))
-         (chat-ui-set-input state new-text :cursor-position (1+ pos)))
-       t)
-      ((eql key :tab)
-       (%handle-command-tab-completion state))
-      ((or (eql key :enter) (eql key :return))
-       ;; If interactive plan execution is awaiting approval and input is empty,
-       ;; approve the next step instead of submitting.
-       (if (and (plan-step-awaiting-approval-p)
-                (zerop (length input-text)))
-           (progn
-             (approve-next-plan-step)
-             t)
-           (if (%handle-slash-command-input state input-text)
-               t
-               (if (%handle-plan-mode-entry-instruction state input-text)
-                   t
-                   (let ((submitted (chat-ui-submit-input state)))
-                     (when submitted
-                       (if (%handle-memory-candidate state submitted)
-                           (conversation-transition! (%ensure-chat-conversation-state state)
-                                                     :idle)
-                           (%start-streaming-assistant-response state submitted)))))))
-       t)
-      ((eql key :backspace)
-       (if (null cur-pos)
-           ;; Cursor at end — use fast path
-           (chat-ui-set-input state (%pop-last-grapheme input-text))
-           ;; Cursor in middle — grapheme-aware delete before
-           (multiple-value-bind (new-text new-pos)
-               (%grapheme-delete-before input-text pos)
-             (chat-ui-set-input state new-text :cursor-position new-pos)))
-       t)
-      ((eql key :delete)
-       ;; Delete grapheme at cursor position (forward delete)
-       (chat-ui-set-input state (%grapheme-delete-at input-text pos)
-                          :cursor-position pos)
-       t)
-      ((eql key :ctrl-w)
-       ;; Delete word backward from cursor position
-       (if (null cur-pos)
-           (chat-ui-set-input state (%delete-word-backward input-text))
-           (multiple-value-bind (new-text new-pos)
-               (%delete-word-backward-at input-text pos)
-             (chat-ui-set-input state new-text :cursor-position new-pos)))
-       t)
-      ((eql key :ctrl-u)
-       ;; Kill from start to cursor
-       (let* ((clusters (ptui.text.grapheme:split-graphemes input-text))
-              (after (with-output-to-string (out)
-                       (loop for cluster in (nthcdr pos clusters)
-                             do (write-string cluster out)))))
-         (chat-ui-set-input state after :cursor-position 0))
-       t)
-      ((eql key :ctrl-k)
-       ;; Kill from cursor to end
-       (let* ((clusters (ptui.text.grapheme:split-graphemes input-text))
-              (before (with-output-to-string (out)
-                        (loop for cluster in (subseq clusters 0 (min pos (length clusters)))
-                              do (write-string cluster out)))))
-         (chat-ui-set-input state before :cursor-position pos))
-       t)
-      ((eql key :ctrl-a)
-       ;; Beginning of input
-       (setf (chat-ui-state-cursor-position state) 0)
-       t)
-      ((eql key :ctrl-e)
-       ;; End of input
-       (setf (chat-ui-state-cursor-position state) nil)
-       t)
-      ((eql key :left)
-       (when (> pos 0)
-         (setf (chat-ui-state-cursor-position state) (1- pos)))
-       t)
-      ((eql key :right)
-       (let ((len (%grapheme-length input-text)))
-         (if (< pos len)
-             (let ((new-pos (1+ pos)))
-               (setf (chat-ui-state-cursor-position state)
-                     (if (= new-pos len) nil new-pos)))
-             ;; Already at end
-             (setf (chat-ui-state-cursor-position state) nil)))
-       t)
-      ((eql key :ctrl-left)
-       ;; Jump one word to the left
-       (let ((new-pos (%word-boundary-backward input-text pos)))
-         (setf (chat-ui-state-cursor-position state) new-pos))
-       t)
-      ((eql key :ctrl-right)
-       ;; Jump one word to the right
-       (let* ((new-pos (%word-boundary-forward input-text pos))
-              (len (%grapheme-length input-text)))
-         (setf (chat-ui-state-cursor-position state)
-               (if (>= new-pos len) nil new-pos)))
-       t)
-      ((eql key :home)
-       (setf (chat-ui-state-cursor-position state) 0)
-       t)
-      ((eql key :end)
-       (setf (chat-ui-state-cursor-position state) nil)
-       t)
-      ((eql key :up)
-       (let* ((inner-w (%prompt-box-inner-width state))
-              (lines (%prompt-wrapped-lines input-text inner-w)))
-         (multiple-value-bind (cur-line cur-col)
-             (%cursor-to-line-col pos lines)
-           (when (> cur-line 0)
-             (let* ((prev-line (nth (1- cur-line) lines))
-                    (target-col (min cur-col (length prev-line)))
-                    (new-pos (%line-col-to-cursor-pos (1- cur-line) target-col lines)))
-               (setf (chat-ui-state-cursor-position state) new-pos)))))
-       t)
-      ((eql key :down)
-       (let* ((inner-w (%prompt-box-inner-width state))
-              (lines (%prompt-wrapped-lines input-text inner-w)))
-         (multiple-value-bind (cur-line cur-col)
-             (%cursor-to-line-col pos lines)
-           (when (< cur-line (1- (length lines)))
-             (let* ((next-line (nth (1+ cur-line) lines))
-                    (target-col (min cur-col (length next-line)))
-                    (new-pos (%line-col-to-cursor-pos (1+ cur-line) target-col lines)))
-               (setf (chat-ui-state-cursor-position state)
-                     (if (and (= (1+ cur-line) (1- (length lines)))
-                              (= target-col (length next-line)))
-                         nil  ;; at end of last line → nil cursor
-                         new-pos))))))
-       t)
-      (t
-       nil))))
-
-(defun %handle-scroll-key (state key)
-  ;; I306: DEPRECATED — scroll keys now handled by chat-panel :keys :mode :default.
-  (case key
-    (:up (chat-ui-scroll-history state 1))
-    (:down (chat-ui-scroll-history state -1))
-    (:pgup (chat-ui-scroll-history state 5))
-    ((:pgdn :pgdown) (chat-ui-scroll-history state -5))
-    (otherwise nil)))
-
-(defun handle-chat-ui-event (state event)
-  (let* ((chat-state (ensure-chat-ui-state state))
-         (runtime (chat-ui-state-runtime chat-state))
-         (agent-completion-count (%inject-agent-completions chat-state))
-         (voice-transcription-count (%inject-voice-transcriptions chat-state))
-         (drained-event-count (%drain-stream-events chat-state))
-         (route (if (typep event 'ptui.core.events:key-event)
-                    (ptui.ui.runtime:route-event runtime event)
-                    (list :kind :unhandled :event event)))
-         (kind (getf route :kind))
-         (target (getf route :target)))
-    (declare (ignore agent-completion-count voice-transcription-count drained-event-count))
-    ;; Poll for pending approvals from the pipeline thread.
-    (%sync-pending-approval-dialog! chat-state)
-    (when (typep event 'ptui.core.events:key-event)
-      (checkpoint-mark-activity)
-      (%chat-mark-activity)
-      (let ((key (ptui.core.events:key-event-key event))
-            (text (ptui.core.events:key-event-text? event)))
-        (when (and (member key '(:escape :ctrl-c))
-                   (token-stream-active-p (chat-ui-state-stream-state chat-state)))
-          (token-stream-request-cancel (chat-ui-state-stream-state chat-state)))
-        (unless (%handle-approval-dialog-key chat-state key text)
-          (unless (%handle-fuzzy-picker-key chat-state key)
-            (unless (%handle-tree-browser-key chat-state key)
-              ;; When input has text, let input handler take up/down for
-              ;; multi-line cursor movement; otherwise scroll history.
-              (let ((input-has-text (plusp (length (chat-ui-state-input-text chat-state)))))
-                (unless (and input-has-text (member key '(:up :down)))
-                  (%handle-scroll-key chat-state key))
-                (when (or (eql target :chat-input)
-                          (eql kind :unhandled)
-                          (null target))
-                  (%handle-input-key chat-state key text))))))))
-    (when (and (ptui.ui.runtime:runtime-root runtime)
-               (listp route))
-      (ptui.widgets.core:dispatch-widget-event
-       (ptui.ui.runtime:runtime-root runtime)
-       route))
-    (%drain-stream-events chat-state)
-    (%publish-status-bar-stream-summary-if-needed chat-state)
-    (%sync-chat-context-usage! chat-state)
-    (%emit-stream-budget-warning-if-needed chat-state)
-    (%run-chat-idle-hooks-if-needed)
-    chat-state))
-
 (defun run-chat-ui (&key (backend :auto) (fps 20) initial-state demo)
   (let ((resolved-state
           (if initial-state
@@ -3477,10 +2781,64 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
     (load-user-extensions)
     (setf *approval-ui-active-p* t)
     (unwind-protect
-        (ptui.engine.loop:run #'render-chat-ui-buffer
-                              :backend backend
-                              :fps fps
-                              :initial-state (ensure-chat-ui-state resolved-state)
-                              :event-bus (current-event-bus)
-                              :on-event #'handle-chat-ui-event)
+        (let* ((chat-state (ensure-chat-ui-state resolved-state))
+               (runtime (chat-ui-state-runtime chat-state))
+               (render-fn
+                 (lambda (state size)
+                   (let* ((chat-state (ensure-chat-ui-state state))
+                          (cols (ptui.core.types:size-cols size))
+                          (rows (ptui.core.types:size-rows size))
+                          (agent-completion-count (%inject-agent-completions chat-state))
+                          (drained-event-count (%drain-stream-events chat-state))
+                          (stream-summary (%publish-status-bar-stream-summary-if-needed chat-state))
+                          (checkpoint
+                            (maybe-auto-checkpoint
+                             :conversation (%ensure-chat-conversation-state chat-state)
+                             :config (%chat-config)
+                             :busy-p (token-stream-active-p (chat-ui-state-stream-state chat-state))))
+                          (picker-state (%chat-sync-fuzzy-picker! chat-state)))
+                     (declare (ignore agent-completion-count drained-event-count stream-summary
+                                      checkpoint picker-state))
+                     (%sync-chat-context-usage! chat-state)
+                     (%emit-stream-budget-warning-if-needed chat-state)
+                     (incf (chat-ui-state-frame-count chat-state))
+                     (let ((tree (let ((ptui.ui.runtime:*current-runtime* runtime))
+                                   (render-chat-panel chat-state cols rows))))
+                       (ptui.ui.runtime:update-runtime runtime tree)
+                       (ptui.ui.app::%render-tree-to-buffer tree size))))
+               (event-handler
+                 (lambda (state event)
+                   (let* ((chat-state (ensure-chat-ui-state state))
+                          (route (if (typep event 'ptui.core.events:key-event)
+                                     (ptui.ui.runtime:route-event runtime event)
+                                     (list :kind :unhandled :event event)))
+                          (agent-completion-count (%inject-agent-completions chat-state))
+                          (voice-transcription-count (%inject-voice-transcriptions chat-state))
+                          (drained-event-count (%drain-stream-events chat-state)))
+                     (declare (ignore agent-completion-count voice-transcription-count drained-event-count))
+                     (%sync-pending-approval-dialog! chat-state)
+                     (when (typep event 'ptui.core.events:key-event)
+                       (checkpoint-mark-activity)
+                       (%chat-mark-activity)
+                       (let ((key (ptui.core.events:key-event-key event)))
+                         (when (and (member key '(:escape :ctrl-c))
+                                    (token-stream-active-p (chat-ui-state-stream-state chat-state)))
+                           (token-stream-request-cancel (chat-ui-state-stream-state chat-state)))))
+                     (when (and (ptui.ui.runtime:runtime-root runtime)
+                                (listp route))
+                       (ptui.widgets.core:dispatch-widget-event
+                        (ptui.ui.runtime:runtime-root runtime)
+                        route))
+                     (%drain-stream-events chat-state)
+                     (%publish-status-bar-stream-summary-if-needed chat-state)
+                     (%sync-chat-context-usage! chat-state)
+                     (%emit-stream-budget-warning-if-needed chat-state)
+                     (%run-chat-idle-hooks-if-needed)
+                     chat-state))))
+          (ptui.engine.loop:run render-fn
+                                :backend backend
+                                :fps fps
+                                :initial-state chat-state
+                                :event-bus (current-event-bus)
+                                :on-event event-handler))
       (setf *approval-ui-active-p* nil))))

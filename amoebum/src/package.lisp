@@ -1521,9 +1521,6 @@
            #:chat-ui-scroll-history
            #:chat-role-prefix
            #:chat-role-cell
-           #:chat-ui-build-tree
-           #:render-chat-ui-buffer
-           #:handle-chat-ui-event
            #:run-chat-ui
            ;; Indexer (I96)
            #:symbol-entry
