@@ -623,33 +623,44 @@
 
 (defun %stream-tool-call-preview-key (index tool-call-id tool-name arguments)
   (cond
-    ((integerp index) index)
     ((and (stringp tool-call-id) (plusp (length tool-call-id)))
      (concatenate 'string "id:" tool-call-id))
     ((and (stringp tool-name) (plusp (length tool-name)))
      (concatenate 'string "name:" tool-name))
     ((and (stringp arguments) (plusp (length arguments)))
      (concatenate 'string "args:" arguments))
+    ((integerp index) index)
     (t
      :unknown)))
 
-(defun %ensure-stream-tool-call-preview (chat-state key)
+(defun %ensure-stream-tool-call-preview (chat-state key &optional index)
   (let* ((table (chat-ui-state-stream-tool-calls chat-state))
-         (entry (and (hash-table-p table) (gethash key table))))
-    (or entry
-        (let ((fresh (list :key key
-                           :index nil
-                           :tool-name nil
-                           :tool-call-id nil
-                           :arguments nil
-                           :started-p nil
-                           :arguments-complete-p nil
-                           :executed-p nil
-                          :execution-error nil
-                          :result nil
-                          :malformed-p nil)))
-          (setf (gethash key table) fresh)
-          fresh))))
+         (entry (and (hash-table-p table) (gethash key table)))
+         (stable-entry
+           (or entry
+               (and (hash-table-p table)
+                    (integerp index)
+                    (not (eq key index))
+                    (gethash index table)))))
+    (if (and stable-entry (not entry) (integerp index) (not (eq key index)))
+        (progn
+          (remhash index table)
+          (setf (gethash key table) stable-entry)
+          stable-entry)
+        (or entry
+            (let ((fresh (list :key key
+                               :index nil
+                               :tool-name nil
+                               :tool-call-id nil
+                               :arguments nil
+                               :started-p nil
+                               :arguments-complete-p nil
+                               :executed-p nil
+                               :execution-error nil
+                               :result nil
+                               :malformed-p nil)))
+              (setf (gethash key table) fresh)
+              fresh)))))
 
 (defun %normalize-stream-tool-name (tool-name)
   (let ((value (if (symbolp tool-name)
@@ -727,7 +738,7 @@
                              (pseudopod:tool-call-arguments tool-call))
                         (getf event :arguments)))
          (key (%stream-tool-call-preview-key index tool-call-id tool-name arguments))
-         (entry (%ensure-stream-tool-call-preview chat-state key))
+         (entry (%ensure-stream-tool-call-preview chat-state key index))
          (kind (getf event :kind)))
     (when (integerp index)
       (setf (getf entry :index) index))
