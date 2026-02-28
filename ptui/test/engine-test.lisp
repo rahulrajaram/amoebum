@@ -58,17 +58,17 @@
   (length draw-ops))
 
 (test engine-starts-and-stops-cleanly
-  (let ((backend (make-counting-test-backend :cols 20 :rows 5)))
+  (let* ((backend (make-counting-test-backend :cols 20 :rows 5))
+         (render-count 0))
     (counting-test-backend-inject-events backend (list (quit-key-event)))
-    (let ((render-count 0))
-      (ptui.engine.loop:run
-       (lambda (state size)
-         (declare (ignore state size))
-         (incf render-count)
-         (ptui.render.buffer:make-buffer 20 5))
-       :backend backend
-       :fps 120
-       :initial-state nil))
+    (ptui.engine.loop:run
+     (lambda (state size)
+       (declare (ignore state size))
+       (incf render-count)
+       (ptui.render.buffer:make-buffer 20 5))
+     :backend backend
+     :fps 120
+     :initial-state nil)
     (is (= render-count 1))
     (is (= (counting-test-backend-commit-count backend) 1))
     (is (plusp (length (counting-test-backend-pop-commit-ops backend))))))
@@ -87,7 +87,7 @@
        (ptui.render.buffer:make-buffer 16 3))
      :backend backend
      :fps 20
-     :initial-state nil))
+     :initial-state nil)
     (setf frame-times (nreverse frame-times))
     (is (>= (length frame-times) 4))
     (let ((deltas (loop for i from 1 below (length frame-times)
@@ -99,22 +99,22 @@
       (is (<= 40 mean 60)))))
 
 (test engine-dispatches-events-to-handler
-  (let ((backend (make-counting-test-backend :cols 20 :rows 5)))
+  (let* ((backend (make-counting-test-backend :cols 20 :rows 5))
+         (seen-events '()))
     (counting-test-backend-inject-events backend (list (quit-key-event)))
-    (let ((seen-events '()))
-      (ptui.engine.loop:run
-       (lambda (state size)
-         (declare (ignore size))
-         (setf state (append state '(:frame)))
-         (ptui.render.buffer:make-buffer 20 5))
-       :backend backend
-       :fps 120
-       :initial-state '()
-       :on-event (lambda (state event)
-                   (push event seen-events)
-                   (push :called state)))
-      (is (= (length seen-events) 1))
-      (is (eql (ptui.core.events:key-event-key (first seen-events)) :ctrl-c)))))
+    (ptui.engine.loop:run
+     (lambda (state size)
+       (declare (ignore size))
+       (setf state (append state '(:frame)))
+       (ptui.render.buffer:make-buffer 20 5))
+     :backend backend
+     :fps 120
+     :initial-state '()
+     :on-event (lambda (state event)
+                 (push event seen-events)
+                 (push :called state)))
+    (is (= (length seen-events) 1))
+    (is (eql (ptui.core.events:key-event-key (first seen-events)) :ctrl-c))))
 
 (test engine-updates-layout-after-resize-event
   (let ((backend (make-counting-test-backend :cols 12 :rows 4))
@@ -142,7 +142,7 @@
                   (setf (counting-test-backend-cols backend) 6
                         (counting-test-backend-rows backend) 2))
                 state)
-     :initial-state nil))
+     :initial-state nil)
     (setf sizes (nreverse sizes))
     (is (= (length sizes) 2))
     (is (equal (first sizes) (cons 12 4)))
@@ -162,10 +162,10 @@
          buffer))
      :backend backend
      :fps 20
-     :initial-state nil))
+     :initial-state nil)
     (is (= (counting-test-backend-commit-count backend) 3))
     (is (some #'plusp (mapcar #'length
-                              (counting-test-backend-pop-commit-ops backend)))))
+                              (counting-test-backend-pop-commit-ops backend))))))
 
 (test engine-minimal-ops-on-idle-unchanged-frames
   (let ((backend (make-counting-test-backend :cols 10 :rows 2))
@@ -181,7 +181,7 @@
        shared-buffer)
      :backend backend
      :fps 20
-     :initial-state nil))
+     :initial-state nil)
     (let ((ops-counts (mapcar #'length (counting-test-backend-pop-commit-ops backend))))
       (is (= (length ops-counts) 3))
       (is (plusp (first ops-counts)))

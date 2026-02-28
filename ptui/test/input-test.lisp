@@ -48,19 +48,25 @@
   (assert-single-key-event '(27 91 49 59 53 68) :ctrl-left :expected-ctrlp t))
 
 (test ptui-input-function-keys-f1-f12
-  (dolist (case '((:f1 27 91 49 49 126)
-                  (:f2 27 91 49 50 126)
-                  (:f3 27 91 49 51 126)
-                  (:f4 27 91 49 52 126)
-                  (:f5 27 91 49 53 126)
-                  (:f6 27 91 49 54 126)
-                  (:f7 27 91 49 55 126)
-                  (:f8 27 91 49 56 126)
-                  (:f9 27 91 49 57 126)
-                  (:f10 27 91 50 48 126)
-                  (:f11 27 91 50 49 126)
-                  (:f12 27 91 50 50 126)))
+  ;; Standard xterm codes: 11-14=F1-F4, 15=F5, 17-21=F6-F10, 23-24=F11-F12
+  ;; (codes 16 and 22 are skipped per xterm convention)
+  (dolist (case '((:f1  27 91 49 49 126)   ; ESC[11~
+                  (:f2  27 91 49 50 126)   ; ESC[12~
+                  (:f3  27 91 49 51 126)   ; ESC[13~
+                  (:f4  27 91 49 52 126)   ; ESC[14~
+                  (:f5  27 91 49 53 126)   ; ESC[15~
+                  (:f6  27 91 49 55 126)   ; ESC[17~
+                  (:f7  27 91 49 56 126)   ; ESC[18~
+                  (:f8  27 91 49 57 126)   ; ESC[19~
+                  (:f9  27 91 50 48 126)   ; ESC[20~
+                  (:f10 27 91 50 49 126)   ; ESC[21~
+                  (:f11 27 91 50 51 126)   ; ESC[23~
+                  (:f12 27 91 50 52 126))) ; ESC[24~
     (assert-single-key-event (cdr case) (first case))))
+
+(test ptui-input-delete-key
+  ;; ESC[3~ = Delete
+  (assert-single-key-event '(27 91 51 126) :delete))
 
 (test ptui-input-home-end-pgup-pgdn
   (dolist (case '((:home 27 91 49 126)

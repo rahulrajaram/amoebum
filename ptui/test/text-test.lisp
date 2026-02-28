@@ -58,16 +58,20 @@
 
 (test layout-wrap-respects-grapheme-clusters
   (let ((cluster (concatenate 'string "A" (string-from-codepoints #x0301))))
+    ;; "AA界界BB" width 3: "AA"(2) | "界"(2) | "界B"(3) | "B"(1)
     (is (equal (ptui.text.layout:wrap-by-width
-                (concatenate 'string "AA" #1=(string-from-codepoints #x754C #x754C) "BB")
+                (concatenate 'string "AA" (string-from-codepoints #x754C #x754C) "BB")
                 3
                 :engine :fallback)
-               (list "AA" "界" "BB")))
+               (list "AA" (string-from-codepoints #x754C)
+                     (concatenate 'string (string-from-codepoints #x754C) "B") "B")))
+    ;; "AÁ界" width 2: "AÁ"(2) | "界"(2)
     (is (equal (ptui.text.layout:wrap-by-width
-                (concatenate 'string "A" cluster "界")
+                (concatenate 'string "A" cluster (string-from-codepoints #x754C))
                 2
                 :engine :fallback)
-               (list cluster "界")))))
+               (list (concatenate 'string "A" cluster)
+                     (string-from-codepoints #x754C))))))
 
 (test layout-truncates-with-ellipsis
   (let ((text (concatenate 'string "A" (string-from-codepoints #x754C) "Bcd"))

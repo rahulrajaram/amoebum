@@ -108,19 +108,21 @@
   (- byte 48))
 
 (defun %map-csi-fn-key (n)
+  "Map CSI numeric code to function key. Standard xterm codes skip 16 and 22."
   (case n
+    (3  :delete)
     (11 :f1)
     (12 :f2)
     (13 :f3)
     (14 :f4)
     (15 :f5)
-    (16 :f6)
-    (17 :f7)
-    (18 :f8)
-    (19 :f9)
-    (20 :f10)
-    (21 :f11)
-    (22 :f12)
+    (17 :f6)
+    (18 :f7)
+    (19 :f8)
+    (20 :f9)
+    (21 :f10)
+    (23 :f11)
+    (24 :f12)
     (t nil)))
 
 (defun %parse-csi-with-prefix (parser)
@@ -137,40 +139,69 @@
             (incf idx))
     (when (>= idx len)
       (return-from %parse-csi-with-prefix 0))
-    (cond
-      ((and (= idx 3)
-            (< (+ idx 2) len)
-            (= (aref pending idx) 59)
-            (= (aref pending (1+ idx)) 53))
-       (let ((final (aref pending (+ idx 2))))
-         (cond
-           ((= final 65) (%emit-key-event parser :ctrl-up :ctrlp t) 6)
-           ((= final 66) (%emit-key-event parser :ctrl-down :ctrlp t) 6)
-           ((= final 67) (%emit-key-event parser :ctrl-right :ctrlp t) 6)
-           ((= final 68) (%emit-key-event parser :ctrl-left :ctrlp t) 6)
-           (t (%emit-key-event parser :escape) 1))))
-      ((= (aref pending idx) 126)
-       (case code
-         (1 (%emit-key-event parser :home) (1+ idx))
-         (4 (%emit-key-event parser :end) (1+ idx))
-         (5 (%emit-key-event parser :pgup) (1+ idx))
-         (6 (%emit-key-event parser :pgdown) (1+ idx))
-         (otherwise
-           (let ((fkey (%map-csi-fn-key code)))
-             (if fkey
-                 (progn (%emit-key-event parser fkey) (1+ idx))
-                 (progn (%emit-key-event parser :escape) 1))))))
-      ((and (< (+ idx 1) len)
-            (= (aref pending idx) 59)
-            (/= (aref pending (1+ idx)) 53))
-       (progn
+    ;; xterm modifier encoding: ";M" where M = 1 + bitmask
+    ;; bit 0 = Shift, bit 1 = Alt/Meta, bit 2 = Ctrl
+    (flet ((%decode-modifier (m)
+             "Return (values ctrlp altp shiftp) from xterm modifier digit."
+             (let ((bits (1- (- m 48))))
+               (values (logbitp 2 bits) (logbitp 1 bits) (logbitp 0 bits))))
+           (%modified-arrow-key (base-key ctrlp altp shiftp)
+             (declare (ignore altp shiftp))
+             ;; Emit ctrl-<dir> for backward compat when ctrl is set.
+             (if ctrlp
+                 (case base-key
+                   (:up :ctrl-up) (:down :ctrl-down)
+                   (:right :ctrl-right) (:left :ctrl-left)
+                   (otherwise base-key))
+                 base-key)))
+      (cond
+        ;; ESC [ code ; modifier <final>  — arrow/fn with modifiers
+        ((and (= (aref pending idx) 59)       ; semicolon
+              (< (+ idx 2) len)
+              (%digit-p (aref pending (1+ idx))))
+         (let ((mod-byte (aref pending (1+ idx)))
+               (final-idx (+ idx 2)))
+           (if (>= final-idx len)
+               0  ; need more data
+               (let ((final (aref pending final-idx)))
+                 (multiple-value-bind (ctrlp altp shiftp) (%decode-modifier mod-byte)
+                   (let ((base-key (case final
+                                     (65 :up) (66 :down) (67 :right) (68 :left)
+                                     (72 :home) (70 :end)
+                                     (t nil))))
+                     (cond
+                       (base-key
+                        (let ((key (%modified-arrow-key base-key ctrlp altp shiftp)))
+                          (%emit-key-event parser key :ctrlp ctrlp :altp altp :shiftp shiftp)
+                          (1+ final-idx)))
+                       ((= final 126)
+                        ;; ESC [ code ; modifier ~ — modified fn/nav key
+                        (let ((fkey (or (%map-csi-fn-key code)
+                                        (case code (1 :home) (4 :end) (5 :pgup) (6 :pgdown) (t nil)))))
+                          (if fkey
+                              (progn (%emit-key-event parser fkey :ctrlp ctrlp :altp altp :shiftp shiftp)
+                                     (1+ final-idx))
+                              (progn (%emit-key-event parser :escape) 1))))
+                       (t (%emit-key-event parser :escape) 1))))))))
+        ;; ESC [ code ~  — unmodified fn/nav key
+        ((= (aref pending idx) 126)
+         (case code
+           (1 (%emit-key-event parser :home) (1+ idx))
+           (3 (%emit-key-event parser :delete) (1+ idx))
+           (4 (%emit-key-event parser :end) (1+ idx))
+           (5 (%emit-key-event parser :pgup) (1+ idx))
+           (6 (%emit-key-event parser :pgdown) (1+ idx))
+           (otherwise
+             (let ((fkey (%map-csi-fn-key code)))
+               (if fkey
+                   (progn (%emit-key-event parser fkey) (1+ idx))
+                   (progn (%emit-key-event parser :escape) 1))))))
+        ;; Incomplete semicolon — need more data
+        ((= (aref pending idx) 59)
+         0)
+        (t
          (%emit-key-event parser :escape)
-         1))
-      ((= (aref pending idx) 59)
-       0)
-      (t
-       (%emit-key-event parser :escape)
-       1))))
+         1)))))
 
 (defun %parse-escape-sequence (parser)
   (let* ((pending (input-parser-pending parser))
