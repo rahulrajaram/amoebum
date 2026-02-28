@@ -30,8 +30,8 @@
                            into maxw
                            finally (return (or maxw 0))))
          (content-width (max min-width line-width))
-         (content-width (if max-width
-                            max-width
+         (content-width (if (and max-width (> max-width 0))
+                            (min content-width max-width)
                             content-width))
          (content-rows (max min-rows line-count))
          (content-rows (if max-rows
