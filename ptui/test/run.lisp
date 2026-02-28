@@ -2475,7 +2475,21 @@ foo bar foo")
     (assert-true (> render-count 0)
                  "expected render to continue after handler error restart.")))
 
+;; Register optional FiveAM suites. Keep this resilient for environments that
+;; invoke test/run.lisp without the ptui/tests system loaded.
+(defun %run-ptui-search-suite-if-available ()
+  (unless (find-package :ptui.test.search)
+    (ignore-errors (asdf:load-system "ptui/tests")))
+  (let ((search-package (find-package :ptui.test.search))
+        (suite-run-fn nil))
+    (when search-package
+      (setf suite-run-fn (find-symbol "RUN-ALL" search-package)))
+    (if (and suite-run-fn (fboundp suite-run-fn))
+        (funcall (symbol-function suite-run-fn))
+        t)))
+
 ;; Script entry
-(multiple-value-bind (passed failed) (run-all-tests)
-  (declare (ignore passed))
-  (uiop:quit (if (zerop failed) 0 1)))
+(let ((search-ok (%run-ptui-search-suite-if-available)))
+  (multiple-value-bind (passed failed) (run-all-tests)
+    (declare (ignore passed))
+    (uiop:quit (if (and (not (eq search-ok nil)) (zerop failed)) 0 1))))
