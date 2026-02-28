@@ -125,28 +125,42 @@
     (flet ((emit (string)
              (write-string string stdout)
              (incf bytes (length string))))
-      (dolist (op draw-ops)
-        (case (ptui.render.diff::draw-op-kind op)
-          (:move
-           (emit (%make-escape "~D;~DH"
-                               (1+ (ptui.render.diff::draw-op-row op))
-                               (1+ (ptui.render.diff::draw-op-col op)))))
-          (:style
-           (emit (%style->escape mode
-                                 (ptui.render.diff::draw-op-fg op)
-                                 (ptui.render.diff::draw-op-bg op)
-                                 (ptui.render.diff::draw-op-attrs op))))
-          (:write
-           (emit (ptui.render.diff::draw-op-text op)))
-          ((:clear-screen :clear-eol :hide-cursor :show-cursor :enter-alt :exit-alt)
-           (let* ((kind (ptui.render.diff::draw-op-kind op))
-                  (esc (ecase kind
-                         (:clear-screen (%make-escape "2J"))
-                         (:clear-eol (%make-escape "K"))
-                         (:hide-cursor (%make-escape "?25l"))
-                         (:show-cursor (%make-escape "?25h"))
-                         (:enter-alt (%make-escape "?1049h"))
-                         (:exit-alt (%make-escape "?1049l")))))
-             (emit esc))))))
+      (flet ((emit-paint-op (op)
+               (emit (%make-escape "~D;~DH"
+                                   (1+ (ptui.render.diff::draw-op-row op))
+                                   (1+ (ptui.render.diff::draw-op-col op))))
+               (emit (%style->escape mode
+                                     (ptui.render.diff::draw-op-fg op)
+                                     (ptui.render.diff::draw-op-bg op)
+                                     (ptui.render.diff::draw-op-attrs op)))
+               (emit (ptui.render.diff::draw-op-text op))))
+        (dolist (op draw-ops)
+          (case (ptui.render.diff::draw-op-kind op)
+            (:move
+             (emit (%make-escape "~D;~DH"
+                                 (1+ (ptui.render.diff::draw-op-row op))
+                                 (1+ (ptui.render.diff::draw-op-col op)))))
+            (:style
+             (emit (%style->escape mode
+                                   (ptui.render.diff::draw-op-fg op)
+                                   (ptui.render.diff::draw-op-bg op)
+                                   (ptui.render.diff::draw-op-attrs op))))
+            (:write
+             (emit (ptui.render.diff::draw-op-text op)))
+            ((:cell :text)
+             (emit-paint-op op))
+            (:full-redraw
+             (emit (%make-escape "2J"))
+             (emit-paint-op op))
+            ((:clear-screen :clear-eol :hide-cursor :show-cursor :enter-alt :exit-alt)
+             (let* ((kind (ptui.render.diff::draw-op-kind op))
+                    (esc (ecase kind
+                           (:clear-screen (%make-escape "2J"))
+                           (:clear-eol (%make-escape "K"))
+                           (:hide-cursor (%make-escape "?25l"))
+                           (:show-cursor (%make-escape "?25h"))
+                           (:enter-alt (%make-escape "?1049h"))
+                           (:exit-alt (%make-escape "?1049l")))))
+               (emit esc))))))
       (finish-output stdout)
-      bytes))
+      bytes)))
