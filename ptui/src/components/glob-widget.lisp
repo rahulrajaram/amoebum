@@ -1,5 +1,9 @@
 (defpackage :ptui.components.glob-widget
   (:use :cl)
+  (:import-from :ptui.components.list-selection
+                #:clamp-index
+                #:move-selection
+                #:visible-window)
   (:export
    #:glob-widget-stream
    #:make-glob-widget-stream
@@ -156,12 +160,9 @@ NEXT must return two values: CANDIDATE and DONE-P."
         (princ-to-string value))))
 
 (defun %clamp-selected-index! (state)
-  (let ((count (length (glob-widget-state-matches state))))
-    (setf (glob-widget-state-selected-index state)
-          (if (zerop count)
-              0
-              (max 0 (min (glob-widget-state-selected-index state)
-                          (1- count)))))))
+  (setf (glob-widget-state-selected-index state)
+        (clamp-index (glob-widget-state-selected-index state)
+                     (length (glob-widget-state-matches state)))))
 
 (defun %recompute-matches! (state)
   (let ((pattern (glob-widget-state-pattern state))
@@ -183,7 +184,7 @@ NEXT must return two values: CANDIDATE and DONE-P."
                                  (prompt "glob> ")
                                  (empty-message "[no matches]")
                                  on-select)
-  "Create mutable state for the glob widget."
+  "Create mutable state for the glob widget. Primary constructor."
   (check-type pattern string)
   (check-type matcher function)
   (check-type candidate->string function)
@@ -279,16 +280,9 @@ NEXT must return two values: CANDIDATE and DONE-P."
        (glob-widget-state-matches state)))
 
 (defun %visible-window (state)
-  (let* ((matches (glob-widget-state-matches state))
-         (count (length matches))
-         (visible (glob-widget-state-visible-count state))
-         (selected (glob-widget-state-selected-index state))
-         (start (if (<= count visible)
-                    0
-                    (min (max 0 (- selected (1- visible)))
-                         (- count visible))))
-         (end (min count (+ start visible))))
-    (values (subseq matches start end) start)))
+  (visible-window (glob-widget-state-matches state)
+                  (glob-widget-state-selected-index state)
+                  (glob-widget-state-visible-count state)))
 
 (defun glob-widget-visible-matches (state)
   "Return currently visible matches."
@@ -300,24 +294,14 @@ NEXT must return two values: CANDIDATE and DONE-P."
   (%recompute-matches! state))
 
 (defun %move-selection! (state key)
-  (let ((count (length (glob-widget-state-matches state))))
-    (cond
-      ((zerop count)
-       (setf (glob-widget-state-selected-index state) 0))
-      ((eq key :up)
-       (setf (glob-widget-state-selected-index state)
-             (max 0 (1- (glob-widget-state-selected-index state)))))
-      ((eq key :down)
-       (setf (glob-widget-state-selected-index state)
-             (min (1- count) (1+ (glob-widget-state-selected-index state)))))
-      ((eq key :home)
-       (setf (glob-widget-state-selected-index state) 0))
-      ((eq key :end)
-       (setf (glob-widget-state-selected-index state) (1- count)))))
+  (setf (glob-widget-state-selected-index state)
+        (move-selection (glob-widget-state-selected-index state)
+                        (length (glob-widget-state-matches state))
+                        key))
   state)
 
 (defun glob-widget-handle-event (state event)
-  "Apply EVENT to STATE and return a plist describing the action."
+  "Apply EVENT to STATE; returns (:action <keyword> :state STATE ...)."
   (check-type state glob-widget-state)
   (unless (typep event 'ptui.core.events:key-event)
     (return-from glob-widget-handle-event

@@ -23,6 +23,7 @@
       (ptui.ui.elements:ui-element-key element)))
 
 (defun make-text-widget (text &key id key styled-segments role metadata)
+  "Create a text display element. Supports optional STYLED-SEGMENTS for ANSI-colored output."
   (ptui.ui.elements:make-element
    :text
    :id id
@@ -46,6 +47,7 @@
    :children '()))
 
 (defun make-box-widget (child &key id key (padding 0) (borderp nil))
+  "Create a box container element with optional padding and border."
   (ptui.ui.elements:make-element
    :box
    :id id
@@ -55,6 +57,7 @@
    :children (if child (list child) '())))
 
 (defun make-stack-widget (children &key id key (direction :column) (gap 0))
+  "Create a stack layout element. DIRECTION is :row or :column."
   (unless (member direction '(:row :column))
     (error "STACK direction must be :row or :column. Got: ~S" direction))
   (ptui.ui.elements:make-element
@@ -66,6 +69,7 @@
    :children children))
 
 (defun make-input-widget (value &key id key (min-width 0) on-event)
+  "Create a focusable text input element. ON-EVENT receives (event node)."
   (when on-event
     (check-type on-event function))
   (ptui.ui.elements:make-element
@@ -79,6 +83,7 @@
    :children '()))
 
 (defun make-scroll-widget (child &key id key viewport-width viewport-height (offset 0))
+  "Create a scrollable viewport element wrapping CHILD."
   (ptui.ui.elements:make-element
    :scroll
    :id id

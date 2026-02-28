@@ -1,5 +1,9 @@
 (defpackage :ptui.components.search-widget
   (:use :cl)
+  (:import-from :ptui.components.list-selection
+                #:clamp-index
+                #:move-selection
+                #:visible-window)
   (:export
    #:search-widget-state
    #:make-search-widget-state
@@ -80,6 +84,8 @@
                                    on-select
                                    (prompt "search> ")
                                    (empty-message "[no results]"))
+  "Create mutable state for the search widget. Primary constructor.
+MODE is :files for filename search or :content for full-text search."
   (check-type mode (member :files :content))
   (check-type query string)
   (check-type visible-count (integer 1 *))
@@ -198,13 +204,9 @@
   (length (search-widget-results state)))
 
 (defun %clamp-selected-index! (state)
-  (let ((count (%results-count state)))
-    (setf (search-widget-state-selected-index state)
-          (if (zerop count)
-              0
-              (max 0
-                   (min (search-widget-state-selected-index state)
-                        (1- count)))))))
+  (setf (search-widget-state-selected-index state)
+        (clamp-index (search-widget-state-selected-index state)
+                     (%results-count state))))
 
 (defun %run-file-search! (state)
   (let ((ranked
@@ -304,20 +306,10 @@
        (search-widget-results state)))
 
 (defun %move-selection! (state key)
-  (let ((count (%results-count state)))
-    (cond
-      ((zerop count)
-       (setf (search-widget-state-selected-index state) 0))
-      ((eq key :up)
-       (setf (search-widget-state-selected-index state)
-             (max 0 (1- (search-widget-state-selected-index state)))))
-      ((eq key :down)
-       (setf (search-widget-state-selected-index state)
-             (min (1- count) (1+ (search-widget-state-selected-index state)))))
-      ((eq key :home)
-       (setf (search-widget-state-selected-index state) 0))
-      ((eq key :end)
-       (setf (search-widget-state-selected-index state) (1- count)))))
+  (setf (search-widget-state-selected-index state)
+        (move-selection (search-widget-state-selected-index state)
+                        (%results-count state)
+                        key))
   state)
 
 (defun %append-query! (state text)
@@ -334,6 +326,7 @@
   state)
 
 (defun search-widget-handle-event (state event)
+  "Apply EVENT to STATE; returns (:action <keyword> :state STATE ...)."
   (check-type state search-widget-state)
   (unless (typep event 'ptui.core.events:key-event)
     (return-from search-widget-handle-event
@@ -382,16 +375,9 @@
              (ptui.search.engine:search-content-match-text result)))))
 
 (defun %visible-window (state)
-  (let* ((results (search-widget-results state))
-         (count (length results))
-         (visible (search-widget-state-visible-count state))
-         (selected (search-widget-state-selected-index state))
-         (start (if (<= count visible)
-                    0
-                    (min (max 0 (- selected (1- visible)))
-                         (- count visible))))
-         (end (min count (+ start visible))))
-    (values (subseq results start end) start)))
+  (visible-window (search-widget-results state)
+                  (search-widget-state-selected-index state)
+                  (search-widget-state-visible-count state)))
 
 (defun make-search-widget (state &key id key (input-id :search-input) (borderp t) (padding 0))
   "Build a composable PTUI element tree for search interaction."

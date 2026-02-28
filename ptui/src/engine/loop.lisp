@@ -108,6 +108,8 @@
               (on-event nil)
               (event-bus nil)
               (on-handler-error :log-and-continue))
+  "Start the PTUI event loop. RENDER-FN is called with (state size) each frame.
+Returns when the user presses Ctrl-C/q or PTUI_EXIT_AFTER_MS elapses."
   (check-type render-fn function)
   (setf ptui.util.log:*log-level* (ptui.util.log:resolve-log-level))
   (let* ((backend-obj (%make-backend backend))

@@ -112,62 +112,69 @@
             :prop prop
             :reason "Prop is never referenced in widget body."))))
 
+(defparameter +element-heads+
+  '(vstack hstack text box scroll input spacer))
+
+(defparameter +element-list-heads+
+  '(when-widget map-widget))
+
+(defparameter +body-last-heads+
+  '(progn let let* flet labels))
+
+(defun %classify-branches (forms lambda-list)
+  "Classify each form; return :non-element if all are, else :unknown."
+  (let ((kinds (loop for form in forms
+                     collect (%widget-root-classification (car (last form))
+                                                          lambda-list))))
+    (if (every (lambda (kind) (eq kind :non-element)) kinds)
+        :non-element
+        :unknown)))
+
+(defun %classify-conditional (form lambda-list)
+  "Classify if/when/unless/cond/case-family forms."
+  (let ((head (car form)))
+    (cond
+      ((eq head 'if)
+       (let ((then-kind (%widget-root-classification (third form) lambda-list))
+             (else-kind (%widget-root-classification (fourth form) lambda-list)))
+         (if (and (eq then-kind :non-element)
+                  (eq else-kind :non-element))
+             :non-element
+             :unknown)))
+      ((member head '(when unless) :test #'eq)
+       (let ((body-kind (%widget-root-classification (car (last (cddr form))) lambda-list)))
+         (if (eq body-kind :non-element) :non-element :unknown)))
+      ((eq head 'cond)
+       (%classify-branches (cdr form) lambda-list))
+      ((member head '(case ecase typecase etypecase) :test #'eq)
+       (%classify-branches (cddr form) lambda-list))
+      (t :unknown))))
+
+(defun %classify-compound-form (form lambda-list)
+  "Classify a compound (list) form."
+  (let ((head (car form)))
+    (cond
+      ((member head +element-heads+ :test #'eq)
+       :element)
+      ((member head +element-list-heads+ :test #'eq)
+       :element-list)
+      ((member head +body-last-heads+ :test #'eq)
+       (%widget-root-classification (car (last (cddr form))) lambda-list))
+      ((member head '(if when unless cond case ecase typecase etypecase) :test #'eq)
+       (%classify-conditional form lambda-list))
+      (t :unknown))))
+
 (defun %widget-root-classification (form lambda-list)
+  "Classify FORM as :element, :element-list, :non-element, or :unknown."
   (cond
     ((or (null form) (eq form t))
      :non-element)
     ((symbolp form)
-     (if (member form lambda-list :test #'eq)
-         :unknown
-         :non-element))
+     (if (member form lambda-list :test #'eq) :unknown :non-element))
     ((atom form)
      :non-element)
     (t
-     (let ((head (car form)))
-       (cond
-         ((member head '(vstack hstack text box scroll input spacer) :test #'eq)
-          :element)
-         ((member head '(when-widget map-widget) :test #'eq)
-          :element-list)
-         ((eq head 'progn)
-          (%widget-root-classification (car (last (cdr form))) lambda-list))
-         ((member head '(let let*) :test #'eq)
-          (%widget-root-classification (car (last (cddr form))) lambda-list))
-         ((eq head 'if)
-          (let ((then-kind (%widget-root-classification (third form) lambda-list))
-                (else-kind (%widget-root-classification (fourth form) lambda-list)))
-            (if (and (eq then-kind :non-element)
-                     (eq else-kind :non-element))
-                :non-element
-                :unknown)))
-         ((eq head 'when)
-          (let ((body-kind (%widget-root-classification (car (last (cddr form))) lambda-list)))
-            (if (eq body-kind :non-element) :non-element :unknown)))
-         ((eq head 'unless)
-          (let ((body-kind (%widget-root-classification (car (last (cddr form))) lambda-list)))
-            (if (eq body-kind :non-element) :non-element :unknown)))
-         ((eq head 'cond)
-          (let ((clause-kinds
-                  (loop for clause in (cdr form)
-                        collect (%widget-root-classification (car (last clause))
-                                                             lambda-list))))
-            (if (every (lambda (kind) (eq kind :non-element)) clause-kinds)
-                :non-element
-                :unknown)))
-         ((member head '(case ecase typecase etypecase) :test #'eq)
-          (let ((clause-kinds
-                  (loop for clause in (cddr form)
-                        collect (%widget-root-classification (car (last clause))
-                                                             lambda-list))))
-            (if (every (lambda (kind) (eq kind :non-element)) clause-kinds)
-                :non-element
-                :unknown)))
-         ((member head '(flet labels) :test #'eq)
-          (%widget-root-classification (car (last (cddr form))) lambda-list))
-         (t
-          (if (%known-widget-root-form-p form lambda-list)
-              :unknown
-              :unknown)))))))
+     (%classify-compound-form form lambda-list))))
 
 (defun %validate-widget-root-form (name lambda-list body)
   (when (null body)

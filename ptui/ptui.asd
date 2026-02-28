@@ -132,8 +132,10 @@
   :serial t
   :components
   ((:file "src/components/prompt-box")
+   (:file "src/components/ansi-parser")
    (:file "src/components/terminal-pane")
    (:file "src/components/plan-presentation")
+   (:file "src/components/list-selection")
    (:file "src/components/glob-widget")
    (:file "src/components/search-widget")))
 
@@ -208,8 +210,10 @@
   :serial t
   :components
   ((:file "src/components/prompt-box")
+   (:file "src/components/ansi-parser")
    (:file "src/components/terminal-pane")
    (:file "src/components/plan-presentation")
+   (:file "src/components/list-selection")
    (:file "src/components/glob-widget")
    (:file "src/components/search-widget")))
 
@@ -256,9 +260,13 @@
   :description "PTUI FiveAM suites"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui" "ptui/test-support" "fiveam")
+  :depends-on ("ptui" "ptui/components" "ptui/test-support" "fiveam")
   :serial t
   :components
   ((:file "test/defwidget-test")
    (:file "test/snapshot-test")
-   (:file "test/event-filters-test")))
+   (:file "test/event-filters-test")
+   (:file "test/ansi-parser-test")
+   (:file "test/queue-test")
+   (:file "test/scheduler-test")
+   (:file "test/list-selection-test")))
