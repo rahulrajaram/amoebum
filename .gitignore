@@ -4,6 +4,7 @@
 .githooks/
 .ralph/
 .yarl/
+.yarli/
 yarli.toml
 yarli.toml.example
 agent_reports/
