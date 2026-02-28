@@ -1,8 +1,23 @@
 .agent/
 .amoebum/
+.claude/
+.githooks/
 .ralph/
 .yarl/
 yarli.toml
+yarli.toml.example
+agent_reports/
+AGENTS.md
+AMOEBUM_REPORT.md
+IMPLEMENTATION_PLAN.md
+PROMPT.md
+PTUI_KERNEL_SPEC.md
+RALPH_PROMPT.md
+SKILL.md
+VISION.md
+ralph.yml
+tranches.toml
+vim/
 
 # Local build artifacts / caches
 ptui/.tools/
