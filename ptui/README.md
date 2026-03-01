@@ -82,6 +82,50 @@ This is the main modularity check:
 PTUI_EXIT_AFTER_MS=5000 ./ptui/dist/metrics-dashboard
 ```
 
+Additional themed examples (loaded via `ptui/examples`):
+
+- `ptui.examples.ops-wallboard:run-ops-wallboard`
+- `ptui.examples.release-tracker:run-release-tracker`
+- `ptui.examples.focus-console:run-focus-console`
+
+Example invocation:
+
+```bash
+sbcl --load ptui/.tools/quicklisp/setup.lisp \
+  --eval '(pushnew (truename "./ptui/") asdf:*central-registry*)' \
+  --eval '(asdf:load-system :ptui/examples)' \
+  --eval '(ptui.examples.release-tracker:run-release-tracker)' \
+  --quit
+```
+
+## Description-First Definition Files
+
+PTUI now supports loading file-driven UI definitions that compile into existing
+`defpanel`/`defapp` macros at runtime via `ptui.ui.definition-loader`.
+
+Supported declarative directives:
+
+- `(:ptui ...)` (wrapper)
+- `(:defpackage ...)`, `(:in-package ...)`
+- `(:panel ...)` -> `ptui.ui.panel:defpanel`
+- `(:app ...)` -> `ptui.ui.app:defapp`
+- `(:widget ...)` -> `ptui.widgets.defwidget:defwidget`
+
+Load and run a declarative definition file:
+
+```bash
+sbcl --load ptui/.tools/quicklisp/setup.lisp \
+  --eval '(pushnew (truename "./ptui/") asdf:*central-registry*)' \
+  --eval '(asdf:load-system :ptui)' \
+  --eval '(ptui.ui.definition-loader:load-and-run-definition-file
+            "ptui/examples/declarative-incident-board.lisp"
+            (quote ptui.examples.declarative.incident-board::incident-board-app))' \
+  --quit
+```
+
+You can also call `ptui.ui.definition-loader:load-definition-file` to only
+register panels/apps and invoke the generated runner later.
+
 Dashboard mode switch:
 
 ```bash

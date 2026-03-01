@@ -93,7 +93,7 @@
   (event-type +event-type-tool-started-event+ :type keyword))
 
 (defstruct (tool-completed-event
-            (:constructor make-tool-completed-event-type
+            (:constructor %make-tool-completed-event
                 (&key tool-name result elapsed-ms timestamp
                  (event-type +event-type-tool-completed-event+))))
   tool-name
@@ -103,7 +103,7 @@
   (event-type +event-type-tool-completed-event+ :type keyword))
 
 (defstruct (tool-error-event
-            (:constructor make-tool-error-event-type
+            (:constructor %make-tool-error-event
                 (&key tool-name condition restarts timestamp
                  (event-type +event-type-tool-error-event+))))
   tool-name
@@ -111,6 +111,12 @@
   restarts
   timestamp
   (event-type +event-type-tool-error-event+ :type keyword))
+
+(defun make-tool-completed-event-type (&rest args)
+  (apply #'%make-tool-completed-event args))
+
+(defun make-tool-error-event-type (&rest args)
+  (apply #'%make-tool-error-event args))
 
 (defstruct (llm-request-event
             (:constructor make-llm-request-event

@@ -31,6 +31,13 @@
   (weight 1 :type number)
   (metadata nil))
 
+(defun make-constraint-spec (&key id kind value min-value max-value (priority 10) (weight 1)
+                               metadata)
+  "Construct a `constraint-spec` with explicit field values."
+  (%make-constraint-spec :id id :kind kind :value value :min-value min-value
+                         :max-value max-value :priority priority :weight weight
+                         :metadata metadata))
+
 (defun fixed (id pixels)
   "Create a fixed-size constraint spec. Allocated first (priority 10)."
   (check-type id symbol)

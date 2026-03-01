@@ -19,10 +19,13 @@
          (max-width (%prop element :max-width nil))
          (min-rows (%prop element :min-rows 1))
          (max-rows (%prop element :max-rows nil))
+         (border-width 2)
+         ;; max-width is a total widget width contract; convert to content width.
+         (content-max-width (and max-width (max 0 (- max-width border-width))))
          (lines (ptui.text.layout:wrap-by-width
                  value
-                 (if (and max-width (> max-width 0))
-                     max-width
+                 (if (and content-max-width (> content-max-width 0))
+                     content-max-width
                      (max 1 (ptui.text.width:string-width value)))))
          (line-count (max 1 (length lines)))
          (line-width (loop for line in lines
@@ -30,16 +33,16 @@
                            into maxw
                            finally (return (or maxw 0))))
          (content-width (max min-width line-width))
-         (content-width (if max-width
-                            max-width
+         (content-width (if content-max-width
+                            (min content-width content-max-width)
                             content-width))
          (content-rows (max min-rows line-count))
          (content-rows (if max-rows
                            (min content-rows max-rows)
                            content-rows)))
     ;; Prompt-box includes its own border.
-    (%layout-size (+ content-width 2)
-                  (+ content-rows 2))))
+    (%layout-size (+ content-width border-width)
+                  (+ content-rows border-width))))
 
 (defun make-prompt-box-widget (value &key id key (min-width 0) max-width (min-rows 1) max-rows
                                      (scroll-offset nil) (cursor-position nil)

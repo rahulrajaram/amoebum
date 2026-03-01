@@ -119,10 +119,12 @@ PAINT-FN signature: (element buffer x y width height)."
         (return-from %paint-element)))
     (case type
       (:text
-       (let ((text (or (getf props :text) "")))
+       (let* ((styled-segments (getf props :styled-segments))
+              (text (or (getf props :text) ""))
+              (payload (or styled-segments text)))
          (when (and (< y max-rows) (< x max-cols))
            (ptui.render.buffer:buffer-draw-text
-            buffer x y text :max-width (- max-cols x)))))
+            buffer x y payload :max-width (- max-cols x)))))
       (:stack
        (let ((direction (getf props :direction :column))
              (gap (or (getf props :gap) 0))
