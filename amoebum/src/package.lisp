@@ -318,7 +318,6 @@
            #:tool-started-event-event-type
            #:tool-completed-event
            #:tool-completed-event-p
-           #:make-tool-completed-event
            #:make-tool-completed-event-type
            #:tool-completed-event-tool-name
            #:tool-completed-event-result
@@ -327,7 +326,6 @@
            #:tool-completed-event-event-type
            #:tool-error-event
            #:tool-error-event-p
-           #:make-tool-error-event
            #:make-tool-error-event-type
            #:tool-error-event-tool-name
            #:tool-error-event-condition

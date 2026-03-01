@@ -7,10 +7,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "${ROOT_DIR}/.." && pwd)"
 
-# Enforce IMPLEMENTATION_PLAN.md open-tranche contract before expensive kernel checks.
-"${REPO_ROOT}/bin/yarli-lint-implementation-plan.sh" "${REPO_ROOT}/IMPLEMENTATION_PLAN.md"
-# Enforce verification command parity between plan and configured runtime policy.
-"${REPO_ROOT}/bin/yarli-verify-gate-parity.sh" "${REPO_ROOT}/IMPLEMENTATION_PLAN.md" "${REPO_ROOT}/bin/yarli-run-verification.sh" "${REPO_ROOT}/yarli.toml"
+PLAN_FILE="${REPO_ROOT}/IMPLEMENTATION_PLAN.md"
+
+# Enforce plan contracts when the plan file is present. In CI, this file may be
+# intentionally local-only and absent from the repository.
+if [[ -f "${PLAN_FILE}" ]]; then
+  "${REPO_ROOT}/bin/yarli-lint-implementation-plan.sh" "${PLAN_FILE}"
+  "${REPO_ROOT}/bin/yarli-verify-gate-parity.sh" "${PLAN_FILE}" "${REPO_ROOT}/bin/yarli-run-verification.sh" "${REPO_ROOT}/yarli.toml"
+else
+  echo "PLAN_LINT_SKIP: ${PLAN_FILE} not found; skipping plan contract checks."
+fi
 
 # Ensure Quicklisp exists for external deps (cffi, bordeaux-threads, ...).
 "${ROOT_DIR}/bin/ensure-quicklisp.sh" >/dev/null

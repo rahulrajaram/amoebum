@@ -1101,31 +1101,6 @@
       (run-hooks :post-receive response)))
   t)
 
-(defun %llm-model-name (client chat-state)
-  (or (and (pseudopod:client-p client)
-           (pseudopod:client-model client))
-      (%chat-model-name chat-state (%chat-config))
-      "unknown"))
-
-(defun %run-llm-pre-send-hooks (messages tools model)
-  (let ((effective-messages (copy-list messages)))
-    (dolist (entry (list-hooks :pre-llm-send)
-             (values :allow effective-messages))
-      (let ((result (%invoke-hook-entry :pre-llm-send entry
-                                       (list effective-messages tools model))))
-        (cond
-          ((or (eq result :block) (eq result :deny))
-           (return (values result effective-messages)))
-          ((listp result)
-           (setf effective-messages result))
-          (t nil))))))
-
-(defun %emit-llm-post-receive-hook (response usage model)
-  (when response
-    (ignore-errors
-      (run-hooks :post-llm-receive response usage model)))
-  t)
-
 (defun %emit-stream-budget-warning-if-needed (chat-state)
   (let* ((stream-state (chat-ui-state-stream-state chat-state))
          (used-tokens (chat-ui-state-context-used-tokens chat-state))
@@ -1495,43 +1470,30 @@ Falls back to the global *toolset* when stream-tools is nil."
                        :toolset toolset
                        :permission-mode (%chat-permission-mode)
                        :event-bus (%context-event-bus chat-state)))
-             (tools (%resolve-chat-tools chat-state))
-             (llm-model (%llm-model-name client chat-state))
-             (pre-send-status-message
-               (multiple-value-list
-                (%run-llm-pre-send-hooks
-                 (copy-list (chat-ui-state-messages chat-state))
-                 tools
-                 llm-model)))
-             (pre-send-status (or (first pre-send-status-message) :allow))
-             (effective-messages (second pre-send-status-message))
-             (step-result (unless (member pre-send-status '(:block :deny) :test #'eq)
-                            (pseudopod:step
-                             client
-                             :messages effective-messages
-                             :tools tools
-                             :toolset toolset
-                             :max-steps +max-agentic-iterations+
-                             :on-tool-call
-                             (lambda (tool-call)
-                               (values t (execute-tool tool-call context)))))
-             (response (and step-result
-                            (or (pseudopod:step-result-final-message step-result)
-                                (pseudopod:step-result-last-message step-result)))))
-        (when step-result
-          (run-hooks :on-step-complete
-                     (pseudopod:step-result-steps step-result)
-                     (max 0
-                          (- (length (or (pseudopod:step-result-history step-result) '()))
-                             (length (chat-ui-state-messages chat-state))))
-                     (length (or (pseudopod:step-result-tool-results step-result) '())))
-          (%append-step-history-delta!
-           chat-state
-           (pseudopod:step-result-history step-result))
-          (%emit-post-receive-hook response)
-          (%emit-llm-post-receive-hook response nil llm-model))
+             (step-result
+               (pseudopod:step
+                client
+                :messages (copy-list (chat-ui-state-messages chat-state))
+                :tools (%resolve-chat-tools chat-state)
+                :toolset toolset
+                :max-steps +max-agentic-iterations+
+                :on-tool-call
+                (lambda (tool-call)
+                  (values t (execute-tool tool-call context)))))
+             (response (or (pseudopod:step-result-final-message step-result)
+                           (pseudopod:step-result-last-message step-result))))
+        (run-hooks :on-step-complete
+                   (pseudopod:step-result-steps step-result)
+                   (max 0
+                        (- (length (or (pseudopod:step-result-history step-result) '()))
+                           (length (chat-ui-state-messages chat-state))))
+                   (length (or (pseudopod:step-result-tool-results step-result) '())))
+        (%append-step-history-delta!
+         chat-state
+         (pseudopod:step-result-history step-result))
+        (%emit-post-receive-hook response)
         (conversation-transition! (%ensure-chat-conversation-state chat-state)
-                                 :idle))))))
+                                  :idle)))))
 
 (defun %resolve-chat-system-prompt (chat-state)
   (let* ((config (%chat-config))
