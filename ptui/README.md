@@ -117,14 +117,21 @@ Load and run a declarative definition file:
 sbcl --load ptui/.tools/quicklisp/setup.lisp \
   --eval '(pushnew (truename "./ptui/") asdf:*central-registry*)' \
   --eval '(asdf:load-system :ptui)' \
-  --eval '(ptui.ui.definition-loader:load-and-run-definition-file
-            "ptui/examples/declarative-incident-board.lisp"
-            (quote ptui.examples.declarative.incident-board::incident-board-app))' \
+  --eval '(ptui.ui.definition-loader:load-definition-file
+            "ptui/examples/declarative-incident-board.lisp")' \
+  --eval '(ptui.ui.definition-loader:run-loaded-app
+            (find-symbol "INCIDENT-BOARD-APP"
+                         "PTUI.EXAMPLES.DECLARATIVE.INCIDENT-BOARD"))' \
   --quit
 ```
 
 You can also call `ptui.ui.definition-loader:load-definition-file` to only
 register panels/apps and invoke the generated runner later.
+
+Manual packet/definition QA assets:
+
+- Playbook: `ptui/docs/packet-manual-test-playbook.md`
+- Golden fixtures: `ptui/examples/golden-packets/`
 
 Dashboard mode switch:
 
