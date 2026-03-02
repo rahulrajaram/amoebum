@@ -1991,6 +1991,19 @@ Falls back to the global *toolset* when stream-tools is nil."
   (let* ((steps (or (plan-mode-state-steps plan-state) '()))
          (total (length steps))
          (approved (length (plan-mode-state-approved-step-indexes plan-state)))
+         (selected-step (%chat-plan-step-by-index steps selected-step-index))
+         (selected-file-path
+           (car (%chat-plan-normalize-path-list
+                 (and selected-step (plan-step-file-paths selected-step)))))
+         (selected-step-line
+           (when (integerp selected-step-index)
+             (if selected-file-path
+                 (format nil
+                         "Selected step: ~D (Ctrl-N/Ctrl-P to change) | file ~A"
+                         selected-step-index
+                         selected-file-path)
+                 (format nil "Selected step: ~D (Ctrl-N/Ctrl-P to change)"
+                         selected-step-index))))
          (decision-text
            (string-downcase
             (symbol-name (or (plan-mode-state-review-decision plan-state)
@@ -1999,15 +2012,12 @@ Falls back to the global *toolset* when stream-tools is nil."
          (command-previews (%chat-plan-command-preview-lines plan-state
                                                              selected-step-index)))
     (if command-previews
-        (if (integerp selected-step-index)
-            (cons (format nil "Selected step: ~D (Ctrl-N/Ctrl-P to change)"
-                          selected-step-index)
-                  command-previews)
+        (if selected-step-line
+            (cons selected-step-line command-previews)
             command-previews)
         (append
-         (when (integerp selected-step-index)
-           (list (format nil "Selected step: ~D (Ctrl-N/Ctrl-P to change)"
-                         selected-step-index)))
+         (when selected-step-line
+           (list selected-step-line))
          (list "Plan mode active. Mutating tools remain blocked."
               (format nil "Review decision: ~A~:[~; (pending)~]" decision-text pending-p)
               (format nil "Step approvals: ~D/~D" approved total)

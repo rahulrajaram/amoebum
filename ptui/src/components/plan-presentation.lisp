@@ -321,22 +321,17 @@
              (list (cons "Suggested recovery actions: none provided." :meta))))))))
 
 (defun %context-panel (selected-step steps entries context-lines context-empty-message)
-  (let* ((primary-file (car (and selected-step
-                                 (plan-presentation-step-file-paths selected-step))))
-         (title (if (and (stringp primary-file) (plusp (length primary-file)))
-                    (format nil "Context Inspector (~A)" primary-file)
-                    "Context Inspector")))
-    (%make-section-widget
-     title
-     (append
-      (%selected-step-context-lines selected-step)
-      (%failure-drilldown-lines steps entries)
-      (when context-lines
-        (cons (cons "Summary:" :system)
-              (loop for line in (or context-lines '())
-                    collect (cons (%safe-string line "") :meta)))))
-     :id :plan-presentation-context
-     :empty-message context-empty-message)))
+  (%make-section-widget
+   "Context Inspector"
+   (append
+    (%selected-step-context-lines selected-step)
+    (%failure-drilldown-lines steps entries)
+    (when context-lines
+      (cons (cons "Summary:" :system)
+            (loop for line in (or context-lines '())
+                  collect (cons (%safe-string line "") :meta)))))
+   :id :plan-presentation-context
+   :empty-message context-empty-message))
 
 (defun make-plan-mode-presentation-widget (&key
                                              steps
