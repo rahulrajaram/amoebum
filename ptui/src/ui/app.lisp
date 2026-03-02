@@ -108,6 +108,54 @@ Key: element-type keyword, Value: (lambda (element buffer x y w h)).")
 PAINT-FN signature: (element buffer x y width height)."
   (setf (gethash element-type *view-paint-registry*) paint-fn))
 
+(defun %prompt-wrapped-lines (value width)
+  (if (<= width 0)
+      (list "")
+      (or (ptui.text.layout:wrap-by-width
+           (or value "")
+           (max 1 width)
+           :preserve-spaces t)
+          (list ""))))
+
+(defun %prompt-visible-lines (lines visible-rows scroll-offset)
+  (let* ((row-count (max 0 visible-rows))
+         (total (length lines))
+         (max-offset (max 0 (- total row-count)))
+         (desired (if (null scroll-offset)
+                      max-offset
+                      scroll-offset))
+         (offset (min max-offset (max 0 desired)))
+         (end (min total (+ offset row-count))))
+    (values (subseq lines offset end) offset max-offset)))
+
+(defun %cursor-to-line-col (cursor-pos lines)
+  (let ((remaining cursor-pos))
+    (loop for line in lines
+          for line-idx from 0
+          for line-len = (length line)
+          do (if (<= remaining line-len)
+                 (if (and (= remaining line-len)
+                          (< (1+ line-idx) (length lines)))
+                     (return-from %cursor-to-line-col
+                       (values (1+ line-idx) 0))
+                     (return-from %cursor-to-line-col
+                       (values line-idx remaining)))
+                 (decf remaining line-len)))
+    (values (max 0 (1- (length lines)))
+            (if lines (length (car (last lines))) 0))))
+
+(defun %prompt-cursor-pos (value cursor-pos-raw)
+  (let ((length* (length (ptui.text.grapheme:split-graphemes (or value "")))))
+    (if (and (integerp cursor-pos-raw) (>= cursor-pos-raw 0))
+        (min length* cursor-pos-raw)
+        length*)))
+
+(defun %normalize-box-border-style (border)
+  (case border
+    ((:single :double :square) :square)
+    ((:rounded :none nil) :rounded)
+    (otherwise :rounded)))
+
 (defun %paint-element (element buffer x y max-cols max-rows)
   "Recursively paint element tree into buffer. Simple top-down layout."
   (let ((type (ptui.ui.elements:ui-element-type element))
@@ -125,6 +173,11 @@ PAINT-FN signature: (element buffer x y width height)."
          (when (and (< y max-rows) (< x max-cols))
            (ptui.render.buffer:buffer-draw-text
             buffer x y payload :max-width (- max-cols x)))))
+      (:input
+       (let ((text (or (getf props :value) "")))
+         (when (and (< y max-rows) (< x max-cols))
+           (ptui.render.buffer:buffer-draw-text
+            buffer x y text :max-width (- max-cols x)))))
       (:stack
        (let ((direction (getf props :direction :column))
              (gap (or (getf props :gap) 0))
@@ -138,10 +191,112 @@ PAINT-FN signature: (element buffer x y width height)."
                  (:column (incf offset-y (+ (ptui.layout:layout-size-height size) gap)))
                  (:row (incf offset-x (+ (ptui.layout:layout-size-width size) gap)))))))))
       (:box
-       (let* ((padding (or (getf props :padding) 0))
+       (let* ((padding (max 0 (or (getf props :padding) 0)))
+              (border (getf props :border nil))
+              (borderp (and border (not (eq border :none))))
+              (border-width (if borderp 1 0))
+              (inset (+ padding border-width))
+              (available-width (max 0 (- max-cols x)))
+              (available-height (max 0 (- max-rows y)))
+              (measured (ptui.widgets.core:widget-measure element))
+              (draw-width (max 0 (min available-width
+                                      (ptui.layout:layout-size-width measured))))
+              (draw-height (max 0 (min available-height
+                                       (ptui.layout:layout-size-height measured))))
               (child (first (ptui.ui.elements:ui-element-children element))))
-         (when child
-           (%paint-element child buffer (+ x padding) (+ y padding) max-cols max-rows))))
+        (when (and borderp (> draw-width 1) (> draw-height 1))
+           (let* ((attrs (or (getf props :attrs)
+                             (ptui.core.types:make-attrs)))
+                  (style-cell (ptui.core.types:make-cell
+                               " "
+                               (getf props :fg)
+                               (getf props :bg)
+                               attrs)))
+             (ptui.render.buffer:buffer-draw-border
+              buffer
+              (ptui.core.types:make-rect x y draw-width draw-height)
+              :style style-cell
+              :border-style (%normalize-box-border-style border))))
+        (when (and child (> draw-width (* 2 inset)) (> draw-height (* 2 inset)))
+          (let* ((inner-x (+ x inset))
+                  (inner-y (+ y inset))
+                  (inner-width (max 0 (- draw-width (* 2 inset))))
+                  (inner-height (max 0 (- draw-height (* 2 inset)))))
+             (ptui.render.buffer:with-clip
+                 (buffer (ptui.core.types:make-rect inner-x inner-y inner-width inner-height))
+               (%paint-element child
+                               buffer
+                               inner-x
+                               inner-y
+                               (+ inner-x inner-width)
+                               (+ inner-y inner-height)))))))
+      (:prompt-box
+       (let* ((value (or (getf props :value) ""))
+              (scroll-offset (getf props :scroll-offset nil))
+              (cursor-pos-raw (getf props :cursor-position nil))
+              (border-style (if (eq (getf props :border-style :rounded) :square)
+                                :square
+                                :rounded))
+              (available-width (max 0 (- max-cols x)))
+              (available-height (max 0 (- max-rows y)))
+              (desired-width (or (getf props :max-width) available-width))
+              (desired-width (max 2 (min available-width desired-width)))
+              (draw-x (+ x (max 0 (floor (- available-width desired-width) 2))))
+              (measured-height
+                (ptui.layout:layout-size-height
+                 (ptui.widgets.core:widget-measure element)))
+              (draw-height (max 0 (min available-height measured-height))))
+         (when (and (> desired-width 1) (> draw-height 1))
+           (let* ((rect (ptui.core.types:make-rect draw-x y desired-width draw-height))
+                  (inner-x (1+ draw-x))
+                  (inner-y (1+ y))
+                  (inner-w (max 0 (- desired-width 2)))
+                  (inner-h (max 0 (- draw-height 2)))
+                  (lines (%prompt-wrapped-lines value inner-w)))
+             (ptui.render.buffer:buffer-draw-border
+              buffer rect :border-style border-style)
+             (multiple-value-bind (visible-lines effective-offset max-offset)
+                 (%prompt-visible-lines lines inner-h scroll-offset)
+               (declare (ignore max-offset))
+               (loop for line in visible-lines
+                     for row from 0 do
+                       (ptui.render.buffer:buffer-draw-text
+                        buffer
+                        inner-x
+                        (+ inner-y row)
+                        line
+                        :max-width inner-w))
+               (let* ((cursor-pos (%prompt-cursor-pos value cursor-pos-raw))
+                      (cursor-cell (ptui.core.types:make-cell
+                                    " "
+                                    nil
+                                    nil
+                                    (ptui.core.types:make-attrs :boldp t))))
+                 (multiple-value-bind (cursor-line cursor-col)
+                     (%cursor-to-line-col cursor-pos lines)
+                   (let ((visible-line (- cursor-line (or effective-offset 0))))
+                     (when (and (>= visible-line 0) (< visible-line inner-h))
+                       (let* ((cx (+ inner-x cursor-col))
+                              (cy (+ inner-y visible-line))
+                              (line (nth cursor-line lines))
+                              (glyph (if (and line (< cursor-col (length line)))
+                                         (string (char line cursor-col))
+                                         " ")))
+                         (when (and (>= cx inner-x)
+                                    (< cx (+ inner-x inner-w))
+                                    (>= cy inner-y)
+                                    (< cy (+ inner-y inner-h)))
+                           (ptui.render.buffer:write-cell-if-visible
+                            buffer
+                            cx
+                            cy
+                            (ptui.core.types:make-cell
+                             glyph
+                             (ptui.core.types:cell-fg cursor-cell)
+                             (ptui.core.types:cell-bg cursor-cell)
+                             (ptui.core.types:cell-attrs cursor-cell))
+                            (ptui.core.types:make-rect
+                             inner-x inner-y inner-w inner-h)))))))))))))
       (:scroll
        (let* ((viewport-width (or (getf props :viewport-width) (- max-cols x)))
               (viewport-height (or (getf props :viewport-height) (- max-rows y)))

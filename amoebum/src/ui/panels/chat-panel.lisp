@@ -27,7 +27,7 @@
                       (ptui.layout.constraints:fixed 'picker 8))
                     (when stream-active-p
                       (ptui.layout.constraints:fixed 'stream-hint 1))
-                    (ptui.layout.constraints:fixed 'input 4)
+                    (ptui.layout.constraints:fixed 'input 3)
                     (ptui.layout.constraints:fixed 'status 1))))
          (solved (ptui.layout.solver:solve-constraints constraints
                                                        (max 0 inner-height))))
@@ -145,7 +145,7 @@
         (%chat-text-widget "Streaming... Press Ctrl-C to stop early."
                            :chat-stream-stop-hint
                            :meta))
-      (input :fixed 4
+      (input :fixed 3
         (ptui.components.prompt-box:make-prompt-box-widget
          (chat-ui-state-input-text chat-state)
          :id :chat-input

@@ -1597,68 +1597,79 @@ Falls back to the global *toolset* when stream-tools is nil."
 
 (defun %message-line-entries (chat-state messages width)
   (let ((entries '())
-        (safe-width (max 1 width)))
-    (loop for message in messages
-          for index from 0 do
-            (let* ((role (%normalize-chat-role (pseudopod:message-role message)))
-                   (prefix (chat-role-prefix role))
-                   (prefix-width (ptui.text.width:string-width prefix))
-                   (content-width (max 1 (- safe-width (+ prefix-width 1))))
-                   (indent (make-string (+ prefix-width 1) :initial-element #\Space)))
-              (if (string= role "assistant")
-                  (let ((styled-lines
-                          (%assistant-message-styled-lines
-                           chat-state
-                           message
-                           index
-                           content-width)))
-                    (loop for styled-line in styled-lines
-                          for line-index from 0 do
-                            (let* ((prefix-text (if (zerop line-index)
-                                                    (concatenate 'string prefix " ")
-                                                    indent))
-                                   (prefix-segment (list :text prefix-text
-                                                         :role role))
-                                   (content-segments (or styled-line
-                                                         (list (list :text ""
-                                                                     :role role))))
-                                   (segments (append (list prefix-segment)
-                                                     content-segments)))
-                              (push (list :id (list :chat-message index line-index)
-                                          :text (%styled-segments->text segments)
-                                          :role role
-                                          :styled-segments segments)
-                                    entries))))
-                  (let* ((body (%message-content->text message))
-                         (wrapped (ptui.text.layout:wrap-by-width body content-width))
-                         (wrapped (if (null wrapped) (list "") wrapped)))
-                    (loop for line in wrapped
-                          for line-index from 0 do
-                            (let ((rendered-line
-                                    (if (zerop line-index)
-                                        (format nil "~A ~A" prefix line)
-                                        (concatenate 'string indent line))))
-                              (push (list :id (list :chat-message index line-index)
-                                          :text rendered-line
-                                          :role role
-                                          :styled-segments
-                                          (list (list :text rendered-line :role role)))
-                                    entries)))))
-              (unless (= index (1- (length messages)))
-                (push (list :id (list :chat-gap index)
-                            :text ""
-                            :role :meta)
-                      entries))))
-    (let ((preview-lines (%stream-tool-call-preview-lines chat-state safe-width)))
-      (when (and entries preview-lines)
-        (push (list :id :chat-stream-tool-gap :text "" :role :meta) entries))
-      (dolist (preview preview-lines)
-        (push preview entries)))
-    (if entries
-        (nreverse entries)
-        (list (list :id :chat-empty
-                    :text "No conversation yet. Type below and press Enter."
-                    :role :system)))))
+        (safe-width (max 1 (1- width))))
+    (flet ((with-left-gutter (text)
+             (concatenate 'string " " (or text ""))))
+      (loop for message in messages
+            for index from 0 do
+              (let* ((role (%normalize-chat-role (pseudopod:message-role message)))
+                     (prefix (chat-role-prefix role))
+                     (prefix-width (ptui.text.width:string-width prefix))
+                     (content-width (max 1 (- safe-width (+ prefix-width 1))))
+                     (indent (make-string (+ prefix-width 1) :initial-element #\Space)))
+                (if (string= role "assistant")
+                    (let ((styled-lines
+                            (%assistant-message-styled-lines
+                             chat-state
+                             message
+                             index
+                             content-width)))
+                      (loop for styled-line in styled-lines
+                            for line-index from 0 do
+                              (let* ((prefix-text
+                                       (if (zerop line-index)
+                                           (with-left-gutter
+                                            (concatenate 'string prefix " "))
+                                           (with-left-gutter indent)))
+                                     (prefix-segment (list :text prefix-text
+                                                           :role role))
+                                     (content-segments (or styled-line
+                                                           (list (list :text ""
+                                                                       :role role))))
+                                     (segments (append (list prefix-segment)
+                                                       content-segments)))
+                                (push (list :id (list :chat-message index line-index)
+                                            :text (%styled-segments->text segments)
+                                            :role role
+                                            :styled-segments segments)
+                                      entries))))
+                    (let* ((body (%message-content->text message))
+                           (wrapped (ptui.text.layout:wrap-by-width body content-width))
+                           (wrapped (if (null wrapped) (list "") wrapped)))
+                      (loop for line in wrapped
+                            for line-index from 0 do
+                              (let* ((rendered-line
+                                       (if (zerop line-index)
+                                           (format nil "~A ~A" prefix line)
+                                           (concatenate 'string indent line)))
+                                     (rendered-with-gutter
+                                       (with-left-gutter rendered-line)))
+                                (push (list :id (list :chat-message index line-index)
+                                            :text rendered-with-gutter
+                                            :role role
+                                            :styled-segments
+                                            (list (list :text rendered-with-gutter
+                                                        :role role)))
+                                      entries)))))
+                (unless (= index (1- (length messages)))
+                  (push (list :id (list :chat-gap index)
+                              :text ""
+                              :role :meta)
+                        entries))))
+      (let ((preview-lines (%stream-tool-call-preview-lines chat-state safe-width)))
+        (when (and entries preview-lines)
+          (push (list :id :chat-stream-tool-gap :text "" :role :meta) entries))
+        (dolist (preview preview-lines)
+          (let ((entry (copy-list preview)))
+            (setf (getf entry :text)
+                  (with-left-gutter (getf preview :text "")))
+            (push entry entries))))
+      (if entries
+          (nreverse entries)
+          (list (list :id :chat-empty
+                      :text (with-left-gutter
+                             "No conversation yet. Type below and press Enter.")
+                      :role :system))))))
 
 (defun %chat-text-widget (text id role &key styled-segments)
   (ptui.ui.elements:make-element

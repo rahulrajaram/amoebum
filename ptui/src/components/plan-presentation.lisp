@@ -273,17 +273,20 @@
                          (plan-presentation-step-description selected-step)))
              (lines (list (cons (format nil "Selected step: ~D"
                                         (or (plan-presentation-step-index selected-step) 0))
-                                :system)
-                          (cons (format nil "Rationale snippet: ~A"
-                                        (%safe-string rationale "none"))
-                                :assistant))))
+                                :system))))
         (if file-paths
             (append lines
                     (list (cons "File references:" :system))
                     (loop for path in file-paths
-                          collect (cons (format nil "  - ~A" path) :meta)))
+                          collect (cons (format nil "  - ~A" path) :meta))
+                    (list (cons (format nil "Rationale snippet: ~A"
+                                        (%safe-string rationale "none"))
+                                :assistant)))
             (append lines
-                    (list (cons "File references: none" :meta)))))))
+                    (list (cons "File references: none" :meta)
+                          (cons (format nil "Rationale snippet: ~A"
+                                        (%safe-string rationale "none"))
+                                :assistant)))))))
 
 (defun %latest-failure-entry (entries)
   (loop for entry in (reverse (or entries '()))
@@ -318,17 +321,22 @@
              (list (cons "Suggested recovery actions: none provided." :meta))))))))
 
 (defun %context-panel (selected-step steps entries context-lines context-empty-message)
-  (%make-section-widget
-   "Context Inspector"
-   (append
-    (%selected-step-context-lines selected-step)
-    (%failure-drilldown-lines steps entries)
-    (when context-lines
-      (cons (cons "Summary:" :system)
-            (loop for line in (or context-lines '())
-                  collect (cons (%safe-string line "") :meta)))))
-   :id :plan-presentation-context
-   :empty-message context-empty-message))
+  (let* ((primary-file (car (and selected-step
+                                 (plan-presentation-step-file-paths selected-step))))
+         (title (if (and (stringp primary-file) (plusp (length primary-file)))
+                    (format nil "Context Inspector (~A)" primary-file)
+                    "Context Inspector")))
+    (%make-section-widget
+     title
+     (append
+      (%selected-step-context-lines selected-step)
+      (%failure-drilldown-lines steps entries)
+      (when context-lines
+        (cons (cons "Summary:" :system)
+              (loop for line in (or context-lines '())
+                    collect (cons (%safe-string line "") :meta)))))
+     :id :plan-presentation-context
+     :empty-message context-empty-message)))
 
 (defun make-plan-mode-presentation-widget (&key
                                              steps

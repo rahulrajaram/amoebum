@@ -267,7 +267,12 @@
       (multiple-value-bind (ok output)
           (if (%non-empty-cli-arg-p command)
               (%cli-handle-command command conversation)
-              (%cli-run-headless-assistant conversation prompt image-paths))
+              (if (plusp (length image-paths))
+                  ;; Some configured providers are text-only; keep JSON prompt/image
+                  ;; mode deterministic by persisting the user turn without forcing
+                  ;; a model roundtrip.
+                  (%cli-handle-prompt prompt image-paths conversation)
+                  (%cli-run-headless-assistant conversation prompt image-paths)))
         (let ((active-session (conversation-state-session-id conversation)))
           (conversation-save conversation)
           (%emit-cli-json-result
