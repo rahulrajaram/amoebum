@@ -142,6 +142,22 @@ PAINT-FN signature: (element buffer x y width height)."
               (child (first (ptui.ui.elements:ui-element-children element))))
          (when child
            (%paint-element child buffer (+ x padding) (+ y padding) max-cols max-rows))))
+      (:scroll
+       (let* ((viewport-width (or (getf props :viewport-width) (- max-cols x)))
+              (viewport-height (or (getf props :viewport-height) (- max-rows y)))
+              (offset (max 0 (or (getf props :offset) 0)))
+              (clip-width (max 0 (min viewport-width (- max-cols x))))
+              (clip-height (max 0 (min viewport-height (- max-rows y))))
+              (child (first (ptui.ui.elements:ui-element-children element))))
+         (when (and child (> clip-width 0) (> clip-height 0))
+           (ptui.render.buffer:with-clip
+               (buffer (ptui.core.types:make-rect x y clip-width clip-height))
+             (%paint-element child
+                             buffer
+                             x
+                             (- y offset)
+                             (+ x clip-width)
+                             (+ y clip-height))))))
       (:constraint-layout
        (%paint-constraint-layout element buffer x y max-cols max-rows))
       (:panel

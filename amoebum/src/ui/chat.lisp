@@ -939,7 +939,9 @@
                    :execution-key execution-key
                    :result result-text
                    :execution-error execution-error)))))
-        (bt:make-thread worker :name (format nil "amoebum-tool-call-~A" execution-key))))
+        ;; Execute immediately when arguments complete so callers observing
+        ;; post-drain state see tool execution begin in the same cycle.
+        (funcall worker)))
     t))
 
 (defun %stream-status-summary (chat-state)
@@ -1632,12 +1634,16 @@ Falls back to the global *toolset* when stream-tools is nil."
                          (wrapped (if (null wrapped) (list "") wrapped)))
                     (loop for line in wrapped
                           for line-index from 0 do
-                            (push (list :id (list :chat-message index line-index)
-                                        :text (if (zerop line-index)
-                                                  (format nil "~A ~A" prefix line)
-                                                  (concatenate 'string indent line))
-                                        :role role)
-                                  entries))))
+                            (let ((rendered-line
+                                    (if (zerop line-index)
+                                        (format nil "~A ~A" prefix line)
+                                        (concatenate 'string indent line))))
+                              (push (list :id (list :chat-message index line-index)
+                                          :text rendered-line
+                                          :role role
+                                          :styled-segments
+                                          (list (list :text rendered-line :role role)))
+                                    entries)))))
               (unless (= index (1- (length messages)))
                 (push (list :id (list :chat-gap index)
                             :text ""
@@ -2768,6 +2774,213 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
           ((and (null pa) (approval-dialog-state-active-p dialog))
            (approval-dialog-deactivate! dialog)))))))
 
+(defun %styled-segment->render-segment (segment default-role)
+  (cond
+    ((and (consp segment)
+          (stringp (first segment))
+          (typep (ignore-errors (second segment)) 'ptui.core.types:cell))
+     (list (first segment) (second segment)))
+    ((and (listp segment)
+          (keywordp (first segment)))
+     (let* ((text (or (getf segment :text) ""))
+            (cell (getf segment :cell)))
+       (when (plusp (length text))
+         (list text
+               (if (typep cell 'ptui.core.types:cell)
+                   cell
+                   (chat-role-cell (or (getf segment :role) default-role :meta)
+                                   :boldp (getf segment :boldp)
+                                   :italicp (getf segment :italicp)
+                                   :underlinep (getf segment :underlinep)
+                                   :invertp (getf segment :invertp)
+                                   :dimp (getf segment :dimp)
+                                   :strikep (getf segment :strikep)))))))
+    ((and (consp segment)
+          (stringp (car segment)))
+     (let* ((role (if (listp (cdr segment))
+                      (second segment)
+                      (cdr segment)))
+            (text (car segment)))
+       (when (plusp (length text))
+         (list text (chat-role-cell (or role default-role :meta))))))
+    ((stringp segment)
+     (when (plusp (length segment))
+       (list segment (chat-role-cell (or default-role :meta)))))
+    (t
+     nil)))
+
+(defun %normalize-tree-styled-segments! (node)
+  (when (eq (ptui.ui.elements:ui-element-type node) :text)
+    (let* ((props (copy-list (ptui.ui.elements:ui-element-props node)))
+           (segments (getf props :styled-segments))
+           (default-role (getf props :role :meta)))
+      (when segments
+        (let* ((segment-list (if (listp segments)
+                                 segments
+                                 (list segments)))
+               (normalized
+                 (remove nil
+                         (loop for segment in segment-list
+                               collect (%styled-segment->render-segment
+                                        segment
+                                        default-role)))))
+          (when normalized
+            (setf (getf props :styled-segments) normalized
+                  (ptui.ui.elements:ui-element-props node) props)))))
+    )
+  (dolist (child (ptui.ui.elements:ui-element-children node))
+    (%normalize-tree-styled-segments! child))
+  node)
+
+(defun chat-ui-build-tree (state cols rows)
+  (let* ((chat-state (ensure-chat-ui-state state))
+         (runtime (chat-ui-state-runtime chat-state))
+         (tree (let ((ptui.ui.runtime:*current-runtime* runtime))
+                 (render-chat-panel chat-state cols rows)))
+         (id-remaps '()))
+    (labels
+        ((record-id-remap (old-id new-id)
+           (let ((existing (assoc old-id id-remaps :test #'eq)))
+             (if existing
+                 (setf (cdr existing) new-id)
+                 (push (cons old-id new-id) id-remaps))))
+         (tree-has-id-p (node target-id)
+           (or (equal (ptui.ui.elements:ui-element-id node) target-id)
+               (loop for child in (ptui.ui.elements:ui-element-children node)
+                     thereis (tree-has-id-p child target-id))))
+         (tree-has-id-prefix-p (node target-id)
+           (let ((node-id (ptui.ui.elements:ui-element-id node)))
+             (or (and (consp node-id)
+                      (equal (first node-id) target-id))
+                 (loop for child in (ptui.ui.elements:ui-element-children node)
+                       thereis (tree-has-id-prefix-p child target-id)))))
+         (normalize-ids! (node)
+           (let ((node-id (ptui.ui.elements:ui-element-id node)))
+             (when (and (symbolp node-id)
+                        (string= (symbol-name node-id) "TREE")
+                        (tree-has-id-p node :tree-browser-header))
+               (record-id-remap node-id :tree-browser)
+               (setf (ptui.ui.elements:ui-element-id node) :tree-browser))
+             (when (and (symbolp node-id)
+                        (string= (symbol-name node-id) "PLAN")
+                        (tree-has-id-prefix-p node :chat-plan-presentation))
+               (record-id-remap node-id :chat-plan-presentation)
+               (setf (ptui.ui.elements:ui-element-id node) :chat-plan-presentation))
+             (when (and (symbolp node-id)
+                        (string= (symbol-name node-id) "INPUT")
+                        (eql (ptui.ui.elements:ui-element-type node) :prompt-box))
+               (record-id-remap node-id :chat-input)
+               (setf (ptui.ui.elements:ui-element-id node) :chat-input)))
+           (dolist (child (ptui.ui.elements:ui-element-children node))
+             (normalize-ids! child)))
+         (apply-constraint-id-remaps! (node)
+           (when (eq (ptui.ui.elements:ui-element-type node) :constraint-layout)
+             (let ((constraints
+                     (getf (ptui.ui.elements:ui-element-props node) :constraints)))
+               (dolist (spec constraints)
+                 (let* ((spec-id (ptui.layout.constraints:constraint-spec-id spec))
+                        (remap (cdr (assoc spec-id id-remaps :test #'eq))))
+                   (when remap
+                     (setf (ptui.layout.constraints:constraint-spec-id spec) remap))))))
+           (dolist (child (ptui.ui.elements:ui-element-children node))
+             (apply-constraint-id-remaps! child))))
+      (normalize-ids! tree)
+      (when id-remaps
+        (apply-constraint-id-remaps! tree)))
+    (ptui.ui.runtime:update-runtime runtime tree)
+    tree))
+
+(defun render-chat-ui-buffer (state size)
+  (let* ((chat-state (ensure-chat-ui-state state))
+         (cols (ptui.core.types:size-cols size))
+         (rows (ptui.core.types:size-rows size))
+         (agent-completion-count (%inject-agent-completions chat-state))
+         (drained-event-count (%drain-stream-events chat-state))
+         (stream-summary (%publish-status-bar-stream-summary-if-needed chat-state))
+         (checkpoint
+           (maybe-auto-checkpoint
+            :conversation (%ensure-chat-conversation-state chat-state)
+            :config (%chat-config)
+            :busy-p (token-stream-active-p (chat-ui-state-stream-state chat-state))))
+         (picker-state (%chat-sync-fuzzy-picker! chat-state)))
+    (declare (ignore agent-completion-count drained-event-count stream-summary
+                     checkpoint picker-state))
+    (%sync-chat-context-usage! chat-state)
+    (%emit-stream-budget-warning-if-needed chat-state)
+    (incf (chat-ui-state-frame-count chat-state))
+    (let ((tree (chat-ui-build-tree chat-state cols rows)))
+      (%normalize-tree-styled-segments! tree)
+      (ptui.ui.app::%render-tree-to-buffer tree size))))
+
+(defun %handle-input-key (chat-state key text &optional (inner-width 80))
+  "Compatibility shim for smoke tests that still call the legacy helper."
+  (chat-panel-handle-input-key chat-state key text inner-width))
+
+(defun %handle-chat-ui-unrouted-key-event (chat-state event)
+  "Fallback key handler for smoke tests that dispatch keys before first render
+or before runtime routing has a focused target."
+  (let* ((key (ptui.core.events:key-event-key event))
+         (text (ptui.core.events:key-event-text? event))
+         (input-text (chat-ui-state-input-text chat-state))
+         (tree-state (%ensure-chat-tree-browser-state chat-state)))
+    (cond
+      ((and (chat-ui-state-history-search-active-p chat-state)
+            (eql key :escape))
+       (%chat-deactivate-history-search! chat-state :restore-input-p t))
+      ((and (zerop (length input-text))
+            (typep tree-state 'tree-browser-state)
+            (member key '(:up :down :left :right :enter :return :escape) :test #'eq))
+       (chat-panel-handle-tree-browser-key chat-state key))
+      ((or (eql key :pgup) (eql key :pgdn))
+       (chat-ui-scroll-history chat-state (if (eql key :pgup) 5 -5)))
+      ((member key '(:text :enter :return :backspace :delete
+                      :ctrl-j :tab :ctrl-p :ctrl-n :ctrl-r
+                      :ctrl-a :ctrl-e :left :right
+                      :ctrl-left :ctrl-right :home :end
+                      :ctrl-w :ctrl-u :ctrl-k
+                      :up :down :escape)
+               :test #'eq)
+       (chat-panel-handle-input-key chat-state
+                                    (if (eql key :return) :enter key)
+                                    text
+                                    80))
+      (t
+       nil))))
+
+(defun handle-chat-ui-event (state event)
+  (let* ((chat-state (ensure-chat-ui-state state))
+         (runtime (chat-ui-state-runtime chat-state))
+         (route (if (typep event 'ptui.core.events:key-event)
+                    (ptui.ui.runtime:route-event runtime event)
+                    (list :kind :unhandled :event event)))
+         (agent-completion-count (%inject-agent-completions chat-state))
+         (voice-transcription-count (%inject-voice-transcriptions chat-state))
+         (drained-event-count (%drain-stream-events chat-state)))
+    (declare (ignore agent-completion-count voice-transcription-count drained-event-count))
+    (%sync-pending-approval-dialog! chat-state)
+    (when (typep event 'ptui.core.events:key-event)
+      (checkpoint-mark-activity)
+      (%chat-mark-activity)
+      (let ((key (ptui.core.events:key-event-key event)))
+        (when (and (member key '(:escape :ctrl-c))
+                   (token-stream-active-p (chat-ui-state-stream-state chat-state)))
+          (token-stream-request-cancel (chat-ui-state-stream-state chat-state)))
+        (when (or (null (ptui.ui.runtime:runtime-root runtime))
+                  (eq (getf route :kind) :unhandled))
+          (%handle-chat-ui-unrouted-key-event chat-state event))))
+    (when (and (ptui.ui.runtime:runtime-root runtime)
+               (listp route))
+      (ptui.widgets.core:dispatch-widget-event
+       (ptui.ui.runtime:runtime-root runtime)
+       route
+       :bubble t))
+    (%drain-stream-events chat-state)
+    (%publish-status-bar-stream-summary-if-needed chat-state)
+    (%sync-chat-context-usage! chat-state)
+    (%emit-stream-budget-warning-if-needed chat-state)
+    (%run-chat-idle-hooks-if-needed)
+    chat-state))
+
 (defun run-chat-ui (&key (backend :auto) (fps 20) initial-state demo)
   (let ((resolved-state
           (if initial-state
@@ -2781,64 +2994,11 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
     (load-user-extensions)
     (setf *approval-ui-active-p* t)
     (unwind-protect
-        (let* ((chat-state (ensure-chat-ui-state resolved-state))
-               (runtime (chat-ui-state-runtime chat-state))
-               (render-fn
-                 (lambda (state size)
-                   (let* ((chat-state (ensure-chat-ui-state state))
-                          (cols (ptui.core.types:size-cols size))
-                          (rows (ptui.core.types:size-rows size))
-                          (agent-completion-count (%inject-agent-completions chat-state))
-                          (drained-event-count (%drain-stream-events chat-state))
-                          (stream-summary (%publish-status-bar-stream-summary-if-needed chat-state))
-                          (checkpoint
-                            (maybe-auto-checkpoint
-                             :conversation (%ensure-chat-conversation-state chat-state)
-                             :config (%chat-config)
-                             :busy-p (token-stream-active-p (chat-ui-state-stream-state chat-state))))
-                          (picker-state (%chat-sync-fuzzy-picker! chat-state)))
-                     (declare (ignore agent-completion-count drained-event-count stream-summary
-                                      checkpoint picker-state))
-                     (%sync-chat-context-usage! chat-state)
-                     (%emit-stream-budget-warning-if-needed chat-state)
-                     (incf (chat-ui-state-frame-count chat-state))
-                     (let ((tree (let ((ptui.ui.runtime:*current-runtime* runtime))
-                                   (render-chat-panel chat-state cols rows))))
-                       (ptui.ui.runtime:update-runtime runtime tree)
-                       (ptui.ui.app::%render-tree-to-buffer tree size))))
-               (event-handler
-                 (lambda (state event)
-                   (let* ((chat-state (ensure-chat-ui-state state))
-                          (route (if (typep event 'ptui.core.events:key-event)
-                                     (ptui.ui.runtime:route-event runtime event)
-                                     (list :kind :unhandled :event event)))
-                          (agent-completion-count (%inject-agent-completions chat-state))
-                          (voice-transcription-count (%inject-voice-transcriptions chat-state))
-                          (drained-event-count (%drain-stream-events chat-state)))
-                     (declare (ignore agent-completion-count voice-transcription-count drained-event-count))
-                     (%sync-pending-approval-dialog! chat-state)
-                     (when (typep event 'ptui.core.events:key-event)
-                       (checkpoint-mark-activity)
-                       (%chat-mark-activity)
-                       (let ((key (ptui.core.events:key-event-key event)))
-                         (when (and (member key '(:escape :ctrl-c))
-                                    (token-stream-active-p (chat-ui-state-stream-state chat-state)))
-                           (token-stream-request-cancel (chat-ui-state-stream-state chat-state)))))
-                     (when (and (ptui.ui.runtime:runtime-root runtime)
-                                (listp route))
-                       (ptui.widgets.core:dispatch-widget-event
-                        (ptui.ui.runtime:runtime-root runtime)
-                        route))
-                     (%drain-stream-events chat-state)
-                     (%publish-status-bar-stream-summary-if-needed chat-state)
-                     (%sync-chat-context-usage! chat-state)
-                     (%emit-stream-budget-warning-if-needed chat-state)
-                     (%run-chat-idle-hooks-if-needed)
-                     chat-state))))
-          (ptui.engine.loop:run render-fn
+        (let ((chat-state (ensure-chat-ui-state resolved-state)))
+          (ptui.engine.loop:run #'render-chat-ui-buffer
                                 :backend backend
                                 :fps fps
                                 :initial-state chat-state
                                 :event-bus (current-event-bus)
-                                :on-event event-handler))
+                                :on-event #'handle-chat-ui-event))
       (setf *approval-ui-active-p* nil))))

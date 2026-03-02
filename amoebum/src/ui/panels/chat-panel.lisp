@@ -2,6 +2,37 @@
 ;;; Replaces chat-ui-build-tree + handle-chat-ui-event with declarative layout.
 (in-package :amoebum)
 
+(defun %chat-panel-history-viewport-height (inner-height
+                                            &key
+                                              provider-active-p
+                                              tree-active-p
+                                              plan-active-p
+                                              approval-active-p
+                                              picker-active-p
+                                              stream-active-p)
+  "Compute the actual allocated history region height for chat-panel."
+  (let* ((constraints
+           (remove nil
+                   (list
+                    (when provider-active-p
+                      (ptui.layout.constraints:fixed 'provider 5))
+                    (when tree-active-p
+                      (ptui.layout.constraints:fixed 'tree 10))
+                    (when plan-active-p
+                      (ptui.layout.constraints:fixed 'plan 12))
+                    (ptui.layout.constraints:flex 'history :weight 1)
+                    (when approval-active-p
+                      (ptui.layout.constraints:fixed 'approval 4))
+                    (when picker-active-p
+                      (ptui.layout.constraints:fixed 'picker 8))
+                    (when stream-active-p
+                      (ptui.layout.constraints:fixed 'stream-hint 1))
+                    (ptui.layout.constraints:fixed 'input 4)
+                    (ptui.layout.constraints:fixed 'status 1))))
+         (solved (ptui.layout.solver:solve-constraints constraints
+                                                       (max 0 inner-height))))
+    (max 0 (or (cdr (assoc 'history solved :test #'eq)) 0))))
+
 (ptui.ui.panel:defpanel chat-panel (chat-state cols rows)
   (:data
     (inner-width (max 20 (- cols 2)) :deps (cols))
@@ -20,7 +51,18 @@
     (plan-widget (%chat-plan-presentation-widget plan-state chat-state) :deps (plan-state chat-state))
     (plan-active-p (not (null plan-widget)) :deps (plan-widget))
     (provider-visible-p (chat-ui-state-provider-dashboard-visible-p chat-state)
-      :deps (chat-state)))
+      :deps (chat-state))
+    (history-viewport-height
+      (%chat-panel-history-viewport-height
+       inner-height
+       :provider-active-p provider-visible-p
+       :tree-active-p tree-active-p
+       :plan-active-p plan-active-p
+       :approval-active-p approval-active-p
+       :picker-active-p picker-active-p
+       :stream-active-p stream-active-p)
+      :deps (inner-height provider-visible-p tree-active-p plan-active-p
+             approval-active-p picker-active-p stream-active-p)))
   (:effects
     (sync-approval (%sync-pending-approval-dialog! chat-state)
       :deps (chat-state))
@@ -56,7 +98,7 @@
                :updated-at (provider-health-last-updated-at))))
       (tree :fixed 10 :when tree-active-p
         (make-tree-browser-widget tree-state))
-      (plan :fixed 6 :when plan-active-p
+      (plan :fixed 12 :when plan-active-p
         plan-widget)
       (history :flex 1
         (let* ((message-lines (%message-line-entries chat-state
@@ -78,7 +120,7 @@
                   (ptui.widgets.core:widget-measure history-stack)))
                (scrollback (chat-ui-state-message-scrollback-lines chat-state)))
           (multiple-value-bind (history-offset new-scrollback max-scrollback)
-              (%compute-scroll-offset history-total-lines inner-height scrollback)
+              (%compute-scroll-offset history-total-lines history-viewport-height scrollback)
             (setf (chat-ui-state-message-scrollback-lines chat-state) new-scrollback
                   (chat-ui-state-max-message-scrollback-lines chat-state) max-scrollback)
             (when stream-active-p
@@ -88,7 +130,7 @@
              history-stack
              :id :chat-history-scroll
              :viewport-width inner-width
-             :viewport-height inner-height
+             :viewport-height history-viewport-height
              :offset history-offset))))
       (approval :fixed 4 :when approval-active-p
         (make-approval-dialog-widget
@@ -140,15 +182,44 @@
       (:enter (chat-panel-handle-tree-browser-key chat-state :enter))
       (:escape (chat-panel-handle-tree-browser-key chat-state :escape)))
     (:mode :default
+      (:text (chat-panel-handle-input-key
+               chat-state
+               :text
+               (ptui.core.events:key-event-text? ptui.ui.panel::event)
+               inner-width))
+      (:enter (chat-panel-handle-input-key chat-state :enter nil inner-width))
+      (:backspace (chat-panel-handle-input-key chat-state :backspace nil inner-width))
+      (:delete (chat-panel-handle-input-key chat-state :delete nil inner-width))
+      (:ctrl-j (chat-panel-handle-input-key chat-state :ctrl-j nil inner-width))
+      (:tab (chat-panel-handle-input-key chat-state :tab nil inner-width))
+      (:ctrl-p (chat-panel-handle-input-key chat-state :ctrl-p nil inner-width))
+      (:ctrl-n (chat-panel-handle-input-key chat-state :ctrl-n nil inner-width))
+      (:ctrl-r (chat-panel-handle-input-key chat-state :ctrl-r nil inner-width))
+      (:ctrl-a (chat-panel-handle-input-key chat-state :ctrl-a nil inner-width))
+      (:ctrl-e (chat-panel-handle-input-key chat-state :ctrl-e nil inner-width))
+      (:left (chat-panel-handle-input-key chat-state :left nil inner-width))
+      (:right (chat-panel-handle-input-key chat-state :right nil inner-width))
+      (:ctrl-left (chat-panel-handle-input-key chat-state :ctrl-left nil inner-width))
+      (:ctrl-right (chat-panel-handle-input-key chat-state :ctrl-right nil inner-width))
+      (:home (chat-panel-handle-input-key chat-state :home nil inner-width))
+      (:end (chat-panel-handle-input-key chat-state :end nil inner-width))
+      (:ctrl-w (chat-panel-handle-input-key chat-state :ctrl-w nil inner-width))
+      (:ctrl-u (chat-panel-handle-input-key chat-state :ctrl-u nil inner-width))
+      (:ctrl-k (chat-panel-handle-input-key chat-state :ctrl-k nil inner-width))
       (:up (let ((has-text (plusp (length (chat-ui-state-input-text chat-state)))))
-             (unless has-text (chat-ui-scroll-history chat-state 1))))
+             (if has-text
+                 (chat-panel-handle-input-key chat-state :up nil inner-width)
+                 (chat-ui-scroll-history chat-state 1))))
       (:down (let ((has-text (plusp (length (chat-ui-state-input-text chat-state)))))
-               (unless has-text (chat-ui-scroll-history chat-state -1))))
+               (if has-text
+                   (chat-panel-handle-input-key chat-state :down nil inner-width)
+                   (chat-ui-scroll-history chat-state -1))))
       (:pgup (chat-ui-scroll-history chat-state 5))
       (:pgdn (chat-ui-scroll-history chat-state -5))
       (:ctrl-c (when stream-active-p
                   (token-stream-request-cancel
                    (chat-ui-state-stream-state chat-state))))
-      (:escape (when stream-active-p
-                 (token-stream-request-cancel
-                  (chat-ui-state-stream-state chat-state)))))))
+      (:escape (if stream-active-p
+                   (token-stream-request-cancel
+                    (chat-ui-state-stream-state chat-state))
+                   (chat-panel-handle-input-key chat-state :escape nil inner-width))))))

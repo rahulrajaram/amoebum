@@ -22,6 +22,10 @@
        (if (chat-ui-state-history-search-active-p state)
            (%chat-deactivate-history-search! state :restore-input-p t)
            (%chat-activate-history-search! state)))
+      ((eql key :escape)
+       (when (chat-ui-state-history-search-active-p state)
+         (%chat-deactivate-history-search! state :restore-input-p t))
+       t)
       ((eql key :ctrl-j)
        (let ((new-text (%grapheme-insert-at input-text pos (string #\Newline))))
          (chat-ui-set-input state new-text :cursor-position (1+ pos))))
@@ -161,7 +165,7 @@
     (:text (chat-panel-handle-input-key
              chat-state
              :text
-             (ptui.core.events:key-event-text? event)
+             (ptui.core.events:key-event-text? ptui.ui.panel::event)
              inner-width))
     (:enter (chat-panel-handle-input-key chat-state :enter nil inner-width))
     (:backspace (chat-panel-handle-input-key chat-state :backspace nil inner-width))

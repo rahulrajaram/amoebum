@@ -1519,6 +1519,9 @@
            #:chat-ui-set-input
            #:chat-ui-submit-input
            #:chat-ui-scroll-history
+           #:chat-ui-build-tree
+           #:render-chat-ui-buffer
+           #:handle-chat-ui-event
            #:chat-role-prefix
            #:chat-role-cell
            #:run-chat-ui
