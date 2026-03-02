@@ -139,8 +139,8 @@ Each section is the cdr of the (:keyword ...) form, or NIL if absent."
           (:style (setf style (%parse-panel-styles (cdr form) panel-name)))
           (t (%signal-syntax-error panel-name (car form)
                                    (format nil "Unknown section keyword ~S."
-                                           (car form))))))
-    (values state data layout keys effects context slots style))))
+                                           (car form)))))))
+    (values state data layout keys effects context slots style)))
 (defun %compile-panel-styles (style-specs)
   "Compile style specs into a region-style lookup function.
 Returns NIL when no styles are defined."
@@ -159,12 +159,12 @@ Returns NIL when no styles are defined."
                               (format nil "Invalid :layout form ~S." container-form)))
       (loop for region in (cdr container-form)
             for region-name = (first region)
-            when (gethash region-name seen)
-              do (%signal-syntax-error panel-name :layout
-                                      (format nil "Duplicate region name ~S in :layout."
-                                              region-name))
+            do (when (gethash region-name seen)
+                 (%signal-syntax-error panel-name :layout
+                                       (format nil "Duplicate region name ~S in :layout."
+                                               region-name)))
             do (setf (gethash region-name seen) t)
-               (collect region-name)))))
+            collect region-name))))
 
 (defun %validate-style-regions (panel-name layout-regions style-specs)
   (dolist (style-spec style-specs)
@@ -451,7 +451,7 @@ the child in a box widget."
                             :invertp (getf %style :inverse)
                             :dimp (getf %style :dim)))
                    %child-node))
-            %child-node))))
+            '%child-node))))
 
 (defun %compile-layout-tree (layout-forms &optional region-style-fn)
   "Compile :layout section into constraint-layout element construction.
