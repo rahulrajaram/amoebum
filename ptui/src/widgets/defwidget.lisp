@@ -58,6 +58,61 @@
 (defparameter +lambda-list-keywords+
   '(&optional &rest &body &key &allow-other-keys &aux &whole &environment))
 
+(defun %lambda-keyword-p (symbol)
+  (member symbol +lambda-list-keywords+))
+
+(defun %make-keyword-symbol (name)
+  (intern (symbol-name name) :keyword))
+
+(defun %split-lambda-list (name lambda-list)
+  (unless (listp lambda-list)
+    (error "DEFWIDGET ~S requires a lambda list. Got: ~S"
+           name lambda-list))
+  (let ((params '())
+        (invocation '())
+        (seen (make-hash-table :test #'eq))
+        (section :required))
+    (labels ((note-param (entry)
+               (when (gethash entry seen)
+                 (error "DEFWIDGET ~S has duplicate parameter names: ~S"
+                        name entry))
+               (setf (gethash entry seen) t)
+               (push entry params))
+             (unsupported (&rest details)
+               (error "DEFWIDGET ~S only supports required symbols and &key params. ~A"
+                      name (format nil "~A" details))))
+      (dolist (entry lambda-list)
+        (cond
+          ((eq entry '&key) (setf section :key))
+          ((eq section :required)
+           (cond
+             ((and (symbolp entry) (not (%lambda-keyword-p entry)))
+              (note-param entry)
+              (push entry invocation))
+             ((%lambda-keyword-p entry)
+              (unsupported "Found unsupported keyword in lambda list.")
+              )
+             (t
+              (unsupported (format nil "Invalid entry ~S in lambda list." entry)))))
+          ((eq section :key)
+           (cond
+             ((symbolp entry)
+              (note-param entry)
+              (push (%make-keyword-symbol entry) invocation)
+              (push entry invocation))
+             ((consp entry)
+              (let ((key-name (first entry)))
+                (unless (symbolp key-name)
+                  (unsupported (format nil "Invalid key spec ~S in lambda list." entry)))
+                (note-param key-name)
+                (push (%make-keyword-symbol key-name) invocation)
+                (push key-name invocation)))
+             (t
+              (unsupported (format nil "Invalid key entry ~S in lambda list." entry)))))
+          (t
+           (unsupported (format nil "Invalid section state while parsing lambda list."))))))
+    (values (nreverse params) (nreverse invocation))))
+
 (defun %make-widget-cache (memoize-mode arity)
   (let ((test (if (and (eq memoize-mode :eq) (= arity 1))
                   'eq
@@ -68,19 +123,7 @@
     (make-hash-table :test test)))
 
 (defun %validate-lambda-list (name lambda-list)
-  (unless (listp lambda-list)
-    (error "DEFWIDGET ~S requires a simple required-arguments lambda list. Got: ~S"
-           name lambda-list))
-  (dolist (entry lambda-list)
-    (unless (and (symbolp entry)
-                 (not (member entry +lambda-list-keywords+)))
-      (error "DEFWIDGET ~S only supports required symbol parameters. Invalid entry: ~S"
-             name entry)))
-  (let ((dupes (set-difference lambda-list
-                               (remove-duplicates lambda-list :test #'eq))))
-    (when dupes
-      (error "DEFWIDGET ~S has duplicate parameter names: ~S"
-             name (remove-duplicates dupes :test #'eq)))))
+  (%split-lambda-list name lambda-list))
 
 (defun %known-widget-root-form-p (form lambda-list)
   (cond
@@ -453,74 +496,75 @@
 
 (defmacro defwidget (name lambda-list &body forms)
   (check-type name symbol)
-  (%validate-lambda-list name lambda-list)
-  (multiple-value-bind (docstring memoize-mode focusable focusable-specified-p body)
-      (%parse-defwidget-options name forms)
-    (%warn-unused-widget-props name lambda-list body)
-    (%validate-widget-root-form name lambda-list body)
-    (let* ((widget-package (or (symbol-package name) *package*))
-           (render-name (intern (format nil "RENDER-~A" (symbol-name name))
-                                widget-package))
-           (vstack-sym (intern "VSTACK" widget-package))
-           (hstack-sym (intern "HSTACK" widget-package))
-           (text-sym (intern "TEXT" widget-package))
-           (box-sym (intern "BOX" widget-package))
-           (scroll-sym (intern "SCROLL" widget-package))
-           (input-sym (intern "INPUT" widget-package))
-           (spacer-sym (intern "SPACER" widget-package))
-           (when-widget-sym (intern "WHEN-WIDGET" widget-package))
-           (map-widget-sym (intern "MAP-WIDGET" widget-package))
-          (arity (length lambda-list))
-          ;; I270: detect :key or :id in lambda-list for instance-key
-          (key-prop (find :key lambda-list :test #'string-equal :key #'symbol-name))
-          (id-prop (find :id lambda-list :test #'string-equal :key #'symbol-name)))
-      `(progn
-         (defun ,render-name ,lambda-list
-           ,@(when docstring (list docstring))
-           (macrolet ((,vstack-sym (&rest children)
-                        `(ptui.widgets.defwidget::%widget-vstack ,@children))
-                      (,hstack-sym (&rest children)
-                        `(ptui.widgets.defwidget::%widget-hstack ,@children))
-                      (,text-sym (content &rest args)
-                        `(ptui.widgets.defwidget::%widget-text ,content ,@args))
-                      (,box-sym (child &rest args)
-                        `(ptui.widgets.defwidget::%widget-box ,child ,@args))
-                      (,scroll-sym (child &rest args)
-                        `(ptui.widgets.defwidget::%widget-scroll ,child ,@args))
-                      (,input-sym (value &rest args)
-                        `(ptui.widgets.defwidget::%widget-input ,value ,@args))
-                      (,spacer-sym (width height)
-                        `(ptui.widgets.defwidget::%widget-spacer ,width ,height))
-                      (,when-widget-sym (predicate &body children)
-                        `(if ,predicate
-                             (ptui.widgets.defwidget::%normalize-widget-children ,@children)
-                             nil))
-                      (,map-widget-sym (fn sequence)
-                        `(mapcar ,fn ,sequence)))
-             ;; I270: Bind widget context around body for hooks support
-             (let ((ptui.ui.runtime:*current-widget-context*
-                     (ptui.ui.runtime::%make-widget-context
-                      ',name
-                      ,(cond
-                         (key-prop key-prop)
-                         (id-prop id-prop)
-                         (t `',name))
-                      ptui.ui.runtime:*current-runtime*)))
-               (ptui.widgets.defwidget::%finalize-widget-result
-                ',name
-                (progn ,@body)
-                ,focusable-specified-p
-                ,focusable))))
-         (defun ,name ,lambda-list
-           (ptui.widgets.defwidget::%invoke-widget
-            ',name
-            (list ,@lambda-list)
-            (lambda ()
-              (,render-name ,@lambda-list))))
-         (eval-when (:load-toplevel :execute)
-           (ptui.widgets.defwidget:register-widget
-            ',name
-            #',render-name
-            :memoize ,memoize-mode
-            :arity ,arity))
-         ',name))))
+  (multiple-value-bind (param-vars param-invocation)
+      (%split-lambda-list name lambda-list)
+    (multiple-value-bind (docstring memoize-mode focusable focusable-specified-p body)
+        (%parse-defwidget-options name forms)
+      (%warn-unused-widget-props name param-vars body)
+      (%validate-widget-root-form name param-vars body)
+      (let* ((widget-package (or (symbol-package name) *package*))
+             (render-name (intern (format nil "RENDER-~A" (symbol-name name))
+                                  widget-package))
+             (vstack-sym (intern "VSTACK" widget-package))
+             (hstack-sym (intern "HSTACK" widget-package))
+             (text-sym (intern "TEXT" widget-package))
+             (box-sym (intern "BOX" widget-package))
+             (scroll-sym (intern "SCROLL" widget-package))
+             (input-sym (intern "INPUT" widget-package))
+             (spacer-sym (intern "SPACER" widget-package))
+             (when-widget-sym (intern "WHEN-WIDGET" widget-package))
+             (map-widget-sym (intern "MAP-WIDGET" widget-package))
+             (arity (length param-vars))
+             ;; I270: detect :key or :id in lambda-list for instance-key
+             (key-prop (find :key param-vars :test #'string-equal :key #'symbol-name))
+             (id-prop (find :id param-vars :test #'string-equal :key #'symbol-name)))
+        `(progn
+           (defun ,render-name ,lambda-list
+             ,@(when docstring (list docstring))
+             (macrolet ((,vstack-sym (&rest children)
+                          `(ptui.widgets.defwidget::%widget-vstack ,@children))
+                        (,hstack-sym (&rest children)
+                          `(ptui.widgets.defwidget::%widget-hstack ,@children))
+                        (,text-sym (content &rest args)
+                          `(ptui.widgets.defwidget::%widget-text ,content ,@args))
+                        (,box-sym (child &rest args)
+                          `(ptui.widgets.defwidget::%widget-box ,child ,@args))
+                        (,scroll-sym (child &rest args)
+                          `(ptui.widgets.defwidget::%widget-scroll ,child ,@args))
+                        (,input-sym (value &rest args)
+                          `(ptui.widgets.defwidget::%widget-input ,value ,@args))
+                        (,spacer-sym (width height)
+                          `(ptui.widgets.defwidget::%widget-spacer ,width ,height))
+                        (,when-widget-sym (predicate &body children)
+                          `(if ,predicate
+                               (ptui.widgets.defwidget::%normalize-widget-children ,@children)
+                               nil))
+                        (,map-widget-sym (fn sequence)
+                          `(mapcar ,fn ,sequence)))
+               ;; I270: Bind widget context around body for hooks support
+               (let ((ptui.ui.runtime:*current-widget-context*
+                       (ptui.ui.runtime::%make-widget-context
+                        ',name
+                        ,(cond
+                           (key-prop key-prop)
+                           (id-prop id-prop)
+                           (t `',name))
+                        ptui.ui.runtime:*current-runtime*)))
+                 (ptui.widgets.defwidget::%finalize-widget-result
+                  ',name
+                  (progn ,@body)
+                  ,focusable-specified-p
+                  ,focusable))))
+           (defun ,name ,lambda-list
+             (ptui.widgets.defwidget::%invoke-widget
+              ',name
+              (list ,@param-vars)
+              (lambda ()
+                (,render-name ,@param-invocation))))
+           (eval-when (:load-toplevel :execute)
+             (ptui.widgets.defwidget:register-widget
+              ',name
+              #',render-name
+              :memoize ,memoize-mode
+              :arity ,arity))
+           ',name)))))

@@ -46,15 +46,26 @@
                 :height (max 0 height))
    :children '()))
 
-(defun make-box-widget (child &key id key (padding 0) (borderp nil))
-  "Create a box container element with optional padding and border."
-  (ptui.ui.elements:make-element
-   :box
-   :id id
-   :key key
-   :props (list :padding (max 0 padding)
-                :borderp (not (null borderp)))
-   :children (if child (list child) '())))
+(defun make-box-widget (child &key id key (padding 0) (borderp nil) border fg bg attrs)
+  "Create a box container element with optional padding and style.
+Accepted BORDER values are :rounded, :single, :double, :none, and nil/false.
+For compatibility, BORDERP continues to request default :rounded border when BORDER is NIL."
+  (let* ((border-value (cond
+                         ((or (not (null borderp)) (and border (not (eq border :none))))
+                          (or border :rounded))
+                         (t nil)))
+         (props (list :padding (max 0 padding)
+                      :border border-value
+                      :borderp (and border-value (not (eq border-value :none)))
+                      :fg fg
+                      :bg bg
+                      :attrs attrs)))
+    (ptui.ui.elements:make-element
+     :box
+     :id id
+     :key key
+     :props props
+     :children (if child (list child) '()))))
 
 (defun make-stack-widget (children &key id key (direction :column) (gap 0))
   "Create a stack layout element. DIRECTION is :row or :column."
@@ -143,7 +154,11 @@
        (let* ((child (first (ptui.ui.elements:ui-element-children element)))
               (child-size (if child (widget-measure child) (%layout-size 0 0)))
               (padding (%prop element :padding 0))
-              (borderp (%prop element :borderp nil))
+              (border (%prop element :border nil))
+              (border-style (if border (or border :rounded) nil))
+              (borderp (and border-style
+                            (not (eq border-style :none))
+                            t))
               (border-extra (if borderp 2 0))
               (pad-extra (* 2 padding)))
          (%layout-size (+ (ptui.layout:layout-size-width child-size) pad-extra border-extra)

@@ -2,7 +2,7 @@
   (:use :cl)
   (:export
    ;; geometry
-   #:size #:make-size #:size-cols #:size-rows
+   #:size #:make-size #:size-cols #:size-rows #:size-width #:size-height
    #:rect #:make-rect #:rect-x #:rect-y #:rect-w #:rect-h
    #:insets #:make-insets #:insets-top #:insets-right #:insets-bottom #:insets-left
 
@@ -30,6 +30,16 @@ An empty string is reserved for width-continuation cells."
 (defstruct (size (:constructor make-size (cols rows)))
   (cols 0 :type index)
   (rows 0 :type index))
+
+(defun size-width (size)
+  "Return the width component of SIZE.
+This is an alias for `size-cols` to offer consumer-facing symmetry."
+  (size-cols size))
+
+(defun size-height (size)
+  "Return the height component of SIZE.
+This is an alias for `size-rows` to offer consumer-facing symmetry."
+  (size-rows size))
 
 (defstruct (rect (:constructor make-rect (x y w h)))
   (x 0 :type fixnum)

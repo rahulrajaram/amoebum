@@ -138,7 +138,7 @@
   :description "PTUI app shell (defapp macro with lifecycle/interceptors)"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui/hooks" "ptui/widgets" "ptui/engine" "ptui/render")
+  :depends-on ("ptui/hooks" "ptui/widgets" "ptui/engine" "ptui/render" "ptui/constraints")
   :serial t
   :components
   ((:file "src/ui/app")))
@@ -157,7 +157,7 @@
   :description "PTUI view primitives (list-view, text-input, status-bar)"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui/widgets" "ptui/hooks" "ptui/constraints")
+  :depends-on ("ptui/app" "ptui/widgets" "ptui/hooks" "ptui/constraints")
   :serial t
   :components
   ((:file "src/views/primitives")
@@ -170,7 +170,17 @@
   :depends-on ("ptui/views" "ptui/hooks" "ptui/constraints" "ptui/app")
   :serial t
   :components
-  ((:file "src/ui/panel")))
+  ((:file "src/ui/panel")
+   (:file "src/ui/definition-loader")))
+
+(asdf:defsystem "ptui/api"
+  :description "PTUI public consumer API re-export"
+  :author "Ralph"
+  :license "MIT"
+  :depends-on ("ptui/app" "ptui/panel")
+  :serial t
+  :components
+  ((:file "src/api")))
 
 (asdf:defsystem "ptui/components"
   :description "PTUI higher-level composable widgets"
@@ -222,6 +232,7 @@
    (:file "src/core/events")
    (:file "src/util/log")
    (:file "src/util/time")
+   (:file "src/search/glob")
    (:file "src/search/engine")
    (:file "src/runtime/queue")
    (:file "src/runtime/event-bus")
@@ -236,9 +247,11 @@
    (:file "src/text/grapheme")
    (:file "src/text/width")
    (:file "src/text/layout")
-   (:file "src/search/glob")
    (:file "src/layout/api")
    #+ptui-layout-yoga (:file "src/layout/yoga")
+   (:file "src/layout/constraints")
+   (:file "src/layout/solver")
+   (:file "src/layout/constraint-layout")
    (:file "src/ui/elements")
    (:file "src/ui/runtime")
    (:file "src/widgets/core")
@@ -251,12 +264,11 @@
    (:file "src/engine/loop")
    (:file "src/ui/hooks")
    (:file "src/ui/app")
-   (:file "src/layout/constraints")
-   (:file "src/layout/solver")
-   (:file "src/layout/constraint-layout")
    (:file "src/views/primitives")
    (:file "src/views/paint")
-   (:file "src/ui/panel")))
+   (:file "src/ui/panel")
+   (:file "src/ui/definition-loader")
+   (:file "src/api")))
 
 (asdf:defsystem "ptui/components-standalone"
   :description "PTUI component library on top of ptui/standalone"
@@ -277,7 +289,7 @@
   :description "PTUI umbrella system"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui/core" "ptui/util" "ptui/search" "ptui/runtime" "ptui/term" "ptui/text" "ptui/layout" "ptui/constraints" "ptui/ui" "ptui/widgets" "ptui/render" "ptui/backend" "ptui/engine" "ptui/hooks" "ptui/app" "ptui/views" "ptui/panel")
+  :depends-on ("ptui/core" "ptui/util" "ptui/search" "ptui/runtime" "ptui/term" "ptui/text" "ptui/layout" "ptui/constraints" "ptui/ui" "ptui/widgets" "ptui/render" "ptui/backend" "ptui/engine" "ptui/hooks" "ptui/app" "ptui/views" "ptui/panel" "ptui/api")
   :serial t
   :components ())
 
@@ -290,7 +302,10 @@
   :components
   ((:file "examples/metrics-dashboard")
    (:file "examples/atop-dashboard")
-   (:file "examples/panel-demo")))
+   (:file "examples/panel-demo")
+   (:file "examples/ops-wallboard")
+   (:file "examples/release-tracker")
+   (:file "examples/focus-console")))
 
 (asdf:defsystem "ptui/examples-standalone"
   :description "PTUI examples (standalone dependency)"
@@ -300,7 +315,8 @@
   :serial t
   :components
   ((:file "examples/metrics-dashboard")
-   (:file "examples/atop-dashboard")))
+   (:file "examples/atop-dashboard")
+   (:file "examples/panel-demo")))
 
 (asdf:defsystem "ptui/test-support"
   :description "PTUI snapshot testing framework"
@@ -338,4 +354,5 @@
    (:file "test/backend-test")
    (:file "test/input-test")
    (:file "test/panel-test")
+   (:file "test/definition-loader-test")
    (:file "test/engine-test")))

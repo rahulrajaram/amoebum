@@ -134,5 +134,21 @@
     (ptui.views.paint:paint-list-view elem buf 0 0 40 5)
     (is (not (null buf)))))
 
+(test paint-text-widget-honors-styled-segments
+  (let* ((accent (ptui.core.color:make-color-rgb 255 0 0))
+         (style-cell (ptui.core.types:make-cell
+                      " "
+                      accent
+                      ptui.core.color:color-default
+                      (ptui.core.types:make-attrs :boldp t)))
+         (elem (ptui.widgets.core:make-text-widget
+                "A"
+                :styled-segments (list (list "A" style-cell))))
+         (buf (ptui.render.buffer:make-buffer 4 1)))
+    (ptui.ui.app::%paint-element elem buf 0 0 4 1)
+    (let ((cell (svref (ptui.core.types:cell-buffer-cells buf) 0)))
+      (is (equalp (ptui.core.types:cell-fg cell) accent))
+      (is (ptui.core.types:attrs-boldp (ptui.core.types:cell-attrs cell))))))
+
 (defun run-all ()
   (run! 'views-suite))

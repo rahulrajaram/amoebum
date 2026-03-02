@@ -1,8 +1,9 @@
 name: ci
 
-on:
+'on':
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   linux:
@@ -17,7 +18,11 @@ jobs:
 
       - name: Lint implementation plan contract
         run: |
-          ./bin/yarli-lint-implementation-plan.sh
+          if [ -f IMPLEMENTATION_PLAN.md ]; then
+            ./bin/yarli-lint-implementation-plan.sh
+          else
+            echo "Skipping plan lint: IMPLEMENTATION_PLAN.md is not tracked in CI."
+          fi
 
       - name: Kernel gates
         run: |

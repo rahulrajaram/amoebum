@@ -2,6 +2,7 @@
   (:use :cl)
   (:export
    #:defpanel
+   #:embed-panel
    #:defpanel-syntax-error
    #:defpanel-syntax-warning
    #:defpanel-syntax-error-panel-name
@@ -16,12 +17,13 @@
    #:%compile-panel-layout
    #:%compile-panel-keys
    #:%compile-panel-effects
+   #:%compile-panel-styles
    #:%parse-panel-sections))
 
 (in-package :ptui.ui.panel)
 
 (defparameter +panel-section-keywords+
-  '(:state :data :layout :keys :effects :context))
+  '(:state :data :layout :keys :effects :context :slots :style))
 
 (define-condition defpanel-syntax-error (error)
   ((panel-name :initarg :panel-name
@@ -62,27 +64,142 @@
         :detail detail))
 
 ;;; ===================================================================
+;;; I316: defpanel :style parsing
+;;; ===================================================================
+
+(defun %style-key-valid-p (key)
+  (member key '(:border :fg :bg :bold :italic :underline :inverse :dim) :test #'eq))
+
+(defun %style-border-valid-p (border)
+  (member border '(:rounded :single :double :none) :test #'eq))
+
+(defun %parse-style-spec (spec panel-name)
+  (unless (consp spec)
+    (%signal-syntax-error panel-name :style
+                          (format nil "Invalid style spec ~S." spec)))
+  (let ((region-name (first spec))
+        (options (cdr spec)))
+    (unless (symbolp region-name)
+      (%signal-syntax-error panel-name :style
+                            (format nil "Invalid style spec ~S." spec)))
+    (when (oddp (length options))
+      (%signal-syntax-error panel-name :style
+                            (format nil "Invalid style options in spec ~S." spec)))
+    (loop for (key value) on options by #'cddr
+          unless (%style-key-valid-p key)
+            do (%signal-syntax-error panel-name :style
+                                     (format nil "Invalid style option ~S." key)))
+    (when (and (getf options :border)
+               (not (%style-border-valid-p (getf options :border))))
+      (%signal-syntax-error panel-name :style
+                            (format nil "Invalid border style ~S." (getf options :border))))
+    (destructuring-bind (region-name &key border fg bg bold italic underline inverse dim &allow-other-keys) spec
+      (declare (ignore region-name))
+      (let ((style '()))
+        (when border
+          (setf style (append style (list :border border))))
+        (when fg
+          (setf style (append style (list :fg fg))))
+        (when bg
+          (setf style (append style (list :bg bg))))
+        (when bold
+          (setf style (append style (list :bold bold))))
+        (when italic
+          (setf style (append style (list :italic italic))))
+        (when underline
+          (setf style (append style (list :underline underline))))
+        (when inverse
+          (setf style (append style (list :inverse inverse))))
+        (when dim
+          (setf style (append style (list :dim dim))))
+        (cons (first spec) style)))))
+
+(defun %parse-panel-styles (style-section panel-name)
+  (loop for style-spec in style-section
+        collect (%parse-style-spec style-spec panel-name)))
+
+;;; ===================================================================
 ;;; I288: defpanel State and Data Compilation
 ;;; ===================================================================
 
 (defun %parse-panel-sections (body &optional panel-name)
-  "Parse defpanel body into (values state data layout keys effects context).
+  "Parse defpanel body into (values state data layout keys effects context slots style).
 Each section is the cdr of the (:keyword ...) form, or NIL if absent."
-  (let (state data layout keys effects context)
+  (let (state data layout keys effects context slots style)
     (dolist (form body)
       (when (and (consp form) (keywordp (car form)))
-        (if (member (car form) +panel-section-keywords+)
-            (case (car form)
-              (:state (setf state (cdr form)))
-              (:data (setf data (cdr form)))
-              (:layout (setf layout (cdr form)))
-              (:keys (setf keys (cdr form)))
-              (:effects (setf effects (cdr form)))
-              (:context (setf context (cdr form))))
-            (%signal-syntax-error panel-name (car form)
-                                  (format nil "Unknown section keyword ~S."
-                                          (car form))))))
-    (values state data layout keys effects context)))
+        (case (car form)
+          (:state (setf state (cdr form)))
+          (:data (setf data (cdr form)))
+          (:layout (setf layout (cdr form)))
+          (:keys (setf keys (cdr form)))
+          (:effects (setf effects (cdr form)))
+          (:context (setf context (cdr form)))
+          (:slots (setf slots (cdr form)))
+          (:style (setf style (%parse-panel-styles (cdr form) panel-name)))
+          (t (%signal-syntax-error panel-name (car form)
+                                   (format nil "Unknown section keyword ~S."
+                                           (car form))))))
+    (values state data layout keys effects context slots style))))
+(defun %compile-panel-styles (style-specs)
+  "Compile style specs into a region-style lookup function.
+Returns NIL when no styles are defined."
+  (when style-specs
+    `(let ((%styles ',style-specs))
+       (lambda (region-name)
+         (cdr (assoc region-name %styles :test #'eq))))))
+
+(defun %collect-layout-regions (panel-name layout-forms)
+  (when (and layout-forms (consp layout-forms))
+    (let ((container-form (first layout-forms))
+          (seen (make-hash-table :test #'eq)))
+      (unless (and (consp container-form)
+                   (member (car container-form) '(:column :row)))
+        (%signal-syntax-error panel-name :layout
+                              (format nil "Invalid :layout form ~S." container-form)))
+      (loop for region in (cdr container-form)
+            for region-name = (first region)
+            when (gethash region-name seen)
+              do (%signal-syntax-error panel-name :layout
+                                      (format nil "Duplicate region name ~S in :layout."
+                                              region-name))
+            do (setf (gethash region-name seen) t)
+               (collect region-name)))))
+
+(defun %validate-style-regions (panel-name layout-regions style-specs)
+  (dolist (style-spec style-specs)
+    (let ((region-name (car style-spec)))
+      (unless (member region-name layout-regions :test #'eq)
+        (%signal-syntax-error panel-name :style
+                              (format nil "Unknown style region ~S." region-name))))))
+
+;;; ===================================================================
+;;; I317: defpanel Slots and Composition Helpers
+;;; ===================================================================
+
+(defun %slot-default (slot-spec)
+  "Extract :default value from a slot spec."
+  (let ((plist (cdr slot-spec)))
+    (getf plist :default nil)))
+
+(defun %compile-slot-params (panel-name slot-specs)
+  "Compile :slots entries into &key argument specs."
+  (loop for slot-spec in slot-specs
+        for slot-name = (first slot-spec)
+        unless (symbolp slot-name)
+          do (%signal-syntax-error panel-name :slots
+                                   (format nil "Invalid slot spec ~S." slot-spec))
+        collect `(,slot-name ,(%slot-default slot-spec))))
+
+(defun %embed-panel-render-name (panel)
+  (intern (format nil "RENDER-~A" (symbol-name panel))
+          (or (symbol-package panel) *package*)))
+
+(defmacro embed-panel (child-panel &rest kwargs)
+  "Embed a child panel invocation in a layout.
+Expands to the child render function call with keyword args."
+  (let ((child-render (%embed-panel-render-name child-panel)))
+    `(,child-render ,@kwargs)))
 
 (defun %compile-state-binding (spec)
   "Compile a single (:state (name init &key type)) into use-state binding forms.
@@ -304,22 +421,39 @@ Handles optional :when clause: (name :fixed N :when pred body...)."
         (first body)
         `(progn ,@body))))
 
-(defun %compile-child-form (name body-form)
-  "Compile a region child form that wraps the body in element-id assignment."
+(defun %compile-child-form (name body-form &optional region-style-fn)
+  "Compile a region child form that wraps the body in element-id assignment.
+When REGION-STYLE-FN is supplied and has a style entry for this region, wrap
+the child in a box widget."
   `(let ((%child ,body-form))
-     (if (typep %child 'ptui.ui.elements:ui-element)
-         ;; Ensure child has id matching region name
-         (ptui.ui.elements:make-element
-          (ptui.ui.elements:ui-element-type %child)
-          :id ',name
-          :key (ptui.ui.elements:ui-element-key %child)
-          :props (ptui.ui.elements:ui-element-props %child)
-          :children (ptui.ui.elements:ui-element-children %child)
-          :focusablep (ptui.ui.elements:ui-element-focusablep %child))
-         (ptui.widgets.core:make-text-widget
-          (princ-to-string %child) :id ',name))))
+     (let ((%child-node (if (typep %child 'ptui.ui.elements:ui-element)
+                            (ptui.ui.elements:make-element
+                             (ptui.ui.elements:ui-element-type %child)
+                             :id ',name
+                             :key (ptui.ui.elements:ui-element-key %child)
+                             :props (ptui.ui.elements:ui-element-props %child)
+                             :children (ptui.ui.elements:ui-element-children %child)
+                             :focusablep (ptui.ui.elements:ui-element-focusablep %child))
+                            (ptui.widgets.core:make-text-widget
+                             (princ-to-string %child) :id ',name))))
+       ,(if region-style-fn
+            `(let ((%style (funcall ,region-style-fn ',name)))
+               (if %style
+                   (ptui.widgets.core:make-box-widget
+                    %child-node
+                    :border (getf %style :border)
+                    :fg (getf %style :fg)
+                    :bg (getf %style :bg)
+                    :attrs (ptui.core.types:make-attrs
+                            :boldp (getf %style :bold)
+                            :italicp (getf %style :italic)
+                            :underlinep (getf %style :underline)
+                            :invertp (getf %style :inverse)
+                            :dimp (getf %style :dim)))
+                   %child-node))
+            %child-node))))
 
-(defun %compile-layout-tree (layout-forms)
+(defun %compile-layout-tree (layout-forms &optional region-style-fn)
   "Compile :layout section into constraint-layout element construction.
 Returns form that builds a ui-element of type :constraint-layout.
 Supports :when on regions — conditional regions are omitted when predicate is falsy."
@@ -339,7 +473,9 @@ Supports :when on regions — conditional regions are omitted when predicate is 
           (let ((constraints (mapcar #'%compile-region-constraint regions))
                 (children (loop for region in regions
                                 for name = (first region)
-                                collect (%compile-child-form name (%compile-region-body region)))))
+                                collect (%compile-child-form name
+                                                           (%compile-region-body region)
+                                                           region-style-fn))))
             `(ptui.ui.elements:make-element
               :constraint-layout
               :props (list :direction ,(if (eq direction :column) :column :row)
@@ -351,7 +487,9 @@ Supports :when on regions — conditional regions are omitted when predicate is 
                         for name = (first region)
                         for when-clause = (%region-when-clause region)
                         for constraint-form = (%compile-region-constraint region)
-                        for child-form = (%compile-child-form name (%compile-region-body region))
+                        for child-form = (%compile-child-form name
+                                                             (%compile-region-body region)
+                                                             region-style-fn)
                         if when-clause
                           collect `(when ,when-clause
                                     (push ,constraint-form %constraints)
@@ -475,10 +613,11 @@ Returns a form that produces an event handler function, or NIL."
 ;;; I290: defpanel Macro Assembly
 ;;; ===================================================================
 
-(defun %validate-panel-names (panel-name state-specs data-specs)
-  "Validate no duplicate names across state and data sections."
+(defun %validate-panel-names (panel-name state-specs data-specs slot-specs)
+  "Validate no duplicate names across state, data, and slot sections."
   (let ((all-names (append (mapcar #'first state-specs)
-                           (mapcar #'first data-specs)))
+                           (mapcar #'first data-specs)
+                           (mapcar #'first slot-specs)))
         (seen (make-hash-table :test #'eq)))
     (dolist (name all-names)
       (when (gethash name seen)
@@ -513,9 +652,10 @@ Example:
     (:keys
       (:up (decf scroll-offset))
       (:down (incf scroll-offset))))"
-  (multiple-value-bind (state-specs data-specs layout-forms key-specs effects-specs context-specs)
+  (multiple-value-bind
+      (state-specs data-specs layout-forms key-specs effects-specs context-specs slot-specs style-specs)
       (%parse-panel-sections sections name)
-    (%validate-panel-names name state-specs data-specs)
+    (%validate-panel-names name state-specs data-specs slot-specs)
     (multiple-value-bind (state-bindings state-vars setter-names)
         (%compile-panel-state state-specs)
       (declare (ignore setter-names))
@@ -524,6 +664,7 @@ Example:
                     unless (member p '(&key &optional &rest &body &allow-other-keys))
                     collect p)))
         (%validate-layout-regions name layout-forms)
+        (%validate-style-regions name (%collect-layout-regions name layout-forms) style-specs)
         (multiple-value-bind (data-bindings data-vars)
             (%compile-panel-data name data-specs widget-params state-vars)
           (%validate-layout-when-clauses
@@ -531,12 +672,21 @@ Example:
            layout-forms
            (%collect-name-set (append widget-params state-vars data-vars)))
           (multiple-value-bind (context-provides context-consumes)
-              (%compile-panel-context context-specs)
-            (let* ((layout-form (%compile-layout-tree layout-forms))
+            (%compile-panel-context context-specs)
+           (let* ((region-style-fn (%compile-panel-styles style-specs))
+                   (layout-form (%compile-layout-tree layout-forms (when region-style-fn '%region-style)))
                    (keys-form (%compile-panel-keys key-specs))
+                   (slot-params (%compile-slot-params name slot-specs))
+                   (defwidget-params (if slot-params
+                                         (append widget-params (list '&key) slot-params)
+                                         widget-params))
                    (effects-forms (%compile-panel-effects effects-specs))
+                   (layout-style-form (if region-style-fn
+                                         `(let ((%region-style ,region-style-fn))
+                                            ,layout-form)
+                                         layout-form))
                    ;; The inner form: layout wrapped with keys
-                   (inner-form (%wrap-with-keys keys-form layout-form))
+                   (inner-form (%wrap-with-keys keys-form layout-style-form name))
                    ;; Wrap with effects (before layout, after data)
                    (effects-and-inner
                      (if effects-forms
@@ -562,7 +712,7 @@ Example:
                          `(progn ,@context-provides ,context-and-rest)
                          context-and-rest)))
               ;; Generate defwidget expansion
-              `(ptui.widgets.defwidget:defwidget ,name ,widget-params
+              `(ptui.widgets.defwidget:defwidget ,name ,defwidget-params
                  (:memoize nil)
                  ,(%nest-state-bindings state-bindings provides-and-rest)))))))))
 
@@ -579,15 +729,22 @@ Example:
         (append first-binding
                 (list (%nest-state-bindings (rest bindings) inner-form))))))
 
-(defun %wrap-with-keys (keys-form layout-form)
+(defun %wrap-with-keys (keys-form layout-form panel-name)
   "If KEYS-FORM is non-nil, wrap layout-form to attach key handler."
   (if keys-form
       `(let ((%panel-tree ,layout-form)
-             (%panel-handler ,keys-form))
+             (%panel-handler ,keys-form)
+             (%widget-context ptui.ui.runtime:*current-widget-context*))
          ;; Attach the key handler to the root element
+         ;; Ensure root has a stable id so focused key events can route.
          (ptui.ui.elements:make-element
           (ptui.ui.elements:ui-element-type %panel-tree)
-          :id (ptui.ui.elements:ui-element-id %panel-tree)
+          :id (or (ptui.ui.elements:ui-element-id %panel-tree)
+                  (and %widget-context
+                       (list :panel-root
+                             (ptui.ui.runtime:widget-context-widget-name %widget-context)
+                             (ptui.ui.runtime:widget-context-instance-key %widget-context)))
+                  (list :panel-root ',panel-name))
           :key (ptui.ui.elements:ui-element-key %panel-tree)
           :props (append (ptui.ui.elements:ui-element-props %panel-tree)
                          (list :on-event %panel-handler))

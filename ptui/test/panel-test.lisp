@@ -162,6 +162,28 @@
           (let ((handler (getf (ptui.ui.elements:ui-element-props elem) :on-event)))
             (is (functionp handler))))))))
 
+(test defpanel-key-routing-updates-state
+  (let ((rt (%make-test-runtime)))
+    (%with-widget-context rt 'test-panel 'tp-keys-route
+      (lambda ()
+        ;; Render and commit so runtime focus order/id are established.
+        (let ((elem (render-test-panel "Keys" 5)))
+          (let ((ptui.ui.runtime:*current-runtime* rt))
+            (ptui.ui.runtime:update-runtime rt elem))
+          (let* ((route (ptui.ui.runtime:route-event
+                         rt
+                         (ptui.core.events:make-key-event :down)))
+                 (root (ptui.ui.runtime:runtime-root rt)))
+            (is (eq (getf route :kind) :key))
+            (is (not (null (getf route :target))))
+            (ptui.widgets.core:dispatch-widget-event root route)
+            (let ((key (list 'test-panel 'test-panel 'selected)))
+              (multiple-value-bind (val found)
+                  (ptui.ui.runtime:runtime-state rt key)
+                (is (not (null found)))
+                (when found
+                  (is (= val 1)))))))))))
+
 ;; Define a minimal panel without keys to test that case
 (ptui.ui.panel:defpanel minimal-panel (label)
   (:state
@@ -538,7 +560,126 @@
                 (main :flex 1
                   (ptui.widgets.core:make-text-widget display)))))))
       (is-false errored))
-    (is-false warned)))
+        (is-false warned)))
+
+;;; ===================================================================
+;;; I316: defpanel Style Section Tests
+;;; ===================================================================
+
+(ptui.ui.panel:defpanel styled-region-panel (title)
+  (:style
+    (header
+      :border :rounded
+      :fg :green
+      :bg :black
+      :bold t))
+  (:layout
+    (:column
+      (header :fixed 1
+        (ptui.widgets.core:make-text-widget (format nil "title: ~A" title)))
+      (body :flex 1
+        (ptui.widgets.core:make-text-widget "body")))))
+
+(test defpanel-style-section-wraps-regions-in-box-widget
+  (let ((rt (%make-test-runtime)))
+    (%with-widget-context rt 'styled-region-panel 'sp-1
+      (lambda ()
+        (let* ((elem (render-styled-region-panel "Style"))
+               (children (ptui.ui.elements:ui-element-children elem))
+               (header-child (first children))
+               (props (ptui.ui.elements:ui-element-props header-child))
+               (attrs (getf props :attrs)))
+          (is (eq (ptui.ui.elements:ui-element-type header-child) :box))
+          (is (eq (getf props :border) :rounded))
+          (is (eq (getf props :fg) :green))
+          (is (eq (getf props :bg) :black))
+          (is (typep attrs 'ptui.core.types:attrs))
+          (is (eq (ptui.core.types:attrs-boldp attrs) t)))))))
+
+(test defpanel-style-no-region-style-backward-compat
+  (signals error
+    (macroexpand-1
+     '(ptui.ui.panel:defpanel legacy-region-style-panel (title)
+        (:layout
+            (:column
+             (header :style :rounded
+               (ptui.widgets.core:make-text-widget title))))))))
+
+(test defpanel-style-unknown-region-signals-error
+  (signals ptui.ui.panel:defpanel-syntax-error
+    (macroexpand-1
+     '(ptui.ui.panel:defpanel style-unknown-region-panel (title)
+        (:style
+          (ghost :border :single :fg :red))
+        (:layout
+          (:column
+            (main :flex 1
+               (ptui.widgets.core:make-text-widget title))))))))
+
+(defun %find-child-by-id (element id)
+  (find id (ptui.ui.elements:ui-element-children element)
+        :key #'ptui.ui.elements:ui-element-id
+        :test #'eq))
+
+;;; ===================================================================
+;;; I317: Panel Composition Helpers
+;;; ===================================================================
+
+(test embed-panel-expands-to-child-render-call
+  (let* ((child 'slot-child-panel)
+         (expected (intern (format nil "RENDER-~A" (symbol-name child))
+                          (symbol-package child)))
+         (expanded (macroexpand-1 '(ptui.ui.panel:embed-panel slot-child-panel :title "Hello"))))
+    (is (equal expanded (list expected :title "Hello")))))
+
+(ptui.ui.panel:defpanel slot-host-panel (label)
+  (:slots
+   (sidebar :default (ptui.widgets.core:make-text-widget "Default Sidebar")))
+  (:layout
+    (:column
+      (header :fixed 1 (ptui.widgets.core:make-text-widget label))
+      (sidebar-region :flex 1 sidebar))))
+
+(test panel-slot-uses-default-when-not-provided
+  (let ((rt (%make-test-runtime)))
+    (%with-widget-context rt 'slot-host-panel 'slot-host-1
+      (lambda ()
+        (let* ((elem (render-slot-host-panel "Main"))
+               (sidebar (%find-child-by-id elem 'sidebar-region))
+               (text (getf (ptui.ui.elements:ui-element-props sidebar) :text)))
+          (is (string= text "Default Sidebar")))))))
+
+(test panel-slot-override-overrides-default
+  (let ((rt (%make-test-runtime)))
+    (%with-widget-context rt 'slot-host-panel 'slot-host-2
+      (lambda ()
+        (let* ((elem (render-slot-host-panel
+                      "Main"
+                      :sidebar (ptui.widgets.core:make-text-widget "Custom Sidebar")))
+               (sidebar (%find-child-by-id elem 'sidebar-region))
+               (text (getf (ptui.ui.elements:ui-element-props sidebar) :text)))
+          (is (string= text "Custom Sidebar")))))))
+
+(defvar *slot-key-value* nil)
+
+(ptui.ui.panel:defpanel slot-key-panel (label)
+  (:slots
+   (action :default :default-action))
+  (:layout
+    (:column
+      (main :flex 1 (ptui.widgets.core:make-text-widget label))))
+  (:keys
+    (:enter (setf *slot-key-value* action))))
+
+(test panel-slot-values-available-in-keys
+  (let ((*slot-key-value* nil)
+        (rt (%make-test-runtime)))
+    (%with-widget-context rt 'slot-key-panel 'slot-key-1
+      (lambda ()
+        (let* ((elem (render-slot-key-panel "Main"))
+               (handler (getf (ptui.ui.elements:ui-element-props elem) :on-event)))
+          (funcall handler (ptui.core.events:make-key-event :enter) nil)
+          (is (eq *slot-key-value* :default-action)))))))
 
 (defun run-all ()
   (run! 'panel-suite))
