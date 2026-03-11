@@ -218,6 +218,10 @@ See documentation/protocol/spec.md for the canonical protocol specification.")
    #:duplicate-agent-registration-agent-id
    #:duplicate-agent-registration-existing-config
    #:duplicate-agent-registration-attempted-config
+   #:provider-secret-access-denied
+   #:provider-secret-access-denied-requester-agent-id
+   #:provider-secret-access-denied-target-agent-id
+   #:provider-secret-access-denied-provider-key
    #:make-local-registry
    #:local-registry
    #:local-registry-entry
@@ -235,7 +239,11 @@ See documentation/protocol/spec.md for the canonical protocol specification.")
    #:local-registry-size
    #:local-registry-clear
    #:find-agents-by-capability
-   #:local-registry-touch)
+   #:local-registry-touch
+   #:local-registry-set-provider-secret
+   #:local-registry-resolve-provider-secret
+   #:local-registry-list-provider-secret-keys
+   #:local-registry-clear-provider-secrets)
 
   ;; Envelope - Message construction
   (:export

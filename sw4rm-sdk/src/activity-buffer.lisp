@@ -11,6 +11,11 @@
   "A single activity entry in the buffer.
    Fields conform to spec §10 requirements."
   (agent-id nil :type (or null string))
+  (activity-id nil :type (or null string))
+  (parent-activity-id nil :type (or null string))
+  (parent-agent-id nil :type (or null string))
+  (correlation-id nil :type (or null string))
+  (sequence-id 0 :type integer)
   (activity-type :task :type t)
   (task-id nil :type (or null string))
   (repo-id nil :type (or null string))
@@ -18,6 +23,17 @@
   (branch nil :type (or null string))
   (timestamp (get-universal-time) :type integer)
   (description nil :type (or null string)))
+
+(defun %normalize-optional-id (value field-name)
+  "Normalize optional VALUE into a trimmed non-empty string or NIL."
+  (when value
+    (let ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                (if (stringp value)
+                                    value
+                                    (princ-to-string value)))))
+      (when (zerop (length trimmed))
+        (error "~A must be non-empty when provided." field-name))
+      trimmed)))
 
 (defun validate-activity-entry (entry)
   "Validate an activity entry conforms to spec §10 requirements.
@@ -46,6 +62,11 @@
                       ""))
     (error "agent-id must be non-empty when provided"))
 
+  (%normalize-optional-id (activity-entry-activity-id entry) "activity-id")
+  (%normalize-optional-id (activity-entry-parent-activity-id entry) "parent-activity-id")
+  (%normalize-optional-id (activity-entry-parent-agent-id entry) "parent-agent-id")
+  (%normalize-optional-id (activity-entry-correlation-id entry) "correlation-id")
+
   t)
 
 ;;; Activity Buffer Class
@@ -72,6 +93,20 @@
     :initform nil
     :documentation "Optional callback for activity upsert/remove events.")
 
+   (timeline-events
+    :initarg :timeline-events
+    :accessor timeline-events
+    :type list
+    :initform '()
+    :documentation "Append-only activity event history (newest first).")
+
+   (sequence-counter
+    :initarg :sequence-counter
+    :accessor sequence-counter
+    :type integer
+    :initform 0
+    :documentation "Monotonic sequence counter for deterministic timeline ordering.")
+
    (lock
     :accessor buffer-lock
     :initform (bt:make-lock "activity-buffer-lock")
@@ -86,9 +121,11 @@
 
 (defmethod initialize-instance :after ((buf activity-buffer) &key)
   "Validate buffer configuration after initialization."
-  (with-slots (max-items) buf
+  (with-slots (max-items sequence-counter) buf
     (when (< max-items 1)
-      (error "max-items must be at least 1, got ~D" max-items))))
+      (error "max-items must be at least 1, got ~D" max-items))
+    (when (< sequence-counter 0)
+      (error "sequence-counter must be >= 0, got ~D" sequence-counter))))
 
 (defun make-activity-key (task-id repo-id worktree-id)
   "Generate a unique key for an activity entry.
@@ -127,7 +164,8 @@
 
 (defmethod upsert-activity ((buf activity-buffer)
                            &key agent-id (activity-type :task)
-                             task-id repo-id worktree-id branch description)
+                             activity-id parent-activity-id parent-agent-id correlation-id
+                             task-id repo-id worktree-id branch timestamp description)
   "Insert or update an activity entry in the buffer.
 
    Per spec §10.1, signals BUFFER-FULL-ERROR if buffer is at capacity
@@ -135,10 +173,15 @@
 
    Args:
      buf: Activity buffer instance
+     activity-id: Stable event identifier (auto-generated when omitted)
+     parent-activity-id: Parent event identifier for timeline reconstruction
+     parent-agent-id: Parent agent identifier for nested delegation attribution
+     correlation-id: Correlation identifier for grouped reconstruction
      task-id: Task identifier
      repo-id: Repository identifier
      worktree-id: Worktree identifier
      branch: Git branch name
+     timestamp: Optional integer timestamp override
      description: Activity description (max 200 words)
 
    Returns:
@@ -150,14 +193,33 @@
   (bt:with-lock-held ((buffer-lock buf))
     (let* ((key (make-activity-key task-id repo-id worktree-id))
            (existing (gethash key (entries buf)))
+           (sequence-id (incf (sequence-counter buf)))
+           (normalized-activity-id (%normalize-optional-id activity-id "activity-id"))
+           (normalized-parent-activity-id (%normalize-optional-id parent-activity-id "parent-activity-id"))
+           (normalized-parent-agent-id (%normalize-optional-id parent-agent-id "parent-agent-id"))
+           (normalized-correlation-id (%normalize-optional-id correlation-id "correlation-id"))
+           (resolved-activity-id (or normalized-activity-id
+                                     (format nil "activity-~8,'0D" sequence-id)))
+           (resolved-correlation-id (or normalized-correlation-id
+                                        (and existing (activity-entry-correlation-id existing))
+                                        resolved-activity-id))
            (entry (make-activity-entry
                    :agent-id agent-id
+                   :activity-id resolved-activity-id
+                   :parent-activity-id (or normalized-parent-activity-id
+                                           (and existing
+                                                (activity-entry-parent-activity-id existing)))
+                   :parent-agent-id (or normalized-parent-agent-id
+                                        (and existing
+                                             (activity-entry-parent-agent-id existing)))
+                   :correlation-id resolved-correlation-id
+                   :sequence-id sequence-id
                    :activity-type activity-type
                    :task-id task-id
                    :repo-id repo-id
                    :worktree-id worktree-id
                    :branch branch
-                   :timestamp (get-universal-time)
+                   :timestamp (or timestamp (get-universal-time))
                    :description description)))
 
       ;; Validate entry
@@ -173,6 +235,7 @@
 
       ;; Store entry
       (setf (gethash key (entries buf)) entry)
+      (push entry (timeline-events buf))
       (when (update-hook buf)
         (funcall (update-hook buf) :upsert entry))
       entry)))
@@ -186,11 +249,16 @@
   (check-type entry activity-entry)
   (upsert-activity buf
                    :agent-id (activity-entry-agent-id entry)
+                   :activity-id (activity-entry-activity-id entry)
+                   :parent-activity-id (activity-entry-parent-activity-id entry)
+                   :parent-agent-id (activity-entry-parent-agent-id entry)
+                   :correlation-id (activity-entry-correlation-id entry)
                    :activity-type (activity-entry-activity-type entry)
                    :task-id (activity-entry-task-id entry)
                    :repo-id (activity-entry-repo-id entry)
                    :worktree-id (activity-entry-worktree-id entry)
                    :branch (activity-entry-branch entry)
+                   :timestamp (activity-entry-timestamp entry)
                    :description (activity-entry-description entry)))
 
 (defmethod remove-activity ((buf activity-buffer)
@@ -227,7 +295,9 @@
   (let ((key (make-activity-key task-id repo-id worktree-id)))
     (gethash key (entries buf))))
 
-(defmethod list-buffer-activities ((buf activity-buffer) &key task-id repo-id agent-id activity-type)
+(defmethod list-buffer-activities ((buf activity-buffer)
+                                   &key task-id repo-id agent-id activity-type
+                                     correlation-id parent-agent-id)
   "List all activities matching the given filters.
 
    Args:
@@ -247,10 +317,141 @@
                          (or (null agent-id)
                              (equal agent-id (activity-entry-agent-id v)))
                          (or (null activity-type)
-                             (equal activity-type (activity-entry-activity-type v))))
+                             (equal activity-type (activity-entry-activity-type v)))
+                         (or (null correlation-id)
+                             (equal correlation-id (activity-entry-correlation-id v)))
+                         (or (null parent-agent-id)
+                             (equal parent-agent-id (activity-entry-parent-agent-id v))))
                  (push v results)))
              (entries buf))
     results))
+
+(defun %activity-order< (left right)
+  "Deterministic ordering for timeline reconstruction."
+  (let ((left-seq (activity-entry-sequence-id left))
+        (right-seq (activity-entry-sequence-id right)))
+    (cond
+      ((/= left-seq right-seq)
+       (< left-seq right-seq))
+      ((/= (activity-entry-timestamp left) (activity-entry-timestamp right))
+       (< (activity-entry-timestamp left) (activity-entry-timestamp right)))
+      (t
+       (string< (or (activity-entry-activity-id left) "")
+                (or (activity-entry-activity-id right) ""))))))
+
+(defmethod list-activity-events ((buf activity-buffer)
+                                 &key correlation-id agent-id parent-agent-id)
+  "Return buffered activity events in deterministic chronological order."
+  (let* ((history (bt:with-lock-held ((buffer-lock buf))
+                    (copy-list (timeline-events buf))))
+         (ordered (sort (nreverse history) #'%activity-order<)))
+    (remove-if-not
+     (lambda (entry)
+       (and (or (null correlation-id)
+                (equal correlation-id (activity-entry-correlation-id entry)))
+            (or (null agent-id)
+                (equal agent-id (activity-entry-agent-id entry)))
+            (or (null parent-agent-id)
+                (equal parent-agent-id (activity-entry-parent-agent-id entry)))))
+     ordered)))
+
+(defun %collect-descendant-activity-ids (events root-activity-id)
+  "Collect ROOT-ACTIVITY-ID and all descendants linked by parent-activity-id."
+  (let ((children (make-hash-table :test #'equal))
+        (allowed (make-hash-table :test #'equal))
+        (queue '()))
+    (dolist (entry events)
+      (let ((parent-id (activity-entry-parent-activity-id entry))
+            (activity-id (activity-entry-activity-id entry)))
+        (when (and parent-id activity-id)
+          (setf (gethash parent-id children)
+                (cons activity-id (gethash parent-id children))))))
+    (push root-activity-id queue)
+    (setf (gethash root-activity-id allowed) t)
+    (loop while queue do
+      (let ((current (pop queue)))
+        (dolist (child-id (gethash current children))
+          (unless (gethash child-id allowed)
+            (setf (gethash child-id allowed) t)
+            (push child-id queue)))))
+    allowed))
+
+(defun %collect-descendant-agent-ids (events root-agent-id)
+  "Collect ROOT-AGENT-ID plus all descendants linked by parent-agent-id."
+  (let ((allowed (make-hash-table :test #'equal)))
+    (setf (gethash root-agent-id allowed) t)
+    (dolist (entry events)
+      (let ((parent-agent-id (activity-entry-parent-agent-id entry))
+            (agent-id (activity-entry-agent-id entry)))
+        (when (and parent-agent-id
+                   agent-id
+                   (gethash parent-agent-id allowed))
+          (setf (gethash agent-id allowed) t))))
+    allowed))
+
+(defun %entry->timeline-row (entry depth)
+  "Convert activity ENTRY to a serializable timeline row."
+  (list :activity-id (activity-entry-activity-id entry)
+        :parent-activity-id (activity-entry-parent-activity-id entry)
+        :correlation-id (activity-entry-correlation-id entry)
+        :sequence-id (activity-entry-sequence-id entry)
+        :depth depth
+        :agent-id (activity-entry-agent-id entry)
+        :parent-agent-id (activity-entry-parent-agent-id entry)
+        :activity-type (activity-entry-activity-type entry)
+        :task-id (activity-entry-task-id entry)
+        :repo-id (activity-entry-repo-id entry)
+        :worktree-id (activity-entry-worktree-id entry)
+        :branch (activity-entry-branch entry)
+        :timestamp (activity-entry-timestamp entry)
+        :description (activity-entry-description entry)))
+
+(defmethod reconstruct-activity-timeline ((buf activity-buffer)
+                                          &key correlation-id
+                                            root-activity-id
+                                            root-agent-id)
+  "Reconstruct a merged parent/child activity timeline with deterministic order.
+
+Returns list of plists containing ordering metadata and attribution."
+  (let* ((events (list-activity-events buf :correlation-id correlation-id))
+         (scoped-by-root-activity
+           (if root-activity-id
+               (let ((allowed (%collect-descendant-activity-ids events root-activity-id)))
+                 (remove-if-not (lambda (entry)
+                                  (and (activity-entry-activity-id entry)
+                                       (gethash (activity-entry-activity-id entry) allowed)))
+                                events))
+               events))
+         (scoped-events
+           (if root-agent-id
+               (let ((allowed (%collect-descendant-agent-ids scoped-by-root-activity root-agent-id)))
+                 (remove-if-not (lambda (entry)
+                                  (let ((agent-id (activity-entry-agent-id entry)))
+                                    (and agent-id (gethash agent-id allowed))))
+                                scoped-by-root-activity))
+               scoped-by-root-activity))
+         (activity-depths (make-hash-table :test #'equal))
+         (agent-depths (make-hash-table :test #'equal))
+         (rows '()))
+    (dolist (entry scoped-events (nreverse rows))
+      (let* ((parent-activity-id (activity-entry-parent-activity-id entry))
+             (parent-agent-id (activity-entry-parent-agent-id entry))
+             (depth (cond
+                      ((and parent-activity-id
+                            (gethash parent-activity-id activity-depths))
+                       (1+ (gethash parent-activity-id activity-depths)))
+                      ((and parent-agent-id
+                            (gethash parent-agent-id agent-depths))
+                       (1+ (gethash parent-agent-id agent-depths)))
+                      (t 0)))
+             (activity-id (activity-entry-activity-id entry))
+             (agent-id (activity-entry-agent-id entry)))
+        (when activity-id
+          (setf (gethash activity-id activity-depths) depth))
+        (when agent-id
+          (setf (gethash agent-id agent-depths)
+                (max depth (or (gethash agent-id agent-depths) 0))))
+        (push (%entry->timeline-row entry depth) rows)))))
 
 (defmethod recent-activities ((buf activity-buffer) &key (limit 10))
   "Get the most recent activities.
@@ -307,6 +508,8 @@
   (bt:with-lock-held ((buffer-lock buf))
     (let ((count (hash-table-count (entries buf))))
       (clrhash (entries buf))
+      (setf (timeline-events buf) '()
+            (sequence-counter buf) 0)
       count)))
 
 (defmethod print-object ((buf activity-buffer) stream)

@@ -73,3 +73,43 @@
     (is (= 1 (sw4rm-sdk:local-registry-size registry)))
     (is (eq t (sw4rm-sdk:local-registry-clear registry)))
     (is (= 0 (sw4rm-sdk:local-registry-size registry)))))
+
+(test local-registry-provider-secret-isolation
+  "Provider secrets should be scoped to owning agent IDs."
+  (let ((registry (sw4rm-sdk:make-local-registry)))
+    (sw4rm-sdk:local-registry-register
+     registry (%agent-config-with-capabilities "agent-a" '("chat")))
+    (sw4rm-sdk:local-registry-register
+     registry (%agent-config-with-capabilities "agent-b" '("chat")))
+    (is (eq t (sw4rm-sdk:local-registry-set-provider-secret
+               registry "agent-a" "OPENAI_API_KEY" "key-a")))
+    (is (eq t (sw4rm-sdk:local-registry-set-provider-secret
+               registry "agent-b" "OPENAI_API_KEY" "key-b")))
+    (is (string= "key-a"
+                 (sw4rm-sdk:local-registry-resolve-provider-secret
+                  registry "agent-a" "agent-a" "OPENAI_API_KEY")))
+    (is (string= "key-b"
+                 (sw4rm-sdk:local-registry-resolve-provider-secret
+                  registry "agent-b" "agent-b" "OPENAI_API_KEY")))
+    (signals sw4rm-sdk:provider-secret-access-denied
+      (sw4rm-sdk:local-registry-resolve-provider-secret
+       registry "agent-a" "agent-b" "OPENAI_API_KEY"))))
+
+(test local-registry-provider-secret-lifecycle
+  "Provider secret state should be removable per-agent and via registry cleanup."
+  (let ((registry (sw4rm-sdk:make-local-registry)))
+    (sw4rm-sdk:local-registry-register
+     registry (%agent-config-with-capabilities "agent-z" '("chat")))
+    (sw4rm-sdk:local-registry-set-provider-secret
+     registry "agent-z" :openai_api_key "key-z")
+    (is (= 1 (length (sw4rm-sdk:local-registry-list-provider-secret-keys
+                      registry "agent-z" "agent-z"))))
+    (is (eq t (sw4rm-sdk:local-registry-clear-provider-secrets registry "agent-z")))
+    (is (null (sw4rm-sdk:local-registry-resolve-provider-secret
+               registry "agent-z" "agent-z" "OPENAI_API_KEY")))
+    (sw4rm-sdk:local-registry-set-provider-secret
+     registry "agent-z" "OPENAI_API_KEY" "key-z-2")
+    (is (eq t (sw4rm-sdk:local-registry-unregister registry "agent-z")))
+    (is (null (sw4rm-sdk:local-registry-resolve-provider-secret
+               registry "agent-z" "agent-z" "OPENAI_API_KEY")))
+    (is (eq t (sw4rm-sdk:local-registry-clear-provider-secrets registry)))))

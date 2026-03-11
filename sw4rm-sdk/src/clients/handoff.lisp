@@ -88,6 +88,77 @@
   "Return a shallow copy of PLIST."
   (copy-list plist))
 
+(defparameter +handoff-sensitive-request-keys+
+  '("provider-secrets"
+    "provider-secret"
+    "provider-credentials"
+    "provider-credential"
+    "provider-api-key"
+    "api-key"
+    "api_key"
+    "anthropic_api_key"
+    "openai_api_key"
+    "moonshot_api_key"))
+
+(defun %handoff-sensitive-key-p (key)
+  (let* ((text (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                              (princ-to-string key)))))
+    (member text +handoff-sensitive-request-keys+ :test #'string=)))
+
+(defun %handoff-plist-like-p (value)
+  (and (listp value)
+       (evenp (length value))
+       (loop for (key _value) on value by #'cddr
+             always (or (keywordp key)
+                        (symbolp key)
+                        (stringp key)))))
+
+(defun %sanitize-handoff-value (value)
+  (cond
+    ((hash-table-p value)
+     (let ((clean (make-hash-table :test (hash-table-test value))))
+       (maphash (lambda (key inner-value)
+                  (unless (%handoff-sensitive-key-p key)
+                    (setf (gethash key clean)
+                          (%sanitize-handoff-value inner-value))))
+                value)
+       clean))
+    ((%handoff-plist-like-p value)
+     (let ((clean '()))
+       (loop for (key inner-value) on value by #'cddr do
+         (unless (%handoff-sensitive-key-p key)
+           (setf clean
+                 (append clean
+                         (list key (%sanitize-handoff-value inner-value))))))
+       clean))
+    ((and (listp value)
+          (every #'consp value))
+     (let ((clean '()))
+       (dolist (entry value (nreverse clean))
+         (unless (%handoff-sensitive-key-p (car entry))
+           (let ((tail (cdr entry)))
+             (push (cons (car entry)
+                         (%sanitize-handoff-value
+                 (if (and (consp tail) (null (cdr tail)))
+                              (car tail)
+                              tail)))
+                   clean))))))
+    ((listp value)
+     (mapcar #'%sanitize-handoff-value value))
+    (t value)))
+
+(defun %sanitize-handoff-request (request)
+  "Drop sensitive provider credential fields from REQUEST recursively."
+  (if (not (%handoff-plist-like-p request))
+      request
+      (let ((clean '()))
+        (loop for (key value) on request by #'cddr do
+          (unless (%handoff-sensitive-key-p key)
+            (setf clean
+                  (append clean
+                          (list key (%sanitize-handoff-value value))))))
+        clean)))
+
 (defun serialize-handoff-context (context &key (max-bytes 65536))
   "Serialize handoff CONTEXT to JSON, truncating if MAX-BYTES is exceeded."
   (let* ((as-json (if (stringp context)
@@ -400,7 +471,7 @@ Returns two values: normalized-request and handoff-id."
   (%required-string request :to-agent)
   (%required-string request :reason)
 
-  (let* ((normalized (%copy-plist request))
+  (let* ((normalized (%copy-plist (%sanitize-handoff-request request)))
          (budget (getf normalized :budget))
          (policy (getf normalized :delegation-policy))
          (handoff-id (or (getf normalized :request-id)
