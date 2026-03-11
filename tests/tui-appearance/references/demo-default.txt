@@ -1,0 +1,40 @@
+ you> hello
+
+ ai> Demo Response
+
+     This is a demo mode response. No API key is required — everything you see is generated locally for TUI testing
+     purposes.
+
+     Features Being Tested
+
+     - Bold text and italic text rendering
+     - Inline code spans within prose
+     - Nested list items with varying content lengths
+     - Paragraph wrapping across terminal widths
+
+     > This is a blockquote. It should be visually distinct from > regular paragraph text and properly indented.
+
+     Here is a numbered list:
+
+     1. First item with some detail
+     2. Second item — slightly longer to test wrapping behavior
+     3. Third item
+
+     That concludes the default demo response. Try typing tool, code, long, or error to see other response types.
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │                                                                                                                    │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+branch master | mode supervised | Tokens: 179/128000 (0%) | stream done | model moonshot-v1-128k

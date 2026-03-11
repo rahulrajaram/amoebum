@@ -20,6 +20,7 @@ test:
 	$(MAKE) test-amoebum
 
 prepare-quicklisp-compat:
+	@ptui/bin/ensure-quicklisp.sh >/dev/null
 	@if [ ! -f "$(QUICKLISP_SETUP_RESOLVED)" ]; then \
 	  echo "Quicklisp setup not found at $(QUICKLISP_SETUP_RESOLVED)" >&2; \
 	  exit 1; \

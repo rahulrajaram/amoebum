@@ -3,9 +3,14 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${REPO_ROOT}/dist"
+ENSURE_QUICKLISP="${REPO_ROOT}/ptui/bin/ensure-quicklisp.sh"
 REPO_QUICKLISP_SETUP="${REPO_ROOT}/ptui/.tools/quicklisp/setup.lisp"
 QUICKLISP_SETUP="${QUICKLISP_SETUP:-${REPO_QUICKLISP_SETUP}}"
 QUICKLISP_SETUP_CANDIDATES=("${QUICKLISP_SETUP}" "${REPO_QUICKLISP_SETUP}" "${HOME}/quicklisp/setup.lisp")
+
+if [[ -x "${ENSURE_QUICKLISP}" ]]; then
+  "${ENSURE_QUICKLISP}" >/dev/null
+fi
 
 if [[ ! -f "${QUICKLISP_SETUP}" ]]; then
   QUICKLISP_SETUP="${REPO_QUICKLISP_SETUP}"

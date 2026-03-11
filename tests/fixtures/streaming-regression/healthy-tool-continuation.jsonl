@@ -1,0 +1,5 @@
+{"seq":1,"ts":3981829318,"type":"UI:STREAM-PROGRESS","source":"AMOEBUM","severity":"DEBUG","payload":"#S(STATUS-BAR-STREAM-PAYLOAD :STATUS RUNNING :ACTIVEP T :TOKENS-USED 0)"}
+{"seq":2,"ts":3981829318,"type":"LLM:STREAM-CHUNK","source":"AMOEBUM","severity":"DEBUG","payload":"#S(LLM-STREAM-CHUNK-PAYLOAD :TOKEN Sure :CHUNK-INDEX 1 :TOKEN-INDEX 1 :TOTAL-TOKENS 1)"}
+{"seq":3,"ts":3981829319,"type":"TOOL-CALL:STARTED","source":"AMOEBUM","severity":"DEBUG","payload":"#S(TOOL-CALL-STARTED-PAYLOAD :TOOL-NAME read-file :TOOL-CALL-ID tc-1)"}
+{"seq":4,"ts":3981829320,"type":"TOOL:INVOKED","source":"AMOEBUM","severity":"DEBUG","payload":"#S(TOOL-INVOKED-PAYLOAD :TOOL-NAME read-file :REQUEST-ID read-file:1)"}
+{"seq":5,"ts":3981829321,"type":"TOOL:COMPLETED","source":"AMOEBUM","severity":"INFO","payload":"#S(TOOL-COMPLETED-PAYLOAD :TOOL-NAME read-file :REQUEST-ID read-file:1)"}

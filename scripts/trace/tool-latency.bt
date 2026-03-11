@@ -1,0 +1,59 @@
+#!/usr/bin/env bpftrace
+/*
+ * I361: Trace tool execution latency using amoebum USDT probe points.
+ *
+ * Usage examples:
+ *   sudo bpftrace scripts/trace/tool-latency.bt -p <amoebum-pid>
+ *   sudo bpftrace scripts/trace/tool-latency.bt -c ./dist/amoebum
+ *
+ * Referenced probes (implemented in amoebum/src/usdt.lisp):
+ *   amoebum:tool-enter(tool_name, request_id)
+ *   amoebum:tool-exit(tool_name, request_id, elapsed_ms, status)
+ */
+
+BEGIN
+{
+  printf("Tracing amoebum tool latency (probe: amoebum:tool-exit). Hit Ctrl-C to stop.\n");
+}
+
+usdt:*:amoebum:tool-enter
+{
+  $request_id = str(arg1);
+  @tool_start_ns[$request_id] = nsecs;
+}
+
+usdt:*:amoebum:tool-exit
+{
+  $tool_name = str(arg0);
+  $request_id = str(arg1);
+  $elapsed_ms = (uint64)arg2;
+
+  /*
+   * Prefer elapsed_ms from the probe payload; if unavailable/zero, derive from
+   * tool-enter/tool-exit timestamps.
+   */
+  if ($elapsed_ms == 0 && @tool_start_ns[$request_id] > 0) {
+    $elapsed_ms = (nsecs - @tool_start_ns[$request_id]) / 1000000;
+  }
+
+  @tool_latency_ms[$tool_name] = hist($elapsed_ms);
+  @tool_calls[$tool_name] = count();
+  @tool_latency_sum_ms[$tool_name] = sum($elapsed_ms);
+
+  delete(@tool_start_ns[$request_id]);
+}
+
+interval:s:10
+{
+  printf("\n=== tool latency snapshot (10s) ===\n");
+  print(@tool_calls);
+  print(@tool_latency_sum_ms);
+}
+
+END
+{
+  printf("\n=== final tool latency histograms ===\n");
+  print(@tool_latency_ms);
+  printf("\n=== final tool call counts ===\n");
+  print(@tool_calls);
+}

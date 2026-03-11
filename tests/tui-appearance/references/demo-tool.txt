@@ -1,0 +1,40 @@
+ you> tool
+
+ ai>
+
+     I read the file. Here are the contents:
+
+     ```
+     Hello from demo mode!
+     ```
+
+     The tool call above was simulated — no file was actually read.█
+
+ TOOL> [streaming] read-file
+      encoding: utf-8
+      path: /tmp/demo.txt
+      ⠴
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Streaming... Press Ctrl-C to stop early.
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │                                                                                                                    │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+branch master | mode supervised | Tokens: 35/128000 (0%) | stream 6.58 tok/s | model moonshot-v1-128k

@@ -178,9 +178,11 @@ fi
 
 # SBCL intercepts --help/--version before the Lisp toplevel runs.
 # Use end-of-runtime-options to pass all args to the amoebum main function.
-if [ -n "${AMOEBUM_RUNTIME_LOG_FILE:-}" ]; then
-  mkdir -p "$(dirname "$AMOEBUM_RUNTIME_LOG_FILE")"
-  printf '%s wrapper invoke: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$AMOEBUM_RUNTIME_LOG_FILE"
+: "${AMOEBUM_RUNTIME_LOG_FILE:=$HOME/.amoebum/runtime/runtime.log}"
+export AMOEBUM_RUNTIME_LOG_FILE
+mkdir -p "$(dirname "$AMOEBUM_RUNTIME_LOG_FILE")"
+printf '%s wrapper invoke: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$AMOEBUM_RUNTIME_LOG_FILE"
+if [ "${AMOEBUM_RUNTIME_LOG_TEE:-0}" = "1" ]; then
   exec "$AMOEBUM_BIN" --end-runtime-options "$@" \
     > >(tee -a "$AMOEBUM_RUNTIME_LOG_FILE") \
     2> >(tee -a "$AMOEBUM_RUNTIME_LOG_FILE" >&2)
@@ -225,6 +227,55 @@ else
   if git config --get core.hooksPath >/dev/null 2>&1; then
     git config --unset core.hooksPath
     log_ok "Unset core.hooksPath"
+  fi
+
+  mkdir -p "$REPO_ROOT/.githooks"
+
+  scaffold_hook_if_missing() {
+    local hook_name="$1"
+    local target="$REPO_ROOT/.githooks/$hook_name"
+    if [ -e "$target" ] || [ -e "$REPO_ROOT/scripts/git-hooks/$hook_name" ]; then
+      log_ok "$hook_name local hook already present"
+      return 0
+    fi
+    cat > "$target"
+    chmod +x "$target"
+    log_ok "$hook_name → .githooks/"
+  }
+
+  scaffold_hook_if_missing pre-push <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+COMMITHOOKS_DIR="$(git rev-parse --git-dir)"
+source "$COMMITHOOKS_DIR/lib/common.sh"
+source "$COMMITHOOKS_DIR/lib/pre-push.sh"
+
+commithooks_reject_wip_commits "$@"
+commithooks_check_branch_name
+EOF
+
+  scaffold_hook_if_missing post-checkout <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+COMMITHOOKS_DIR="$(git rev-parse --git-dir)"
+source "$COMMITHOOKS_DIR/lib/common.sh"
+source "$COMMITHOOKS_DIR/lib/deps.sh"
+
+commithooks_reinstall_if_changed "${1:-}" "${2:-}"
+EOF
+
+  scaffold_hook_if_missing post-merge <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+COMMITHOOKS_DIR="$(git rev-parse --git-dir)"
+source "$COMMITHOOKS_DIR/lib/common.sh"
+source "$COMMITHOOKS_DIR/lib/deps.sh"
+
+commithooks_reinstall_if_changed
+EOF
+
+  if rg -n '^\.githooks/?$|^\.githooks/' "$REPO_ROOT/.gitignore" >/dev/null 2>&1; then
+    log_warn ".githooks/ is ignored by .gitignore; local hook stubs won't be tracked."
   fi
 fi
 echo ""

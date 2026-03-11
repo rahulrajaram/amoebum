@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Watch/Nudge Registrations</title>
+    <style>
+      :root {
+        --bg: #f4f8fb;
+        --panel: #ffffff;
+        --line: #d7e1e8;
+        --text: #1f2a33;
+        --accent: #006d77;
+        --warn: #a94314;
+      }
+      body {
+        margin: 0;
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+        background: linear-gradient(180deg, #f7fbff 0%, var(--bg) 65%);
+        color: var(--text);
+      }
+      main {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 24px 16px 48px;
+      }
+      h1 {
+        margin: 0 0 12px;
+        letter-spacing: 0.02em;
+      }
+      section {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 16px;
+        margin-top: 16px;
+      }
+      .row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 10px;
+      }
+      label {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 14px;
+      }
+      input {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 14px;
+      }
+      button {
+        border: 1px solid var(--line);
+        background: #f2f7fb;
+        color: var(--text);
+        padding: 8px 10px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      button.primary {
+        background: var(--accent);
+        color: #ffffff;
+        border-color: var(--accent);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        border-bottom: 1px solid var(--line);
+        padding: 10px 8px;
+        text-align: left;
+        vertical-align: middle;
+      }
+      td.actions {
+        white-space: nowrap;
+      }
+      .status {
+        margin-top: 12px;
+        min-height: 22px;
+        font-size: 14px;
+      }
+      .status.error {
+        color: var(--warn);
+      }
+      .status.ok {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body data-api-base="/api">
+    <main>
+      <h1>Registration Manager</h1>
+      <p>List, add, update, and remove watch/nudge registrations.</p>
+
+      <section>
+        <h2>Add registration</h2>
+        <form id="registration-form">
+          <div class="row">
+            <label>
+              Registration ID
+              <input id="new-id" name="id" required />
+            </label>
+            <label>
+              Watch Path
+              <input id="new-path" name="watch_path" required />
+            </label>
+            <label>
+              Nudge Minutes
+              <input id="new-minutes" name="nudge_minutes" type="number" min="1" value="45" />
+            </label>
+            <label>
+              Notes
+              <input id="new-notes" name="notes" />
+            </label>
+          </div>
+          <p>
+            <button class="primary" type="submit">Add registration</button>
+          </p>
+        </form>
+      </section>
+
+      <section>
+        <h2>Current registrations</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Watch Path</th>
+              <th>Nudge Minutes</th>
+              <th>Notes</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="registration-rows"></tbody>
+        </table>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+      </section>
+    </main>
+    <script src="/assets/app.js"></script>
+  </body>
+</html>
