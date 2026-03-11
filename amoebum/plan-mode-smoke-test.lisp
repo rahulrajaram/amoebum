@@ -59,8 +59,11 @@
          (plan-execution-pathways-enabled-fn
            (funcall fn-in "PLAN-MODE-STATE-EXECUTION-PATHWAYS-ENABLED-P" amoebum-pkg))
          (plan-input-gating-snapshot-fn (funcall fn-in "PLAN-INPUT-GATING-SNAPSHOT" amoebum-pkg))
+         (plan-mode-exploration-snapshot-fn (funcall fn-in "PLAN-MODE-EXPLORATION-SNAPSHOT" amoebum-pkg))
          (plan-step-description-fn (funcall fn-in "PLAN-STEP-DESCRIPTION" amoebum-pkg))
+         (plan-step-file-paths-fn (funcall fn-in "PLAN-STEP-FILE-PATHS" amoebum-pkg))
          (plan-step-depends-on-fn (funcall fn-in "PLAN-STEP-DEPENDS-ON" amoebum-pkg))
+         (capture-plan-steps-fn (funcall fn-in "CAPTURE-PLAN-STEPS-FROM-RESPONSE" amoebum-pkg))
          (clear-step-approvals-fn (funcall fn-in "CLEAR-PLAN-STEP-APPROVALS" amoebum-pkg))
          (set-step-approvals-fn (funcall fn-in "SET-PLAN-STEP-APPROVALS" amoebum-pkg))
          (plan-review-pending-fn (funcall fn-in "PLAN-MODE-STATE-REVIEW-PENDING-P" amoebum-pkg))
@@ -96,7 +99,17 @@
            (funcall fn-in "PLAN-EXECUTION-STATE-ROLLBACK-ATTEMPTED-P" amoebum-pkg))
          (plan-execution-state-rollback-succeeded-p-fn
            (funcall fn-in "PLAN-EXECUTION-STATE-ROLLBACK-SUCCEEDED-P" amoebum-pkg))
+         (plan-execution-state-continuity-output-fn
+           (funcall fn-in "PLAN-EXECUTION-STATE-CONTINUITY-OUTPUT" amoebum-pkg))
          (plan-execution-output-lines-fn (funcall fn-in "PLAN-EXECUTION-OUTPUT-LINES" amoebum-pkg))
+         (plan-execution-output-entry-line-fn
+           (funcall fn-in "PLAN-EXECUTION-OUTPUT-ENTRY-LINE" amoebum-pkg))
+         (plan-execution-output-entry-step-index-fn
+           (funcall fn-in "PLAN-EXECUTION-OUTPUT-ENTRY-STEP-INDEX" amoebum-pkg))
+         (plan-execution-output-entry-severity-fn
+           (funcall fn-in "PLAN-EXECUTION-OUTPUT-ENTRY-SEVERITY" amoebum-pkg))
+         (plan-execution-output-entry-recovery-actions-fn
+           (funcall fn-in "PLAN-EXECUTION-OUTPUT-ENTRY-RECOVERY-ACTIONS" amoebum-pkg))
          (chat-plan-execution-progress-line-fn
            (funcall fn-in "%CHAT-PLAN-EXECUTION-PROGRESS-LINE" amoebum-pkg))
          (chat-plan-presentation-context-lines-fn
@@ -137,7 +150,6 @@
          (plan-step-status-payload-status-fn
            (funcall fn-in "PLAN-STEP-STATUS-PAYLOAD-STATUS" amoebum-pkg))
          (make-tool-call-fn (funcall fn-in "MAKE-TOOL-CALL" pseudopod-pkg))
-         (temporary-directory-fn (funcall fn-in "TEMPORARY-DIRECTORY" uiop-pkg))
          (ensure-directory-pathname-fn (funcall fn-in "ENSURE-DIRECTORY-PATHNAME" uiop-pkg))
          (read-file-string-fn (funcall fn-in "READ-FILE-STRING" uiop-pkg))
          (run-program-fn (funcall fn-in "RUN-PROGRAM" uiop-pkg)))
@@ -220,7 +232,10 @@
         (assert-true (contains-text-p assembled "Output the plan as numbered steps")
                      "Expected plan mode guidance to require numbered plan steps.")
         (assert-true (contains-text-p assembled "include a concise step description and explicit file paths")
-                     "Expected plan mode guidance to require per-step descriptions and file paths."))
+                     "Expected plan mode guidance to require per-step descriptions and file paths.")
+        (assert-true (contains-text-p assembled "Exploration checkpoint: no codebase exploration tool calls recorded")
+                     "Expected plan mode guidance to include an explicit pre-exploration checkpoint, got ~S."
+                     assembled))
 
       (let ((chat-state (funcall make-chat-ui-state-fn)))
         (funcall chat-ui-set-input-fn chat-state
@@ -242,6 +257,42 @@
                        "Expected a user message to retain natural-language plan instruction.")
           (assert-true saw-system-ack
                        "Expected a system acknowledgment for inferred /plan on.")))
+      (funcall clear-steps-fn)
+      (let* ((captured-step-count
+               (funcall capture-plan-steps-fn
+                        "1. Review plan parsing in `amoebum/src/plan-mode.lisp` and streaming wiring in `amoebum/src/ui/chat.lisp`.
+2. Extend smoke verification in `amoebum/plan-mode-smoke-test.lisp` and adjust exports in `amoebum/src/package.lisp`."
+                        :state (funcall current-plan-state-fn)))
+             (captured-steps (funcall plan-mode-steps-fn
+                                      (funcall current-plan-state-fn)))
+             (first-captured-step (first captured-steps))
+             (second-captured-step (second captured-steps))
+             (first-file-paths (and first-captured-step
+                                    (funcall plan-step-file-paths-fn
+                                             first-captured-step)))
+             (second-file-paths (and second-captured-step
+                                     (funcall plan-step-file-paths-fn
+                                              second-captured-step))))
+        (assert-true (= 2 captured-step-count)
+                     "Expected structured numbered response capture to return 2 steps, got ~S."
+                     captured-step-count)
+        (assert-true (= 2 (length captured-steps))
+                     "Expected two captured structured plan steps, got ~D."
+                     (length captured-steps))
+        (assert-true (contains-text-p (funcall plan-step-description-fn first-captured-step)
+                                      "Review plan parsing")
+                     "Expected first captured step description text, got ~S."
+                     (and first-captured-step
+                          (funcall plan-step-description-fn first-captured-step)))
+        (assert-true (and (member "amoebum/src/plan-mode.lisp" first-file-paths :test #'string=)
+                          (member "amoebum/src/ui/chat.lisp" first-file-paths :test #'string=))
+                     "Expected first captured step file paths to include plan-mode/chat files, got ~S."
+                     first-file-paths)
+        (assert-true (and (member "amoebum/plan-mode-smoke-test.lisp" second-file-paths :test #'string=)
+                          (member "amoebum/src/package.lisp" second-file-paths :test #'string=))
+                     "Expected second captured step file paths to include smoke/package files, got ~S."
+                     second-file-paths))
+      (funcall clear-steps-fn)
       (funcall add-plan-step-fn
                "Review target implementation files with `rg -n plan amoebum/src/plan-mode.lisp`."
                :file-paths (list "amoebum/src/plan-mode.lisp"
@@ -273,9 +324,10 @@
                (funcall ensure-directory-pathname-fn
                         (merge-pathnames
                          (make-pathname :directory
-                                        `(:relative ,(format nil "amoebum-i40-~A"
-                                                              (get-universal-time))))
-                         (funcall temporary-directory-fn))))
+                                        `(:relative ".tmp-plan-mode-smokes"
+                                                    ,(format nil "amoebum-i40-~A"
+                                                             (get-universal-time))))
+                         repo-root)))
              (read-target (merge-pathnames #P"plan-mode-read.txt" tmp-root))
              (write-target (merge-pathnames #P"plan-mode-write.txt" tmp-root))
              (event-bus (funcall make-event-bus-fn :capacity 64))
@@ -331,6 +383,34 @@
                             (contains-text-p search-result "\"RESULTS\":["))
                        "Expected search-project to remain allowed in plan mode, got ~S."
                        search-result))
+
+        (let* ((exploration-snapshot
+                 (funcall plan-mode-exploration-snapshot-fn
+                          (funcall current-plan-state-fn)))
+               (exploration-tools (or (getf exploration-snapshot :tool-names) '()))
+               (exploration-call-count (or (getf exploration-snapshot :call-count) 0))
+               (assembled-after-exploration (funcall assemble-system-prompt-fn)))
+          (assert-true (>= exploration-call-count 4)
+                       "Expected plan exploration checkpoint to record read/search calls, got count ~S snapshot=~S."
+                       exploration-call-count
+                       exploration-snapshot)
+          (assert-true (member "read-file" exploration-tools :test #'string=)
+                       "Expected exploration checkpoint to include read-file tool usage, got ~S."
+                       exploration-tools)
+          (assert-true (member "glob-files" exploration-tools :test #'string=)
+                       "Expected exploration checkpoint to include glob-files tool usage, got ~S."
+                       exploration-tools)
+          (assert-true (member "grep-content" exploration-tools :test #'string=)
+                       "Expected exploration checkpoint to include grep-content tool usage, got ~S."
+                       exploration-tools)
+          (assert-true (member "search-project" exploration-tools :test #'string=)
+                       "Expected exploration checkpoint to include search-project tool usage, got ~S."
+                       exploration-tools)
+          (assert-true (contains-text-p assembled-after-exploration "Exploration checkpoint:")
+                       "Expected assembled system prompt to include exploration checkpoint text after tool usage.")
+          (assert-true (contains-text-p assembled-after-exploration "recorded using")
+                       "Expected assembled system prompt checkpoint to report recorded exploration tools, got ~S."
+                       assembled-after-exploration))
 
         (let ((write-call (funcall make-tool-call-fn
                                    :name "write-file"
@@ -527,22 +607,41 @@
         (multiple-value-bind (handledp review-result)
             (funcall dispatch-fn "/plan review")
           (assert-true handledp "Expected /plan review to be handled.")
-          (assert-true (contains-text-p (funcall result-output-fn review-result)
-                                        "Plan review:")
-                       "Expected /plan review output heading, got ~S."
-                       (funcall result-output-fn review-result))
-          (assert-true (contains-text-p (funcall result-output-fn review-result)
-                                        "Input gating: active")
-                       "Expected /plan review output to include input gating summary, got ~S."
-                       (funcall result-output-fn review-result))
-          (assert-true (contains-text-p (funcall result-output-fn review-result)
-                                        "# Amoebum Plan")
-                       "Expected /plan review output to include plan markdown header, got ~S."
-                       (funcall result-output-fn review-result))
-          (assert-true (contains-text-p (funcall result-output-fn review-result)
-                                        "Review target implementation files with")
-                       "Expected /plan review output to include captured step text, got ~S."
-                       (funcall result-output-fn review-result)))
+          (let* ((review-output (funcall result-output-fn review-result))
+                 (styled-lines (funcall stream-markdown-styled-lines-fn
+                                        review-output
+                                        120))
+                 (has-code-highlighting
+                   (loop for line in styled-lines
+                         thereis (loop for segment in line
+                                       for role = (and (listp segment)
+                                                       (keywordp (first segment))
+                                                       (getf segment :role))
+                                       thereis (member role
+                                                       '(:assistant-code
+                                                         :assistant-code-keyword
+                                                         :assistant-code-fence)
+                                                       :test #'eq)))))
+            (assert-true (contains-text-p review-output
+                                          "Plan review:")
+                         "Expected /plan review output heading, got ~S."
+                         review-output)
+            (assert-true (contains-text-p review-output
+                                          "Input gating: active")
+                         "Expected /plan review output to include input gating summary, got ~S."
+                         review-output)
+            (assert-true (contains-text-p review-output
+                                          "# Amoebum Plan")
+                         "Expected /plan review output to include plan markdown header, got ~S."
+                         review-output)
+            (assert-true (contains-text-p review-output
+                                          "Review target implementation files with")
+                         "Expected /plan review output to include captured step text, got ~S."
+                         review-output)
+            (assert-true (contains-text-p review-output "```markdown")
+                         "Expected /plan review output to wrap captured plan in a markdown fence.")
+            (assert-true has-code-highlighting
+                         "Expected /plan review output to render with code syntax highlighting roles.")))
         (multiple-value-bind (handledp partial-approve-result)
             (funcall dispatch-fn "/plan approve 1,3")
           (assert-true handledp "Expected /plan approve 1,3 to be handled.")
@@ -770,9 +869,10 @@
                  (funcall ensure-directory-pathname-fn
                           (merge-pathnames
                            (make-pathname :directory
-                                          `(:relative ,(format nil "amoebum-i186-~A"
-                                                                (get-universal-time))))
-                           (funcall temporary-directory-fn))))
+                                          `(:relative ".tmp-plan-mode-smokes"
+                                                      ,(format nil "amoebum-i186-~A"
+                                                               (get-universal-time))))
+                           repo-root)))
                (execute-write-target (merge-pathnames #P"execute-write.txt" tmp-root))
                (context (funcall make-context-fn
                                  :toolset (symbol-value toolset-sym)
@@ -824,6 +924,12 @@
                        (funcall plan-execution-state-status-fn execution-state))
           (assert-true (integerp (funcall plan-execution-state-started-at-fn execution-state))
                        "Expected start-plan-execution to set started-at timestamp.")
+          (let ((continuity-lines (funcall plan-execution-output-lines-fn execution-state)))
+            (assert-true (some (lambda (line)
+                                 (contains-text-p line "LIVE> Progress: step 1 of 2 (elapsed "))
+                               continuity-lines)
+                         "Expected continuity output to include initial step-of-total progress with elapsed time, got ~S."
+                         continuity-lines))
           (funcall pause-plan-execution-fn execution-state)
           (assert-true (eq :paused (funcall plan-execution-state-status-fn execution-state))
                        "Expected pause-plan-execution to set :paused, got ~S."
@@ -893,6 +999,11 @@
                                  (contains-text-p line "LIVE> [step 3 done] step-3-ok"))
                                continuity-lines)
                          "Expected continuity output to include completion result for step 3, got ~S."
+                         continuity-lines)
+            (assert-true (some (lambda (line)
+                                 (contains-text-p line "LIVE> Progress: step 2 of 2 (elapsed "))
+                               continuity-lines)
+                         "Expected continuity output to include completed step-of-total progress with elapsed time, got ~S."
                          continuity-lines)
             (assert-true (some (lambda (line)
                                  (contains-text-p line "LIVE> All approved steps completed."))
@@ -973,9 +1084,10 @@
                  (funcall ensure-directory-pathname-fn
                           (merge-pathnames
                            (make-pathname :directory
-                                          `(:relative ,(format nil "amoebum-i172-~A"
-                                                                (get-universal-time))))
-                           (funcall temporary-directory-fn))))
+                                          `(:relative ".tmp-plan-mode-smokes"
+                                                      ,(format nil "amoebum-i172-~A"
+                                                               (get-universal-time))))
+                           repo-root)))
                (rollback-file (merge-pathnames #P"tracked.txt" rollback-root))
                (execution-state (funcall initialize-plan-execution-fn :plan-state plan-state))
                (executed-order '()))
@@ -1056,10 +1168,19 @@
                        "Expected rollback scenario to mark rollback-attempted-p true.")
           (assert-true (funcall plan-execution-state-rollback-succeeded-p-fn execution-state)
                        "Expected rollback scenario to mark rollback-succeeded-p true.")
+          (let ((pending-step-indexes
+                  (funcall plan-execution-state-pending-step-indexes-fn execution-state)))
+            (assert-true (member 2 pending-step-indexes :test #'=)
+                         "Expected failed step 2 to remain pending for retry decision, got ~S."
+                         pending-step-indexes)
+            (assert-true (not (member 1 pending-step-indexes :test #'=))
+                         "Expected completed step 1 to be removed from pending queue, got ~S."
+                         pending-step-indexes))
           (assert-true (contains-text-p (funcall read-file-string-fn rollback-file)
                                         "baseline")
                        "Expected rollback scenario to restore tracked file baseline content.")
-          (let ((continuity-lines (funcall plan-execution-output-lines-fn execution-state)))
+          (let ((continuity-lines (funcall plan-execution-output-lines-fn execution-state))
+                (continuity-entries (funcall plan-execution-state-continuity-output-fn execution-state)))
             (assert-true (some (lambda (line)
                                  (contains-text-p line "Failure detected; attempting git rollback"))
                                continuity-lines)
@@ -1069,7 +1190,39 @@
                                  (contains-text-p line "Rollback completed; git baseline restored"))
                                continuity-lines)
                          "Expected rollback continuity output to include rollback success marker, got ~S."
-                         continuity-lines)))
+                         continuity-lines)
+            (assert-true (not (some (lambda (line)
+                                      (contains-text-p line "[step 3 running]"))
+                                    continuity-lines))
+                         "Expected step 3 to remain unexecuted after step 2 failure, got ~S."
+                         continuity-lines)
+            (let ((failed-step-entry
+                    (find-if (lambda (entry)
+                               (and (= 2 (or (funcall plan-execution-output-entry-step-index-fn entry) -1))
+                                    (eq :error (funcall plan-execution-output-entry-severity-fn entry))
+                                    (contains-text-p (funcall plan-execution-output-entry-line-fn entry)
+                                                     "Choose next action")))
+                             continuity-entries)))
+              (assert-true failed-step-entry
+                           "Expected failed step continuity entry to include next-action guidance, got ~S."
+                           continuity-lines)
+              (let ((recovery-actions
+                      (funcall plan-execution-output-entry-recovery-actions-fn failed-step-entry)))
+                (assert-true (some (lambda (action)
+                                     (contains-text-p action "/execute"))
+                                   recovery-actions)
+                             "Expected failed step recovery actions to include /execute retry guidance, got ~S."
+                             recovery-actions)
+                (assert-true (some (lambda (action)
+                                     (contains-text-p action "/plan review"))
+                                   recovery-actions)
+                             "Expected failed step recovery actions to include /plan review guidance, got ~S."
+                             recovery-actions)
+                (assert-true (some (lambda (action)
+                                     (contains-text-p action "/plan modify"))
+                                   recovery-actions)
+                             "Expected failed step recovery actions to include /plan modify guidance, got ~S."
+                             recovery-actions)))))
         (funcall clear-step-approvals-fn plan-state)
         (let ((saw-init-error nil))
           (handler-case

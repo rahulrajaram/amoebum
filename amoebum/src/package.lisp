@@ -105,6 +105,7 @@
            #:+event-type-agent-spawned+
            #:+event-type-agent-completed+
            #:+event-type-agent-error+
+           #:+event-type-agent-activity+
            #:+lifecycle-event-types+
            #:event-type-p
            #:+core-event-types+
@@ -417,6 +418,12 @@
            #:send-webhook-notification
            #:make-webhook-backend
            #:make-webhook-backends
+           #:default-runtime-log-path
+           #:default-crash-log-path
+           #:runtime-log-path
+           #:crash-log-path
+           #:log-runtime-event
+           #:log-runtime-condition
            #:log-backend
            #:log-backend-path
            #:log-backend-lock
@@ -437,6 +444,7 @@
            #:*notification-async-dispatch-p*
            #:*notification-manager-registry*
            #:*desktop-notification-run-command-function*
+           #:*desktop-notifications-suppressed*
            #:notification-command-available-p
            #:notification-run-command
            #:desktop-notification-available-p
@@ -517,7 +525,9 @@
            #:reload-config
            #:current-config
            #:config-value
+           #:cfg
            #:config-layer-source
+           #:describe-config
            #:setconfig
            #:resolve-provider
            #:clear-resolved-provider-cache
@@ -597,6 +607,7 @@
            #:conversation-state-add-message
            #:conversation-state-messages
            #:conversation-load
+           #:conversation-list-sessions
            #:conversation-load-latest
            #:conversation-load-session
            #:parse-history-timestamp
@@ -625,13 +636,22 @@
            #:plan-mode-state-review-notes
            #:plan-mode-state-review-decided-at
            #:plan-mode-state-review-last-presented-at
+           #:plan-mode-state-exploration-call-count
+           #:plan-mode-state-exploration-tool-names
+           #:plan-mode-state-exploration-last-updated-at
            #:plan-mode-state-last-plan-markdown
            #:plan-mode-state-last-output-path
            #:plan-mode-state-last-exit-reason
+           #:*plan-mode-exploration-tool-names*
            #:*plan-mode-state*
            #:current-plan-mode-state
            #:plan-mode-active-p
            #:plan-step-indexes
+           #:plan-mode-exploration-tool-p
+           #:clear-plan-mode-exploration
+           #:record-plan-mode-exploration
+           #:plan-mode-exploration-snapshot
+           #:plan-mode-exploration-complete-p
            #:clear-plan-mode-steps
            #:clear-plan-step-approvals
            #:add-plan-step
@@ -799,6 +819,21 @@
            #:agent-check-cancel
            #:agent-output
            #:drain-agent-completions
+           #:agent-activity-entry
+           #:agent-activity-entry-p
+           #:make-agent-activity-entry
+           #:agent-activity-entry-sequence
+           #:agent-activity-entry-timestamp
+           #:agent-activity-entry-agent-id
+           #:agent-activity-entry-activity-type
+           #:agent-activity-entry-description
+           #:agent-activity-entry-metadata
+           #:agent-activity-entry-source-event-type
+           #:+agent-activity-types+
+           #:ensure-agent-activity-stream
+           #:clear-agent-activity-stream
+           #:record-agent-activity
+           #:list-agent-activity
            #:memory-backend
            #:file-memory-backend
            #:file-memory-backend-p
@@ -861,6 +896,8 @@
            #:extension-load-record-name
            #:extension-load-record-version
            #:extension-load-record-dependencies
+           #:extension-load-record-permissions
+           #:extension-load-record-package-name
            #:extension-load-record-entry-point
            #:extension-load-record-manifest-path
            #:extension-load-record-status
@@ -872,11 +909,15 @@
            #:extension-registry-entry-name
            #:extension-registry-entry-version
            #:extension-registry-entry-dependencies
+           #:extension-registry-entry-permissions
+           #:extension-registry-entry-package-name
            #:extension-registry-entry-entry-point
            #:extension-registry-entry-manifest-path
            #:extension-registry-entry-extension-root
            #:extension-registry-entry-scope
            #:extension-registry-entry-enabled-p
+           #:extension-registry-entry-tool-count
+           #:extension-registry-entry-hook-count
            #:extension-registry-entry-status
            #:extension-registry-entry-loaded-at
            #:extension-registry-entry-last-write-date
@@ -890,13 +931,20 @@
            #:*extension-hot-reload-interval-seconds*
            #:*extension-hot-reload-thread*
            #:*extension-hot-reload-running-p*
+           #:+extension-supported-permissions+
+           #:*extension-safe-operations*
+           #:*extension-permission-approvals*
+           #:*extension-permission-prompt-function*
            #:*extensions-global-directory-override*
            #:*extensions-project-directory-override*
+           #:clear-extension-permission-approvals
            #:discover-user-extension-files
            #:extension-disabled-p
            #:list-extension-report
            #:list-loaded-extensions
            #:list-extension-registry
+           #:list-extensions
+           #:describe-extension
            #:extension-report-summary
            #:known-user-extension-paths
            #:known-user-extension-names
@@ -916,14 +964,22 @@
            #:session-checkpoint-auto-p
            #:session-checkpoint-trigger
            #:*checkpoint-directory-override*
+           #:*session-snapshot-directory-override*
            #:*checkpoint-last-activity-at*
            #:*checkpoint-last-auto-checkpoint-at*
+           #:*checkpoint-default-max-count*
            #:checkpoint-directory
+           #:session-snapshot-directory
            #:list-session-checkpoints
+           #:list-session-snapshots
            #:checkpoint-session
            #:restore-session
+           #:save-session-snapshot
+           #:load-session-snapshot
            #:checkpoint-auto-idle-seconds
+           #:checkpoint-max-count
            #:checkpoint-mark-activity
+           #:rotate-session-checkpoints
            #:maybe-auto-checkpoint
            #:slash-command-parameter
            #:slash-command-parameter-p
@@ -1264,12 +1320,21 @@
            #:budget-exceeded-kind
            #:budget-exceeded-used
            #:budget-exceeded-budget
+           #:budget-exhausted-condition
+           #:budget-exhausted-kind
+           #:budget-exhausted-used
+           #:budget-exhausted-budget
+           #:budget-exhausted-context-summary
            #:condition-to-llm-context
            #:+tool-restart-names+
+           #:+budget-restart-names+
            #:*supervised-restart-selector*
+           #:*budget-exhaustion-restart-selector*
            #:default-supervised-restart-selector
+           #:default-budget-exhaustion-restart-selector
            #:parse-recovery-decision
            #:apply-user-recovery-decision
+           #:handle-budget-exhaustion
            #:execute-tool-with-restarts
            #:tool-execution-context
            #:amoebum-context
@@ -1332,6 +1397,7 @@
            #:add-permission-rule
            #:canonicalize-permission-command
            #:command-canonicalization-trace
+           #:permission-command-argument-profile
            #:normalize-permission-path
            #:evaluate-path-permission
            #:evaluate-command-permission
@@ -1364,6 +1430,7 @@
            #:normalize-sandbox-policy
            #:sandbox-policy
            #:sandbox-policy-enabled-p
+           #:*sandbox-enforcement-rules*
            #:sandbox-check-tool-call
            #:safe-open
            #:safe-run-program
@@ -1540,11 +1607,20 @@
            #:codebase-index-p
            #:make-codebase-index
            #:codebase-index-entries
+           #:codebase-index-entries-by-file
            #:codebase-index-file-mtimes
+           #:codebase-index-indexed-systems
+           #:codebase-index-repo-map
+           #:codebase-index-repo-map-token-estimate
+           #:codebase-index-last-run-stats
            #:codebase-index-created-at
            #:codebase-index-updated-at
+           #:+default-repo-map-token-target+
+           #:*active-codebase-index*
            #:index-package-symbols
            #:index-directory
+           #:index-loaded-asdf-systems
+           #:ensure-project-codebase-index
            #:generate-repo-map
            #:index-find-symbol
            #:index-find-by-file
@@ -1562,7 +1638,9 @@
            #:modification-entry-result
            #:modification-entry-status
            #:modification-entry-timestamp
+           #:modification-entry-agent-id
            #:modification-entry-applied-symbols
+           #:modification-entry-approval-mode
            #:modification-entry-error-message
            #:*modification-journal*
            #:modification-journal
@@ -1570,12 +1648,24 @@
            #:find-modification
            #:sandboxed-eval
            #:*self-modify-auto-approve-p*
+           #:*self-modify-auto-approve-prefixes*
+           #:*self-modify-max-eval-seconds*
+           #:*self-modify-max-cons-cells*
+           #:*self-modification-audit-path-override*
+           #:*self-modification-agent-id-override*
+           #:self-modification-audit-path
            #:propose-modification
            #:approve-modification
+           #:deny-modification
+           #:edit-modification
+           #:render-modification-approval-widget
            #:apply-modification
            #:rollback-modification
+           #:undo-last-modification
            #:pending-modifications
            #:applied-modifications
+           #:list-modifications
+           #:modification-history-browser
            #:modification-journal-summary
            ;; Image save/restore (I99)
            #:*image-directory-override*
@@ -1621,6 +1711,7 @@
            #:extension-manifest-description
            #:extension-manifest-license
            #:extension-manifest-dependencies
+           #:extension-manifest-capabilities
            #:extension-manifest-provides
            #:extension-manifest-entry-point
            #:extension-manifest-source-path
@@ -1675,6 +1766,55 @@
            #:profiling-report-table-widget
            #:memory-statistics
            #:metrics-summary
+           ;; USDT/eBPF observability (I255)
+           #:+usdt-probe-types+
+           #:usdt-probe-event
+           #:usdt-probe-event-p
+           #:make-usdt-probe-event
+           #:usdt-probe-event-type
+           #:usdt-probe-event-timestamp-ms
+           #:usdt-probe-event-duration-ms
+           #:usdt-probe-event-payload
+           #:usdt-bpf-program
+           #:usdt-bpf-program-p
+           #:make-usdt-bpf-program
+           #:usdt-bpf-program-name
+           #:usdt-bpf-program-path
+           #:usdt-bpf-program-description
+           #:usdt-bpf-program-event-types
+           #:usdt-bpf-program-filter
+           #:*usdt-probes-enabled-p*
+           #:usdt-probes-enabled-p
+           #:*usdt-probe-capacity*
+           #:set-usdt-probe-capacity
+           #:usdt-probe-count
+           #:clear-usdt-probe-events
+           #:usdt-probe-events
+           #:install-usdt-gc-hooks
+           #:uninstall-usdt-gc-hooks
+           #:enable-usdt-probes
+           #:disable-usdt-probes
+           #:usdt-probe-tool-enter
+           #:usdt-probe-tool-exit
+           #:usdt-probe-tool-call
+           #:usdt-probe-llm-request-start
+           #:usdt-probe-llm-stream-chunk
+           #:usdt-probe-llm-request-end
+           #:usdt-probe-agent-lifecycle
+           #:usdt-probe-gc-start
+           #:usdt-probe-gc-end
+           #:usdt-probe-render-frame
+           #:usdt-probe-event-dispatch
+           #:usdt-latency-histogram
+           #:usdt-gc-pause-summary
+           #:usdt-dashboard-snapshot
+           #:render-usdt-dashboard
+           #:usdt-dashboard-widget
+           #:*usdt-prebuilt-bpf-directory*
+           #:list-prebuilt-bpf-programs
+           #:load-prebuilt-bpf-program
+           #:bpf-program-filter-events
+           #:usdt-disabled-overhead-percent
            ;; Swarm integration (I83-I93)
            #:swarm-agent
            #:swarm-agent-p
@@ -1697,6 +1837,23 @@
            #:find-swarm-agent
            #:clear-swarm-registry
            #:swarm-status-summary
+           ;; Inter-user coordination (I253)
+           #:register-user-session-peer
+           #:unregister-user-session-peer
+           #:find-user-session-peer
+           #:list-user-session-peers
+           #:clear-user-coordination-state
+           #:handoff-between-users
+           #:get-user-pending-handoffs
+           #:user-handoff-status
+           #:accept-user-handoff
+           #:reject-user-handoff
+           #:complete-user-handoff
+           #:create-user-negotiation-room
+           #:submit-user-negotiation-artifact
+           #:add-user-negotiation-critique
+           #:get-user-negotiation-room-status
+           #:wait-for-user-negotiation-decision
            ;; Read orchestration (I105, re-exported for tests)
            #:read-orchestration-error
            #:validate-read-arguments
@@ -1731,6 +1888,9 @@
            #:uninstall-edit-validation-hooks
            ;; Shell environment handling (I111)
            #:*shell-env-sensitive-patterns*
+           #:*shell-profile-candidate-files*
+           #:*shell-project-env-relative-path*
+           #:*shell-project-path-augmentation-relative-dirs*
            #:shell-environment
            #:shell-environment-p
            #:make-shell-environment
@@ -1742,6 +1902,11 @@
            #:shell-environment-sensitive-patterns
            #:shell-environment-extra-path-dirs
            #:filter-sensitive-env
+           #:resolve-shell-runtime-executable
+           #:resolve-shell-profile-files
+           #:wrap-command-with-shell-profile-init
+           #:load-project-env-overrides
+           #:default-project-path-augmentation-dirs
            #:resolve-shell-env-cwd
            #:assemble-shell-env
            #:shell-env-to-string-list
@@ -1938,7 +2103,8 @@
            #:worker-dashboard-unsubscribe
            #:worker-dashboard-select
            #:worker-dashboard-selected-output
-           #:worker-status-bar-segment))
+           #:worker-status-bar-segment
+           #:agent-activity-stream))
 
 (defpackage :amoebum.sandbox
   (:use)

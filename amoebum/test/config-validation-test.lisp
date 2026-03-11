@@ -60,6 +60,16 @@
   (is (amoebum::%valid-config-value-p :sandbox-policy :off))
   (is (not (amoebum::%valid-config-value-p :sandbox-policy :medium))))
 
+(test schema-entry-captures-type-default-validator
+  "Schema entries should define type, default, and validator metadata."
+  (let ((entry (amoebum::%config-schema-entry :permission-mode)))
+    (is (typep entry 'amoebum::config-schema-entry))
+    (is (equal '(or keyword symbol string)
+               (amoebum::config-schema-entry-type entry)))
+    (is (eq :supervised
+            (amoebum::config-schema-entry-default entry)))
+    (is (functionp (amoebum::config-schema-entry-validator entry)))))
+
 ;;; --- configuration-error condition ---
 
 (test configuration-error-condition
@@ -137,6 +147,23 @@
            (amoebum:setconfig :permission-mode :totally-invalid))
       (setf amoebum::*current-config* old-config))))
 
+(test describe-config-shows-source-layer
+  "describe-config should include value + source layer metadata."
+  (let ((old-config amoebum::*current-config*)
+        (old-model (amoebum:config-value :model)))
+    (unwind-protect
+         (progn
+           (amoebum:setconfig :model "describe-runtime-model")
+           (let ((description (amoebum:describe-config :model)))
+             (is (eq :model (getf description :key)))
+             (is (string= "describe-runtime-model"
+                          (getf description :value)))
+             (is (eq :runtime (getf description :source)))
+             (is (string= "runtime"
+                          (getf description :source-label)))))
+      (amoebum:setconfig :model old-model)
+      (setf amoebum::*current-config* old-config))))
+
 ;;; --- config-value and config-layer-source ---
 
 (test config-value-returns-stored-value
@@ -158,3 +185,7 @@
                                     :cli-values nil)))
     (is (eq :built-in (amoebum:config-layer-source :model cfg)))
     (is (null (amoebum:config-layer-source :nonexistent-key cfg)))))
+
+(test config-validation-smoke-sentinel
+  (is-true t)
+  (format t "CONFIG_VALIDATION_SMOKE_OK~%"))

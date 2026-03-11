@@ -24,6 +24,12 @@
 (defun %non-empty-cli-arg-p (value)
   (> (length (%trim-cli-arg value)) 0))
 
+(defun %resume-latest-token-p (value)
+  (let ((trimmed (%trim-cli-arg value)))
+    (or (string-equal trimmed "latest")
+        (string-equal trimmed "1")
+        (string-equal trimmed "true"))))
+
 (defun %consume-cli-value (args index flag)
   (let* ((next-index (1+ index))
          (value (and (< next-index (length args))
@@ -100,46 +106,29 @@
 (defun %resolve-cli-conversation (&key session-id resume)
   (let ((trimmed-session-id (%trim-cli-arg session-id))
         (trimmed-resume (%trim-cli-arg resume)))
-    (or (when (> (length trimmed-session-id) 0)
-          (or (conversation-load-session trimmed-session-id)
-              (make-conversation-state :session-id trimmed-session-id)))
-        (when (> (length trimmed-resume) 0)
-          (if (or (string= trimmed-resume "latest")
-                  (string= trimmed-resume "1")
-                  (string= trimmed-resume "true"))
-              (conversation-load-latest)
-              (conversation-load-session trimmed-resume)))
-        (conversation-load-latest)
-        (make-conversation-state))))
+    (when (and (> (length trimmed-session-id) 0)
+               (> (length trimmed-resume) 0))
+      (error "Use either --session-id or --resume, not both."))
+    (cond
+      ((> (length trimmed-session-id) 0)
+       (or (conversation-load-session trimmed-session-id)
+           (make-conversation-state :session-id trimmed-session-id)))
+      ((> (length trimmed-resume) 0)
+       (if (%resume-latest-token-p trimmed-resume)
+           (or (conversation-load-latest)
+               (error "Cannot resume latest session: no saved sessions found."))
+           (or (conversation-load-session trimmed-resume)
+               (error "Cannot resume session ~S: no saved conversation found."
+                      trimmed-resume))))
+      (t
+       (or (conversation-load-latest)
+           (make-conversation-state))))))
 
 (defun %validate-image-path (path)
-  (let* ((trimmed (%trim-cli-arg path))
-         (resolved (and (> (length trimmed) 0)
-                        (ignore-errors (probe-file trimmed)))))
-    (unless resolved
-      (error "Image path ~S does not exist." path))
-    resolved))
-
-(defun %read-binary-file-octets (path)
-  (with-open-file (stream path :direction :input :element-type '(unsigned-byte 8))
-    (let ((octets (make-array (file-length stream) :element-type '(unsigned-byte 8))))
-      (read-sequence octets stream)
-      octets)))
+  (%validate-image-input-path (%trim-cli-arg path)))
 
 (defun %image-content-part (path)
-  (let* ((resolved (%validate-image-path path))
-         (mime-type (%image-mime-type resolved)))
-    (unless mime-type
-      (error "Unsupported image type for ~A." (namestring resolved)))
-    (let* ((octets (%read-binary-file-octets resolved))
-           (base64 (%base64-encode-octets octets))
-           (part (make-hash-table :test #'equal)))
-      (setf (gethash "type" part) "image"
-            (gethash "media_type" part) mime-type
-            (gethash "data" part) base64
-            (gethash "path" part) (namestring resolved)
-            (gethash "text" part) (format nil "[image ~A]" (file-namestring resolved)))
-      part)))
+  (%make-image-content-part path))
 
 (defun %build-user-message-content (prompt image-paths)
   (let ((parts '()))
@@ -152,7 +141,7 @@
 (defun %cli-handle-command (command conversation)
   (if (or (null command)
           (not (%non-empty-cli-arg-p command)))
-      (values nil "No command provided.")
+      (values nil "No command provided." nil)
       (let ((trimmed (%trim-cli-arg command)))
         (if (slash-command-input-p trimmed)
             (multiple-value-bind (handled result)
@@ -163,8 +152,11 @@
                       (if (and result (typep result 'slash-command-result))
                           (or (slash-command-result-output result) "")
                           (or (and result (princ-to-string result))
-                              ""))))
-            (values nil "Only slash commands are supported in --json command mode.")))))
+                              ""))
+                      (and (typep result 'slash-command-result)
+                           (slash-command-result-payload result))))
+            (values nil "Only slash commands are supported in --json command mode."
+                    nil)))))
 
 (defun %cli-handle-prompt (prompt image-paths conversation)
   (let ((content (%build-user-message-content prompt image-paths)))
@@ -190,7 +182,8 @@
           finally (return ""))))
 
 (defun %cli-run-headless-assistant (conversation prompt image-paths)
-  (let* ((content (%build-user-message-content prompt image-paths))
+  (let* ((*desktop-notifications-suppressed* t)
+         (content (%build-user-message-content prompt image-paths))
          (chat-state (make-chat-ui-state
                       :conversation conversation
                       :stream-client (pseudopod:make-client))))
@@ -198,8 +191,10 @@
         (values nil "Prompt and image attachments are empty.")
         (progn
           (chat-ui-add-message chat-state "user" content)
-          (%start-step-loop-assistant-response chat-state)
-        (values t (%cli-last-assistant-message chat-state))))))
+          (let ((amoebum::*missing-tool-argument-recovery-mode*
+                  :structured-error))
+            (%start-step-loop-assistant-response chat-state))
+          (values t (%cli-last-assistant-message chat-state))))))
 
 (defun %event-journal-enabled-p ()
   (let ((value (uiop:getenv "AMOEBUM_EVENT_JOURNAL")))
@@ -222,6 +217,14 @@
                          :journal (make-event-journal-instance
                                    :directory (%event-journal-directory))))
         (error (condition)
+          (log-runtime-condition condition
+                                 :kind "event-journal-init-failed"
+                                 :source :main
+                                 :message "Event journal initialization failed."
+                                 :details (list :event-journal-directory
+                                                (%event-journal-directory))
+                                 :path (runtime-log-path)
+                                 :include-backtrace-p nil)
           (format *error-output* "[amoebum] event journal init failed: ~A~%"
                   condition))))
     (unwind-protect
@@ -229,24 +232,152 @@
       (when journal
         (ignore-errors
           (let ((paths (journal-segment-paths journal)))
+            (log-runtime-event :level :info
+                               :kind "event-journal-stopped"
+                               :source :main
+                               :message "Event journal stopped."
+                               :details (list :paths paths))
             (format *error-output*
                     "[amoebum] event journal stopped: ~A~%"
                     (or paths "<none>"))))
         (ignore-errors (stop-event-journal journal))))))
 
+(defparameter +cli-json-schema-version+ "amoebum.cli.json.v1")
+(defparameter +cli-json-schema-doc+ "docs/json-cli-contract.md")
+
+(defun %cli-plist-like-p (value)
+  (and (listp value)
+       (evenp (length value))
+       (loop for key in value by #'cddr
+             always (or (keywordp key)
+                        (stringp key)
+                        (symbolp key)))))
+
+(defun %cli-json-encodable (value)
+  (cond
+    ((or (null value)
+         (stringp value)
+         (numberp value)
+         (eq value t))
+     value)
+    ((keywordp value)
+     (string-downcase (symbol-name value)))
+    ((hash-table-p value)
+     (let ((table (make-hash-table :test #'equal)))
+       (maphash (lambda (key item)
+                  (setf (gethash (string-downcase
+                                  (if (or (symbolp key) (keywordp key))
+                                      (symbol-name key)
+                                      (princ-to-string key)))
+                                 table)
+                        (%cli-json-encodable item)))
+                value)
+       table))
+    ((vectorp value)
+     (coerce (loop for item across value
+                   collect (%cli-json-encodable item))
+             'vector))
+    ((%cli-plist-like-p value)
+     (let ((table (make-hash-table :test #'equal)))
+       (loop for (key item) on value by #'cddr do
+         (setf (gethash (string-downcase
+                         (if (or (symbolp key) (keywordp key))
+                             (symbol-name key)
+                             (princ-to-string key)))
+                        table)
+               (%cli-json-encodable item)))
+       table))
+    ((listp value)
+     (coerce (mapcar #'%cli-json-encodable value) 'vector))
+    (t
+     (princ-to-string value))))
+
+(defun %cli-json-result-kind (action ok)
+  (let ((normalized-action (or action "none")))
+    (cond
+      ((string= normalized-action "error") "error")
+      ((string= normalized-action "command") (if ok "tool" "error"))
+      ((string= normalized-action "prompt") (if ok "prompt" "error"))
+      ((not ok) "error")
+      (t "prompt"))))
+
+(defun %cli-json-events (&key action ok command output error command-payload)
+  (let* ((normalized-action (or action "none"))
+         (events (list
+                  (%json-object
+                   "kind" "progress"
+                   "phase" "started"
+                   "action" normalized-action))))
+    (when (string= normalized-action "command")
+      (push (%json-object
+             "kind" "tool"
+             "phase" (if ok "completed" "failed")
+             "name" "slash-command"
+             "command" command
+             "output" output
+             "payload" (%cli-json-encodable command-payload)
+             "error" error)
+            events))
+    (push (%json-object
+           "kind" "progress"
+           "phase" (if ok "completed" "failed")
+           "action" normalized-action
+           "message" (if ok
+                          "Headless run completed."
+                          "Headless run failed."))
+          events)
+    (nreverse events)))
+
 (defun %emit-cli-json-result (&key ok mode action output error command prompt
-                                session-id image-paths)
-  (let ((payload
+                                session-id image-paths command-payload)
+  (let* ((normalized-ok (not (null ok)))
+         (normalized-mode (or mode "interactive"))
+         (normalized-action (or action "none"))
+         (normalized-command-payload (%cli-json-encodable command-payload))
+         (images (coerce (or image-paths '()) 'vector))
+         (result-kind (%cli-json-result-kind normalized-action normalized-ok))
+         (result-status (if normalized-ok "completed" "failed"))
+         (events (%cli-json-events :action normalized-action
+                                   :ok normalized-ok
+                                   :command command
+                                   :output output
+                                   :error error
+                                   :command-payload normalized-command-payload))
+         (payload
           (%json-object
-           "ok" (not (null ok))
-           "mode" (or mode "interactive")
-           "action" (or action "none")
+           "schema_version" +cli-json-schema-version+
+           "schema_doc" +cli-json-schema-doc+
+           "ok" normalized-ok
+           "mode" normalized-mode
+           "action" normalized-action
            "command" command
            "prompt" prompt
            "session_id" session-id
-           "images" (coerce (or image-paths '()) 'vector)
+           "images" images
            "output" output
-           "error" error)))
+           "error" error
+           "command_payload" normalized-command-payload
+           "request" (%json-object
+                      "mode" normalized-mode
+                      "action" normalized-action
+                      "command" command
+                      "prompt" prompt
+                      "images" images
+                      "session_id" session-id
+                      "command_payload" normalized-command-payload)
+           "result" (%json-object
+                     "kind" result-kind
+                     "status" result-status
+                     "output" output
+                     "error" error
+                     "tool" (and (string= result-kind "tool")
+                                 (%json-object
+                                  "name" "slash-command"
+                                  "command" command
+                                  "payload" normalized-command-payload))
+                     "progress" (%json-object
+                                 "status" result-status))
+           "events" (coerce events 'vector))))
     (format t "~A~%" (%json-encode payload))
     (finish-output)))
 
@@ -260,22 +391,23 @@
          (conversation (%resolve-cli-conversation
                         :session-id session-id
                         :resume resume)))
-    (when (and (%non-empty-cli-arg-p command)
-               (%non-empty-cli-arg-p prompt))
-      (error "Use either --command or --prompt, not both."))
     (handler-case
-      (multiple-value-bind (ok output)
-          (if (%non-empty-cli-arg-p command)
-              (%cli-handle-command command conversation)
-              (if (plusp (length image-paths))
-                  ;; Some configured providers are text-only; keep JSON prompt/image
-                  ;; mode deterministic by persisting the user turn without forcing
-                  ;; a model roundtrip.
-                  (%cli-handle-prompt prompt image-paths conversation)
-                  (%cli-run-headless-assistant conversation prompt image-paths)))
-        (let ((active-session (conversation-state-session-id conversation)))
-          (conversation-save conversation)
-          (%emit-cli-json-result
+      (progn
+        (when (and (%non-empty-cli-arg-p command)
+                   (%non-empty-cli-arg-p prompt))
+          (error "Use either --command or --prompt, not both."))
+        (multiple-value-bind (ok output command-payload)
+            (if (%non-empty-cli-arg-p command)
+                (%cli-handle-command command conversation)
+                (if (plusp (length image-paths))
+                    ;; Some configured providers are text-only; keep JSON prompt/image
+                    ;; mode deterministic by persisting the user turn without forcing
+                    ;; a model roundtrip.
+                    (%cli-handle-prompt prompt image-paths conversation)
+                    (%cli-run-headless-assistant conversation prompt image-paths)))
+          (let ((active-session (conversation-state-session-id conversation)))
+            (conversation-save conversation)
+            (%emit-cli-json-result
              :ok ok
              :mode "json"
              :action (if (%non-empty-cli-arg-p command) "command" "prompt")
@@ -283,9 +415,17 @@
              :command command
              :prompt prompt
              :session-id active-session
-             :image-paths image-paths))
-          t)
+             :image-paths image-paths
+             :command-payload command-payload))
+            t))
       (error (condition)
+        (log-runtime-condition condition
+                               :kind "cli-json-error"
+                               :source :main
+                               :message "JSON mode failed."
+                               :details (list :argv argv)
+                               :path (runtime-log-path)
+                               :include-backtrace-p nil)
         (%emit-cli-json-result
          :ok nil
          :mode "json"
@@ -304,19 +444,51 @@
                             #-sbcl nil)))
     (reload-config :cli-arguments effective-argv)
     (enable-tts-post-receive-hook)
-    (let ((options (%parse-cli-options effective-argv)))
-      (%run-with-optional-event-journal
-       (lambda ()
-         (cond
-           ((getf options :json-mode-p)
-            (apply #'run-cli-json effective-argv))
-           ((getf options :demo-mode-p)
-            (run-chat-ui :backend :auto :fps 20
-                         :demo t))
-           (t
-            (let ((conversation (%resolve-cli-conversation
-                                 :session-id (getf options :session-id)
-                                 :resume (getf options :resume))))
-              (run-chat-ui :backend :auto :fps 20
-                           :initial-state (make-chat-ui-state
-                                           :conversation conversation))))))))))
+    (let* ((options (%parse-cli-options effective-argv))
+           (mode (cond
+                   ((getf options :json-mode-p) :json)
+                   ((getf options :demo-mode-p) :demo)
+                   (t :interactive)))
+           (completedp nil))
+      (log-runtime-event :level :info
+                         :kind "runtime-startup"
+                         :source :main
+                         :message "Amoebum runtime starting."
+                         :details (list :mode mode
+                                        :argv effective-argv
+                                        :runtime-log (runtime-log-path)
+                                        :crash-log (crash-log-path)))
+      (unwind-protect
+           (handler-case
+               (prog1
+                   (%run-with-optional-event-journal
+                    (lambda ()
+                      (cond
+                        ((getf options :json-mode-p)
+                         (apply #'run-cli-json effective-argv))
+                        ((getf options :demo-mode-p)
+                         (run-chat-ui :backend :auto :fps 20
+                                      :demo t))
+                        (t
+                         (let ((conversation (%resolve-cli-conversation
+                                              :session-id (getf options :session-id)
+                                              :resume (getf options :resume))))
+                           (run-chat-ui :backend :auto :fps 20
+                                        :initial-state (make-chat-ui-state
+                                                        :conversation conversation)))))))
+                 (setf completedp t))
+             (error (condition)
+               (log-runtime-condition condition
+                                      :kind "runtime-unhandled-error"
+                                      :source :main
+                                      :message "Amoebum runtime exited with an unhandled condition."
+                                      :details (list :mode mode
+                                                     :argv effective-argv)
+                                      :path (crash-log-path))
+               (error condition)))
+        (when completedp
+          (log-runtime-event :level :info
+                             :kind "runtime-shutdown"
+                             :source :main
+                             :message "Amoebum runtime stopped cleanly."
+                             :details (list :mode mode)))))))

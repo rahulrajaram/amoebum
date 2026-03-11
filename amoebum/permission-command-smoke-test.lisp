@@ -63,6 +63,20 @@
         (assert-true
          (eq (funcall evaluate-command-permission
                       :tool :bash
+                      :command "echo prep | git status"
+                      :rules rules)
+             :allow)
+         "Expected prefix allow rule to match git status pipeline segment.")
+        (assert-true
+         (eq (funcall evaluate-command-permission
+                      :tool :bash
+                      :command "echo prep | git push --force"
+                      :rules rules)
+             :deny)
+         "Expected exact deny to match git pipeline segment.")
+        (assert-true
+         (eq (funcall evaluate-command-permission
+                      :tool :bash
                       :command "git push --force"
                       :rules rules)
              :deny)
@@ -94,6 +108,22 @@
                                             :command "rm -rf *"
                                             :source :project)))
              :prompt)
-         "Expected dangerous escalation to prompt despite allow rule in full-auto."))))
+         "Expected dangerous escalation to prompt despite allow rule in full-auto.")
+        (assert-true
+         (eq (funcall evaluate-command-permission
+                      :tool :bash
+                      :command "echo prep | git push --force"
+                      :rules (list (funcall make-rule
+                                            :effect :allow
+                                            :tool :bash
+                                            :command "git push --force"
+                                            :source :project)
+                                   (funcall make-rule
+                                            :effect :deny
+                                            :tool :bash
+                                            :command "git push --force"
+                                            :source :project)))
+             :deny)
+         "Expected deterministic deny precedence for conflicting exact command rules."))))
 
   (format t "AMOEBUM_PERMISSION_COMMAND_SMOKE_OK~%"))

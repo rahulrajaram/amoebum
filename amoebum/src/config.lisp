@@ -41,7 +41,8 @@
     :tts-python-module nil
     :tts-voice "af_heart"
     :tts-auto-speak nil
-    :auto-checkpoint-idle-seconds 300
+    :auto-checkpoint-idle-seconds 1800
+    :auto-checkpoint-max-count 10
     :plan-mode nil))
 
 (defparameter *known-permission-modes*
@@ -61,6 +62,16 @@
 
 (defparameter *known-memory-backends*
   '(:auto :file :haake-cli :haake-mcp))
+
+(defstruct (config-schema-entry
+            (:constructor make-config-schema-entry
+                (&key key type default validator)))
+  key
+  type
+  default
+  validator)
+
+(defparameter *config-schema* (make-hash-table :test 'eq))
 
 (defparameter *current-config* nil)
 
@@ -120,7 +131,10 @@
 (defun %default-value (key project-root)
   (if (eq key :project-root)
       project-root
-      (getf *default-config-values* key)))
+      (let ((entry (%config-schema-entry key)))
+        (if entry
+            (config-schema-entry-default entry)
+            (getf *default-config-values* key)))))
 
 (defun %default-config-keys ()
   (append
@@ -144,148 +158,32 @@
       (t
        nil))))
 
+(defun %register-config-schema-entry (key type default &optional validator)
+  (setf (gethash key *config-schema*)
+        (make-config-schema-entry :key key
+                                  :type type
+                                  :default default
+                                  :validator validator)))
+
+(defun %config-schema-entry (key)
+  (%ensure-config-schema)
+  (gethash key *config-schema*))
+
+(defun %schema-type-valid-p (type value)
+  (or (null type)
+      (eq type t)
+      (typep value type)))
+
 (defun %valid-config-value-p (key value)
-  (case key
-    (:model (stringp value))
-    (:provider-override
-     (or (null value)
-         (and (or (stringp value)
-                  (symbolp value)
-                  (keywordp value))
-              (member (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                                  (string value))
-                                     )
-                      '("anthropic-provider" "anthropic"
-                        "openai-compatible-provider" "openai-compat" "openai"
-                        "kimi-provider" "kimi")
-                      :test #'string=))))
-    (:api-base-url
-     (or (null value)
-         (and (stringp value)
-              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-                 0))))
-    (:context-window-limit
-     (or (null value)
-         (and (integerp value)
-              (> value 0))))
-    (:stream-budget-abort-threshold-percent
-     (and (integerp value)
-          (>= value 1)
-          (<= value 100)))
-    (:permission-mode
-     (member value *known-permission-modes* :test #'eq))
-    (:approval-policy
-     (member (%approval-policy-keyword value)
-             *known-approval-policies*
-             :test #'eq))
-    (:sandbox-policy
-     (member (%sandbox-policy-keyword value)
-             *known-sandbox-policies*
-             :test #'eq))
-    (:sandbox-mode
-     (member (%sandbox-mode-keyword value)
-             *known-sandbox-modes*
-             :test #'eq))
-    (:swarm-delegation-mode
-     (member (%swarm-delegation-mode-keyword value)
-             *known-swarm-delegation-modes*
-             :test #'eq))
-    (:memory-backend
-     (member value *known-memory-backends* :test #'eq))
-    (:web-search-searxng-url
-     (or (null value)
-         (and (stringp value)
-              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-                 0))))
-    (:web-search-duckduckgo-url
-     (or (null value)
-         (and (stringp value)
-              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-                 0))))
-    (:web-search-allow-domains
-     (%string-sequence-p value))
-    (:web-search-block-domains
-     (%string-sequence-p value))
-    (:web-search-user-agent
-     (or (null value)
-         (and (stringp value)
-              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-                 0))))
-    (:web-fetch-timeout-seconds
-     (and (integerp value) (> value 0)))
-    (:web-fetch-cache-ttl-seconds
-     (and (integerp value) (> value 0)))
-    (:web-fetch-max-markdown-bytes
-     (and (integerp value) (> value 0)))
-    (:web-fetch-user-agent
-     (or (null value)
-         (and (stringp value)
-              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-                 0))))
-    (:haake-command
-     (and (stringp value)
-          (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-             0)))
-    (:haake-project-id
-     (or (null value)
-         (and (stringp value)
-              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-                 0))))
-    (:haake-agent
-     (and (stringp value)
-          (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-             0)))
-    (:haake-autodetect (or (eq value t) (eq value nil)))
-    (:notifications-enabled (or (eq value t) (eq value nil)))
-    (:notification-events
-     (%keyword-like-sequence-p value))
-    (:notification-sound-enabled (or (eq value t) (eq value nil)))
-    (:notification-desktop-enabled (or (eq value t) (eq value nil)))
-    (:notification-log-enabled (or (eq value t) (eq value nil)))
-    (:notification-sound-player
-     (or (null value)
-         (and (stringp value)
-              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-                 0))))
-    (:notification-desktop-command
-     (or (null value)
-         (and (stringp value)
-              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-                 0))))
-    (:notification-log-path
-     (or (null value)
-         (%pathname-or-string-p value)))
-    (:notification-webhooks
-     (or (null value)
-         (listp value)
-         (vectorp value)))
-    (:notification-sound-task-complete
-     (or (null value)
-         (%pathname-or-string-p value)))
-    (:notification-sound-error
-     (or (null value)
-         (%pathname-or-string-p value)))
-    (:notification-sound-approval-needed
-     (or (null value)
-         (%pathname-or-string-p value)))
-    (:tts-command
-     (or (null value)
-         (and (stringp value)
-              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-                 0))))
-    (:tts-python-module (or (eq value t) (eq value nil)))
-    (:tts-voice
-     (or (null value)
-         (and (stringp value)
-              (> (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))
-                 0))))
-    (:tts-auto-speak (or (eq value t) (eq value nil)))
-    (:auto-checkpoint-idle-seconds
-     (and (integerp value)
-          (>= value 0)))
-    (:plan-mode (or (eq value t) (eq value nil)))
-    (:project-root (%pathname-or-string-p value))
-    (t t)))
+  (let ((entry (%config-schema-entry key)))
+    (if (null entry)
+        t
+        (let ((type-ok (%schema-type-valid-p (config-schema-entry-type entry) value))
+              (validator (config-schema-entry-validator entry)))
+          (and type-ok
+               (if validator
+                   (funcall validator value)
+                   t))))))
 
 (defun %signal-invalid-value (key value reason project-root)
   (restart-case
@@ -461,6 +359,106 @@
       (:NETWORKED :networked)
       (:LOCAL :local)
       (otherwise normalized))))
+
+(defun %ensure-config-schema ()
+  (when (zerop (hash-table-count *config-schema*))
+    (labels ((register (key type &key (default (getf *default-config-values* key)) validator)
+               (%register-config-schema-entry key type default validator))
+             (non-empty-or-nil-p (value)
+               (or (null value) (%non-empty-string-p value)))
+             (provider-override-p (value)
+               (or (null value)
+                   (and (or (stringp value)
+                            (symbolp value)
+                            (keywordp value))
+                        (member (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                            (string value)))
+                                '("anthropic-provider" "anthropic"
+                                  "openai-compatible-provider" "openai-compat" "openai"
+                                  "kimi-provider" "kimi")
+                                :test #'string=)))))
+      (register :model 'string)
+      (register :provider-override '(or null string symbol keyword)
+                :validator #'provider-override-p)
+      (register :api-base-url '(or null string) :validator #'non-empty-or-nil-p)
+      (register :context-window-limit '(or null integer)
+                :validator (lambda (value) (or (null value) (> value 0))))
+      (register :stream-budget-abort-threshold-percent 'integer
+                :validator (lambda (value) (and (>= value 1) (<= value 100))))
+      (register :permission-mode '(or keyword symbol string)
+                :validator (lambda (value)
+                             (member (%permission-mode-keyword value)
+                                     *known-permission-modes*
+                                     :test #'eq)))
+      (register :approval-policy '(or keyword symbol string)
+                :validator (lambda (value)
+                             (member (%approval-policy-keyword value)
+                                     *known-approval-policies*
+                                     :test #'eq)))
+      (register :sandbox-policy '(or keyword symbol string)
+                :validator (lambda (value)
+                             (member (%sandbox-policy-keyword value)
+                                     *known-sandbox-policies*
+                                     :test #'eq)))
+      (register :sandbox-mode '(or keyword symbol string)
+                :validator (lambda (value)
+                             (member (%sandbox-mode-keyword value)
+                                     *known-sandbox-modes*
+                                     :test #'eq)))
+      (register :swarm-delegation-mode '(or keyword symbol string)
+                :validator (lambda (value)
+                             (member (%swarm-delegation-mode-keyword value)
+                                     *known-swarm-delegation-modes*
+                                     :test #'eq)))
+      (register :memory-backend 'keyword
+                :validator (lambda (value)
+                             (member value *known-memory-backends* :test #'eq)))
+      (register :web-search-searxng-url '(or null string) :validator #'non-empty-or-nil-p)
+      (register :web-search-duckduckgo-url '(or null string) :validator #'non-empty-or-nil-p)
+      (register :web-search-allow-domains t :validator #'%string-sequence-p)
+      (register :web-search-block-domains t :validator #'%string-sequence-p)
+      (register :web-search-user-agent '(or null string) :validator #'non-empty-or-nil-p)
+      (register :web-fetch-timeout-seconds 'integer :validator (lambda (value) (> value 0)))
+      (register :web-fetch-cache-ttl-seconds 'integer :validator (lambda (value) (> value 0)))
+      (register :web-fetch-max-markdown-bytes 'integer :validator (lambda (value) (> value 0)))
+      (register :web-fetch-user-agent '(or null string) :validator #'non-empty-or-nil-p)
+      (register :haake-command 'string :validator #'%non-empty-string-p)
+      (register :haake-project-id '(or null string) :validator #'non-empty-or-nil-p)
+      (register :haake-agent 'string :validator #'%non-empty-string-p)
+      (register :haake-autodetect 'boolean)
+      (register :notifications-enabled 'boolean)
+      (register :notification-events t :validator #'%keyword-like-sequence-p)
+      (register :notification-sound-enabled 'boolean)
+      (register :notification-desktop-enabled 'boolean)
+      (register :notification-log-enabled 'boolean)
+      (register :notification-sound-player '(or null string) :validator #'non-empty-or-nil-p)
+      (register :notification-desktop-command '(or null string) :validator #'non-empty-or-nil-p)
+      (register :notification-log-path '(or null pathname string)
+                :validator (lambda (value)
+                             (or (null value) (%pathname-or-string-p value))))
+      (register :notification-webhooks '(or null list vector))
+      (register :notification-sound-task-complete '(or null pathname string)
+                :validator (lambda (value)
+                             (or (null value) (%pathname-or-string-p value))))
+      (register :notification-sound-error '(or null pathname string)
+                :validator (lambda (value)
+                             (or (null value) (%pathname-or-string-p value))))
+      (register :notification-sound-approval-needed '(or null pathname string)
+                :validator (lambda (value)
+                             (or (null value) (%pathname-or-string-p value))))
+      (register :tts-command '(or null string) :validator #'non-empty-or-nil-p)
+      (register :tts-python-module 'boolean)
+      (register :tts-voice '(or null string) :validator #'non-empty-or-nil-p)
+      (register :tts-auto-speak 'boolean)
+      (register :auto-checkpoint-idle-seconds 'integer
+                :validator (lambda (value) (>= value 0)))
+      (register :auto-checkpoint-max-count 'integer
+                :validator (lambda (value) (> value 0)))
+      (register :plan-mode 'boolean)
+      (register :project-root '(or pathname string)
+                :default nil
+                :validator #'%pathname-or-string-p)))
+  *config-schema*)
 
 (defun %environment-config-values ()
   (let ((values (make-hash-table :test 'eq))
@@ -643,8 +641,27 @@
 (defun config-value (key &optional (cfg (current-config)))
   (gethash key (config-values cfg)))
 
+(defun cfg (key &optional default)
+  "Concise config accessor. Returns the value for KEY from current-config,
+or DEFAULT if the config is nil or the key is missing."
+  (or (ignore-errors (config-value key (current-config)))
+      default))
+
 (defun config-layer-source (key &optional (cfg (current-config)))
   (gethash key (config-sources cfg)))
+
+(defun describe-config (key &optional (cfg (current-config)))
+  (let* ((entry (%config-schema-entry key))
+         (source (config-layer-source key cfg)))
+    (list :key key
+          :value (config-value key cfg)
+          :source source
+          :source-label (if source (string-downcase (symbol-name source)) "unknown")
+          :default (if (eq key :project-root)
+                       (config-project-root cfg)
+                       (and entry (config-schema-entry-default entry)))
+          :type (and entry (config-schema-entry-type entry))
+          :validator-present-p (and entry (not (null (config-schema-entry-validator entry)))))))
 
 (defun emit-config-changed (key old-value new-value)
   (let ((event (make-config-changed-event :key key

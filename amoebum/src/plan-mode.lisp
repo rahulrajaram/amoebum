@@ -6,6 +6,15 @@
 (defparameter *known-plan-review-decisions*
   '(:pending :approved :partially-approved :rejected :modification-requested))
 
+(defparameter *plan-mode-exploration-tool-names*
+  '("read-file" "glob-files" "grep-content" "search-project"))
+
+(defparameter *known-plan-path-extensions*
+  '("lisp" "asd" "md" "txt" "toml" "json" "yaml" "yml"
+    "sh" "bash" "zsh" "py" "js" "ts" "tsx" "css" "scss"
+    "html" "xml" "c" "h" "cpp" "hpp" "go" "rs" "java"
+    "kt" "swift" "sql" "proto" "nix"))
+
 (defstruct (plan-step
             (:constructor make-plan-step
                 (&key index
@@ -33,6 +42,9 @@
                    review-notes
                    review-decided-at
                    review-last-presented-at
+                   (exploration-call-count 0)
+                   (exploration-tool-names '())
+                   exploration-last-updated-at
                    last-plan-markdown
                    last-output-path
                    last-exit-reason)))
@@ -47,6 +59,9 @@
   review-notes
   review-decided-at
   review-last-presented-at
+  (exploration-call-count 0 :type integer)
+  (exploration-tool-names '() :type list)
+  exploration-last-updated-at
   last-plan-markdown
   last-output-path
   last-exit-reason)
@@ -90,6 +105,24 @@
     (if (member risk *known-plan-step-risk-levels* :test #'eq)
         risk
         :medium)))
+
+(defun %normalize-plan-tool-name (tool-name)
+  (let* ((text (typecase tool-name
+                 (string tool-name)
+                 (symbol (symbol-name tool-name))
+                 (t nil)))
+         (trimmed (and (stringp text)
+                       (string-trim '(#\Space #\Tab #\Newline #\Return) text))))
+    (and (stringp trimmed)
+         (plusp (length trimmed))
+         (string-downcase trimmed))))
+
+(defun plan-mode-exploration-tool-p (tool-name)
+  (let ((normalized (%normalize-plan-tool-name tool-name)))
+    (and (stringp normalized)
+         (member normalized
+                 *plan-mode-exploration-tool-names*
+                 :test #'string=))))
 
 (defun %normalize-plan-review-decision (value)
   (let* ((decision-text (typecase value
@@ -310,6 +343,258 @@
       (t
        '()))))
 
+(defun %plan-whitespace-char-p (char)
+  (member char '(#\Space #\Tab #\Newline #\Return) :test #'char=))
+
+(defun %split-whitespace (text)
+  (let* ((source (%safe-plan-string text ""))
+         (length (length source))
+         (start nil)
+         (result '()))
+    (labels ((push-fragment (end)
+               (when (and start (< start end))
+                 (push (subseq source start end) result))))
+      (loop for index from 0 below length
+            for char = (char source index) do
+              (if (%plan-whitespace-char-p char)
+                  (progn
+                    (push-fragment index)
+                    (setf start nil))
+                  (unless start
+                    (setf start index))))
+      (push-fragment length))
+    (nreverse result)))
+
+(defun %parse-numbered-step-line (line)
+  (let* ((source (%safe-plan-string line ""))
+         (trimmed (string-left-trim '(#\Space #\Tab) source))
+         (length (length trimmed)))
+    (unless (plusp length)
+      (return-from %parse-numbered-step-line (values nil nil)))
+    (let ((position 0))
+      (loop while (and (< position length)
+                       (digit-char-p (char trimmed position)))
+            do (incf position))
+      (unless (plusp position)
+        (return-from %parse-numbered-step-line (values nil nil)))
+      (unless (< position length)
+        (return-from %parse-numbered-step-line (values nil nil)))
+      (let ((delimiter (char trimmed position)))
+        (unless (member delimiter '(#\. #\)) :test #'char=)
+          (return-from %parse-numbered-step-line (values nil nil)))
+        (let ((description-start (1+ position)))
+          (loop while (and (< description-start length)
+                           (%plan-whitespace-char-p
+                            (char trimmed description-start)))
+                do (incf description-start))
+          (values (parse-integer trimmed :start 0 :end position)
+                  (string-trim '(#\Space #\Tab #\Newline #\Return)
+                               (if (< description-start length)
+                                   (subseq trimmed description-start)
+                                   ""))))))))
+
+(defun %collect-plan-step-blocks (response-text)
+  (let ((blocks '())
+        (current-index nil)
+        (current-lines '()))
+    (with-input-from-string (stream (%safe-plan-string response-text ""))
+      (loop for line = (read-line stream nil nil)
+            while line do
+              (multiple-value-bind (step-index remainder)
+                  (%parse-numbered-step-line line)
+                (if (integerp step-index)
+                    (progn
+                      (when current-index
+                        (push (list :index current-index
+                                    :lines (nreverse current-lines))
+                              blocks))
+                      (setf current-index step-index
+                            current-lines (list remainder)))
+                    (when current-index
+                      (push line current-lines))))))
+    (when current-index
+      (push (list :index current-index
+                  :lines (nreverse current-lines))
+            blocks))
+    (nreverse blocks)))
+
+(defun %plan-step-metadata-line-p (line)
+  (let ((text (string-downcase
+               (string-trim '(#\Space #\Tab #\Newline #\Return)
+                            (%safe-plan-string line "")))))
+    (or (uiop:string-prefix-p "risk:" text)
+        (uiop:string-prefix-p "- risk:" text)
+        (uiop:string-prefix-p "files:" text)
+        (uiop:string-prefix-p "- files:" text)
+        (uiop:string-prefix-p "file:" text)
+        (uiop:string-prefix-p "- file:" text)
+        (uiop:string-prefix-p "paths:" text)
+        (uiop:string-prefix-p "- paths:" text)
+        (uiop:string-prefix-p "path:" text)
+        (uiop:string-prefix-p "- path:" text)
+        (uiop:string-prefix-p "depends_on:" text)
+        (uiop:string-prefix-p "- depends_on:" text)
+        (uiop:string-prefix-p "depends on:" text)
+        (uiop:string-prefix-p "- depends on:" text))))
+
+(defun %plan-path-extension (token)
+  (let* ((text (%safe-plan-string token ""))
+         (trimmed (string-trim '(#\Space #\Tab #\Newline #\Return) text))
+         (position (position #\. trimmed :from-end t)))
+    (when (and position
+               (< (1+ position) (length trimmed)))
+      (string-downcase (subseq trimmed (1+ position))))))
+
+(defun %sanitize-plan-path-token (token)
+  (string-trim '(#\Space #\Tab #\Newline #\Return
+                 #\` #\' #\" #\( #\) #\[ #\] #\{ #\}
+                 #\< #\> #\, #\; #\: #\! #\?)
+               (%safe-plan-string token "")))
+
+(defun %plan-path-token-p (token)
+  (let* ((trimmed (%sanitize-plan-path-token token))
+         (length (length trimmed))
+         (extension (%plan-path-extension trimmed))
+         (has-separator (or (find #\/ trimmed)
+                            (find #\\ trimmed)))
+         (looks-like-known-file
+           (member trimmed
+                   '("Makefile" "Dockerfile" "Jenkinsfile")
+                   :test #'string=)))
+    (and (plusp length)
+         (not (uiop:string-prefix-p "-" trimmed))
+         (not (search "://" trimmed :test #'char=))
+         (loop for char across trimmed
+               thereis (alphanumericp char))
+         (or has-separator
+             looks-like-known-file
+             (and extension
+                  (member extension
+                          *known-plan-path-extensions*
+                          :test #'string=))))))
+
+(defun %extract-inline-code-spans (text)
+  (let* ((source (%safe-plan-string text ""))
+         (length (length source))
+         (index 0)
+         (result '()))
+    (loop while (< index length) do
+      (let ((start (position #\` source :start index)))
+        (if (null start)
+            (setf index length)
+            (let ((end (position #\` source :start (1+ start))))
+              (if (null end)
+                  (setf index length)
+                  (let ((snippet (subseq source (1+ start) end)))
+                    (push snippet result)
+                    (setf index (1+ end))))))))
+    (nreverse result)))
+
+(defun %collect-plan-path-candidates (text)
+  (let ((result '()))
+    (dolist (token (%split-whitespace text))
+      (let ((trimmed (%sanitize-plan-path-token token)))
+        (when (%plan-path-token-p trimmed)
+          (push trimmed result))))
+    (nreverse result)))
+
+(defun %collect-plan-step-file-paths (lines)
+  (let ((result '())
+        (seen (make-hash-table :test #'equal)))
+    (labels ((record-path (candidate)
+               (let ((trimmed (%sanitize-plan-path-token candidate)))
+                 (when (and (%plan-path-token-p trimmed)
+                            (not (gethash trimmed seen)))
+                   (setf (gethash trimmed seen) t)
+                   (push trimmed result)))))
+      (dolist (line (or lines '()))
+        (dolist (candidate (%collect-plan-path-candidates line))
+          (record-path candidate))
+        (dolist (span (%extract-inline-code-spans line))
+          (record-path span)
+          (dolist (candidate (%collect-plan-path-candidates span))
+            (record-path candidate)))))
+    (nreverse result)))
+
+(defun %extract-plan-risk-from-lines (lines)
+  (dolist (line (or lines '()) :medium)
+    (let* ((text (string-downcase
+                  (string-trim '(#\Space #\Tab #\Newline #\Return)
+                               (%safe-plan-string line ""))))
+           (position (or (search "risk:" text :test #'char=)
+                         (search "- risk:" text :test #'char=))))
+      (when position
+        (let* ((value-start (+ position
+                               (if (uiop:string-prefix-p "- risk:" (subseq text position))
+                                   7
+                                   5)))
+               (value (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                   (if (< value-start (length text))
+                                       (subseq text value-start)
+                                       ""))))
+          (return (%normalize-plan-risk value)))))))
+
+(defun %extract-plan-dependencies-from-lines (lines)
+  (let ((result '()))
+    (dolist (line (or lines '()))
+      (let ((text (string-downcase (%safe-plan-string line ""))))
+        (when (or (search "depends_on" text :test #'char=)
+                  (search "depends on" text :test #'char=))
+          (dolist (fragment (%split-whitespace text))
+            (when (%string-contains-digits-p fragment)
+              (let ((index (%extract-first-integer fragment)))
+                (when (and (integerp index)
+                           (>= index 1))
+                  (push index result))))))))
+    (sort (remove-duplicates result :test #'=) #'<)))
+
+(defun %normalize-plan-step-description (lines)
+  (let ((description-lines
+          (loop for line in (or lines '())
+                for text = (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                        (%safe-plan-string line ""))
+                unless (or (zerop (length text))
+                           (%plan-step-metadata-line-p text))
+                  collect text)))
+    (string-trim '(#\Space #\Tab #\Newline #\Return)
+                 (format nil "~{~A~^ ~}" description-lines))))
+
+(defun %parse-plan-step-block (block)
+  (let* ((lines (copy-list (or (getf block :lines) '())))
+         (description (%normalize-plan-step-description lines))
+         (file-paths (%collect-plan-step-file-paths lines))
+         (risk (%extract-plan-risk-from-lines lines))
+         (depends-on (%extract-plan-dependencies-from-lines lines)))
+    (when (and (plusp (length description))
+               file-paths)
+      (list :description description
+            :file-paths file-paths
+            :risk risk
+            :depends-on depends-on))))
+
+(defun capture-plan-steps-from-response (response-text &key
+                                                       (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (unless (plan-mode-active-p state)
+    (return-from capture-plan-steps-from-response 0))
+  (let* ((blocks (%collect-plan-step-blocks response-text))
+         (parsed (loop for block in blocks
+                       for candidate = (%parse-plan-step-block block)
+                       when candidate
+                         collect candidate)))
+    (unless (and blocks
+                 (= (length parsed) (length blocks)))
+      (return-from capture-plan-steps-from-response 0))
+    (setf (plan-mode-state-steps state) '())
+    (clear-plan-step-approvals state)
+    (dolist (step parsed)
+      (add-plan-step (getf step :description)
+                     :file-paths (getf step :file-paths)
+                     :risk (getf step :risk)
+                     :depends-on (getf step :depends-on)
+                     :state state))
+    (length parsed)))
+
 (defun current-plan-mode-state ()
   (or *plan-mode-state*
       (setf *plan-mode-state* (%make-plan-mode-state))))
@@ -318,9 +603,46 @@
   (and (plan-mode-state-p state)
        (plan-mode-state-active-p state)))
 
+(defun clear-plan-mode-exploration (&optional (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (setf (plan-mode-state-exploration-call-count state) 0
+        (plan-mode-state-exploration-tool-names state) '()
+        (plan-mode-state-exploration-last-updated-at state) nil)
+  state)
+
+(defun record-plan-mode-exploration (tool-name &key
+                                                (state (current-plan-mode-state))
+                                                (successful-p t))
+  (check-type state plan-mode-state)
+  (let ((normalized-tool-name (%normalize-plan-tool-name tool-name)))
+    (when (and successful-p
+               (plan-mode-exploration-tool-p normalized-tool-name))
+      (incf (plan-mode-state-exploration-call-count state))
+      (setf (plan-mode-state-exploration-tool-names state)
+            (sort (remove-duplicates
+                   (cons normalized-tool-name
+                         (plan-mode-state-exploration-tool-names state))
+                   :test #'string=)
+                  #'string<)
+            (plan-mode-state-exploration-last-updated-at state)
+            (get-universal-time))))
+  state)
+
+(defun plan-mode-exploration-snapshot (&optional (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (let ((call-count (max 0 (or (plan-mode-state-exploration-call-count state) 0))))
+    (list :call-count call-count
+          :tool-names (copy-list (or (plan-mode-state-exploration-tool-names state) '()))
+          :last-updated-at (plan-mode-state-exploration-last-updated-at state)
+          :complete-p (plusp call-count))))
+
+(defun plan-mode-exploration-complete-p (&optional (state (current-plan-mode-state)))
+  (not (null (getf (plan-mode-exploration-snapshot state) :complete-p))))
+
 (defun clear-plan-mode-steps (&optional (state (current-plan-mode-state)))
   (check-type state plan-mode-state)
   (setf (plan-mode-state-steps state) '())
+  (clear-plan-mode-exploration state)
   (clear-plan-step-approvals state)
   state)
 
@@ -486,6 +808,9 @@
         (plan-mode-state-review-notes state) nil
         (plan-mode-state-review-decided-at state) nil
         (plan-mode-state-review-last-presented-at state) nil
+        (plan-mode-state-exploration-call-count state) 0
+        (plan-mode-state-exploration-tool-names state) '()
+        (plan-mode-state-exploration-last-updated-at state) nil
         (plan-mode-state-last-plan-markdown state) nil)
   state)
 

@@ -304,11 +304,8 @@
   "Return or create the active sound backend."
   (or *sound-backend-instance*
       (setf *sound-backend-instance*
-            (let* ((cfg (ignore-errors (current-config)))
-                   (backend-key (or (and cfg (config-value :sound-backend cfg))
-                                    :auto))
-                   (hailer-cmd (or (and cfg (config-value :hailer-command cfg))
-                                   "hailer")))
+            (let* ((backend-key (or (cfg :sound-backend) :auto))
+                   (hailer-cmd (or (cfg :hailer-command) "hailer")))
               (select-sound-backend :backend backend-key
                                     :hailer-command hailer-cmd)))))
 

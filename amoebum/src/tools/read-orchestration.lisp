@@ -92,7 +92,7 @@
           :hash (%read-orchestration-content-hash resolved))))
 
 (defun %read-orchestration-cache-path-key (path)
-  (%path-text (or (ignore-errors (truename path))
+  (coerce-path-string (or (ignore-errors (truename path))
                   (probe-file path)
                   path)))
 
@@ -155,7 +155,6 @@
           (validate-read-arguments path-string offset limit pages)
         (declare (ignore _path))
         (let ((pathname-value (pathname path-string)))
-          (%ensure-tool-path-allowed :read-file pathname-value)
           (multiple-value-bind (cached cache-status)
               (%read-orchestration-cache-lookup pathname-value
                                                 validated-offset
@@ -172,7 +171,7 @@
                                                     validated-limit
                                                     validated-pages)))))
               (list :ok t
-                    :path (%path-text pathname-value)
+                    :path (coerce-path-string pathname-value)
                     :cache-status cache-status
                     :content content)))))
     (error (condition)

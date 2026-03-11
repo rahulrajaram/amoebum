@@ -93,7 +93,7 @@
 (defun %search-orchestration-file-hits (files root query &key case-insensitive)
   (let ((hits '()))
     (dolist (file files)
-      (let* ((path-text (%path-text file))
+      (let* ((path-text (coerce-path-string file))
              (relative-path (%relative-path-text file root)))
         (when (%search-orchestration-path-match-p query
                                                   relative-path
@@ -129,6 +129,7 @@
                                            after
                                            nil
                                            case-insensitive
+                                           nil
                                            root)))
 
 (defun %search-orchestration-backend-rank (backend)
@@ -231,7 +232,7 @@
            (limited (subseq sorted 0 (min effective-limit (length sorted))))
            (results (mapcar #'%search-orchestration-hit->plist limited)))
       (list :query normalized-query
-            :root (%path-text root-path)
+            :root (coerce-path-string root-path)
             :path-glob path-glob
             :limit effective-limit
             :extensions normalized-extensions

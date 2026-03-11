@@ -1,6 +1,10 @@
 (in-package :amoebum)
 
 (defparameter *desktop-notification-run-command-function* #'pseudopod:run-command)
+(defparameter *desktop-notifications-suppressed* nil
+  "When non-NIL, send-desktop-notification returns immediately without
+firing notify-send.  Set to T in headless/batch/CI modes to avoid
+polluting the user's desktop during non-interactive runs.")
 
 (defun %desktop-shell-quote (text)
   (format nil "'~A'"
@@ -102,6 +106,8 @@
     (not (null command))))
 
 (defun send-desktop-notification (notification &key backend)
+  (when *desktop-notifications-suppressed*
+    (return-from send-desktop-notification (values nil :suppressed)))
   (let ((resolved-backend (or backend (make-desktop-backend))))
     (if (not (desktop-notification-available-p resolved-backend))
         (values nil :backend-unavailable)

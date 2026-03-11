@@ -15,6 +15,8 @@
 (defparameter *web-fetch-default-cache-ttl-seconds* 900)
 (defparameter *web-fetch-default-max-markdown-bytes* 10240)
 (defparameter *web-fetch-default-user-agent* "amoebum-web-fetch/0.1")
+(defparameter *web-fetch-summary-max-snippets* 3)
+(defparameter *web-fetch-summary-snippet-max-chars* 220)
 (defparameter *web-fetch-cache* (make-hash-table :test #'equal))
 (defparameter *web-fetch-cache-lock*
   (bordeaux-threads:make-lock "amoebum-web-fetch-cache"))
@@ -29,20 +31,18 @@
   (let ((collapsed (cl-ppcre:regex-replace-all "\\s+" (or value "") " ")))
     (%web-trim collapsed)))
 
-(defun %web-monotonic-seconds ()
-  (/ (coerce (get-internal-real-time) 'double-float)
-     internal-time-units-per-second))
+;; Monotonic time delegated to monotonic-seconds in util.lisp
 
 (defun %web-acquire-rate-limit-slot ()
   (bordeaux-threads:with-lock-held (*web-search-rate-limit-lock*)
-    (let* ((now (%web-monotonic-seconds))
+    (let* ((now (monotonic-seconds))
            (elapsed (- now *web-search-last-request-at*))
            (remaining (- *web-search-rate-limit-seconds* elapsed))
            (slept 0.0d0))
       (when (> remaining 0.0d0)
         (sleep remaining)
         (setf slept remaining
-              now (%web-monotonic-seconds)))
+              now (monotonic-seconds)))
       (setf *web-search-last-request-at* now)
       slept)))
 
@@ -137,6 +137,16 @@
                   :end1 suffix-length
                   :start2 (- value-length suffix-length)
                   :end2 value-length))))
+
+(defun %web-string-prefix-p (prefix value)
+  (let ((prefix-length (length prefix))
+        (value-length (length value)))
+    (and (<= prefix-length value-length)
+         (string= prefix value
+                  :start1 0
+                  :end1 prefix-length
+                  :start2 0
+                  :end2 prefix-length))))
 
 (defun %web-normalize-domain (domain)
   (let ((trimmed (string-downcase (%web-trim domain))))
@@ -335,6 +345,48 @@
        (%web-domain-allowed-p domain allow-domains block-domains)))
    results))
 
+;; --- Query shaping (I357) ---
+
+(defparameter *web-search-current-date-provider* #'get-universal-time)
+
+(defparameter *web-search-temporal-keywords*
+  '("latest" "recent" "newest" "current" "today" "now" "new" "updated"
+    "last week" "last month" "this year" "this month"))
+
+(defun %web-query-has-iso-date-p (query)
+  "Return T if QUERY already contains an ISO-8601 date (YYYY-MM-DD)."
+  (cl-ppcre:scan "\\d{4}-\\d{2}-\\d{2}" query))
+
+(defun %web-query-temporal-p (query)
+  "Return T if QUERY contains temporal keywords suggesting time-sensitivity."
+  (let ((lower (string-downcase query)))
+    (some (lambda (keyword)
+            (search keyword lower :test #'char=))
+          *web-search-temporal-keywords*)))
+
+(defun %web-shape-search-query (query allow-domains block-domains)
+  "Shape QUERY with domain policy directives and date context.
+Returns (values effective-query date-context-or-nil)."
+  (let ((parts (list query))
+        (date-context nil))
+    ;; Add domain directives
+    (dolist (domain allow-domains)
+      (push (format nil "site:~A" domain) parts))
+    (dolist (domain block-domains)
+      (push (format nil "-site:~A" domain) parts))
+    ;; Add date context for temporal queries without existing dates
+    (when (and (%web-query-temporal-p query)
+               (not (%web-query-has-iso-date-p query)))
+      (let ((now (funcall *web-search-current-date-provider*)))
+        (multiple-value-bind (sec min hour day month year)
+            (decode-universal-time now 0)
+          (declare (ignore sec min hour))
+          (let ((date-str (format nil "~4,'0D-~2,'0D-~2,'0D" year month day)))
+            (setf date-context date-str)
+            (push (format nil "as of ~A" date-str) parts)))))
+    (values (format nil "~{~A~^ ~}" (nreverse parts))
+            date-context)))
+
 (defun %web-markdown-lines-for-result (index result)
   (let ((title (getf result :title))
         (url (getf result :url))
@@ -357,18 +409,18 @@
         (format stream "No results found.~%"))))
 
 (defun %web-effective-searxng-url (override)
-  (let ((configured (or override (config-value :web-search-searxng-url))))
+  (let ((configured (or override (cfg :web-search-searxng-url))))
     (unless (%web-empty-string-p configured)
       (%web-trim configured))))
 
 (defun %web-effective-duckduckgo-url ()
-  (let ((configured (config-value :web-search-duckduckgo-url)))
+  (let ((configured (cfg :web-search-duckduckgo-url)))
     (if (%web-empty-string-p configured)
         *web-search-default-duckduckgo-url*
         (%web-trim configured))))
 
 (defun %web-effective-search-user-agent ()
-  (let ((configured (config-value :web-search-user-agent)))
+  (let ((configured (cfg :web-search-user-agent)))
     (if (%web-empty-string-p configured)
         *web-search-default-user-agent*
         (%web-trim configured))))
@@ -376,10 +428,10 @@
 (defun %web-effective-domain-list (explicit-value config-key)
   (if explicit-value
       (%web-normalize-domain-list explicit-value)
-      (%web-normalize-domain-list (config-value config-key))))
+      (%web-normalize-domain-list (cfg config-key))))
 
 (defun %web-effective-fetch-user-agent (override)
-  (let ((configured (or override (config-value :web-fetch-user-agent))))
+  (let ((configured (or override (cfg :web-fetch-user-agent))))
     (if (%web-empty-string-p configured)
         *web-fetch-default-user-agent*
         (%web-trim configured))))
@@ -392,19 +444,19 @@
 (defun %web-resolve-fetch-timeout (override)
   (%web-resolve-positive-integer
    override
-   (%web-resolve-positive-integer (config-value :web-fetch-timeout-seconds)
+   (%web-resolve-positive-integer (cfg :web-fetch-timeout-seconds)
                                   *web-fetch-default-timeout-seconds*)))
 
 (defun %web-resolve-fetch-max-markdown-bytes (override)
   (%web-resolve-positive-integer
    override
-   (%web-resolve-positive-integer (config-value :web-fetch-max-markdown-bytes)
+   (%web-resolve-positive-integer (cfg :web-fetch-max-markdown-bytes)
                                   *web-fetch-default-max-markdown-bytes*)))
 
 (defun %web-resolve-fetch-cache-ttl-seconds (override)
   (%web-resolve-positive-integer
    override
-   (%web-resolve-positive-integer (config-value :web-fetch-cache-ttl-seconds)
+   (%web-resolve-positive-integer (cfg :web-fetch-cache-ttl-seconds)
                                   *web-fetch-default-cache-ttl-seconds*)))
 
 (defun %web-fetch-cache-key (url max-markdown-bytes)
@@ -538,12 +590,100 @@
                (prefix (subseq text 0 body-limit)))
           (values (concatenate 'string prefix suffix) t)))))
 
+(defun %web-truncate-text-with-ellipsis (value max-chars)
+  (let* ((limit (max 1 max-chars))
+         (payload (or value "")))
+    (if (<= (length payload) limit)
+        payload
+        (let* ((ellipsis "...")
+               (prefix-limit (max 0 (- limit (length ellipsis)))))
+          (concatenate 'string
+                       (subseq payload 0 prefix-limit)
+                       ellipsis)))))
+
+(defun %web-markdown-first-line-matching (markdown predicate)
+  (loop for raw-line in (cl-ppcre:split "\\n+" (or markdown ""))
+        for line = (%web-trim raw-line)
+        when (and (> (length line) 0)
+                  (funcall predicate line))
+          do (return line)
+        finally (return nil)))
+
+(defun %web-markdown-summary-snippets (markdown &key (limit *web-fetch-summary-max-snippets*) (max-chars *web-fetch-summary-snippet-max-chars*))
+  (let ((snippets '()))
+    (dolist (raw-line (cl-ppcre:split "\\n+" (or markdown "")))
+      (let ((line (%web-normalize-space raw-line)))
+        (when (and (> (length line) 0)
+                   (not (%web-string-prefix-p "#" line))
+                   (not (cl-ppcre:scan "(?i)^source:" line))
+                   (>= (length line) 40))
+          (let ((snippet (%web-truncate-text-with-ellipsis line max-chars)))
+            (unless (member snippet snippets :test #'string=)
+              (push snippet snippets)
+              (when (>= (length snippets) (max 1 limit))
+                (return)))))))
+    (nreverse snippets)))
+
+(defun %web-summarize-oversized-markdown (markdown max-bytes)
+  (let* ((limit (max 1 max-bytes))
+         (text (or markdown ""))
+         (snippet-limit (max 60
+                             (min *web-fetch-summary-snippet-max-chars*
+                                  (floor limit 3))))
+         (snippet-count (max 1
+                             (min *web-fetch-summary-max-snippets*
+                                  (floor limit 120))))
+         (title-line (or (%web-markdown-first-line-matching
+                          text
+                          (lambda (line) (%web-string-prefix-p "#" line)))
+                         "# Fetched Web Content"))
+         (source-line (%web-markdown-first-line-matching
+                       text
+                       (lambda (line) (cl-ppcre:scan "(?i)^source:" line))))
+         (snippets (%web-markdown-summary-snippets text
+                                                   :limit snippet-count
+                                                   :max-chars snippet-limit)))
+    (with-output-to-string (stream)
+      (format stream "~A~2%" title-line)
+      (when source-line
+        (format stream "~A~2%" source-line))
+      (format stream "Summary generated for oversized page (~D bytes).~2%"
+              (length text))
+      (if snippets
+          (loop for snippet in snippets
+                for index from 1 do
+                  (format stream "~D. ~A~%" index snippet))
+          (format stream "1. No readable summary snippets were extracted.~%"))
+      (format stream "~%...[summarized to fit ~D bytes]..." limit))))
+
+(defun %web-bound-markdown (markdown max-bytes)
+  (let* ((limit (max 1 max-bytes))
+         (text (or markdown "")))
+    (if (<= (length text) limit)
+        (values text nil nil)
+        (multiple-value-bind (summary summary-truncated-p)
+            (%web-truncate-markdown
+             (%web-summarize-oversized-markdown text limit)
+             limit)
+          (declare (ignore summary-truncated-p))
+          (values summary t t)))))
+
 (defun %web-host-changed-p (requested-url effective-url)
   (let ((requested-host (%web-url-domain requested-url))
         (effective-host (%web-url-domain effective-url)))
     (and requested-host
          effective-host
          (not (string= requested-host effective-host)))))
+
+(defun %web-redirect-host-diagnostic (requested-url effective-url)
+  (let ((requested-host (%web-url-domain requested-url))
+        (effective-host (%web-url-domain effective-url)))
+    (when (and requested-host
+               effective-host
+               (not (string= requested-host effective-host)))
+      (format nil "Redirect host changed: ~A -> ~A"
+              requested-host
+              effective-host))))
 
 (defun %web-url-looks-like-login-p (url)
   (and (stringp url)
@@ -726,7 +866,7 @@
     (when (%web-empty-string-p normalized-url)
       (error "URL must not be empty."))
     (let* ((cache-key (%web-fetch-cache-key normalized-url resolved-max-markdown-bytes))
-           (now (%web-monotonic-seconds))
+           (now (monotonic-seconds))
            (cached (%web-fetch-cache-get cache-key now)))
       (if cached
           (append (list :cached t) cached)
@@ -743,9 +883,11 @@
                  (fetched-at (or (getf response :fetched-at) 0))
                  (base-markdown (%web-document->markdown normalized-url effective-url body))
                  (auth-warning (%web-authentication-warning normalized-url effective-url body status))
-                 (host-changed (%web-host-changed-p normalized-url effective-url)))
-            (multiple-value-bind (markdown truncated-p)
-                (%web-truncate-markdown base-markdown resolved-max-markdown-bytes)
+                 (host-changed (%web-host-changed-p normalized-url effective-url))
+                 (redirect-host-diagnostic
+                   (%web-redirect-host-diagnostic normalized-url effective-url)))
+            (multiple-value-bind (markdown truncated-p summarized-p)
+                (%web-bound-markdown base-markdown resolved-max-markdown-bytes)
               (let ((result
                       (list :cached nil
                             :url normalized-url
@@ -755,8 +897,10 @@
                             :fetch-engine fetch-engine
                             :fetched-at fetched-at
                             :host-changed host-changed
+                            :redirect-host-diagnostic redirect-host-diagnostic
                             :authentication-warning auth-warning
                             :truncated-p truncated-p
+                            :summarized-p summarized-p
                             :max-markdown-bytes resolved-max-markdown-bytes
                             :cache-ttl-seconds resolved-cache-ttl
                             :markdown markdown)))

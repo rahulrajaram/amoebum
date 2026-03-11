@@ -94,6 +94,36 @@
              (is (eq :env (amoebum:config-layer-source :model cfg)))))
       (%delete-directory-tree-safe tmp-dir))))
 
+(test directory-layer-overrides-project
+  "Directory config layer should override project and global before env/cli."
+  (let* ((tmp-dir (%make-temp-directory "amoebum-config-loader"))
+         (project-root (merge-pathnames #P"repo/" tmp-dir))
+         (directory-root (merge-pathnames #P"repo/nested/work/" tmp-dir))
+         (global-path (merge-pathnames #P"global-config.lisp" tmp-dir))
+         (project-path (merge-pathnames #P"repo/.amoebum/config.lisp" tmp-dir))
+         (directory-path (merge-pathnames #P"repo/nested/.amoebum/config.lisp" tmp-dir)))
+    (unwind-protect
+         (progn
+           (ensure-directories-exist project-path)
+           (ensure-directories-exist directory-path)
+           (ensure-directories-exist (merge-pathnames #P".keep" directory-root))
+           (%write-text-file global-path
+                             "(configure :model \"global-model\")")
+           (%write-text-file project-path
+                             "(configure :model \"project-model\")")
+           (%write-text-file directory-path
+                             "(configure :model \"directory-model\")")
+           (let ((cfg (amoebum::load-config
+                       :project-root project-root
+                       :directory-root directory-root
+                       :global-config-path global-path
+                       :project-config-path project-path
+                       :environment-values nil
+                       :cli-values nil)))
+             (is (string= "directory-model" (amoebum:config-value :model cfg)))
+             (is (eq :directory (amoebum:config-layer-source :model cfg)))))
+      (%delete-directory-tree-safe tmp-dir))))
+
 (test cli-layer-overrides-all
   "CLI layer should have highest priority."
   (let* ((tmp-dir (%make-temp-directory "amoebum-config-loader"))
@@ -115,6 +145,47 @@
                        :cli-values cli-values)))
              (is (string= "cli-model" (amoebum:config-value :model cfg)))
              (is (eq :cli (amoebum:config-layer-source :model cfg)))))
+      (%delete-directory-tree-safe tmp-dir))))
+
+(test list-merge-directives-append-and-prepend
+  "List-valued keys should support :append and :prepend merge directives."
+  (let* ((tmp-dir (%make-temp-directory "amoebum-config-loader"))
+         (project-root (merge-pathnames #P"repo/" tmp-dir))
+         (directory-root (merge-pathnames #P"repo/nested/work/" tmp-dir))
+         (global-path (merge-pathnames #P"global-config.lisp" tmp-dir))
+         (project-path (merge-pathnames #P"repo/.amoebum/config.lisp" tmp-dir))
+         (directory-path (merge-pathnames #P"repo/nested/.amoebum/config.lisp" tmp-dir))
+         (env-values (make-hash-table :test 'eq))
+         (cli-values (make-hash-table :test 'eq)))
+    (setf (gethash :web-search-allow-domains env-values)
+          '(:append ("env.example")))
+    (setf (gethash :web-search-allow-domains cli-values)
+          '(:append "cli.example"))
+    (unwind-protect
+         (progn
+           (ensure-directories-exist project-path)
+           (ensure-directories-exist directory-path)
+           (%write-text-file global-path
+                             "(configure :web-search-allow-domains '(\"global.example\"))")
+           (%write-text-file project-path
+                             "(configure :web-search-allow-domains '(:append (\"project.example\")))")
+           (%write-text-file directory-path
+                             "(configure :web-search-allow-domains '(:prepend (\"directory.example\")))")
+           (let ((cfg (amoebum::load-config
+                       :project-root project-root
+                       :directory-root directory-root
+                       :global-config-path global-path
+                       :project-config-path project-path
+                       :environment-values env-values
+                       :cli-values cli-values)))
+             (is (equal '("directory.example"
+                          "global.example"
+                          "project.example"
+                          "env.example"
+                          "cli.example")
+                        (amoebum:config-value :web-search-allow-domains cfg)))
+             (is (eq :cli
+                     (amoebum:config-layer-source :web-search-allow-domains cfg)))))
       (%delete-directory-tree-safe tmp-dir))))
 
 (test cli-arguments-parsing

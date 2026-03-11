@@ -11,7 +11,17 @@
     use-value
     abort-tool))
 
+(defparameter +budget-restart-names+
+  '(extend-budget
+    summarize-and-finish
+    abort-task))
+
+(defparameter +budget-partial-output-max-chars+ 320)
+
 (defparameter *supervised-restart-selector*
+  nil)
+
+(defparameter *budget-exhaustion-restart-selector*
   nil)
 
 (defun %json-function (name)
@@ -321,9 +331,30 @@
   (:report (lambda (condition stream)
              (format stream "~A budget exceeded (~A/~A)."
                      (string-capitalize
-                      (string-downcase (symbol-name (budget-exceeded-kind condition))))
+                     (string-downcase (symbol-name (budget-exceeded-kind condition))))
                      (budget-exceeded-used condition)
                      (budget-exceeded-budget condition)))))
+
+(define-condition budget-exhausted-condition (amoebum-error)
+  ((kind :initarg :kind
+         :initform :token
+         :reader budget-exhausted-kind)
+   (used :initarg :used
+         :initform 0
+         :reader budget-exhausted-used)
+   (budget :initarg :budget
+           :initform 0
+           :reader budget-exhausted-budget)
+   (context-summary :initarg :context-summary
+                    :initform nil
+                    :reader budget-exhausted-context-summary))
+  (:report (lambda (condition stream)
+             (format stream "~A budget exhausted (~A/~A)."
+                     (string-capitalize
+                      (string-downcase
+                       (symbol-name (budget-exhausted-kind condition))))
+                     (budget-exhausted-used condition)
+                     (budget-exhausted-budget condition)))))
 
 (defgeneric condition-to-llm-context (condition)
   (:documentation "Convert CONDITION to compact context text for LLM recovery."))
@@ -451,6 +482,145 @@
    (format nil "~A budget exceeded; reduce scope/cost and continue with smaller operations."
            (string-downcase (symbol-name (budget-exceeded-kind condition))))))
 
+(defmethod condition-to-llm-context ((condition budget-exhausted-condition))
+  (%format-llm-condition-context
+   condition
+   "Budget exhausted; choose extend-budget, summarize-and-finish, or abort-task based on risk and user preference."))
+
+(defun %normalize-inline-budget-text (value)
+  (let ((text (string-trim '(#\Space #\Tab #\Newline #\Return)
+                           (if (stringp value)
+                               value
+                               (princ-to-string (or value ""))))))
+    (with-output-to-string (out)
+      (let ((previous-space-p nil))
+        (loop for char across text do
+          (if (member char '(#\Space #\Tab #\Newline #\Return) :test #'char=)
+              (unless previous-space-p
+                (write-char #\Space out)
+                (setf previous-space-p t))
+              (progn
+                (write-char char out)
+                (setf previous-space-p nil))))))))
+
+(defun %coerce-max-partial-output-chars (value)
+  (if (and (integerp value) (> value 0))
+      value
+      +budget-partial-output-max-chars+))
+
+(defun %bounded-budget-output (text max-chars)
+  (let* ((safe-max (%coerce-max-partial-output-chars max-chars))
+         (normalized (%normalize-inline-budget-text text))
+         (length (length normalized)))
+    (cond
+      ((<= length safe-max)
+       normalized)
+      ((<= safe-max 3)
+       (subseq normalized 0 safe-max))
+      (t
+       (concatenate 'string
+                    (subseq normalized 0 (- safe-max 3))
+                    "...")))))
+
+(defun %budget-default-partial-output (kind used budget context-summary max-chars)
+  (%bounded-budget-output
+   (if (and (stringp context-summary)
+            (plusp (length (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                        context-summary))))
+       (format nil "Budget exhausted (~A ~A/~A). Partial summary: ~A"
+               (string-downcase (symbol-name kind))
+               used
+               budget
+               context-summary)
+       (format nil "Budget exhausted (~A ~A/~A). Partial summary unavailable."
+               (string-downcase (symbol-name kind))
+               used
+               budget))
+   max-chars))
+
+(defun default-budget-exhaustion-restart-selector (condition)
+  "Default budget restart policy: summarize-and-finish."
+  (declare (ignore condition))
+  'summarize-and-finish)
+
+(defun %invoke-budget-restart-decision (condition decision)
+  (multiple-value-bind (name args)
+      (%decision-restart-and-args decision)
+    (when (and name
+               (member name +budget-restart-names+ :test #'eq))
+      (let ((restart (find-restart name condition)))
+        (when restart
+          (apply #'invoke-restart restart args))))))
+
+(defun handle-budget-exhaustion (&key
+                                   (kind :token)
+                                   (used 0)
+                                   (budget 0)
+                                   context-summary
+                                   (max-partial-output-chars
+                                     +budget-partial-output-max-chars+))
+  "Signal a recoverable budget exhaustion condition with restart options.
+
+Returns a plist resolution with :ACTION set to one of:
+- :extend-budget
+- :summarize-and-finish
+- :abort-task"
+  (let* ((safe-max (%coerce-max-partial-output-chars max-partial-output-chars))
+         (default-summary (%budget-default-partial-output kind
+                                                          used
+                                                          budget
+                                                          context-summary
+                                                          safe-max)))
+    (handler-bind
+        ((budget-exhausted-condition
+           (lambda (condition)
+             (let ((selector *budget-exhaustion-restart-selector*))
+               (when (functionp selector)
+                 (%invoke-budget-restart-decision condition
+                                                  (funcall selector condition)))))))
+      (restart-case
+          (error 'budget-exhausted-condition
+                 :kind kind
+                 :used used
+                 :budget budget
+                 :context-summary context-summary
+                 :message (format nil "~A budget exhausted (~A/~A)."
+                                  (string-downcase (symbol-name kind))
+                                  used
+                                  budget))
+        (extend-budget (&optional
+                          (extra-budget
+                            (max 1 (truncate (max 1 (if (integerp budget)
+                                                         budget
+                                                         1))
+                                             2))))
+          :report "Increase budget and continue."
+          (list :action :extend-budget
+                :kind kind
+                :used used
+                :budget budget
+                :extra-budget (max 1 (if (and (integerp extra-budget)
+                                              (> extra-budget 0))
+                                         extra-budget
+                                         1))))
+        (summarize-and-finish (&optional (partial-output default-summary))
+          :report "Produce bounded partial output and finish."
+          (list :action :summarize-and-finish
+                :kind kind
+                :used used
+                :budget budget
+                :max-partial-output-chars safe-max
+                :partial-output (%bounded-budget-output partial-output safe-max)))
+        (abort-task (&optional (reason "Budget exhausted; task aborted."))
+          :report "Abort the current task."
+          (list :action :abort-task
+                :kind kind
+                :used used
+                :budget budget
+                :reason (if (stringp reason)
+                            reason
+                            (princ-to-string reason))))))))
+
 (defun %argument-as-string (arguments key)
   (let ((value (and (hash-table-p arguments)
                     (gethash key arguments))))
@@ -461,10 +631,7 @@
         (symbol (symbol-name value))
         (t (princ-to-string value))))))
 
-(defun %tool-metadata-for (tool-name)
-  (and (boundp '*tool-metadata*)
-       (hash-table-p *tool-metadata*)
-       (gethash (string-downcase (princ-to-string tool-name)) *tool-metadata*)))
+;; Tool metadata lookup delegated to find-tool-metadata in deftool.lisp
 
 (defun %likely-missing-argument-p (message)
   (or (search "Missing required tool argument" message :test #'char-equal)
@@ -507,69 +674,10 @@
                        :reason message
                        :cause condition)))))
 
-(defun %normalize-tool-name (tool-name)
-  (string-downcase
-   (string-trim '(#\Space #\Tab #\Newline #\Return)
-                (if (symbolp tool-name)
-                    (symbol-name tool-name)
-                    (princ-to-string tool-name)))))
+;; Name normalization delegated to normalize-name in util.lisp
 
-(defun %invoke-tool-core (tool-name arguments toolset permission-mode)
-  (let* ((metadata (%tool-metadata-for tool-name))
-         (timeout-seconds (and metadata (tool-metadata-timeout-seconds metadata)))
-         (dangerous-p (and metadata (tool-metadata-dangerous-p metadata)))
-         (path (or (%argument-as-string arguments "path")
-                   (%argument-as-string arguments "file")
-                   (%argument-as-string arguments "target")))
-         (command (or (%argument-as-string arguments "command")
-                      (%argument-as-string arguments "cmd")))
-         (permission (check-permission :tool tool-name
-                                       :path path
-                                       :command command
-                                       :dangerous-p dangerous-p
-                                       :permission-mode permission-mode)))
-    (unless (pseudopod:find-tool toolset tool-name)
-      (error 'tool-not-found
-             :tool-name tool-name
-             :arguments arguments
-             :message (format nil "No registered tool named ~S." tool-name)
-             :reason "tool not found"))
-    (unless (eq permission :allow)
-      (error 'tool-permission-denied
-             :tool-name tool-name
-             :arguments arguments
-             :message (format nil "Permission decision ~A for tool ~S."
-                              permission
-                              tool-name)
-             :reason (format nil "permission decision ~A" permission)))
-    (handler-case
-        #+sbcl
-        (if (and timeout-seconds (> timeout-seconds 0))
-            (sb-ext:with-timeout timeout-seconds
-              (pseudopod:invoke-tool-call
-               toolset
-               (pseudopod:make-tool-call :name tool-name
-                                         :arguments arguments)))
-            (pseudopod:invoke-tool-call
-             toolset
-             (pseudopod:make-tool-call :name tool-name
-                                       :arguments arguments)))
-        #-sbcl
-        (pseudopod:invoke-tool-call
-         toolset
-         (pseudopod:make-tool-call :name tool-name
-                                   :arguments arguments))
-      #+sbcl
-      (sb-ext:timeout (condition)
-        (error 'tool-timeout
-               :tool-name tool-name
-               :arguments arguments
-               :timeout-seconds timeout-seconds
-               :message (format nil "Tool ~S timed out." tool-name)
-               :reason (format nil "timed out after ~A seconds" timeout-seconds)
-               :cause condition))
-      (error (condition)
-        (error (%tool-error-from-condition tool-name arguments condition))))))
+;; %invoke-tool-core removed — all tool execution routes through the pipeline
+;; (execute-tool) which enforces permissions via %check-permission-or-signal.
 
 (defun %normalize-restart-decision (decision)
   (let ((name (if (consp decision) (first decision) decision))
@@ -601,36 +709,10 @@
 (unless (functionp *supervised-restart-selector*)
   (setf *supervised-restart-selector* #'default-supervised-restart-selector))
 
-(defun %execute-tool-with-restarts (tool-name arguments toolset permission-mode)
-  (handler-bind
-      ((tool-error
-         (lambda (condition)
-           (when (and (eq (%effective-permission-mode permission-mode) :supervised)
-                      (functionp *supervised-restart-selector*))
-             (let ((decision (funcall *supervised-restart-selector* condition)))
-               (when decision
-                 (%invoke-restart-decision condition decision)))))))
-    (restart-case
-        (%invoke-tool-core tool-name arguments toolset permission-mode)
-      (retry-tool (&optional (new-arguments arguments))
-        :report "Retry tool execution."
-        (%execute-tool-with-restarts tool-name new-arguments toolset permission-mode))
-      (skip-tool ()
-        :report "Skip this tool and continue."
-        (format nil "Tool ~A skipped by error recovery." tool-name))
-      (use-value (value)
-        :report "Provide a replacement value."
-        value)
-      (abort-tool ()
-        :report "Abort tool execution and propagate failure."
-        (error 'amoebum-error
-               :message (format nil "Tool ~A aborted by recovery restart." tool-name))))))
+(unless (functionp *budget-exhaustion-restart-selector*)
+  (setf *budget-exhaustion-restart-selector*
+        #'default-budget-exhaustion-restart-selector))
 
-(defun execute-tool-with-restarts (tool-name arguments
-                                     &key (toolset *toolset*)
-                                       permission-mode)
-  "Invoke TOOL-NAME with restart protocol and typed amoebum conditions."
-  (%execute-tool-with-restarts (%normalize-tool-name tool-name)
-                               arguments
-                               toolset
-                               permission-mode))
+;; %execute-tool-with-restarts and execute-tool-with-restarts removed from
+;; conditions.lisp — canonical versions live in pipeline.lisp and route through
+;; (execute-tool) for permission enforcement and event emission.

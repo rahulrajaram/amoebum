@@ -825,15 +825,44 @@
   (or (ignore-errors (file-write-date path))
       0))
 
-(defun conversation-load-latest (&key project-root)
+(defun %conversation-session-files (&key project-root)
   (let* ((directory (conversation-session-directory :project-root project-root))
          (pattern (merge-pathnames #P"*.sexp" directory))
          (files (ignore-errors (directory pattern))))
-    (when files
-      (let ((latest (first (sort (copy-list files)
-                                 #'>
-                                 :key #'%conversation-file-write-date))))
-        (conversation-load latest :project-root project-root)))))
+    (if files
+        (sort (copy-list files)
+              #'>
+              :key #'%conversation-file-write-date)
+        '())))
+
+(defun conversation-list-sessions (&key project-root limit)
+  (let ((records '()))
+    (dolist (path (%conversation-session-files :project-root project-root))
+      (let* ((payload (%conversation-read-sexp-file path))
+             (session-id (%conversation-session-id-from-path path payload))
+             (updated-at (or (and (listp payload) (getf payload :updated-at))
+                             (and (listp payload) (getf payload :created-at))
+                             (%conversation-file-write-date path)
+                             (%conversation-now)))
+             (state (and (listp payload) (%conversation-normalize-state (getf payload :state))))
+             (entry-count (length (or (and (listp payload) (getf payload :entries))
+                                      '()))))
+        (push (list :session-id session-id
+                    :path path
+                    :updated-at updated-at
+                    :state (or state :idle)
+                    :message-count entry-count)
+              records)))
+    (let ((sorted (nreverse records)))
+      (if (and (integerp limit) (>= limit 0))
+          (subseq sorted 0 (min limit (length sorted)))
+          sorted))))
+
+(defun conversation-load-latest (&key project-root)
+  (let* ((sessions (conversation-list-sessions :project-root project-root :limit 1))
+         (latest-path (and sessions (getf (first sessions) :path))))
+    (and latest-path
+         (conversation-load latest-path :project-root project-root))))
 
 (defun conversation-load-session (session-id &key project-root)
   (let ((session-path (conversation-session-path session-id
@@ -908,15 +937,10 @@
         nil)))
 
 (defun %history-normalize-tool-name (tool-name)
-  (let ((trimmed (%conversation-trim
-                  (cond
-                    ((null tool-name) "")
-                    ((stringp tool-name) tool-name)
-                    ((symbolp tool-name) (symbol-name tool-name))
-                    (t (princ-to-string tool-name))))))
-    (if (plusp (length trimmed))
-        (string-downcase trimmed)
-        nil)))
+  (when tool-name
+    (let ((result (normalize-name tool-name)))
+      (when (plusp (length result))
+        result))))
 
 (defun %history-tool-name (entry)
   (let ((name (conversation-history-entry-name entry)))

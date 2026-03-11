@@ -40,48 +40,62 @@
     (labels ((assert-true (condition format-string &rest format-args)
                (unless condition
                  (error (apply #'format nil format-string format-args)))))
-      (let* ((rules
+      (let* ((project-prefix
+               (namestring
+                (merge-pathnames #P".tmp-permissions-smokes/project/" repo-root)))
+             (project-glob (format nil "~A**" project-prefix))
+             (project-env (format nil "~A.env" project-prefix))
+             (project-src-glob (format nil "~Asrc/*.lisp" project-prefix))
+             (project-src-main (format nil "~Asrc/main.lisp" project-prefix))
+             (project-docs-glob (format nil "~Adocs/*" project-prefix))
+             (project-docs-readme (format nil "~Adocs/readme.md" project-prefix))
+             (project-src-dir (format nil "~Asrc/" project-prefix))
+             (project-src-recursive-lisp (format nil "~Asrc/**/*.lisp" project-prefix))
+             (project-src-core-helper (format nil "~Asrc/core/helper.lisp" project-prefix))
+             (project-src-core-readme (format nil "~Asrc/core/readme.md" project-prefix))
+             (project-src-core-blocked (format nil "~Asrc/core/blocked.lisp" project-prefix))
+             (rules
                (list
                 (funcall make-rule
                          :effect :allow
-                         :path "/tmp/project/**"
+                         :path project-glob
                          :tool :write-file
                          :source :global)
                 (funcall make-rule
                          :effect :deny
-                         :path "/tmp/project/.env"
+                         :path project-env
                          :tool :write-file
                          :source :global)
                 (funcall make-rule
                          :effect :allow
-                         :path "/tmp/project/src/*.lisp"
+                         :path project-src-glob
                          :tool :write-file
                          :source :project)
                 (funcall make-rule
                          :effect :deny
-                         :path "/tmp/project/src/*.lisp"
+                         :path project-src-glob
                          :tool :write-file
                          :source :global)
                 (funcall make-rule
                          :effect :allow
-                         :path "/tmp/project/docs/*"
+                         :path project-docs-glob
                          :tool :write-file
                          :source :global)
                 (funcall make-rule
                          :effect :deny
-                         :path "/tmp/project/docs/*"
+                         :path project-docs-glob
                          :tool :write-file
                          :source :global))))
         ;; Mode defaults.
         (assert-true
          (eq (funcall check-permission :tool :read-file
-                      :path "/tmp/project/src/main.lisp"
+                      :path project-src-main
                       :permission-mode :supervised)
              :prompt)
          "Expected supervised mode to prompt all operations.")
         (assert-true
          (eq (funcall check-permission :tool :read-file
-                      :path "/tmp/project/src/main.lisp"
+                      :path project-src-main
                       :permission-mode :auto-edit)
              :allow)
          "Expected auto-edit to allow file operations.")
@@ -113,21 +127,21 @@
         ;; Path-level matching and precedence.
         (assert-true
          (eq (funcall check-permission :tool :write-file
-                      :path "/tmp/project/.env"
+                      :path project-env
                       :permission-mode :full-auto
                       :rules rules)
              :deny)
          "Expected exact deny rule to override broader allow rule.")
         (assert-true
          (eq (funcall check-permission :tool :write-file
-                      :path "/tmp/project/src/main.lisp"
+                      :path project-src-main
                       :permission-mode :full-auto
                       :rules rules)
              :allow)
          "Expected project-scope allow to beat global-scope deny on tie.")
         (assert-true
          (eq (funcall check-permission :tool :write-file
-                      :path "/tmp/project/docs/readme.md"
+                      :path project-docs-readme
                       :permission-mode :full-auto
                       :rules rules)
              :deny)
@@ -152,57 +166,57 @@
         ;; Specificity ordering: exact > glob > directory > wildcard.
         (let ((specificity-rules
                 (list
-                 (funcall make-rule
+                (funcall make-rule
                           :effect :allow
                           :path "**/*"
                           :tool :write-file
                           :source :global)
                  (funcall make-rule
                           :effect :deny
-                          :path "/tmp/project/src/"
+                          :path project-src-dir
                           :tool :write-file
                           :source :global)
                  (funcall make-rule
                           :effect :allow
-                          :path "/tmp/project/src/**/*.lisp"
+                          :path project-src-recursive-lisp
                           :tool :write-file
                           :source :global)
                  (funcall make-rule
                           :effect :deny
-                          :path "/tmp/project/src/core/blocked.lisp"
+                          :path project-src-core-blocked
                           :tool :write-file
                           :source :global))))
           (assert-true
            (eq (funcall check-permission :tool :write-file
-                        :path "/tmp/project/src/main.lisp"
+                        :path project-src-main
                         :permission-mode :full-auto
                         :rules specificity-rules)
                :allow)
            "Expected ** glob allow to match direct child path and beat directory deny.")
           (assert-true
            (eq (funcall check-permission :tool :write-file
-                        :path "/tmp/project/src/core/helper.lisp"
+                        :path project-src-core-helper
                         :permission-mode :full-auto
                         :rules specificity-rules)
                :allow)
            "Expected glob allow to beat directory deny for nested .lisp paths.")
           (assert-true
            (eq (funcall check-permission :tool :write-file
-                        :path "/tmp/project/src/core/readme.md"
+                        :path project-src-core-readme
                         :permission-mode :full-auto
                         :rules specificity-rules)
                :deny)
            "Expected directory deny to beat wildcard allow for non-glob matches.")
           (assert-true
            (eq (funcall check-permission :tool :write-file
-                        :path "/tmp/project/docs/readme.md"
+                        :path project-docs-readme
                         :permission-mode :full-auto
                         :rules specificity-rules)
                :allow)
            "Expected wildcard allow outside denied directory subtree.")
           (assert-true
            (eq (funcall check-permission :tool :write-file
-                        :path "/tmp/project/src/core/blocked.lisp"
+                        :path project-src-core-blocked
                         :permission-mode :full-auto
                         :rules specificity-rules)
                :deny)
@@ -211,7 +225,7 @@
         ;; Escalation can still force prompt when operation is otherwise auto-approved.
         (assert-true
          (eq (funcall check-permission :tool :write-file
-                      :path "/tmp/project/src/main.lisp"
+                      :path project-src-main
                       :permission-mode :full-auto
                       :rules rules
                       :dangerous-p t)

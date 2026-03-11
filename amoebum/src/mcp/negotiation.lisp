@@ -40,19 +40,17 @@
         (gethash (string-downcase key) table)
         (gethash (string-upcase key) table))))
 
-(defun %mcp-normalize-tool-name (name)
-  (let ((raw (if (stringp name) name (princ-to-string name))))
-    (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) raw))))
+;; Name normalization delegated to normalize-name in util.lisp
 
 (defun %mcp-extract-tool-name (entry)
   (cond
     ((null entry) nil)
-    ((stringp entry) (%mcp-normalize-tool-name entry))
-    ((symbolp entry) (%mcp-normalize-tool-name entry))
+    ((stringp entry) (normalize-name entry))
+    ((symbolp entry) (normalize-name entry))
     ((hash-table-p entry)
      (let ((name (%mcp-negotiation-table-value entry "name")))
        (when name
-         (%mcp-normalize-tool-name name))))
+         (normalize-name name))))
     (t nil)))
 
 (defun %mcp-normalize-declared-tools (value)
@@ -148,7 +146,7 @@
   (let* ((server-info (mcp-server-server-info server))
          (declared-tools (and server-info
                               (mcp-server-info-declared-tools server-info)))
-         (normalized (%mcp-normalize-tool-name tool-name)))
+         (normalized (normalize-name tool-name)))
     (or (null declared-tools)
         (member normalized declared-tools :test #'string=))))
 

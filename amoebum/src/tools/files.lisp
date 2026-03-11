@@ -9,22 +9,12 @@
 (defparameter *file-read-snapshots* (make-hash-table :test #'equal))
 (defparameter *edit-file-syntax-validator-runner* nil)
 
-(defun %path-text (path)
-  (typecase path
-    (pathname (namestring path))
-    (string path)
-    (t (prin1-to-string path))))
+;; Path coercion delegated to coerce-path-string in util.lisp
 
-(defun %ensure-tool-path-allowed (tool path)
-  (let ((decision (check-permission :tool tool :path path)))
-    (unless (eq decision :allow)
-      (error "Permission decision ~S for tool ~A on ~A."
-             decision
-             tool
-             (%path-text path)))))
+;; Permission checking delegated to pipeline chokepoint (%check-permission-or-signal)
 
 (defun %canonical-path-key (path)
-  (%path-text (or (ignore-errors (truename path))
+  (coerce-path-string (or (ignore-errors (truename path))
                   (probe-file path)
                   path)))
 
@@ -63,7 +53,7 @@
                  :tool-name tool-name
                  :argument-name "path"
                  :message (format nil "File ~A must be read with read-file before ~A."
-                                  (%path-text path) tool-name)
+                                  (coerce-path-string path) tool-name)
                  :reason (format nil "read-file is required before ~A for file safety."
                                  tool-name)
                  :reason-code :read-provenance-required))))
@@ -78,7 +68,7 @@
                  :tool-name tool-name
                  :argument-name "path"
                  :message (format nil "File ~A must be read with read-file before ~A."
-                                  (%path-text path) tool-name)
+                                  (coerce-path-string path) tool-name)
                  :reason (format nil "read-file is required before ~A for file safety."
                                  tool-name)
                  :reason-code :read-provenance-required))
@@ -95,7 +85,7 @@
                    :tool-name tool-name
                    :argument-name "path"
                    :message (format nil "File ~A changed on disk after last read."
-                                    (%path-text path))
+                                    (coerce-path-string path))
                    :reason "file changed on disk after last read"
                    :reason-code :stale-content)))))
 
@@ -105,7 +95,7 @@
 
 (defun %edit-conflict-warning (path)
   (format nil "File ~A changed on disk since the last read in this session."
-          (%path-text path)))
+          (coerce-path-string path)))
 
 (defun %normalized-read-window (offset limit)
   (let ((start (or offset 0))
@@ -210,7 +200,7 @@
                                (list "-f" (write-to-string start-page)))
                              (when end-page
                                (list "-l" (write-to-string end-page)))
-                             (list (%path-text path) "-"))))
+                             (list (coerce-path-string path) "-"))))
       (handler-case
           (multiple-value-bind (stdout stderr exit-code)
               (uiop:run-program arguments
@@ -219,7 +209,7 @@
                                 :error-output :string)
             (unless (zerop (or exit-code 0))
               (error "pdftotext failed for ~A: ~A"
-                     (%path-text path)
+                     (coerce-path-string path)
                      (%files-trim-whitespace
                       (if (plusp (length (or stderr "")))
                           stderr
@@ -227,7 +217,7 @@
             (or stdout ""))
         (error (condition)
           (error "Unable to extract PDF text for ~A. Ensure pdftotext is installed. Cause: ~A"
-                 (%path-text path)
+                 (coerce-path-string path)
                  condition))))))
 
 (unless *pdf-text-extractor*
@@ -282,15 +272,39 @@
 (defun %read-image-file (path)
   (let ((mime-type (%image-mime-type path)))
     (unless mime-type
-      (error "Unsupported image type for ~A." (%path-text path)))
+      (error "Unsupported image type for ~A." (coerce-path-string path)))
     (let* ((octets (%read-binary-octets path))
            (base64 (%base64-encode-octets octets)))
       (list :kind :image
-            :path (%path-text path)
+            :path (coerce-path-string path)
             :mime-type mime-type
             :encoding "base64"
             :bytes (length octets)
             :data base64))))
+
+(defun %validate-image-input-path (path)
+  (let* ((trimmed (%files-trim-whitespace
+                   (if (stringp path) path (princ-to-string path))))
+         (resolved (and (plusp (length trimmed))
+                        (ignore-errors (probe-file trimmed)))))
+    (unless resolved
+      (error "Image path ~S does not exist." path))
+    resolved))
+
+(defun %make-image-content-part (path)
+  (let* ((resolved (%validate-image-input-path path))
+         (mime-type (%image-mime-type resolved)))
+    (unless mime-type
+      (error "Unsupported image type for ~A." (coerce-path-string resolved)))
+    (let* ((octets (%read-binary-octets resolved))
+           (base64 (%base64-encode-octets octets))
+           (part (make-hash-table :test #'equal)))
+      (setf (gethash "type" part) "image"
+            (gethash "media_type" part) mime-type
+            (gethash "data" part) base64
+            (gethash "path" part) (coerce-path-string resolved)
+            (gethash "text" part) (format nil "[image ~A]" (file-namestring resolved)))
+      part)))
 
 (defun %parse-json-hash-table (json-text)
   (let* ((jonathan-package (find-package :jonathan))
@@ -299,6 +313,28 @@
     (unless (and parse-symbol (fboundp parse-symbol))
       (error "Notebook parsing requires the JONATHAN package."))
     (funcall (symbol-function parse-symbol) json-text :as :hash-table)))
+
+(defun %prepare-notebook-write-content (path content notebook-output-policy
+                                        &key baseline-content)
+  (unless (stringp content)
+    (error "Notebook write content for ~A must be a string."
+           (coerce-path-string path)))
+  (let ((baseline (or baseline-content
+                      (when (probe-file path)
+                        (uiop:read-file-string path :external-format :utf-8)))))
+    (handler-case
+        (pseudopod:prepare-notebook-content
+         content
+         :baseline-content baseline
+         :output-policy (or notebook-output-policy :preserve))
+      (pseudopod:pseudopod-notebook-error (condition)
+        (error "Invalid notebook payload for ~A: ~A"
+               (coerce-path-string path)
+               (princ-to-string condition)))
+      (error (condition)
+        (error "Notebook write validation failed for ~A: ~A"
+               (coerce-path-string path)
+               condition)))))
 
 (defun %json-object-value (object key &optional default)
   (if (hash-table-p object)
@@ -479,7 +515,7 @@
 (defun %read-file-content (path offset limit pages)
   (let ((delimiter (%tabular-delimiter path)))
     (when (and pages (not (%pdf-file-p path)))
-      (error "PAGES is supported only for PDF files, got ~A." (%path-text path)))
+      (error "PAGES is supported only for PDF files, got ~A." (coerce-path-string path)))
     (cond
       ((%pdf-file-p path)
        (%read-pdf-file path pages))
@@ -494,11 +530,12 @@
 
 (defun %write-file-string (path content)
   (ensure-directories-exist path)
-  (with-open-file (stream path
-                          :direction :output
-                          :if-exists :supersede
-                          :if-does-not-exist :create
-                          :external-format :utf-8)
+  (with-open-stream (stream (safe-open path
+                                       :tool :write-file
+                                       :direction :output
+                                       :if-exists :supersede
+                                       :if-does-not-exist :create
+                                       :external-format :utf-8))
     (write-string content stream)))
 
 (defun %replace-all-literal (source old-string new-string)
@@ -563,7 +600,7 @@
       (%validator-spec-for-extension validators extension))))
 
 (defun %replace-path-placeholder (text path)
-  (nth-value 0 (%replace-all-literal text "{path}" (%path-text path))))
+  (nth-value 0 (%replace-all-literal text "{path}" (coerce-path-string path))))
 
 (defun %syntax-validator-command (spec path)
   (cond
@@ -601,7 +638,7 @@
                             :ok nil
                             :reason "invalid syntax validator command specification")
                       (format nil "Syntax validation configuration for ~A is invalid."
-                              (%path-text path)))
+                              (coerce-path-string path)))
               (handler-case
                   (multiple-value-bind (stdout stderr exit-code)
                       (funcall (or *edit-file-syntax-validator-runner*
@@ -619,7 +656,7 @@
                           (values result nil)
                           (values result
                                   (format nil "Syntax validation failed for ~A (exit ~D)."
-                                          (%path-text path)
+                                          (coerce-path-string path)
                                           status)))))
                 (error (condition)
                   (values (list :enabled t
@@ -627,7 +664,7 @@
                                 :command command
                                 :error (princ-to-string condition))
                           (format nil "Syntax validation failed for ~A: ~A"
-                                  (%path-text path)
+                                  (coerce-path-string path)
                                   (princ-to-string condition))))))))))
 
 (deftool read-file ((path pathname :description "Absolute path to read" :required t)
@@ -641,59 +678,73 @@
   (:dangerous nil)
   (:category :file-read)
   (:timeout 30)
-  (%ensure-tool-path-allowed :read-file path)
   (let ((content (%read-file-content path offset limit pages)))
     (%record-file-read-state path)
     content))
 
-(defun %write-file-result (path content force)
-  (let ((path-text (%path-text path)))
+(defun %write-file-result (path content force &key notebook-output-policy)
+  (let ((path-text (coerce-path-string path)))
     (let ((warnings '())
           (read-state (when (probe-file path-text)
                         (%require-file-read-provenance path-text "write-file" force))))
       (when read-state
         (let ((stale-warning
                (first (%check-file-stale-read-provenance path-text
-                                                        "write-file"
-                                                        read-state
-                                                        force))))
+                                                         "write-file"
+                                                         read-state
+                                                         force))))
           (when stale-warning
             (push stale-warning warnings))))
       (let ((conflict-detected (and read-state (not (null warnings)))))
-        (let ((result (list :path path-text
-                            :bytes (length content)
-                            :written t
-                            :conflict-detected conflict-detected)))
-          (when warnings
-            (setf result (append result (list :warnings (nreverse warnings)))))
-          (%write-file-string path content)
-          (%record-file-read-state path :write)
-          result)))))
+        (multiple-value-bind (content* notebook-metadata)
+            (if (%notebook-file-p path)
+                (%prepare-notebook-write-content path
+                                                 content
+                                                 notebook-output-policy)
+                (values content nil))
+          (let ((result (list :path path-text
+                              :bytes (length content*)
+                              :written t
+                              :conflict-detected conflict-detected)))
+            (when notebook-metadata
+              (setf result
+                    (append result
+                            (list :notebook notebook-metadata))))
+            (when warnings
+              (setf result (append result (list :warnings (nreverse warnings)))))
+            (%write-file-string path content*)
+            (%record-file-read-state path :write)
+            result))))))
 
 (deftool write-file ((path pathname :description "Absolute path to write" :required t)
                      (content string :description "Complete file content" :required t)
+                     (notebook-output-policy (or null string)
+                      :description "Notebook output policy for .ipynb writes: preserve (default), replace, or strip."
+                      :default nil)
                      (force boolean :description "Skip read-provenance checks" :default nil))
   "Create or overwrite a file with the provided content."
   (:permission :auto)
   (:dangerous nil)
   (:category :file-write)
   (:timeout 30)
-  (%ensure-tool-path-allowed :write-file path)
-  (%write-file-result path content force))
+  (%write-file-result path content force
+                      :notebook-output-policy notebook-output-policy))
 
 (deftool edit-file ((path pathname :description "Absolute path to edit" :required t)
                     (old-string string :description "String to replace" :required t)
                     (new-string string :description "Replacement string" :required t)
+                    (notebook-output-policy (or null string)
+                     :description "Notebook output policy for .ipynb edits: preserve (default), replace, or strip."
+                     :default nil)
                     (force boolean :description "Skip read-provenance checks" :default nil))
   "Edit an existing file using exact string replacement."
   (:permission :auto)
   (:dangerous nil)
   (:category :file-edit)
   (:timeout 30)
-  (%ensure-tool-path-allowed :edit-file path)
-  (let* ((read-state (%require-file-edit-provenance (%path-text path) "edit-file" force))
+  (let* ((read-state (%require-file-edit-provenance (coerce-path-string path) "edit-file" force))
          (stale-warnings (if read-state
-                             (%check-file-stale-read-provenance (%path-text path)
+                             (%check-file-stale-read-provenance (coerce-path-string path)
                                                               "edit-file"
                                                               read-state
                                                               force)
@@ -703,22 +754,33 @@
       (multiple-value-bind (updated replacements)
           (%replace-all-literal current old-string new-string)
         (when (zerop replacements)
-          (error "EDIT-FILE found no match for OLD-STRING in ~A." (%path-text path)))
-        (%write-file-string path updated)
-        (%record-file-read-state path :edit)
-        (multiple-value-bind (syntax-validation syntax-warning)
-            (%maybe-run-post-edit-syntax-validation path)
-          (when syntax-warning
-            (push syntax-warning stale-warnings))
-          (let ((result (list :path (%path-text path)
-                              :replacements replacements
-                              :conflict-detected conflict-detected)))
-            (when stale-warnings
-              (setf result
-                      (append result
-                              (list :warnings (nreverse stale-warnings)))))
-            (when syntax-validation
-              (setf result
-                      (append result
-                              (list :syntax-validation syntax-validation))))
-            result))))))
+          (error "EDIT-FILE found no match for OLD-STRING in ~A." (coerce-path-string path)))
+        (multiple-value-bind (content* notebook-metadata)
+            (if (%notebook-file-p path)
+                (%prepare-notebook-write-content path
+                                                 updated
+                                                 notebook-output-policy
+                                                 :baseline-content current)
+                (values updated nil))
+          (%write-file-string path content*)
+          (%record-file-read-state path :edit)
+          (multiple-value-bind (syntax-validation syntax-warning)
+              (%maybe-run-post-edit-syntax-validation path)
+            (when syntax-warning
+              (push syntax-warning stale-warnings))
+            (let ((result (list :path (coerce-path-string path)
+                                :replacements replacements
+                                :conflict-detected conflict-detected)))
+              (when notebook-metadata
+                (setf result
+                        (append result
+                                (list :notebook notebook-metadata))))
+              (when stale-warnings
+                (setf result
+                        (append result
+                                (list :warnings (nreverse stale-warnings)))))
+              (when syntax-validation
+                (setf result
+                        (append result
+                                (list :syntax-validation syntax-validation))))
+              result)))))))

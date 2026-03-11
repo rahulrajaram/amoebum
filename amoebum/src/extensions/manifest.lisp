@@ -2,17 +2,17 @@
 
 (defparameter +extension-capabilities+
   '(:tools :hooks :widgets :keymaps)
-  "Capabilities an extension manifest may declare in :PROVIDES.")
+  "Capabilities an extension manifest may declare in :CAPABILITIES.")
 
 (defstruct (extension-manifest
-            (:constructor make-extension-manifest
+            (:constructor %make-extension-manifest
                 (&key name
                  version
                  author
                  description
                  license
                  (dependencies '())
-                 (provides '())
+                 (capabilities '())
                  entry-point
                  source-path)))
   (name "" :type string)
@@ -21,9 +21,36 @@
   (description "" :type string)
   (license "" :type string)
   (dependencies '() :type list)
-  (provides '() :type list)
+  (capabilities '() :type list)
   (entry-point "extension-main.lisp" :type string)
   (source-path nil :type (or null string pathname)))
+
+(defun make-extension-manifest (&key name
+                                     version
+                                     author
+                                     description
+                                     license
+                                     (dependencies '())
+                                     capabilities
+                                     provides
+                                     entry-point
+                                     source-path)
+  (%make-extension-manifest
+   :name (%trim-string name)
+   :version (%trim-string version)
+   :author (%trim-string author)
+   :description (%trim-string description)
+   :license (%trim-string license)
+   :dependencies (or dependencies '())
+   :capabilities (or capabilities provides '())
+   :entry-point (%trim-string (or entry-point "extension-main.lisp"))
+   :source-path source-path))
+
+(defun extension-manifest-provides (manifest)
+  (extension-manifest-capabilities manifest))
+
+(defun (setf extension-manifest-provides) (value manifest)
+  (setf (extension-manifest-capabilities manifest) value))
 
 (defun %trim-string (value)
   (if (stringp value)
@@ -104,7 +131,9 @@
          (description (%trim-string (getf plist :description)))
          (license (%trim-string (getf plist :license)))
          (dependencies-raw (or (getf plist :dependencies) '()))
-         (provides-raw (or (getf plist :provides) '()))
+         (capabilities-raw (or (getf plist :capabilities)
+                               (getf plist :provides)
+                               '()))
          (entry-point (%trim-string (or (getf plist :entry-point)
                                         "extension-main.lisp"))))
     (unless (and plist (listp plist))
@@ -122,7 +151,7 @@
      :description description
      :license license
      :dependencies (mapcar #'%parse-dependency-entry dependencies-raw)
-     :provides (remove-duplicates (mapcar #'%parse-capability provides-raw) :test #'eq)
+     :capabilities (remove-duplicates (mapcar #'%parse-capability capabilities-raw) :test #'eq)
      :entry-point entry-point
      :source-path source-path)))
 

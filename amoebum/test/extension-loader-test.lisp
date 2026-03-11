@@ -23,7 +23,8 @@
     (%write-text-file
      entry-path
      (format nil
-             "(in-package :amoebum/test)~%(setf *i232-extension-log* (append *i232-extension-log* (list ~S)))~%"
+             "(setf amoebum/test::*i232-extension-log*
+       (append amoebum/test::*i232-extension-log* (list ~S)))~%"
              marker))
     (values extension-root manifest-path entry-path)))
 
@@ -95,8 +96,8 @@
 ")
               (%write-text-file
                pentry
-               "(in-package :amoebum/test)
-(setf *i232-extension-log* (append *i232-extension-log* (list \"project-beta-v2\")))
+               "(setf amoebum/test::*i232-extension-log*
+       (append amoebum/test::*i232-extension-log* (list \"project-beta-v2\")))
 ")
               (sleep 1)
               (is-true (amoebum:check-extension-hot-reload :project-root project-root

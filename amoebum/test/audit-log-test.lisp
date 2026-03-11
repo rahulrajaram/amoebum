@@ -87,7 +87,7 @@
            :timestamp t3)
           (is (= 2 (length (amoebum:audit-log-query
                             :path log-path
-                            :event-type :tool:error))))
+                            :event-type "tool:error"))))
           (is (= 1 (length (amoebum:audit-log-query
                             :path log-path
                             :session-id "session-b"))))

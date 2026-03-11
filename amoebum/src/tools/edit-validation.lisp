@@ -81,7 +81,7 @@ Uses a combination of length and character-based checksum for efficiency."
   (when (null path)
     (%edit-validation-signal "path" "File path is required."
                              :reason "missing file path"))
-  (let ((path-string (%path-text path)))
+  (let ((path-string (coerce-path-string path)))
     (when (zerop (length (string-trim '(#\Space #\Tab #\Newline #\Return)
                                        path-string)))
       (%edit-validation-signal "path" "File path must not be empty."
@@ -123,7 +123,7 @@ Uses a combination of length and character-based checksum for efficiency."
 (defun %validate-edit-content-hash (path)
   "Verify file content hasn't changed since last read by checking content hash.
 Returns (VALUES OK-P CURRENT-HASH STORED-HASH)."
-  (let* ((path-string (%path-text path))
+  (let* ((path-string (coerce-path-string path))
          (stored-hash (%edit-validation-stored-hash path-string))
          (current-content (handler-case
                               (uiop:read-file-string path-string
@@ -230,7 +230,7 @@ Returns a plist with :valid-p, :hook-results, :warnings."
   "Pre-tool-use hook for edit validation.
 Only activates for edit-file tool calls when validation is enabled."
   (when (and *edit-validation-enabled-p*
-             (string= (%pipeline-normalize-tool-name tool-name) "edit-file"))
+             (string= (normalize-name tool-name) "edit-file"))
     (let* ((path (%argument-value arguments "path"))
            (old-string (%argument-value arguments "old_string"))
            (new-string (%argument-value arguments "new_string")))
@@ -243,7 +243,7 @@ Only activates for edit-file tool calls when validation is enabled."
 Runs registered post-edit hooks after successful edit-file calls."
   (declare (ignore elapsed-ms))
   (when (and *edit-validation-enabled-p*
-             (string= (%pipeline-normalize-tool-name tool-name) "edit-file")
+             (string= (normalize-name tool-name) "edit-file")
              (listp result))
     (let ((path (getf result :path)))
       (when path
@@ -286,13 +286,13 @@ Runs registered post-edit hooks after successful edit-file calls."
   "Post-tool-use hook that records content hash after read-file."
   (declare (ignore elapsed-ms))
   (when (and *edit-validation-enabled-p*
-             (string= (%pipeline-normalize-tool-name tool-name) "read-file")
+             (string= (normalize-name tool-name) "read-file")
              (stringp result))
     ;; Extract path from pipeline context
     (let ((path (and *pipeline-current-arguments*
                      (%argument-value *pipeline-current-arguments* "path"))))
       (when path
-        (%edit-validation-record-content-hash (%path-text path) result))))
+        (%edit-validation-record-content-hash (coerce-path-string path) result))))
   :ok)
 
 ;;; Install hooks

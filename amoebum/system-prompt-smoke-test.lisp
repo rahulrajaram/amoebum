@@ -40,6 +40,8 @@
          (temporary-directory-fn (funcall fn-in "TEMPORARY-DIRECTORY" uiop-pkg))
          (ensure-directory-pathname-fn (funcall fn-in "ENSURE-DIRECTORY-PATHNAME" uiop-pkg))
          (assemble-system-prompt-fn (funcall fn-in "ASSEMBLE-SYSTEM-PROMPT" amoebum-pkg))
+         (global-layer-candidates-fn
+           (funcall fn-in "%SYSTEM-PROMPT-GLOBAL-LAYER-CANDIDATES" amoebum-pkg))
          (make-toolset-fn (funcall fn-in "MAKE-TOOLSET" pseudopod-pkg))
          (make-tool-definition-fn (funcall fn-in "MAKE-TOOL-DEFINITION" pseudopod-pkg))
          (register-tool-fn (funcall fn-in "REGISTER-TOOL" pseudopod-pkg)))
@@ -49,6 +51,11 @@
              (contains-substring-p (needle haystack)
                (and (stringp haystack)
                     (search needle haystack :test #'char-equal)))
+             (token-position (needle haystack)
+               (or (search needle haystack :test #'char-equal)
+                   -1))
+             (set-home-env (value)
+               (setf (uiop:getenv "HOME") value))
              (write-text-file (path content)
                (ensure-directories-exist path)
                (with-open-file (stream path
@@ -101,11 +108,23 @@
              (global-prompt (merge-pathnames #P".amoebum/SYSTEM_PROMPT.md" fake-home))
              (project-prompt (merge-pathnames #P".amoebum/SYSTEM_PROMPT.md" project-root))
              (directory-prompt (merge-pathnames #P".amoebum/prompts/src.md" project-root))
+             (root-agents (merge-pathnames #P"AGENTS.md" project-root))
+             (directory-agents (merge-pathnames #P"src/AGENTS.md" project-root))
+             (fallback-global (merge-pathnames #P"fallback/AGENTS.md" tmp-root))
+             (missing-global (merge-pathnames #P"missing/AGENTS.md" tmp-root))
+             (missing-directory (merge-pathnames #P"missing-dir/AGENTS.md" tmp-root))
+             (codex-home (merge-pathnames #P"codex-home/" tmp-root))
+             (codex-global (merge-pathnames #P".codex/AGENTS.md" codex-home))
+             (original-home (uiop:getenv "HOME"))
              (toolset (toolset-with-sentinel-tool)))
         (ensure-directories-exist working-dir)
         (write-text-file global-prompt "GLOBAL_LAYER_SENTINEL")
         (write-text-file project-prompt "PROJECT_LAYER_SENTINEL")
         (write-text-file directory-prompt "DIRECTORY_LAYER_SENTINEL")
+        (write-text-file root-agents "ROOT_DIRECTORY_SENTINEL POLICY=base")
+        (write-text-file directory-agents "NESTED_DIRECTORY_SENTINEL POLICY=override")
+        (write-text-file fallback-global "FALLBACK_GLOBAL_SENTINEL")
+        (write-text-file codex-global "CODEX_USER_DEFAULT_SENTINEL")
         (write-text-file (merge-pathnames #P"README.md" project-root) "demo")
 
         (assert-command-ok '("git" "init") project-root)
@@ -141,6 +160,54 @@
           (assert-true (contains-substring-p "sysprompt-sentinel-tool" assembled)
                        "Expected custom tool to be listed in dynamic context.")
           (assert-true (contains-substring-p "seed commit for system prompt smoke" assembled)
-                       "Expected recent commit history to be injected.")))))
+                       "Expected recent commit history to be injected."))
+
+        ;; Candidate discovery should include codex-style user defaults.
+        (let* ((candidate-paths (mapcar #'namestring (funcall global-layer-candidates-fn)))
+               (home (user-homedir-pathname))
+               (codex-path (namestring (merge-pathnames #P".codex/AGENTS.md" home)))
+               (config-codex-path (namestring (merge-pathnames #P".config/codex/AGENTS.md" home))))
+          (assert-true (find codex-path candidate-paths :test #'string=)
+                       "Expected global candidate list to include ~/.codex/AGENTS.md.")
+          (assert-true (find config-codex-path candidate-paths :test #'string=)
+                       "Expected global candidate list to include ~/.config/codex/AGENTS.md."))
+
+        ;; Missing files should be skipped while preserving deterministic ordering.
+        (let* ((assembled
+                 (funcall assemble-system-prompt-fn
+                          :project-root project-root
+                          :cwd working-dir
+                          :toolset toolset
+                          :global-layer-path (list missing-global fallback-global)
+                          :project-layer-path project-prompt
+                          :directory-layer-paths (list root-agents missing-directory directory-agents)))
+               (fallback-pos (token-position "FALLBACK_GLOBAL_SENTINEL" assembled))
+               (root-pos (token-position "ROOT_DIRECTORY_SENTINEL" assembled))
+               (nested-pos (token-position "NESTED_DIRECTORY_SENTINEL" assembled))
+               (base-policy-pos (token-position "POLICY=base" assembled))
+               (override-policy-pos (token-position "POLICY=override" assembled)))
+          (assert-true (>= fallback-pos 0)
+                       "Expected fallback global file to be ingested when earlier candidate is missing.")
+          (assert-true (and (>= root-pos 0) (>= nested-pos 0) (< root-pos nested-pos))
+                       "Expected directory instruction merge order root->nested.")
+          (assert-true (and (>= base-policy-pos 0)
+                            (>= override-policy-pos 0)
+                            (< base-policy-pos override-policy-pos))
+                       "Expected nested instruction text to appear after parent instruction text."))
+
+        ;; Default global lookup should ingest codex fallback when HOME points at codex-only defaults.
+        (unwind-protect
+            (progn
+              (set-home-env (namestring codex-home))
+              (let ((assembled
+                      (funcall assemble-system-prompt-fn
+                               :project-root project-root
+                               :cwd working-dir
+                               :toolset toolset
+                               :project-layer-path project-prompt
+                               :directory-layer-paths (list directory-prompt))))
+                (assert-true (contains-substring-p "CODEX_USER_DEFAULT_SENTINEL" assembled)
+                             "Expected codex user defaults fallback to be ingested from ~/.codex/AGENTS.md.")))
+          (set-home-env original-home)))))
 
   (format t "AMOEBUM_SYSPROMPT_SMOKE_OK~%"))

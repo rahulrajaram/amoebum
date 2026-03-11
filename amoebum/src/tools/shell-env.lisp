@@ -27,6 +27,19 @@
 Variables whose names contain any of these (case-insensitive) are filtered
 from subprocess environments.")
 
+(defparameter *shell-profile-candidate-files*
+  '((:bash . (".bash_profile" ".bash_login" ".profile" ".bashrc"))
+    (:zsh . (".zshenv" ".zprofile" ".zshrc" ".zlogin"))
+    (:sh . (".profile")))
+  "Per-shell-family profile files sourced for shell initialization.")
+
+(defparameter *shell-project-env-relative-path* ".amoebum/env"
+  "Default project-relative environment overlay file path.")
+
+(defparameter *shell-project-path-augmentation-relative-dirs*
+  '("node_modules/.bin" ".venv/bin")
+  "Project-relative PATH entries prepended when present on disk.")
+
 ;;; --- Shell environment struct ----------------------------------------------
 
 (defstruct (shell-environment
@@ -83,12 +96,176 @@ Slots:
         (subseq entry (1+ pos))
         "")))
 
+(defun %trim-shell-env-text (value)
+  (if (stringp value)
+      (string-trim '(#\Space #\Tab #\Newline #\Return) value)
+      ""))
+
+(defun %unquote-shell-env-value (value)
+  (let* ((trimmed (%trim-shell-env-text value))
+         (length* (length trimmed)))
+    (if (and (>= length* 2)
+             (or (and (char= (char trimmed 0) #\")
+                      (char= (char trimmed (1- length*)) #\"))
+                 (and (char= (char trimmed 0) #\')
+                      (char= (char trimmed (1- length*)) #\'))))
+        (subseq trimmed 1 (1- length*))
+        trimmed)))
+
+(defun %shell-env-assignment-valid-name-p (name)
+  (and (stringp name)
+       (> (length name) 0)
+       (let ((first (char name 0)))
+         (and (or (alpha-char-p first) (char= first #\_))
+              (loop for char across name
+                    always (or (alpha-char-p char)
+                               (digit-char-p char)
+                               (char= char #\_)))))))
+
+(defun %parse-project-env-assignment (line)
+  (let* ((trimmed (%trim-shell-env-text line)))
+    (cond
+      ((or (zerop (length trimmed))
+           (char= (char trimmed 0) #\#))
+       nil)
+      (t
+       (let* ((without-export
+                (if (and (>= (length trimmed) 7)
+                         (string-equal "export " trimmed :end2 7))
+                    (%trim-shell-env-text (subseq trimmed 7))
+                    trimmed))
+              (eq-pos (position #\= without-export)))
+         (when (and eq-pos (> eq-pos 0))
+           (let* ((name (%trim-shell-env-text (subseq without-export 0 eq-pos)))
+                  (value (%unquote-shell-env-value
+                          (subseq without-export (1+ eq-pos)))))
+             (when (%shell-env-assignment-valid-name-p name)
+               (cons name value)))))))))
+
+(defun %shell-family-from-executable (shell-executable)
+  (let ((lower (string-downcase (or shell-executable ""))))
+    (cond
+      ((search "zsh" lower :test #'char=) :zsh)
+      ((search "bash" lower :test #'char=) :bash)
+      (t :sh))))
+
+(defun %resolve-shell-executable (shell-executable)
+  (let ((candidate (%trim-shell-env-text shell-executable)))
+    (cond
+      ((> (length candidate) 0) candidate)
+      ((uiop:getenv "SHELL")
+       (%trim-shell-env-text (uiop:getenv "SHELL")))
+      (t "/bin/bash"))))
+
+(defun %resolve-home-file (relative-path)
+  (merge-pathnames relative-path (user-homedir-pathname)))
+
+(defun %shell-env-single-quote (text)
+  (with-output-to-string (stream)
+    (write-char #\' stream)
+    (loop for char across (or text "") do
+          (if (char= char #\')
+              (write-string "'\"'\"'" stream)
+              (write-char char stream)))
+    (write-char #\' stream)))
+
 (defun filter-sensitive-env (env-alist &optional patterns)
   "Remove entries from ENV-ALIST whose keys match sensitive patterns.
 ENV-ALIST is a list of (NAME . VALUE) cons cells."
   (remove-if (lambda (pair)
                (%sensitive-var-p (car pair) patterns))
              env-alist))
+
+(defun resolve-shell-runtime-executable (&optional shell-executable)
+  "Return the shell executable used for command execution."
+  (%resolve-shell-executable shell-executable))
+
+(defun resolve-shell-profile-files (&optional shell-executable)
+  "Return existing profile files for SHELL-EXECUTABLE's shell family."
+  (let* ((resolved-shell (%resolve-shell-executable shell-executable))
+         (family (%shell-family-from-executable resolved-shell))
+         (candidates (cdr (assoc family *shell-profile-candidate-files*))))
+    (loop for relative in candidates
+          for path = (%resolve-home-file relative)
+          when (probe-file path)
+            collect (coerce-path-string path))))
+
+(defun wrap-command-with-shell-profile-init (command profile-files)
+  "Prefix COMMAND with silent profile initialization from PROFILE-FILES."
+  (if (null profile-files)
+      command
+      (with-output-to-string (stream)
+        (dolist (profile profile-files)
+          (let ((quoted (%shell-env-single-quote profile)))
+            (format stream "if [ -f ~A ]; then . ~A >/dev/null 2>&1 || true; fi; "
+                    quoted quoted)))
+        (write-string command stream))))
+
+(defun %resolve-project-env-path (cwd env-path)
+  (let* ((directory (%resolve-shell-directory cwd))
+         (pathname*
+           (cond
+             ((pathnamep env-path) env-path)
+             ((stringp env-path) (pathname env-path))
+             (t (pathname *shell-project-env-relative-path*)))))
+    (if (uiop:absolute-pathname-p pathname*)
+        pathname*
+        (merge-pathnames pathname* directory))))
+
+(defun load-project-env-overrides (&key cwd (env-path *shell-project-env-relative-path*))
+  "Load NAME=VALUE assignments from project env file.
+Returns an alist suitable for `shell-environment-env-overrides`."
+  (let ((path (%resolve-project-env-path cwd env-path)))
+    (if (not (probe-file path))
+        nil
+        (let ((overrides '()))
+          (with-open-file (stream path
+                                  :direction :input
+                                  :if-does-not-exist nil)
+            (loop for line = (read-line stream nil nil)
+                  while line do
+                    (let ((assignment (%parse-project-env-assignment line)))
+                      (when assignment
+                        (push assignment overrides)))))
+          (nreverse overrides)))))
+
+(defun default-project-path-augmentation-dirs (&key cwd)
+  "Return existing project-local PATH augmentation directories."
+  (let ((directory (%resolve-shell-directory cwd)))
+    (loop for relative in *shell-project-path-augmentation-relative-dirs*
+          for path = (merge-pathnames relative directory)
+          for normalized = (uiop:ensure-directory-pathname path)
+          when (probe-file normalized)
+            collect (coerce-path-string normalized))))
+
+(defun %prepare-shell-runtime (cwd init-shell-profile-p init-project-env-p
+                               prepend-project-path-p
+                               &optional shell-executable)
+  "Resolve shell runtime settings for command execution.
+
+Returns four values:
+  1. Effective working directory pathname
+  2. Shell executable string
+  3. Existing shell profile files to source (or NIL)
+  4. Environment entries as a list of \"NAME=VALUE\" strings"
+  (let* ((directory (%resolve-shell-directory cwd))
+         (resolved-shell (resolve-shell-runtime-executable shell-executable))
+         (profiles (when init-shell-profile-p
+                     (resolve-shell-profile-files resolved-shell)))
+         (project-overrides (when init-project-env-p
+                              (load-project-env-overrides :cwd directory)))
+         (extra-path-dirs (when prepend-project-path-p
+                            (default-project-path-augmentation-dirs
+                             :cwd directory)))
+         (shell-env (make-shell-environment
+                     :cwd directory
+                     :inherit-cwd-p nil
+                     :env-overrides project-overrides
+                     :inherit-env-p t
+                     :filter-sensitive-p t
+                     :extra-path-dirs extra-path-dirs))
+         (env-vars (shell-env-to-string-list (assemble-shell-env shell-env))))
+    (values directory resolved-shell profiles env-vars)))
 
 (defun %current-process-env-alist ()
   "Return the current process environment as an alist of (NAME . VALUE)."

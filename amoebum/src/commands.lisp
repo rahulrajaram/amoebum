@@ -1,213 +1,8 @@
 (in-package :amoebum)
 
-(defstruct (slash-command-parameter
-            (:constructor make-slash-command-parameter
-                (&key name
-                 (type :string)
-                 (required-p nil)
-                 default
-                 choices
-                 (greedy-p nil)
-                 description)))
-  name
-  (type :string)
-  (required-p nil :type boolean)
-  default
-  choices
-  (greedy-p nil :type boolean)
-  description)
-
-(defstruct (slash-command
-            (:constructor make-slash-command
-                (&key name
-                 description
-                 usage
-                 (aliases '())
-                 (parameters '())
-                 handler
-                 completer)))
-  name
-  description
-  usage
-  (aliases '() :type list)
-  (parameters '() :type list)
-  handler
-  completer)
-
-(defstruct (slash-command-invocation
-            (:constructor make-slash-command-invocation
-                (&key input
-                 name
-                 (arguments-text "")
-                 (argument-tokens '()))))
-  input
-  name
-  (arguments-text "" :type string)
-  (argument-tokens '() :type list))
-
-(defstruct (slash-command-result
-            (:constructor make-slash-command-result
-                (&key
-                   (handledp t)
-                   (echo-input-p t)
-                   output
-                   (action :none)
-                   payload)))
-  (handledp t :type boolean)
-  (echo-input-p t :type boolean)
-  output
-  action
-  payload)
-
-(defstruct (slash-command-context
-            (:constructor make-slash-command-context
-                (&key config memory-backend chat-state)))
-  config
-  memory-backend
-  chat-state)
-
-(defparameter *slash-command-registry* (make-hash-table :test #'equal))
-;; Defined in src/macros/deftool.lisp; declared here for compile/load order.
-(defvar *tool-metadata*)
-(defvar *tool-history*)
-
-(defparameter *memory-command-subcommands*
-  '("show" "edit" "clear" "remember" "forget" "import" "export"))
-
-(defun %slash-trim (text)
-  (if (stringp text)
-      (string-trim '(#\Space #\Tab #\Newline #\Return) text)
-      ""))
-
-(defun %slash-blank-p (text)
-  (let ((trimmed (%slash-trim text)))
-    (zerop (length trimmed))))
-
-(defun %normalize-command-name (name)
-  (let* ((raw (if (symbolp name)
-                  (symbol-name name)
-                  (princ-to-string name)))
-         (trimmed (%slash-trim raw))
-         (without-slash (if (and (plusp (length trimmed))
-                                 (char= (char trimmed 0) #\/))
-                            (subseq trimmed 1)
-                            trimmed)))
-    (string-downcase without-slash)))
-
-(defun %command-name-keyword (name)
-  (intern (string-upcase (%normalize-command-name name)) :keyword))
-
-(defun %starts-with-ci-p (prefix text)
-  (let ((prefix-len (length prefix))
-        (text-len (length text)))
-    (and (<= prefix-len text-len)
-         (string-equal prefix text :end2 prefix-len))))
-
-(defun %tokenize-command-arguments (text)
-  (let ((length (length text))
-        (index 0)
-        (tokens '()))
-    (labels ((peek-next-char ()
-               (and (< index length)
-                    (char text index)))
-             (consume-next-char ()
-               (prog1 (peek-next-char)
-                 (incf index)))
-             (whitespacep (char)
-               (member char '(#\Space #\Tab #\Newline #\Return) :test #'char=))
-             (skip-whitespace ()
-               (loop while (and (< index length)
-                                (whitespacep (peek-next-char)))
-                     do (incf index)))
-             (read-token ()
-               (with-output-to-string (out)
-                 (let ((quote-char nil))
-                   (loop while (< index length) do
-                     (let ((char (consume-next-char)))
-                       (cond
-                         ((and (null quote-char)
-                               (whitespacep char))
-                          (return))
-                         ((and (null quote-char)
-                               (member char '(#\" #\') :test #'char=))
-                          (setf quote-char char))
-                         ((and quote-char
-                               (char= char quote-char))
-                          (setf quote-char nil))
-                         ((and (char= char #\\) (< index length))
-                          (write-char (consume-next-char) out))
-                         (t
-                          (write-char char out)))))))))
-      (loop do
-        (skip-whitespace)
-        (when (>= index length)
-          (return))
-        (let ((token (read-token)))
-          (when (plusp (length token))
-            (push token tokens))))
-      (nreverse tokens))))
-
-(defun slash-command-input-p (input)
-  (let ((trimmed (%slash-trim input)))
-    (and (plusp (length trimmed))
-         (char= (char trimmed 0) #\/))))
-
-(defun parse-slash-command (input)
-  (let ((trimmed (%slash-trim input)))
-    (unless (slash-command-input-p trimmed)
-      (return-from parse-slash-command nil))
-    (let* ((body (subseq trimmed 1))
-           (space-pos (position-if (lambda (char)
-                                     (member char '(#\Space #\Tab #\Newline #\Return)
-                                             :test #'char=))
-                                   body))
-           (name (if space-pos
-                     (subseq body 0 space-pos)
-                     body))
-           (arguments-text (if space-pos
-                               (%slash-trim (subseq body (1+ space-pos)))
-                               ""))
-           (tokens (%tokenize-command-arguments arguments-text)))
-      (if (%slash-blank-p name)
-          nil
-          (make-slash-command-invocation
-           :input trimmed
-           :name (%normalize-command-name name)
-           :arguments-text arguments-text
-           :argument-tokens tokens)))))
-
-(defun clear-slash-commands ()
-  (clrhash *slash-command-registry*)
-  t)
-
-(defun register-slash-command (command)
-  (check-type command slash-command)
-  (let ((name (%normalize-command-name (slash-command-name command))))
-    (when (%slash-blank-p name)
-      (error "Slash command name must not be blank."))
-    (setf (gethash name *slash-command-registry*) command)
-    (dolist (alias (slash-command-aliases command))
-      (let ((alias-name (%normalize-command-name alias)))
-        (when (plusp (length alias-name))
-          (setf (gethash alias-name *slash-command-registry*) command)))
-      command)))
-
-(defun find-slash-command (name)
-  (gethash (%normalize-command-name name) *slash-command-registry*))
-
-(defun list-slash-commands ()
-  (let ((seen (make-hash-table :test #'equal))
-        (commands '()))
-    (maphash (lambda (_name command)
-               (declare (ignore _name))
-               (let ((canonical (%normalize-command-name (slash-command-name command))))
-                 (unless (gethash canonical seen)
-                   (setf (gethash canonical seen) t)
-                   (push command commands))))
-             *slash-command-registry*)
-    (sort commands #'string<
-          :key (lambda (command)
-                 (%normalize-command-name (slash-command-name command))))))
+;;; Struct definitions, registry, string utilities, and registration functions
+;;; are in src/commands-base.lisp (loaded early, before defskill.lisp).
+;;; This file contains the main command dispatch logic and built-in commands.
 
 (defun %value-matches-choice-p (value choice)
   (or (equal value choice)
@@ -712,7 +507,7 @@
                   (length approved-step-indexes)
                   step-count
                   (%format-step-index-list approved-step-indexes)))
-        (format out "~%~A" plan-markdown))
+        (format out "~%```markdown~%~A~%```" plan-markdown))
       "No captured plan is available yet. Exit plan mode first to capture one.")))
 
 (defun %plan-handler (_invocation arguments _context)
@@ -1618,6 +1413,89 @@
        (make-slash-command-result
         :output (format nil "Unsupported /agent action ~S." action))))))
 
+(defun %agent-activity-usage ()
+  "/agent-activity [agent-id] [--type inference|tool-call|waiting|idle] [--limit N]")
+
+(defun %agent-activity-type-token (token)
+  (let ((candidate (and token
+                        (intern (string-upcase (%slash-trim token)) :keyword))))
+    (when (member candidate +agent-activity-types+ :test #'eq)
+      candidate)))
+
+(defun %parse-agent-activity-args (raw-args)
+  (let ((tokens (%tokenize-command-arguments (or raw-args "")))
+        (agent-id nil)
+        (activity-type nil)
+        (limit 20)
+        (errors '()))
+    (loop while tokens do
+      (let ((token (pop tokens)))
+        (cond
+          ((string= token "--type")
+           (if tokens
+               (let ((parsed (%agent-activity-type-token (pop tokens))))
+                 (if parsed
+                     (setf activity-type parsed)
+                     (push "Invalid --type value. Expected inference|tool-call|waiting|idle."
+                           errors)))
+               (push "Missing value for --type." errors)))
+          ((string= token "--limit")
+           (if tokens
+               (let ((limit-token (pop tokens)))
+                 (handler-case
+                     (let ((parsed (parse-integer limit-token)))
+                       (if (> parsed 0)
+                           (setf limit parsed)
+                           (push "--limit must be a positive integer." errors)))
+                   (error ()
+                     (push "--limit must be a positive integer." errors))))
+               (push "Missing value for --limit." errors)))
+          ((and (plusp (length token))
+                (char= (char token 0) #\-))
+           (push (format nil "Unknown option ~S." token) errors))
+          ((null agent-id)
+           (setf agent-id token))
+          (t
+           (push (format nil "Unexpected argument ~S." token) errors)))))
+    (values agent-id activity-type limit (nreverse errors))))
+
+(defun %render-agent-activity-output (entries &key agent-id activity-type)
+  (let ((agent-label (if (%slash-blank-p (or agent-id "")) "all" agent-id))
+        (type-label (if activity-type
+                        (string-downcase (symbol-name activity-type))
+                        "all")))
+    (if (null entries)
+        (format nil "Agent activity [agent=~A type=~A]: no matching entries."
+                agent-label type-label)
+        (with-output-to-string (out)
+          (format out "Agent activity [agent=~A type=~A] (~D entries):~%"
+                  agent-label type-label (length entries))
+          (dolist (entry entries)
+            (format out "- #~D | ~A | ~A~@[ | ~A~]~%"
+                    (agent-activity-entry-sequence entry)
+                    (agent-activity-entry-agent-id entry)
+                    (string-downcase
+                     (symbol-name (agent-activity-entry-activity-type entry)))
+                    (agent-activity-entry-description entry)))))))
+
+(defun %agent-activity-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (multiple-value-bind (agent-id activity-type limit errors)
+      (%parse-agent-activity-args (or (gethash :ARGS arguments) ""))
+    (if errors
+        (make-slash-command-result
+         :output (format nil "~{~A~%~}Usage: ~A"
+                         errors
+                         (%agent-activity-usage)))
+        (let ((entries (list-agent-activity
+                        :agent-id agent-id
+                        :activity-type activity-type
+                        :limit limit)))
+          (make-slash-command-result
+           :output (%render-agent-activity-output entries
+                                                  :agent-id agent-id
+                                                  :activity-type activity-type))))))
+
 (defun %extensions-usage ()
   "/extensions [list|reload|enable <all|name|path>|disable <all|name|path>]")
 
@@ -1636,8 +1514,9 @@
 
 (defun %render-extensions-list ()
   (let* ((report (list-extension-report))
-         (summary (extension-report-summary report)))
-    (if (null report)
+         (summary (extension-report-summary report))
+         (extensions (list-extensions)))
+    (if (null extensions)
         "No extension scan has run yet. Use /extensions reload."
         (with-output-to-string (out)
           (format out "Extensions: total=~D loaded=~D errors=~D disabled=~D~%"
@@ -1645,15 +1524,24 @@
                   (getf summary :loaded 0)
                   (getf summary :errors 0)
                   (getf summary :disabled 0))
-          (dolist (entry report)
-            (format out "- [~A/~A] ~A~@[ name=~A~]~@[ version=~A~]~@[ entry=~A~]~@[ -- ~A~]~%"
-                    (%extension-status-label (extension-load-record-status entry))
-                    (%extension-scope-label (extension-load-record-scope entry))
-                    (extension-load-record-path entry)
-                    (extension-load-record-name entry)
-                    (extension-load-record-version entry)
-                    (extension-load-record-entry-point entry)
-                    (extension-load-record-message entry)))))))
+          (dolist (entry extensions)
+            (let ((status (getf entry :status))
+                  (scope (getf entry :scope))
+                  (name (getf entry :name))
+                  (version (or (getf entry :version) "0.0.0"))
+                  (tool-count (or (getf entry :tool-count) 0))
+                  (hook-count (or (getf entry :hook-count) 0))
+                  (path (or (getf entry :path) (getf entry :entry-point)))
+                  (message (getf entry :message)))
+              (format out "- [~A/~A] ~A~@[ v~A~] tools=~D hooks=~D~@[ path=~A~]~@[ -- ~A~]~%"
+                      (%extension-status-label status)
+                      (%extension-scope-label scope)
+                      (or name "<unnamed>")
+                      version
+                      tool-count
+                      hook-count
+                      path
+                      message)))))))
 
 (defun %extensions-join (tokens)
   (with-output-to-string (out)
@@ -1685,6 +1573,22 @@
           (remember target)
           (remember (file-namestring (pathname target)))))
       (nreverse result))))
+
+(defun %extensions-matching-target (target &optional (extensions (list-extensions)))
+  (let ((needle (%slash-trim target)))
+    (if (or (%slash-blank-p needle)
+            (string-equal needle "all"))
+        extensions
+        (remove-if-not
+         (lambda (entry)
+           (or (%extension-match-target-p needle (or (getf entry :name) ""))
+               (%extension-match-target-p needle (or (getf entry :path) ""))
+               (%extension-match-target-p needle (or (getf entry :entry-point) ""))
+               (%extension-match-target-p needle (or (getf entry :manifest-path) ""))))
+         extensions))))
+
+(defun %count-extensions-by-status (extensions status)
+  (count status extensions :key (lambda (entry) (getf entry :status)) :test #'eq))
 
 (defun %extensions-handler (_invocation arguments context)
   (declare (ignore _invocation))
@@ -1754,6 +1658,97 @@
         (t
          (invalid-usage (format nil "Unknown /extensions action ~S." action-token)))))))
 
+(defun %ext-load-usage ()
+  "/ext-load <all|name|path>")
+
+(defun %ext-unload-usage ()
+  "/ext-unload <all|name|path>")
+
+(defun %ext-reload-usage ()
+  "/ext-reload [all|name|path]")
+
+(defun %extension-command-project-root (context)
+  (let ((cfg (or (slash-command-context-config context)
+                 (%current-config-safe))))
+    (and (config-p cfg)
+         (config-project-root cfg))))
+
+(defun %ext-load-handler (_invocation arguments context)
+  (declare (ignore _invocation))
+  (let ((target (%slash-trim (or (gethash :TARGET arguments) ""))))
+    (if (%slash-blank-p target)
+        (make-slash-command-result
+         :echo-input-p t
+         :output (format nil "Usage: ~A" (%ext-load-usage)))
+        (progn
+          (enable-user-extension target)
+          (reload-user-extensions :project-root (%extension-command-project-root context))
+          (let* ((matched (%extensions-matching-target target))
+                 (loaded-count (%count-extensions-by-status matched :loaded))
+                 (error-count (%count-extensions-by-status matched :error))
+                 (disabled-count (%count-extensions-by-status matched :disabled)))
+            (if (null matched)
+                (make-slash-command-result
+                 :echo-input-p t
+                 :output (format nil "No extensions matched ~S." target))
+                (make-slash-command-result
+                 :echo-input-p t
+                 :output (format nil "ext-load ~S: matched=~D loaded=~D errors=~D disabled=~D."
+                                 target
+                                 (length matched)
+                                 loaded-count
+                                 error-count
+                                 disabled-count))))))))
+
+(defun %ext-unload-handler (_invocation arguments context)
+  (declare (ignore _invocation))
+  (let ((target (%slash-trim (or (gethash :TARGET arguments) ""))))
+    (if (%slash-blank-p target)
+        (make-slash-command-result
+         :echo-input-p t
+         :output (format nil "Usage: ~A" (%ext-unload-usage)))
+        (progn
+          (disable-user-extension target)
+          (reload-user-extensions :project-root (%extension-command-project-root context))
+          (let* ((matched (%extensions-matching-target target))
+                 (loaded-count (%count-extensions-by-status matched :loaded))
+                 (error-count (%count-extensions-by-status matched :error))
+                 (disabled-count (%count-extensions-by-status matched :disabled)))
+            (if (null matched)
+                (make-slash-command-result
+                 :echo-input-p t
+                 :output (format nil "No extensions matched ~S." target))
+                (make-slash-command-result
+                 :echo-input-p t
+                 :output (format nil "ext-unload ~S: matched=~D loaded=~D errors=~D disabled=~D."
+                                 target
+                                 (length matched)
+                                 loaded-count
+                                 error-count
+                                 disabled-count))))))))
+
+(defun %ext-reload-handler (_invocation arguments context)
+  (declare (ignore _invocation))
+  (let ((target (%slash-trim (or (gethash :TARGET arguments) ""))))
+    (reload-user-extensions :project-root (%extension-command-project-root context))
+    (let* ((matched (%extensions-matching-target target))
+           (loaded-count (%count-extensions-by-status matched :loaded))
+           (error-count (%count-extensions-by-status matched :error))
+           (disabled-count (%count-extensions-by-status matched :disabled))
+           (target-label (if (%slash-blank-p target) "all" target)))
+      (if (null matched)
+          (make-slash-command-result
+           :echo-input-p t
+           :output (format nil "No extensions matched ~S." target-label))
+          (make-slash-command-result
+           :echo-input-p t
+           :output (format nil "ext-reload ~S: matched=~D loaded=~D errors=~D disabled=~D."
+                           target-label
+                           (length matched)
+                           loaded-count
+                           error-count
+                           disabled-count))))))
+
 (defun %checkpoint-usage ()
   "/checkpoint [save|list|restore <id>]")
 
@@ -1788,6 +1783,17 @@
     (if (typep conversation 'conversation-state)
         conversation
         nil)))
+
+(defun %apply-chat-conversation! (chat-state next-conversation)
+  (when (and (typep chat-state 'chat-ui-state)
+             (typep next-conversation 'conversation-state))
+    (setf (chat-ui-state-conversation chat-state) next-conversation
+          (chat-ui-state-messages chat-state)
+          (conversation-state-messages next-conversation)
+          (chat-ui-state-message-scrollback-lines chat-state) 0
+          (chat-ui-state-max-message-scrollback-lines chat-state) 0)
+    (%sync-chat-context-usage! chat-state :allow-auto-compress-p nil))
+  next-conversation)
 
 (defun %checkpoint-handler (_invocation arguments context)
   (declare (ignore _invocation))
@@ -1838,13 +1844,7 @@
                                                      :config cfg))
                           (checkpoint (getf restored :checkpoint))
                           (restored-conversation (getf restored :conversation)))
-                     (when (and (typep chat-state 'chat-ui-state)
-                                (typep restored-conversation 'conversation-state))
-                       (setf (chat-ui-state-conversation chat-state) restored-conversation
-                             (chat-ui-state-messages chat-state)
-                             (conversation-state-messages restored-conversation)
-                             (chat-ui-state-message-scrollback-lines chat-state) 0
-                             (chat-ui-state-max-message-scrollback-lines chat-state) 0))
+                     (%apply-chat-conversation! chat-state restored-conversation)
                      (make-slash-command-result
                       :echo-input-p t
                       :output (format nil
@@ -1877,6 +1877,155 @@
                collect option))
       ((and (string= head "restore") (= index 1))
        (%checkpoint-id-completions fragment))
+      (t
+       nil))))
+
+(defun %session-usage ()
+  "/session [current|list|resume <id|latest>|new [id]]")
+
+(defun %session-context-project-root (context)
+  (let ((cfg (or (slash-command-context-config context)
+                 (%current-config-safe))))
+    (and (config-p cfg)
+         (config-project-root cfg))))
+
+(defun %session-context-conversation (context)
+  (let* ((chat-state (slash-command-context-chat-state context))
+         (conversation (and (typep chat-state 'chat-ui-state)
+                            (chat-ui-state-conversation chat-state))))
+    (and (typep conversation 'conversation-state)
+         conversation)))
+
+(defun %session-resume-latest-token-p (value)
+  (let ((trimmed (%slash-trim value)))
+    (or (string-equal trimmed "latest")
+        (string-equal trimmed "1")
+        (string-equal trimmed "true"))))
+
+(defun %session-resolve-resume (target &key project-root)
+  (let ((trimmed (%slash-trim (or target ""))))
+    (if (%session-resume-latest-token-p trimmed)
+        (conversation-load-latest :project-root project-root)
+        (conversation-load-session trimmed :project-root project-root))))
+
+(defun %render-session-list (&optional sessions)
+  (let ((records (or sessions
+                     (conversation-list-sessions :limit 25))))
+    (if (null records)
+        "No saved conversations available."
+        (with-output-to-string (out)
+          (format out "Saved conversations (~D):~%" (length records))
+          (loop for record in records
+                for index from 1 do
+                  (format out "~2D. ~A ~A state=~(~A~) messages=~D~%"
+                          index
+                          (or (getf record :session-id) "unknown")
+                          (%format-checkpoint-timestamp (getf record :updated-at))
+                          (or (getf record :state) :idle)
+                          (or (getf record :message-count) 0)))))))
+
+(defun %session-current-output (conversation)
+  (if (not (typep conversation 'conversation-state))
+      "No active conversation session."
+      (format nil "Current session ~A (state=~(~A~), fork=~A, messages=~D)."
+              (conversation-state-session-id conversation)
+              (conversation-state-state conversation)
+              (conversation-active-fork-name conversation)
+              (length (conversation-state-entries conversation)))))
+
+(defun %session-handler (_invocation arguments context)
+  (declare (ignore _invocation))
+  (let* ((raw (or (gethash :ARGS arguments) ""))
+         (tokens (%tokenize-command-arguments raw))
+         (action-token (if tokens
+                           (string-downcase (first tokens))
+                           "current"))
+         (chat-state (slash-command-context-chat-state context))
+         (project-root (%session-context-project-root context))
+         (conversation (%session-context-conversation context)))
+    (labels ((invalid-usage (&optional details)
+               (make-slash-command-result
+                :echo-input-p t
+                :output (format nil "~@[~A~%~]Usage: ~A"
+                                details
+                                (%session-usage))))
+             (apply-conversation! (next-conversation)
+               (%apply-chat-conversation! chat-state next-conversation)))
+      (cond
+        ((member action-token '("current" "show") :test #'string=)
+         (if (> (length tokens) 1)
+             (invalid-usage (format nil "Unexpected argument ~S." (second tokens)))
+             (make-slash-command-result
+              :echo-input-p t
+              :output (%session-current-output conversation))))
+        ((member action-token '("list" "ls") :test #'string=)
+         (if (> (length tokens) 1)
+             (invalid-usage (format nil "Unexpected argument ~S." (second tokens)))
+             (make-slash-command-result
+              :echo-input-p t
+              :output (%render-session-list
+                       (conversation-list-sessions
+                        :project-root project-root
+                        :limit 25)))))
+        ((string= action-token "resume")
+         (let ((target (%extensions-join (rest tokens))))
+           (if (%slash-blank-p target)
+               (invalid-usage "Specify a session id or 'latest'.")
+               (let ((restored (%session-resolve-resume target
+                                                        :project-root project-root)))
+                 (if (null restored)
+                     (make-slash-command-result
+                      :echo-input-p t
+                      :output (format nil "Session ~S not found." target))
+                     (let* ((active (apply-conversation! restored))
+                            (session-id (conversation-state-session-id active)))
+                       (make-slash-command-result
+                        :echo-input-p t
+                        :output (format nil
+                                        "Resumed session ~A (state=~(~A~), fork=~A, messages=~D)."
+                                        session-id
+                                        (conversation-state-state active)
+                                        (conversation-active-fork-name active)
+                                        (length (conversation-state-entries active))))))))))
+        ((string= action-token "new")
+         (if (> (length tokens) 2)
+             (invalid-usage (format nil "Unexpected argument ~S." (third tokens)))
+             (let* ((requested-id (%slash-trim (or (second tokens) "")))
+                    (fresh (if (%slash-blank-p requested-id)
+                               (make-conversation-state :project-root project-root)
+                               (make-conversation-state :project-root project-root
+                                                        :session-id requested-id)))
+                    (active (apply-conversation! fresh)))
+               (conversation-save active)
+               (make-slash-command-result
+                :echo-input-p t
+                :output (format nil "Started session ~A."
+                                (conversation-state-session-id active))))))
+        (t
+         (invalid-usage (format nil "Unknown /session action ~S." action-token)))))))
+
+(defun %session-id-completions (fragment)
+  (let ((prefix (%slash-trim fragment)))
+    (loop for record in (conversation-list-sessions :limit 25)
+          for id = (getf record :session-id)
+          when (and (stringp id)
+                    (%starts-with-ci-p prefix id))
+            collect id)))
+
+(defun %session-arg-completer (_command _invocation index fragment prefix-tokens)
+  (declare (ignore _command _invocation))
+  (let ((head (and prefix-tokens (string-downcase (first prefix-tokens))))
+        (prefix (%slash-trim fragment)))
+    (cond
+      ((= index 0)
+       (loop for option in '("current" "list" "resume" "new")
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      ((and (string= head "resume") (= index 1))
+       (let ((ids (%session-id-completions fragment)))
+         (if (%starts-with-ci-p prefix "latest")
+             (cons "latest" ids)
+             ids)))
       (t
        nil))))
 
@@ -2116,14 +2265,12 @@
          (invalid-usage (format nil "Unknown /notifications action ~S." action-token)))))))
 
 (defun %render-tts-status ()
-  (let* ((cfg (%current-config-safe))
-         (auto-p (and (config-p cfg)
-                      (eq t (config-value :tts-auto-speak cfg))))
+  (let* ((auto-p (eq t (cfg :tts-auto-speak)))
          (backend *tts-backend*)
          (active-voice
            (when (and backend (typep backend 'kokoro-tts-backend))
              (kokoro-tts-voice backend)))
-         (configured-voice (and (config-p cfg) (config-value :tts-voice cfg)))
+         (configured-voice (cfg :tts-voice))
          (voice (or active-voice configured-voice *tts-default-voice*)))
     (format nil "TTS auto-speak: ~:[off~;on~], voice: ~A, speaking: ~:[no~;yes~]."
             auto-p
@@ -2434,6 +2581,53 @@
     (t
      '())))
 
+(defun %agent-activity-id-completions (fragment)
+  (let ((prefix (%slash-trim fragment))
+        (seen (make-hash-table :test #'equal))
+        (ids '()))
+    (dolist (entry (list-agent-activity :limit 200))
+      (let ((id (agent-activity-entry-agent-id entry)))
+        (when (and (stringp id)
+                   (plusp (length id))
+                   (%starts-with-ci-p prefix id)
+                   (not (gethash id seen)))
+          (setf (gethash id seen) t)
+          (push id ids))))
+    (sort ids #'string<)))
+
+(defun %agent-activity-type-completions (fragment)
+  (let ((prefix (%slash-trim fragment)))
+    (loop for option in '("inference" "tool-call" "waiting" "idle")
+          when (%starts-with-ci-p prefix option)
+            collect option)))
+
+(defun %agent-activity-arg-completer (_command _invocation index fragment prefix-tokens)
+  (declare (ignore _command _invocation))
+  (let* ((previous (and (> index 0)
+                        (nth (1- index) prefix-tokens)))
+         (prefix (%slash-trim fragment)))
+    (cond
+      ((and previous (string= previous "--type"))
+       (%agent-activity-type-completions fragment))
+      ((and previous (string= previous "--limit"))
+       (loop for option in '("10" "20" "50" "100")
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      ((and (plusp (length prefix))
+            (char= (char prefix 0) #\-))
+       (loop for option in '("--type" "--limit")
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      ((= index 0)
+       (append (%agent-activity-id-completions fragment)
+               (loop for option in '("--type" "--limit")
+                     when (%starts-with-ci-p prefix option)
+                       collect option)))
+      (t
+       (loop for option in '("--type" "--limit")
+             when (%starts-with-ci-p prefix option)
+               collect option)))))
+
 (defun %switch-fork-arg-completer (_command _invocation index fragment _prefix)
   (declare (ignore _command _invocation _prefix))
   (if (= index 0)
@@ -2499,6 +2693,31 @@
                  collect option)))
       (t
        nil))))
+
+(defun %ext-command-target-completions (fragment)
+  (let ((prefix (%slash-trim fragment))
+        (targets (append '("all") (%extensions-known-targets))))
+    (loop for option in targets
+          when (%starts-with-ci-p prefix option)
+            collect option)))
+
+(defun %ext-load-arg-completer (_command _invocation index fragment _prefix-tokens)
+  (declare (ignore _command _invocation _prefix-tokens))
+  (if (= index 0)
+      (%ext-command-target-completions fragment)
+      nil))
+
+(defun %ext-unload-arg-completer (_command _invocation index fragment _prefix-tokens)
+  (declare (ignore _command _invocation _prefix-tokens))
+  (if (= index 0)
+      (%ext-command-target-completions fragment)
+      nil))
+
+(defun %ext-reload-arg-completer (_command _invocation index fragment _prefix-tokens)
+  (declare (ignore _command _invocation _prefix-tokens))
+  (if (= index 0)
+      (%ext-command-target-completions fragment)
+      nil))
 
 (defun %sounds-arg-completer (_command _invocation index fragment prefix-tokens)
   (declare (ignore _command _invocation))
@@ -2846,25 +3065,212 @@
 
 (defun %index-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
-  (let ((args-text (or (gethash :ARGS arguments) "")))
-    (handler-case
-        (let ((refresh-p (search "--refresh" args-text :test #'char-equal)))
+  (labels ((parse-index-options (text)
+             (let ((tokens (%tokenize-command-arguments text))
+                   (refresh-p nil)
+                   (repo-map-token-target nil)
+                   (systems '()))
+               (loop while tokens do
+                 (let ((token (pop tokens)))
+                   (cond
+                     ((string-equal token "--refresh")
+                      (setf refresh-p t))
+                     ((string-equal token "--tokens")
+                      (let ((candidate (and tokens (pop tokens))))
+                        (when candidate
+                          (let ((parsed (ignore-errors (parse-integer candidate :junk-allowed t))))
+                            (when (and parsed (<= 300 parsed 8000))
+                              (setf repo-map-token-target parsed))))))
+                     ((string-equal token "--system")
+                      (let ((system-name (and tokens (pop tokens))))
+                        (when (and system-name (plusp (length system-name)))
+                          (push system-name systems))))
+                     ((and (plusp (length token))
+                           (not (uiop:string-prefix-p "--" token)))
+                      (push token systems)))))
+               (list :refresh-p refresh-p
+                     :repo-map-token-target repo-map-token-target
+                     :systems (nreverse systems)))))
+    (let* ((args-text (or (gethash :ARGS arguments) ""))
+           (options (parse-index-options args-text))
+           (refresh-p (getf options :refresh-p))
+           (repo-map-token-target (or (getf options :repo-map-token-target)
+                                      +default-repo-map-token-target+))
+           (systems (let ((parsed (getf options :systems)))
+                      (if (plusp (length parsed)) parsed nil))))
+      (handler-case
+          (multiple-value-bind (index stats)
+              (ensure-project-codebase-index
+               :refresh refresh-p
+               :systems systems
+               :repo-map-token-target repo-map-token-target)
+            (declare (ignore index))
+            (let ((systems-count (or (getf stats :systems) 0))
+                  (files-tracked (or (getf stats :files-tracked) 0))
+                  (files-changed (or (getf stats :files-changed) 0))
+                  (files-deleted (or (getf stats :files-deleted) 0))
+                  (entries (or (getf stats :entries) 0))
+                  (repo-tokens (or (getf stats :repo-map-tokens) 0))
+                  (reindexed-p (getf stats :reindexed-p)))
+              (make-slash-command-result
+               :output
+               (format nil "~A codebase index (~D system~:P, ~D file~:P tracked, ~D changed, ~D deleted, ~D entries, repo-map ~D tokens)."
+                       (if reindexed-p "Updated" "Index cache reused")
+                       systems-count
+                       files-tracked
+                       files-changed
+                       files-deleted
+                       entries
+                       repo-tokens))))
+        (error (c)
           (make-slash-command-result
-           :output (format nil "~A codebase index."
-                           (if refresh-p "Refreshed" "Generated"))))
-      (error (c)
-        (make-slash-command-result
-         :output (format nil "Index error: ~A" c))))))
+           :output (format nil "Index error: ~A" c)))))))
 
 (defun %self-modify-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
-  (let ((form-text (or (gethash :FORM arguments) "")))
-    (if (zerop (length (%slash-trim form-text)))
-        (make-slash-command-result
-         :output "Usage: /self-modify <lisp-form>")
-        (make-slash-command-result
-         :output (format nil "Self-modify proposed: ~A~%Use /approvals to review."
-                         form-text)))))
+  (let ((input (%slash-trim (or (gethash :FORM arguments) ""))))
+    (labels ((usage-result ()
+               (make-slash-command-result
+                :output
+                (format nil
+                        "Usage: /self-modify <lisp-form>~%       /self-modify approve <id>~%       /self-modify deny <id>~%       /self-modify edit-approve <id> <lisp-form>~%       /self-modify pending~%       /self-modify history [limit]~%       /self-modify undo")))
+             (split-first-token (text)
+               (let* ((trimmed (%slash-trim text))
+                      (space (position #\Space trimmed)))
+                 (if space
+                     (values (%slash-trim (subseq trimmed 0 space))
+                             (%slash-trim (subseq trimmed (1+ space))))
+                     (values trimmed "")))))
+      (cond
+        ((zerop (length input))
+         (usage-result))
+        ((or (string-equal input "pending")
+             (string-equal input "list"))
+         (let ((pending (pending-modifications)))
+           (if pending
+               (make-slash-command-result
+                :output
+                (with-output-to-string (out)
+                  (format out "Pending self-modifications (~D):~%" (length pending))
+                  (dolist (entry pending)
+                    (format out "~A~%"
+                            (render-modification-approval-widget entry)))))
+               (make-slash-command-result
+                :output "No pending self-modifications."))))
+        ((string-equal input "undo")
+         (handler-case
+             (let ((entry (undo-last-modification)))
+               (make-slash-command-result
+                :output
+                (format nil "Rolled back self-modification ~A."
+                        (modification-entry-id entry))))
+           (error (c)
+             (make-slash-command-result
+              :output (format nil "Self-modify undo error: ~A" c)))))
+        ((or (string-equal input "history")
+             (%starts-with-ci-p "history " input))
+         (let* ((raw-limit (if (string-equal input "history")
+                               ""
+                               (%slash-trim (subseq input (length "history")))))
+                (limit (handler-case
+                           (if (zerop (length raw-limit))
+                               20
+                               (max 1 (parse-integer raw-limit)))
+                         (error ()
+                           nil))))
+           (if limit
+               (make-slash-command-result
+                :output (modification-history-browser :limit limit))
+               (make-slash-command-result
+                :output "Self-modify history expects a numeric limit, e.g. /self-modify history 25."))))
+        ((%starts-with-ci-p "approve " input)
+         (let ((id (%slash-trim (subseq input (length "approve")))))
+           (if (zerop (length id))
+               (usage-result)
+               (handler-case
+                   (progn
+                     (approve-modification id)
+                     (let ((entry (apply-modification id)))
+                       (if (eq (modification-entry-status entry) :applied)
+                           (make-slash-command-result
+                            :output
+                            (format nil
+                                    "Self-modification ~A approved and applied. Result: ~A"
+                                    id
+                                    (or (modification-entry-result entry) "NIL")))
+                           (make-slash-command-result
+                            :output
+                            (format nil
+                                    "Self-modification ~A approval succeeded but apply failed: ~A"
+                                    id
+                                    (or (modification-entry-error-message entry)
+                                        "unknown error"))))))
+                 (error (c)
+                   (make-slash-command-result
+                    :output (format nil "Self-modify approve error: ~A" c)))))))
+        ((%starts-with-ci-p "deny " input)
+         (let ((id (%slash-trim (subseq input (length "deny")))))
+           (if (zerop (length id))
+               (usage-result)
+               (handler-case
+                   (let ((entry (deny-modification id)))
+                     (make-slash-command-result
+                      :output
+                      (format nil "Self-modification ~A denied (status: ~A)."
+                              id
+                              (modification-entry-status entry))))
+                 (error (c)
+                   (make-slash-command-result
+                    :output (format nil "Self-modify deny error: ~A" c)))))))
+        ((%starts-with-ci-p "edit-approve " input)
+         (let ((rest (%slash-trim (subseq input (length "edit-approve")))))
+           (multiple-value-bind (id edited-form) (split-first-token rest)
+             (if (or (zerop (length id))
+                     (zerop (length edited-form)))
+                 (usage-result)
+                 (handler-case
+                     (progn
+                       (edit-modification id edited-form :approve-p t)
+                       (let ((entry (apply-modification id)))
+                         (if (eq (modification-entry-status entry) :applied)
+                             (make-slash-command-result
+                              :output
+                              (format nil
+                                      "Self-modification ~A edited, approved, and applied."
+                                      id))
+                             (make-slash-command-result
+                              :output
+                              (format nil
+                                      "Self-modification ~A edit+approve failed during apply: ~A"
+                                      id
+                                      (or (modification-entry-error-message entry)
+                                          "unknown error"))))))
+                   (error (c)
+                     (make-slash-command-result
+                      :output (format nil "Self-modify edit-approve error: ~A" c))))))))
+        (t
+         (handler-case
+             (let ((entry (propose-modification input)))
+               (if (eq (modification-entry-status entry) :approved)
+                   (let ((applied (apply-modification (modification-entry-id entry))))
+                     (if (eq (modification-entry-status applied) :applied)
+                         (make-slash-command-result
+                          :output
+                          (format nil
+                                  "Self-modification auto-approved and applied (~A)."
+                                  (modification-entry-id applied)))
+                         (make-slash-command-result
+                          :output
+                          (format nil
+                                  "Self-modification auto-approved (~A) but apply failed: ~A"
+                                  (modification-entry-id applied)
+                                  (or (modification-entry-error-message applied)
+                                      "unknown error")))))
+                   (make-slash-command-result
+                    :output (render-modification-approval-widget entry))))
+           (error (c)
+             (make-slash-command-result
+              :output (format nil "Self-modify proposal error: ~A" c)))))))))
 
 (defun %image-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
@@ -3090,8 +3496,7 @@
     (t nil)))
 
 (defun %mcp-auth-normalized-rules ()
-  (let* ((cfg (current-config))
-         (raw (and cfg (config-value :mcp-server-permissions cfg)))
+  (let* ((raw (cfg :mcp-server-permissions))
          (rules '()))
     (dolist (entry (%mcp-auth-config-pairs raw))
       (let* ((server (%mcp-auth-normalize-server (car entry)))
@@ -3259,8 +3664,7 @@
          (tokens (%tokenize-command-arguments args-text))
          (action (string-downcase (or (first tokens) "status")))
          (policy-token (second tokens))
-         (cfg (%current-config-safe))
-         (current-policy (config-value :approval-policy cfg)))
+         (current-policy (cfg :approval-policy)))
     (cond
       ((or (string= action "status")
            (string= action "list"))
@@ -3289,7 +3693,39 @@
        :output "Approvals: /approvals status | /approvals set <policy>")))))
 
 (defun %permissions-usage ()
-  "/permissions [stats|log [limit]|explain [decision-id|latest]]")
+  "/permissions [stats|session [once|session|always]|reset [session|all]|log [limit]|explain [decision-id|latest]]")
+
+(defun %permissions-scope-keyword (token)
+  (let ((normalized (and token (string-downcase token))))
+    (cond
+      ((null normalized) nil)
+      ((string= normalized "once") :once)
+      ((string= normalized "session") :session)
+      ((string= normalized "always") :always)
+      (t nil))))
+
+(defun %permissions-format-path-approval-entry (entry)
+  (let ((tool (or (path-approval-entry-tool entry) "unknown"))
+        (scope (or (path-approval-entry-scope entry) :unknown))
+        (path (or (path-approval-entry-path entry) ""))
+        (uses (path-approval-entry-uses-remaining entry)))
+    (format nil "- tool=~A scope=~(~A~) path=~A~@[ uses-remaining=~D~]"
+            tool
+            scope
+            path
+            uses)))
+
+(defun %permissions-session-output (&optional scope)
+  (let* ((entries (list-path-approvals :scope scope))
+         (scope-label (if scope
+                          (string-downcase (symbol-name scope))
+                          "all")))
+    (if entries
+        (with-output-to-string (out)
+          (format out "Session path approvals (~A, ~D):~%" scope-label (length entries))
+          (dolist (entry entries)
+            (format out "~A~%" (%permissions-format-path-approval-entry entry))))
+        (format nil "No session path approvals recorded (~A scope)." scope-label))))
 
 (defun %permissions-format-trace (trace)
   (if (null trace)
@@ -3334,6 +3770,32 @@
                             (or (getf metrics :invalidations) 0)
                             (or (getf metrics :rules-version) 0)
                             (or (getf metrics :entries) 0)))))
+        ((member action '("session" "list") :test #'string=)
+         (let* ((scope-token (second tokens))
+                (scope (%permissions-scope-keyword scope-token)))
+           (if (and scope-token (null scope))
+               (invalid-usage
+                (format nil "Unknown /permissions session scope ~S. Expected once, session, or always."
+                        scope-token))
+               (make-slash-command-result
+                :echo-input-p t
+                :output (%permissions-session-output scope)))))
+        ((member action '("reset" "clear") :test #'string=)
+         (let* ((target (string-downcase (or (second tokens) "session")))
+                (include-persistent (string= target "all")))
+           (if (member target '("session" "all") :test #'string=)
+               (let ((removed (clear-path-approvals :include-persistent include-persistent)))
+                 (make-slash-command-result
+                  :echo-input-p t
+                  :output (format nil
+                                  "Removed ~D path approval~:P (~A)."
+                                  removed
+                                  (if include-persistent
+                                      "session + persistent"
+                                      "session only"))))
+               (invalid-usage
+                (format nil "Unknown /permissions reset target ~S. Expected session or all."
+                        target)))))
         ((string= action "log")
          (let* ((limit-token (second tokens))
                 (limit (if limit-token
@@ -3375,7 +3837,15 @@
         (action (and prefix-tokens (string-downcase (first prefix-tokens)))))
     (cond
       ((= index 0)
-       (loop for option in '("stats" "log" "explain")
+       (loop for option in '("stats" "session" "reset" "log" "explain")
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      ((and (string= action "session") (= index 1))
+       (loop for option in '("once" "session" "always")
+             when (%starts-with-ci-p prefix option)
+               collect option))
+      ((and (string= action "reset") (= index 1))
+       (loop for option in '("session" "all")
              when (%starts-with-ci-p prefix option)
                collect option))
       ((and (string= action "explain") (= index 1))
@@ -3503,6 +3973,20 @@
     :completer #'%agent-arg-completer))
   (register-slash-command
    (make-slash-command
+    :name "agent-activity"
+    :description "Show recent real-time agent activity with optional agent/type filters."
+    :usage (%agent-activity-usage)
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Optional: [agent-id] [--type inference|tool-call|waiting|idle] [--limit N]."))
+    :handler #'%agent-activity-handler
+    :completer #'%agent-activity-arg-completer))
+  (register-slash-command
+   (make-slash-command
     :name "clear"
     :description "Reset the active conversation (requires confirmation)."
     :usage "/clear --yes"
@@ -3607,6 +4091,48 @@
     :completer #'%extensions-arg-completer))
   (register-slash-command
    (make-slash-command
+    :name "ext-load"
+    :description "Load one or more user extensions without restarting the image."
+    :usage (%ext-load-usage)
+    :parameters
+    (list (make-slash-command-parameter
+           :name "target"
+           :type :string
+           :required-p t
+           :greedy-p t
+           :description "Extension name/path or all."))
+    :handler #'%ext-load-handler
+    :completer #'%ext-load-arg-completer))
+  (register-slash-command
+   (make-slash-command
+    :name "ext-unload"
+    :description "Unload (disable) one or more user extensions without restarting the image."
+    :usage (%ext-unload-usage)
+    :parameters
+    (list (make-slash-command-parameter
+           :name "target"
+           :type :string
+           :required-p t
+           :greedy-p t
+           :description "Extension name/path or all."))
+    :handler #'%ext-unload-handler
+    :completer #'%ext-unload-arg-completer))
+  (register-slash-command
+   (make-slash-command
+    :name "ext-reload"
+    :description "Reload all user extensions or a matched target."
+    :usage (%ext-reload-usage)
+    :parameters
+    (list (make-slash-command-parameter
+           :name "target"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Optional extension name/path; defaults to all."))
+    :handler #'%ext-reload-handler
+    :completer #'%ext-reload-arg-completer))
+  (register-slash-command
+   (make-slash-command
     :name "checkpoint"
     :description "Save a session checkpoint, list checkpoints, or restore one."
     :usage (%checkpoint-usage)
@@ -3619,6 +4145,20 @@
            :description "Optional action: save, list, restore <id>."))
     :handler #'%checkpoint-handler
     :completer #'%checkpoint-arg-completer))
+  (register-slash-command
+   (make-slash-command
+    :name "session"
+    :description "Inspect, list, resume, or start persisted conversation sessions."
+    :usage (%session-usage)
+    :parameters
+    (list (make-slash-command-parameter
+           :name "args"
+           :type :string
+           :required-p nil
+           :greedy-p t
+           :description "Optional action: current, list, resume <id|latest>, new [id]."))
+    :handler #'%session-handler
+    :completer #'%session-arg-completer))
   (register-slash-command
    (make-slash-command
     :name "hooks"
@@ -3749,27 +4289,27 @@
    (make-slash-command
     :name "index"
     :description "Generate or refresh the codebase symbol index and repo map."
-    :usage "/index [--refresh] [--lang LANG]"
+    :usage "/index [--refresh] [--tokens N] [--system NAME ...]"
     :parameters
     (list (make-slash-command-parameter
            :name "args"
            :type :string
            :required-p nil
            :greedy-p t
-           :description "Optional flags: --refresh to force rebuild."))
+           :description "Optional flags: --refresh, --tokens N (300-8000), --system NAME."))
     :handler #'%index-handler))
   (register-slash-command
    (make-slash-command
     :name "self-modify"
-    :description "Propose, approve, and apply a runtime code modification."
-    :usage "/self-modify <lisp-form>"
+    :description "Propose and evaluate self-modification forms with sandboxed approval workflow."
+    :usage "/self-modify <lisp-form> | /self-modify approve|deny <id> | /self-modify edit-approve <id> <lisp-form> | /self-modify pending"
     :parameters
     (list (make-slash-command-parameter
            :name "form"
            :type :string
            :required-p t
            :greedy-p t
-           :description "Lisp form to evaluate in sandboxed context."))
+           :description "Either a Lisp form or a self-modify subcommand payload."))
     :handler #'%self-modify-handler))
   (register-slash-command
    (make-slash-command
@@ -3866,15 +4406,15 @@
   (register-slash-command
    (make-slash-command
     :name "permissions"
-    :description "Inspect permission cache metrics and explain decision traces."
-    :usage "/permissions [stats|log [limit]|explain [decision-id|latest]]"
+    :description "Inspect permission cache/decision traces and path approval memory."
+    :usage "/permissions [stats|session [once|session|always]|reset [session|all]|log [limit]|explain [decision-id|latest]]"
     :parameters
     (list (make-slash-command-parameter
            :name "args"
            :type :string
            :required-p nil
            :greedy-p t
-           :description "Optional action: stats, log, or explain <decision-id>."))
+           :description "Optional action: stats, session/reset, log, or explain <decision-id>."))
     :handler #'%permissions-handler
     :completer #'%permissions-arg-completer))
   t)

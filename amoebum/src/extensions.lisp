@@ -16,6 +16,8 @@
                  name
                  version
                  dependencies
+                 permissions
+                 package-name
                  entry-point
                  manifest-path
                  status
@@ -26,6 +28,8 @@
   name
   version
   (dependencies '() :type list)
+  (permissions '() :type list)
+  package-name
   entry-point
   manifest-path
   (status :loaded :type keyword)

@@ -143,7 +143,9 @@
 (test write-safety-allows-tmp-path
   "Writing to /tmp should succeed (not in forbidden list)."
   (let ((amoebum:*permission-rules* nil))
-    (is-true (amoebum:check-write-safety "/tmp/scratch.txt"
+    (is-true (amoebum:check-write-safety
+              (namestring (merge-pathnames #P".tmp-test-work/scratch.txt"
+                                           (%amoebum-system-root)))
                                           :tool "write-file"
                                           :permission-mode :full-auto
                                           :rules amoebum:*permission-rules*))))
@@ -164,7 +166,9 @@
   "write-safety-check-p returns T for allowed paths."
   (let ((amoebum:*permission-rules* nil))
     (multiple-value-bind (ok reason)
-        (amoebum:write-safety-check-p "/tmp/safe-file.txt"
+        (amoebum:write-safety-check-p
+         (namestring (merge-pathnames #P".tmp-test-work/safe-file.txt"
+                                      (%amoebum-system-root)))
                                        :tool "write-file"
                                        :permission-mode :full-auto)
       (is-true ok)

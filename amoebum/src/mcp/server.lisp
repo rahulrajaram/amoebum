@@ -257,35 +257,49 @@
   (error "MCP server lifecycle requires SBCL run-program support."))
 
 (defun %mcp-server-start-connection (server)
-  (case (mcp-server-transport server)
-    (:stdio
-     (let* ((process (%mcp-server-spawn-process server))
-            (client (make-mcp-jsonrpc-client
-                     :input-stream #+sbcl (sb-ext:process-output process)
-                     :output-stream #+sbcl (sb-ext:process-input process)
-                     :start-reader-p t)))
-       (handler-case
-           (progn
-             (if (fboundp 'mcp-negotiate-server-capabilities)
-                 (mcp-negotiate-server-capabilities
-                  server
-                  client
-                  :timeout-seconds (mcp-server-initialize-timeout-seconds server))
-                 (mcp-jsonrpc-send-request
-                  client
-                  "initialize"
-                  :params (%mcp-server-initialize-params)
-                  :timeout-seconds (mcp-server-initialize-timeout-seconds server)))
-             (mcp-jsonrpc-send-notification client "initialized")
-             (%mcp-server-set-active-connection server process client))
-         (error (condition)
-           (%mcp-server-shutdown-connection process client
-                                            (mcp-server-shutdown-grace-seconds server))
-           (error condition)))))
-    (:streamable-http
-     (%mcp-server-set-active-connection server nil nil))
-    (otherwise
-     (error "Unsupported MCP transport ~S." (mcp-server-transport server)))))
+  (flet ((negotiate-and-mark-initialized (client)
+           (if (fboundp 'mcp-negotiate-server-capabilities)
+               (mcp-negotiate-server-capabilities
+                server
+                client
+                :timeout-seconds (mcp-server-initialize-timeout-seconds server))
+               (mcp-jsonrpc-send-request
+                client
+                "initialize"
+                :params (%mcp-server-initialize-params)
+                :timeout-seconds (mcp-server-initialize-timeout-seconds server)))
+           (mcp-jsonrpc-send-notification client "initialized")))
+    (case (mcp-server-transport server)
+      (:stdio
+       (let* ((process (%mcp-server-spawn-process server))
+              (client (make-mcp-jsonrpc-client
+                       :input-stream #+sbcl (sb-ext:process-output process)
+                       :output-stream #+sbcl (sb-ext:process-input process)
+                       :start-reader-p t)))
+         (handler-case
+             (progn
+               (negotiate-and-mark-initialized client)
+               (%mcp-server-set-active-connection server process client))
+           (error (condition)
+             (%mcp-server-shutdown-connection process client
+                                              (mcp-server-shutdown-grace-seconds server))
+             (error condition)))))
+      (:streamable-http
+       (let ((client (make-mcp-jsonrpc-client
+                      :transport :streamable-http
+                      :endpoint-url (mcp-server-endpoint-url server)
+                      :http-headers (mcp-server-http-headers server)
+                      :default-timeout-seconds
+                      (mcp-server-initialize-timeout-seconds server))))
+         (handler-case
+             (progn
+               (negotiate-and-mark-initialized client)
+               (%mcp-server-set-active-connection server nil client))
+           (error (condition)
+             (%mcp-server-send-shutdown-sequence client)
+             (error condition)))))
+      (otherwise
+       (error "Unsupported MCP transport ~S." (mcp-server-transport server))))))
 
 (defun %mcp-server-monitor-sleep (server seconds)
   (let ((remaining (max 0.0d0 (float seconds 1.0d0))))
@@ -312,10 +326,23 @@
     (error "SERVER must be an MCP-SERVER, got ~S." server))
   (case (mcp-server-transport server)
     (:streamable-http
-     (and (%mcp-server-running-p server)
-          (let ((endpoint (mcp-server-endpoint-url server)))
-            (and (stringp endpoint)
-                 (> (length endpoint) 0)))))
+     (multiple-value-bind (_process client)
+         (%mcp-server-active-connection server)
+       (declare (ignore _process))
+       (and (%mcp-server-running-p server)
+            (let ((endpoint (mcp-server-endpoint-url server)))
+              (and (stringp endpoint)
+                   (> (length endpoint) 0)))
+            client
+            (handler-case
+                (progn
+                  (mcp-jsonrpc-send-request
+                   client
+                   "ping"
+                   :timeout-seconds (mcp-server-ping-timeout-seconds server))
+                  t)
+              (mcp-timeout () nil)
+              (error () nil)))))
     (otherwise
      (multiple-value-bind (process client)
          (%mcp-server-active-connection server)
@@ -473,8 +500,7 @@
                                                (find-package :amoebum))))
               (when (and bridge-symbol (fboundp bridge-symbol))
                 (funcall (symbol-function bridge-symbol) server)))
-            (when (eq (mcp-server-transport server) :stdio)
-              (%mcp-server-start-monitor server)))
+            (%mcp-server-start-monitor server))
         (error (condition)
           (%with-mcp-server-lock (server)
             (setf (mcp-server-running-p server) nil
