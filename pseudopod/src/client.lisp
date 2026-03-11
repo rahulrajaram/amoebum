@@ -83,12 +83,126 @@
     (setf (gethash "content" obj) content)
     obj))
 
-(defun %coerce-request-message (message)
+(defun %trimmed-non-empty-string (value)
+  (when (stringp value)
+    (let ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return) value)))
+      (when (plusp (length trimmed))
+        trimmed))))
+
+(defun %openai-content-part-text-p (part)
+  (and (hash-table-p part)
+       (string= (string-downcase (or (gethash "type" part) ""))
+                "text")
+       (stringp (gethash "text" part))))
+
+(defun %openai-make-text-content-part (text)
+  (let ((part (make-hash-table :test #'equal)))
+    (setf (gethash "type" part) "text"
+          (gethash "text" part) (or text ""))
+    part))
+
+(defun %openai-make-image-url-content-part (url)
+  (let ((part (make-hash-table :test #'equal))
+        (image-url (make-hash-table :test #'equal)))
+    (setf (gethash "type" part) "image_url"
+          (gethash "url" image-url) url
+          (gethash "image_url" part) image-url)
+    part))
+
+(defun %openai-image-data-uri (part)
+  (when (hash-table-p part)
+    (let* ((media-type (%trimmed-non-empty-string
+                        (or (gethash "media_type" part)
+                            (gethash "mime_type" part)
+                            (gethash "mime-type" part))))
+           (data (%trimmed-non-empty-string (gethash "data" part))))
+      (when (and media-type data)
+        (format nil "data:~A;base64,~A" media-type data)))))
+
+(defun %openai-image-url-value (part)
+  (when (hash-table-p part)
+    (or (%trimmed-non-empty-string (gethash "url" part))
+        (let ((image-url (gethash "image_url" part)))
+          (and (hash-table-p image-url)
+               (%trimmed-non-empty-string (gethash "url" image-url)))))))
+
+(defun %openai-coerce-content-part (part)
+  (let* ((hash (cond
+                 ((content-part-p part)
+                  (content-part-to-hash part))
+                 ((hash-table-p part)
+                  (%copy-hash-table part))
+                 ((stringp part)
+                  (%openai-make-text-content-part part))
+                 (t nil)))
+         (type (and (hash-table-p hash)
+                    (string-downcase (or (gethash "type" hash) "")))))
+    (cond
+      ((null hash)
+       nil)
+      ((string= type "text")
+       (%openai-make-text-content-part
+        (or (%trimmed-non-empty-string (gethash "text" hash))
+            (%trimmed-non-empty-string (gethash "content" hash))
+            "")))
+      ((or (string= type "image")
+           (string= type "input_image"))
+       (let ((uri (or (%openai-image-data-uri hash)
+                      (%openai-image-url-value hash))))
+         (if uri
+             (%openai-make-image-url-content-part uri)
+             (%openai-make-text-content-part
+              (or (%trimmed-non-empty-string (gethash "text" hash))
+                  "[image]")))))
+      ((string= type "image_url")
+       (let ((uri (%openai-image-url-value hash)))
+         (if uri
+             (%openai-make-image-url-content-part uri)
+             (%openai-make-text-content-part
+              (or (%trimmed-non-empty-string (gethash "text" hash))
+                  "[image]")))))
+      (t
+       hash))))
+
+(defun %openai-normalize-message-content (content)
   (cond
-    ((message-p message) (message-to-hash message))
-    ((hash-table-p message) message)
+    ((or (null content) (stringp content))
+     content)
+    ((or (listp content) (vectorp content))
+     (let ((parts (remove nil (mapcar #'%openai-coerce-content-part
+                                      (%sequence->list content)))))
+       (cond
+         ((null parts) "")
+         ((and (= (length parts) 1)
+               (%openai-content-part-text-p (first parts)))
+          (gethash "text" (first parts)))
+         (t
+          (coerce parts 'vector)))))
+    ((or (hash-table-p content)
+         (content-part-p content))
+     (let ((part (%openai-coerce-content-part content)))
+       (cond
+         ((null part) "")
+         ((%openai-content-part-text-p part) (gethash "text" part))
+         (t (vector part)))))
     (t
-     (error "Expected message struct or hash-table, got ~S" message))))
+     content)))
+
+(defun %openai-normalize-message-for-payload (message)
+  (let ((raw (cond
+               ((message-p message) (message-to-hash message))
+               ((hash-table-p message) message)
+               ((stringp message) (%make-raw-message "user" message))
+               (t nil))))
+    (unless (hash-table-p raw)
+      (error "Expected message struct, hash-table, or string, got ~S" message))
+    (let ((normalized (%copy-hash-table raw)))
+      (setf (gethash "content" normalized)
+            (%openai-normalize-message-content (gethash "content" raw)))
+      normalized)))
+
+(defun %coerce-request-message (message)
+  (%openai-normalize-message-for-payload message))
 
 (defun %normalize-request-messages (system-prompt user-prompt messages)
   (if messages
@@ -128,7 +242,8 @@
           (%normalize-request-messages system-prompt user-prompt messages))
     (let ((normalized-tools (%normalize-request-tools tools)))
       (when normalized-tools
-        (setf (gethash "tools" payload) normalized-tools)))
+        (setf (gethash "tools" payload) normalized-tools)
+        (setf (gethash "tool_choice" payload) "auto")))
     (setf (gethash "temperature" payload) (coerce (client-temperature client) 'double-float))
     (setf (gethash "max_tokens" payload) (client-max-tokens client))
     (setf (gethash "top_p" payload) (coerce (client-top-p client) 'double-float))
@@ -491,6 +606,70 @@ Returns two values: token-count integer and parsed response hash-table."
       (%signal-http-status-error status body :streamp nil))
     (or (%coerce-response-body body) "")))
 
+(defvar *active-stream-registry* (make-hash-table :test #'equal)
+  "Maps stream-id -> stream state plist.")
+
+(defvar *stream-id-random-state* (make-random-state t)
+  "Random state used for stream-id generation.")
+
+(defvar *stream-registry-lock*
+  #+sb-thread (sb-thread:make-mutex :name "pseudopod-stream-registry-lock")
+  #-sb-thread nil
+  "Mutex guarding *ACTIVE-STREAM-REGISTRY* when threads are available.")
+
+(defmacro %with-stream-registry-lock (&body body)
+  #+sb-thread
+  `(sb-thread:with-mutex (*stream-registry-lock*)
+     ,@body)
+  #-sb-thread
+  `(progn
+     ,@body))
+
+(defun %normalize-stream-id (stream-id)
+  (when stream-id
+    (let ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                (princ-to-string stream-id))))
+      (and (plusp (length trimmed))
+           trimmed))))
+
+(defun %generate-stream-id ()
+  (format nil "stream-~D-~D"
+          (get-universal-time)
+          (random most-positive-fixnum *stream-id-random-state*)))
+
+(defun %register-active-stream (&optional requested-stream-id)
+  (let ((stream-id (or (%normalize-stream-id requested-stream-id)
+                       (%generate-stream-id))))
+    (%with-stream-registry-lock
+      (loop while (gethash stream-id *active-stream-registry*) do
+        (setf stream-id (%generate-stream-id)))
+      (setf (gethash stream-id *active-stream-registry*)
+            (list :cancelled-p nil
+                  :started-at (get-universal-time))))
+    stream-id))
+
+(defun %unregister-active-stream (stream-id)
+  (%with-stream-registry-lock
+    (remhash stream-id *active-stream-registry*))
+  stream-id)
+
+(defun %stream-cancelled-p (stream-id)
+  (%with-stream-registry-lock
+    (let ((state (and stream-id
+                      (gethash stream-id *active-stream-registry*))))
+      (and state
+           (getf state :cancelled-p)))))
+
+(defun cancel-stream (stream-id)
+  "Request cancellation of an active stream. Returns true when stream is found."
+  (let ((normalized (%normalize-stream-id stream-id)))
+    (and normalized
+         (%with-stream-registry-lock
+           (let ((state (gethash normalized *active-stream-registry*)))
+             (when state
+               (setf (getf state :cancelled-p) t)
+               t))))))
+
 (defun %non-empty-string-p (value)
   (and (stringp value)
        (> (length value) 0)))
@@ -601,6 +780,29 @@ Returns two values: token-count integer and parsed response hash-table."
           :arguments-complete-p (%stream-tool-call-arguments-complete-p arguments)
           :tool-call tool-call)))
 
+(defun %copy-hash-table-shallow (table)
+  (let ((copy (make-hash-table :test #'equal)))
+    (when (hash-table-p table)
+      (maphash (lambda (key value)
+                 (setf (gethash key copy) value))
+               table))
+    copy))
+
+(defun %make-stream-usage-delta-chunk (usage)
+  (let* ((usage-copy (%copy-hash-table-shallow usage))
+         (prompt-tokens (or (%token-count-integer (gethash "prompt_tokens" usage-copy))
+                            (%token-count-integer (gethash "input_tokens" usage-copy))))
+         (completion-tokens (or (%token-count-integer (gethash "completion_tokens" usage-copy))
+                                (%token-count-integer (gethash "output_tokens" usage-copy))))
+         (total-tokens (or (%token-count-integer (gethash "total_tokens" usage-copy))
+                           (and prompt-tokens completion-tokens
+                                (+ prompt-tokens completion-tokens)))))
+    (list :type :usage-delta
+          :usage usage-copy
+          :prompt-tokens prompt-tokens
+          :completion-tokens completion-tokens
+          :total-tokens total-tokens)))
+
 (defun %ensure-stream-tool-call-state (tool-call-states index)
   (or (gethash index tool-call-states)
       (setf (gethash index tool-call-states)
@@ -656,12 +858,14 @@ Returns two values: token-count integer and parsed response hash-table."
                           on-content
                           on-role
                           on-chunk
+                          on-usage-delta
                           on-tool-call-delta
                           on-tool-call-started
                           on-tool-call-argument-complete
                           tool-call-partials
                           tool-call-states
                           content-stream
+                          usage-delta-state
                           parse-error-count)
   (let ((payload nil))
     (cond
@@ -680,6 +884,7 @@ Returns two values: token-count integer and parsed response hash-table."
                  (role (and (hash-table-p delta) (gethash "role" delta)))
                  (reasoning (and (hash-table-p delta) (gethash "reasoning_content" delta)))
                  (content (and (hash-table-p delta) (gethash "content" delta)))
+                 (usage (and (hash-table-p json) (gethash "usage" json)))
                  (tool-calls (and (hash-table-p delta) (gethash "tool_calls" delta))))
             (when (and on-role (%non-empty-string-p role))
               (funcall on-role role))
@@ -690,6 +895,13 @@ Returns two values: token-count integer and parsed response hash-table."
               (when on-content
                 (funcall on-content content))
               (%emit-stream-chunk on-chunk (%make-stream-text-delta-chunk content)))
+            (when (hash-table-p usage)
+              (let ((usage-chunk (%make-stream-usage-delta-chunk usage)))
+                (%emit-stream-chunk on-chunk usage-chunk)
+                (when on-usage-delta
+                  (funcall on-usage-delta usage-chunk))
+                (when usage-delta-state
+                  (setf (car usage-delta-state) (getf usage-chunk :usage)))))
             (dolist (tool-call (%sequence->list tool-calls))
               (multiple-value-bind (entry index)
                   (%merge-stream-tool-call-delta tool-call-partials tool-call)
@@ -715,89 +927,133 @@ Returns two values: token-count integer and parsed response hash-table."
                                           on-reasoning
                                           on-content
                                           on-chunk
+                                          on-usage-delta
                                           on-tool-call-delta
                                           on-tool-call-started
-                                          on-tool-call-argument-complete)
+                                          on-tool-call-argument-complete
+                                          stream-id)
   (let ((role "assistant")
         (content-stream (make-string-output-stream))
         (tool-call-partials (make-hash-table :test #'eql))
         (tool-call-states (make-hash-table :test #'eql))
+        (usage-delta-state (list nil))
         (parse-error-count (list 0))
+        (stream-status :completed)
+        (active-stream-id nil)
         (max-bytes (client-max-response-bytes client))
         (bytes-read 0))
-    (multiple-value-bind (body-stream status)
-        (%request-post client
-                       (%build-payload client system-prompt user-prompt t
-                                       :messages messages
-                                       :tools tools)
-                       :streamp t)
-      (unless (<= 200 status 299)
-        (let ((error-body (%coerce-response-body body-stream)))
-          (handler-case (close body-stream)
-            (error () nil))
-          (%signal-http-status-error status error-body :streamp t)))
-      (unwind-protect
-          (handler-case
-              (loop for line = (read-line body-stream nil nil)
-                    while line do
-                      (incf bytes-read (length line))
-                      (when (and (plusp max-bytes) (> bytes-read max-bytes))
-                        (error 'pseudopod-api-error
-                               :message (format nil
-                                                "Streaming response exceeded ~:D byte limit."
-                                                max-bytes)
-                               :status-code nil
-                               :body nil))
-                      (%consume-sse-line line
-                                         on-reasoning
-                                         on-content
-                                         (lambda (next-role) (setf role next-role))
-                                         on-chunk
-                                         on-tool-call-delta
-                                         on-tool-call-started
-                                         on-tool-call-argument-complete
-                                         tool-call-partials
-                                         tool-call-states
-                                         content-stream
-                                         parse-error-count))
-            (error (condition)
-              (if (%timeout-condition-p condition)
-                  (error 'pseudopod-timeout-error
-                         :message "Moonshot streaming request timed out."
-                         :cause condition)
-                  (error condition))))
-        (handler-case (close body-stream)
-          (error () nil))))
-    (values role
+    (setf active-stream-id (%register-active-stream stream-id))
+    (unwind-protect
+        (multiple-value-bind (body-stream status)
+            (%request-post client
+                           (%build-payload client system-prompt user-prompt t
+                                           :messages messages
+                                           :tools tools)
+                           :streamp t)
+          (unless (<= 200 status 299)
+            (let ((error-body (%coerce-response-body body-stream)))
+              (handler-case (close body-stream)
+                (error () nil))
+              (%signal-http-status-error status error-body :streamp t)))
+          (unwind-protect
+              (handler-case
+                  (loop for line = (read-line body-stream nil nil)
+                        while line do
+                          (when (%stream-cancelled-p active-stream-id)
+                            (setf stream-status :cancelled)
+                            (return))
+                          (incf bytes-read (length line))
+                          (when (and (plusp max-bytes) (> bytes-read max-bytes))
+                            (error 'pseudopod-api-error
+                                   :message (format nil
+                                                    "Streaming response exceeded ~:D byte limit."
+                                                    max-bytes)
+                                   :status-code nil
+                                   :body nil))
+                          (%consume-sse-line line
+                                             on-reasoning
+                                             on-content
+                                             (lambda (next-role) (setf role next-role))
+                                             on-chunk
+                                             on-usage-delta
+                                             on-tool-call-delta
+                                             on-tool-call-started
+                                             on-tool-call-argument-complete
+                                             tool-call-partials
+                                             tool-call-states
+                                             content-stream
+                                             usage-delta-state
+                                             parse-error-count)
+                          (when (%stream-cancelled-p active-stream-id)
+                            (setf stream-status :cancelled)
+                            (return)))
+                (error (condition)
+                  (if (%timeout-condition-p condition)
+                      (error 'pseudopod-timeout-error
+                             :message "Moonshot streaming request timed out."
+                             :cause condition)
+                      (error condition))))
+            (handler-case (close body-stream)
+              (error () nil))))
+      (%unregister-active-stream active-stream-id))
+    (values active-stream-id
+            role
             (get-output-stream-string content-stream)
             (%finalize-stream-tool-call-partials tool-call-partials)
-            (car parse-error-count))))
+            (car parse-error-count)
+            stream-status
+            (car usage-delta-state))))
 
 (defun %emit-stream-tool-calls (tool-calls on-tool-call)
   (when on-tool-call
     (dolist (tool-call tool-calls)
       (funcall on-tool-call tool-call))))
 
-(defun stream-chat-completion (client user-prompt
-                               &key
-                                 (system-prompt "You are a helpful assistant.")
-                                 messages
-                                 tools
-                                 on-reasoning
-                                 on-content
-                                 on-tool-call
-                                 on-chunk
-                                 on-tool-call-delta
-                                 on-tool-call-started
-                                 on-tool-call-argument-complete)
+(defun %blank-stream-content-p (content)
+  (or (null content)
+      (not (stringp content))
+      (zerop (length (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                  content)))))
+
+(defun %stream-terminal-outcome-missing-p (stream-status content tool-calls)
+  (and (eq stream-status :completed)
+       (%blank-stream-content-p content)
+       (null (%sequence->list tool-calls))))
+
+(defun %keyword-present-p (plist key)
+  (loop for plist-key in plist by #'cddr
+        thereis (eq plist-key key)))
+
+(defun %split-legacy-stream-callback (args)
+  (if (and args (functionp (first args)))
+      (values (first args) (rest args))
+      (values nil args)))
+
+(defun %stream-chat-completion-dispatch (client user-prompt
+                                         &key
+                                           (system-prompt "You are a helpful assistant.")
+                                           messages
+                                           tools
+                                           on-reasoning
+                                           on-content
+                                           on-tool-call
+                                           on-chunk
+                                           on-usage-delta
+                                           on-tool-call-delta
+                                           on-tool-call-started
+                                           on-tool-call-argument-complete
+                                           stream-id)
   "Run a streaming Moonshot completion.
 ON-REASONING and ON-CONTENT receive streaming text chunks.
-ON-CHUNK receives chunk plists with :TYPE = :TEXT-DELTA or :TOOL-CALL-DELTA.
+ON-CHUNK receives chunk plists with :TYPE = :TEXT-DELTA, :TOOL-CALL-DELTA,
+or :USAGE-DELTA.
+ON-USAGE-DELTA receives token-usage chunk plists.
 ON-TOOL-CALL-DELTA receives incremental tool-call chunk plists.
 ON-TOOL-CALL-STARTED fires when a streamed tool call has a resolved name.
 ON-TOOL-CALL-ARGUMENT-COMPLETE fires when a streamed tool argument JSON object parses.
 ON-TOOL-CALL receives reconstructed tool-call structs when present."
-  (multiple-value-bind (role content tool-calls)
+  (multiple-value-bind (active-stream-id role content tool-calls parse-error-count
+                        stream-status usage)
       (%stream-chat-completion-collect client
                                        user-prompt
                                        :system-prompt system-prompt
@@ -806,28 +1062,58 @@ ON-TOOL-CALL receives reconstructed tool-call structs when present."
                                        :on-reasoning on-reasoning
                                        :on-content on-content
                                        :on-chunk on-chunk
+                                       :on-usage-delta on-usage-delta
                                        :on-tool-call-delta on-tool-call-delta
                                        :on-tool-call-started on-tool-call-started
                                        :on-tool-call-argument-complete
-                                       on-tool-call-argument-complete)
+                                       on-tool-call-argument-complete
+                                       :stream-id stream-id)
     (declare (ignore role))
+    (when (%stream-terminal-outcome-missing-p stream-status content tool-calls)
+      (error 'pseudopod-parse-error
+             :message "Streaming response completed with no assistant content and no tool calls."
+             :payload (list :stream-status stream-status
+                            :parse-error-count parse-error-count
+                            :usage usage)))
     (%emit-stream-tool-calls tool-calls on-tool-call)
-    (values content tool-calls)))
+    (values content
+            tool-calls
+            active-stream-id
+            stream-status
+            usage
+            parse-error-count)))
 
-(defun stream-chat-completion* (client user-prompt
-                                &key
-                                  (system-prompt "You are a helpful assistant.")
-                                  messages
-                                  tools
-                                  on-reasoning
-                                  on-content
-                                  on-tool-call
-                                  on-chunk
-                                  on-tool-call-delta
-                                  on-tool-call-started
-                                  on-tool-call-argument-complete)
+(defun stream-chat-completion (client user-prompt &rest args)
+  "Run a streaming Moonshot completion.
+
+Legacy compatibility: supports an optional positional callback as the third
+argument, treated as :ON-CONTENT."
+  (multiple-value-bind (legacy-on-content keyword-args)
+      (%split-legacy-stream-callback args)
+    (let ((effective-args keyword-args))
+      (when (and legacy-on-content
+                 (not (%keyword-present-p keyword-args :on-content)))
+        (setf effective-args (append effective-args
+                                     (list :on-content legacy-on-content))))
+      (apply #'%stream-chat-completion-dispatch client user-prompt effective-args))))
+
+(defun %stream-chat-completion*-dispatch (client user-prompt
+                                          &key
+                                            (system-prompt "You are a helpful assistant.")
+                                            messages
+                                            tools
+                                            on-reasoning
+                                            on-content
+                                            on-tool-call
+                                            on-chunk
+                                            on-usage-delta
+                                            on-tool-call-delta
+                                            on-tool-call-started
+                                            on-tool-call-argument-complete
+                                            stream-id)
   "Run a streaming Moonshot completion and return a typed message struct."
-  (multiple-value-bind (role content tool-calls)
+  (multiple-value-bind (active-stream-id role content tool-calls parse-error-count
+                        stream-status usage)
       (%stream-chat-completion-collect client
                                        user-prompt
                                        :system-prompt system-prompt
@@ -836,14 +1122,40 @@ ON-TOOL-CALL receives reconstructed tool-call structs when present."
                                        :on-reasoning on-reasoning
                                        :on-content on-content
                                        :on-chunk on-chunk
+                                       :on-usage-delta on-usage-delta
                                        :on-tool-call-delta on-tool-call-delta
                                        :on-tool-call-started on-tool-call-started
                                        :on-tool-call-argument-complete
-                                       on-tool-call-argument-complete)
+                                       on-tool-call-argument-complete
+                                       :stream-id stream-id)
+    (when (%stream-terminal-outcome-missing-p stream-status content tool-calls)
+      (error 'pseudopod-parse-error
+             :message "Streaming response completed with no assistant content and no tool calls."
+             :payload (list :stream-status stream-status
+                            :parse-error-count parse-error-count
+                            :usage usage)))
     (%emit-stream-tool-calls tool-calls on-tool-call)
-    (make-message :role (if (%non-empty-string-p role) role "assistant")
-                  :content (or content "")
-                  :tool-calls tool-calls)))
+    (values (make-message :role (if (%non-empty-string-p role) role "assistant")
+                          :content (or content "")
+                          :tool-calls tool-calls)
+            active-stream-id
+            stream-status
+            usage
+            parse-error-count)))
+
+(defun stream-chat-completion* (client user-prompt &rest args)
+  "Run a streaming Moonshot completion and return a typed message struct.
+
+Legacy compatibility: supports an optional positional callback as the third
+argument, treated as :ON-CONTENT."
+  (multiple-value-bind (legacy-on-content keyword-args)
+      (%split-legacy-stream-callback args)
+    (let ((effective-args keyword-args))
+      (when (and legacy-on-content
+                 (not (%keyword-present-p keyword-args :on-content)))
+        (setf effective-args (append effective-args
+                                     (list :on-content legacy-on-content))))
+      (apply #'%stream-chat-completion*-dispatch client user-prompt effective-args))))
 
 (defun print-streamed-completion (client user-prompt
                                   &key

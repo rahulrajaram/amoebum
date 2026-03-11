@@ -103,7 +103,8 @@
              (when max-tokens (setf (client-max-tokens client) max-tokens))
              (when top-p (setf (client-top-p client) top-p))
              (stream-chat-completion client nil callback
-                                     :messages raw-messages :tools tools)))
+                                     :messages raw-messages
+                                     :tools tools)))
       (setf (client-model client) saved-model))))
 
 (defmethod list-provider-models ((provider kimi-provider))

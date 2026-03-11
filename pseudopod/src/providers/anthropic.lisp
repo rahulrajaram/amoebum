@@ -58,17 +58,246 @@
           (string-right-trim "/" (provider-base-url provider))
           path))
 
-(defun %anthropic-coerce-message (m)
-  "Coerce a message for the Anthropic format."
+(defun %anthropic-non-empty-string-p (value)
+  (and (stringp value) (plusp (length value))))
+
+(defun %anthropic-content-text (content)
+  (labels ((emit-part (part stream)
+             (cond
+               ((stringp part)
+                (write-string part stream))
+               ((hash-table-p part)
+                (let* ((type (string-downcase (or (gethash "type" part "") "")))
+                       (text (or (and (string= type "text")
+                                      (stringp (gethash "text" part))
+                                      (gethash "text" part))
+                                 (and (stringp (gethash "content" part))
+                                      (gethash "content" part))
+                                 (and (stringp (gethash "text" part))
+                                      (gethash "text" part)))))
+                  (when (stringp text)
+                    (write-string text stream))))
+               (t nil))))
+    (with-output-to-string (stream)
+      (cond
+        ((null content) nil)
+        ((stringp content) (write-string content stream))
+        ((hash-table-p content) (emit-part content stream))
+        ((vectorp content)
+         (loop for part across content do (emit-part part stream)))
+        ((listp content)
+         (dolist (part content) (emit-part part stream)))
+        (t (write-string (princ-to-string content) stream))))))
+
+(defun %anthropic-join-strings (parts)
+  (with-output-to-string (stream)
+    (loop for part in (remove-if-not #'%anthropic-non-empty-string-p parts)
+          for index from 0
+          do (progn
+               (when (plusp index)
+                 (write-string (format nil "~%~%") stream))
+               (write-string part stream)))))
+
+(defun %anthropic-parse-tool-input (arguments)
   (cond
-    ((hash-table-p m) m)
-    ((message-p m) (message-to-hash m))
-    ((stringp m)
-     (let ((h (make-hash-table :test #'equal)))
-       (setf (gethash "role" h) "user"
-             (gethash "content" h) m)
-       h))
-    (t m)))
+    ((hash-table-p arguments) arguments)
+    ((null arguments) (make-hash-table :test #'equal))
+    ((stringp arguments)
+     (let ((trimmed (string-trim '(#\Space #\Tab #\Return #\Newline) arguments)))
+       (if (zerop (length trimmed))
+           (make-hash-table :test #'equal)
+           (handler-case
+               (let ((parsed (jonathan:parse trimmed :as :hash-table)))
+                 (if (hash-table-p parsed)
+                     parsed
+                     (let ((fallback (make-hash-table :test #'equal)))
+                       (setf (gethash "value" fallback) parsed)
+                       fallback)))
+             (error ()
+               (let ((fallback (make-hash-table :test #'equal)))
+                 (setf (gethash "raw" fallback) trimmed)
+                 fallback))))))
+    (t
+     (let ((fallback (make-hash-table :test #'equal)))
+       (setf (gethash "value" fallback) arguments)
+       fallback))))
+
+(defun %anthropic-make-text-block (text)
+  (let ((block (make-hash-table :test #'equal)))
+    (setf (gethash "type" block) "text")
+    (setf (gethash "text" block) (or text ""))
+    block))
+
+(defun %anthropic-make-image-block (media-type data)
+  (let ((block (make-hash-table :test #'equal))
+        (source (make-hash-table :test #'equal)))
+    (setf (gethash "type" block) "image"
+          (gethash "type" source) "base64"
+          (gethash "media_type" source) media-type
+          (gethash "data" source) data
+          (gethash "source" block) source)
+    block))
+
+(defun %anthropic-parse-data-uri (uri)
+  (when (and (stringp uri)
+             (uiop:string-prefix-p "data:" uri))
+    (let* ((separator ";base64,")
+           (marker (search separator uri :test #'char=))
+           (start (length "data:"))
+           (data-start (and marker (+ marker (length separator)))))
+      (when (and marker data-start
+                 (> marker start)
+                 (< data-start (length uri)))
+        (values (subseq uri start marker)
+                (subseq uri data-start))))))
+
+(defun %anthropic-image-block-from-part (part)
+  (let* ((media-type (%trimmed-non-empty-string
+                      (or (gethash "media_type" part)
+                          (gethash "mime_type" part)
+                          (gethash "mime-type" part))))
+         (data (%trimmed-non-empty-string (gethash "data" part)))
+         (image-url (%openai-image-url-value part)))
+    (cond
+      ((and media-type data)
+       (%anthropic-make-image-block media-type data))
+      (image-url
+       (multiple-value-bind (data-uri-media data-uri-data)
+           (%anthropic-parse-data-uri image-url)
+         (when (and (%anthropic-non-empty-string-p data-uri-media)
+                    (%anthropic-non-empty-string-p data-uri-data))
+           (%anthropic-make-image-block data-uri-media data-uri-data))))
+      (t
+       nil))))
+
+(defun %anthropic-coerce-content-part-block (part)
+  (let* ((hash (cond
+                 ((content-part-p part) (content-part-to-hash part))
+                 ((hash-table-p part) (%copy-hash-table part))
+                 ((stringp part)
+                  (let ((value (make-hash-table :test #'equal)))
+                    (setf (gethash "type" value) "text"
+                          (gethash "text" value) part)
+                    value))
+                 (t nil)))
+         (type (and (hash-table-p hash)
+                    (string-downcase (or (gethash "type" hash) "")))))
+    (cond
+      ((null hash)
+       nil)
+      ((string= type "text")
+       (%anthropic-make-text-block
+        (or (%trimmed-non-empty-string (gethash "text" hash))
+            (%trimmed-non-empty-string (gethash "content" hash))
+            "")))
+      ((or (string= type "image")
+           (string= type "input_image")
+           (string= type "image_url"))
+       (or (%anthropic-image-block-from-part hash)
+           (let ((fallback (%trimmed-non-empty-string (gethash "text" hash))))
+             (and fallback (%anthropic-make-text-block fallback)))))
+      (t
+       (let ((fallback (%trimmed-non-empty-string
+                        (or (gethash "text" hash)
+                            (gethash "content" hash)))))
+         (and fallback (%anthropic-make-text-block fallback)))))))
+
+(defun %anthropic-coerce-content-blocks (content)
+  (let ((parts (cond
+                 ((null content) nil)
+                 ((or (listp content) (vectorp content))
+                  (%sequence->list content))
+                 (t
+                  (list content)))))
+    (remove nil (mapcar #'%anthropic-coerce-content-part-block parts))))
+
+(defun %anthropic-tool-call->block (tool-call)
+  (when (hash-table-p tool-call)
+    (let* ((function-body (and (hash-table-p (gethash "function" tool-call))
+                               (gethash "function" tool-call)))
+           (id (or (and (stringp (gethash "id" tool-call))
+                        (gethash "id" tool-call))
+                   ""))
+           (name (or (and (hash-table-p function-body)
+                          (stringp (gethash "name" function-body))
+                          (gethash "name" function-body))
+                     (and (stringp (gethash "name" tool-call))
+                          (gethash "name" tool-call))
+                     ""))
+           (arguments (or (and (hash-table-p function-body)
+                               (gethash "arguments" function-body))
+                          (gethash "arguments" tool-call)))
+           (block (make-hash-table :test #'equal)))
+      (setf (gethash "type" block) "tool_use")
+      (when (%anthropic-non-empty-string-p id)
+        (setf (gethash "id" block) id))
+      (when (%anthropic-non-empty-string-p name)
+        (setf (gethash "name" block) name))
+      (setf (gethash "input" block) (%anthropic-parse-tool-input arguments))
+      block)))
+
+(defun %anthropic-coerce-tool-calls (tool-calls)
+  (let ((calls (cond
+                 ((null tool-calls) '())
+                 ((listp tool-calls) tool-calls)
+                 ((vectorp tool-calls) (coerce tool-calls 'list))
+                 ((hash-table-p tool-calls) (list tool-calls))
+                 (t '()))))
+    (remove nil (mapcar #'%anthropic-tool-call->block calls))))
+
+(defun %anthropic-tool-result-message (tool-use-id content)
+  (let* ((message (make-hash-table :test #'equal))
+         (block (make-hash-table :test #'equal)))
+    (setf (gethash "type" block) "tool_result")
+    (setf (gethash "tool_use_id" block) (or tool-use-id ""))
+    (setf (gethash "content" block) (or content ""))
+    (setf (gethash "role" message) "user")
+    (setf (gethash "content" message) (list block))
+    message))
+
+(defun %anthropic-coerce-message (m)
+  "Coerce message M into Anthropic message format.
+Returns two values:
+1. Anthropic message hash-table or NIL (for system-role extraction).
+2. System prompt fragment (string) or NIL."
+  (let ((raw (cond
+               ((hash-table-p m) m)
+               ((message-p m) (message-to-hash m))
+               ((stringp m)
+                (let ((h (make-hash-table :test #'equal)))
+                  (setf (gethash "role" h) "user"
+                        (gethash "content" h) m)
+                  h))
+               (t nil))))
+    (unless (hash-table-p raw)
+      (return-from %anthropic-coerce-message (values nil nil)))
+    (let* ((role (string-downcase (or (gethash "role" raw) "user")))
+           (content (gethash "content" raw))
+           (tool-calls (gethash "tool_calls" raw))
+           (tool-call-id (and (stringp (gethash "tool_call_id" raw))
+                              (gethash "tool_call_id" raw))))
+      (cond
+        ((string= role "system")
+         (values nil (%anthropic-content-text content)))
+        ((string= role "tool")
+         (values (%anthropic-tool-result-message tool-call-id
+                                                 (%anthropic-content-text content))
+                 nil))
+        ((or (string= role "user")
+             (string= role "assistant"))
+         (let ((out (make-hash-table :test #'equal))
+               (blocks (%anthropic-coerce-content-blocks content)))
+           (when (string= role "assistant")
+             (setf blocks (nconc blocks (%anthropic-coerce-tool-calls tool-calls))))
+           (setf (gethash "role" out) role)
+           (setf (gethash "content" out)
+                 (if (null blocks) "" blocks))
+           (values out nil)))
+        (t
+         (let ((fallback (make-hash-table :test #'equal)))
+           (setf (gethash "role" fallback) "user")
+           (setf (gethash "content" fallback) (%anthropic-content-text content))
+           (values fallback nil)))))))
 
 (defun %anthropic-build-payload (provider messages &key model temperature max-tokens
                                                         top-p tools tool-choice
@@ -77,10 +306,24 @@
   (let ((payload (make-hash-table :test #'equal)))
     (setf (gethash "model" payload) (or model (provider-default-model provider)))
     (setf (gethash "max_tokens" payload) (or max-tokens 4096))
-    (when system-prompt
-      (setf (gethash "system" payload) system-prompt))
-    (setf (gethash "messages" payload)
-          (mapcar #'%anthropic-coerce-message messages))
+    (let ((coerced-messages '())
+          (system-fragments '()))
+      (dolist (message messages)
+        (multiple-value-bind (coerced system-fragment)
+            (%anthropic-coerce-message message)
+          (when coerced
+            (push coerced coerced-messages))
+          (when (%anthropic-non-empty-string-p system-fragment)
+            (push system-fragment system-fragments))))
+      (let ((resolved-system
+              (%anthropic-join-strings
+               (append (when (%anthropic-non-empty-string-p system-prompt)
+                         (list system-prompt))
+                       (nreverse system-fragments)))))
+        (when (%anthropic-non-empty-string-p resolved-system)
+          (setf (gethash "system" payload) resolved-system)))
+      (setf (gethash "messages" payload)
+            (nreverse coerced-messages)))
     (when temperature
       (setf (gethash "temperature" payload) (coerce temperature 'double-float)))
     (when top-p
@@ -140,9 +383,6 @@
     ((uiop:string-prefix-p "data: " line) (subseq line 6))
     ((uiop:string-prefix-p "data:" line) (string-left-trim '(#\Space #\Tab) (subseq line 5)))
     (t "")))
-
-(defun %anthropic-non-empty-string-p (value)
-  (and (stringp value) (plusp (length value))))
 
 (defun %anthropic-normalize-stream-result (role content tool-calls usage &optional thinking)
   (let ((response (make-hash-table :test #'equal)))

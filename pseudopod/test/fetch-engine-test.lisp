@@ -81,3 +81,76 @@
     (is (= 503 (pseudopod:pseudopod-fetch-error-status-code condition)))
     (is (string= "text/plain" (pseudopod:pseudopod-fetch-http-error-content-type condition)))
     (is (string= "temporarily unavailable" (pseudopod:pseudopod-fetch-http-error-body condition)))))
+
+(test fetch-engine-redirect-host-change-detected
+  (let ((result
+          (pseudopod:fetch-url
+           "https://docs.example/protected"
+           :cache-ttl-seconds 0
+           :http-get-fn
+           (lambda (url &key timeout-seconds max-body-bytes user-agent follow-redirects)
+             (declare (ignore url timeout-seconds max-body-bytes user-agent follow-redirects))
+             ;; Simulate a followed redirect chain finishing on a different host.
+             (list :status 200
+                   :effective-url "https://auth.example.net/session/login"
+                   :content-type "text/html; charset=utf-8"
+                   :body "<html><body>sign in</body></html>")))))
+    (is-true (pseudopod:fetch-result-p result))
+    (is (pseudopod:fetch-result-redirected-p result))
+    (is (pseudopod:fetch-result-host-changed-p result))
+    (is (null (pseudopod:fetch-result-cached-p result)))
+    (is (string= "https://auth.example.net/session/login"
+                 (pseudopod:fetch-result-effective-url result)))))
+
+(test fetch-engine-cache-hit-and-expiry
+  (clrhash pseudopod::*fetch-cache*)
+  (let* ((call-count 0)
+         (url "https://docs.example/cacheable")
+         (max-body-bytes 4096)
+         (user-agent "pseudopod-cache-test/1.0")
+         (runner (lambda (request-url &key timeout-seconds max-body-bytes user-agent follow-redirects)
+                   (declare (ignore timeout-seconds max-body-bytes user-agent follow-redirects))
+                   (incf call-count)
+                   (list :status 200
+                         :effective-url request-url
+                         :content-type "text/plain"
+                         :body (format nil "payload-~D" call-count)))))
+    (unwind-protect
+        (progn
+          (let ((first
+                  (pseudopod:fetch-url
+                   url
+                   :cache-ttl-seconds 30
+                   :max-body-bytes max-body-bytes
+                   :user-agent user-agent
+                   :http-get-fn runner)))
+            (is (null (pseudopod:fetch-result-cached-p first)))
+            (is (= 1 call-count)))
+          (let ((second
+                  (pseudopod:fetch-url
+                   url
+                   :cache-ttl-seconds 30
+                   :max-body-bytes max-body-bytes
+                   :user-agent user-agent
+                   :http-get-fn runner)))
+            (is (pseudopod:fetch-result-cached-p second))
+            (is (= 1 call-count)))
+          (let* ((cache-key (pseudopod::%fetch-cache-key url
+                                                         max-body-bytes
+                                                         t
+                                                         user-agent))
+                 (entry (gethash cache-key pseudopod::*fetch-cache*)))
+            (is-true entry)
+            ;; Force expiry deterministically without sleeping.
+            (setf (first entry) (1- (get-universal-time))
+                  (gethash cache-key pseudopod::*fetch-cache*) entry))
+          (let ((third
+                  (pseudopod:fetch-url
+                   url
+                   :cache-ttl-seconds 30
+                   :max-body-bytes max-body-bytes
+                   :user-agent user-agent
+                   :http-get-fn runner)))
+            (is (null (pseudopod:fetch-result-cached-p third)))
+            (is (= 2 call-count))))
+      (clrhash pseudopod::*fetch-cache*))))

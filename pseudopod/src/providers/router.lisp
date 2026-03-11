@@ -225,16 +225,52 @@ COST-TIERS is a list of provider names in cost order (cheapest first)."
   "Return list of healthy providers."
   (remove-if-not #'provider-healthy-p (model-router-providers router)))
 
-(defun router-set-task-route (router task-type provider-name)
-  "Set routing for TASK-TYPE to PROVIDER-NAME."
-  (setf (gethash task-type (model-router-task-routing router)) provider-name)
+(defun router-set-task-route (router task-type provider-name &key model)
+  "Set routing for TASK-TYPE to PROVIDER-NAME.
+
+When MODEL is provided, route stores a model+provider pair plist."
+  (setf (gethash task-type (model-router-task-routing router))
+        (if model
+            (list :provider provider-name
+                  :model model)
+            provider-name))
   router)
+
+(defun %task-route-provider-name (route)
+  (typecase route
+    (null nil)
+    (string route)
+    (symbol (string-downcase (symbol-name route)))
+    (cons
+     (let ((provider (or (getf route :provider)
+                         (getf route :provider-name))))
+       (typecase provider
+         (string provider)
+         (symbol (string-downcase (symbol-name provider)))
+         (t nil))))
+    (t nil)))
+
+(defun %task-route-model (route)
+  (when (listp route)
+    (let ((model (or (getf route :model)
+                     (getf route :model-name))))
+      (and model
+           (princ-to-string model)))))
+
+(defun %task-route-target (router task-type)
+  (let* ((route (gethash task-type (model-router-task-routing router)))
+         (provider-name (%task-route-provider-name route))
+         (provider (and provider-name
+                        (router-find-provider router provider-name))))
+    (values provider
+            (%task-route-model route))))
 
 ;;; --- Provider Selection ---
 
 (defun %router-select-by-task (router task-type)
   "Select provider based on task type."
-  (let* ((provider-name (gethash task-type (model-router-task-routing router)))
+  (let* ((route (gethash task-type (model-router-task-routing router)))
+         (provider-name (%task-route-provider-name route))
          (provider (when provider-name
                      (router-find-provider router provider-name))))
     (if (and provider (provider-healthy-p provider))
@@ -293,6 +329,15 @@ COST-TIERS is a list of provider names in cost order (cheapest first)."
     ;; Try healthy first, then unhealthy as last resort
     (append healthy unhealthy)))
 
+(defun %router-select-task-chain (router preferred-provider)
+  "Return fallback chain for task routing, prioritizing preferred provider when healthy."
+  (let ((fallback (%router-select-fallback-chain router)))
+    (if (and preferred-provider
+             (provider-healthy-p preferred-provider))
+        (cons preferred-provider
+              (remove preferred-provider fallback :test #'eq))
+        fallback)))
+
 (defun router-select-provider (router &key task-type
                                             messages
                                             (minimum-context-window 0)
@@ -313,29 +358,46 @@ COST-TIERS is a list of provider names in cost order (cheapest first)."
                                                     top-p tools tool-choice
                                                     system-prompt task-type extra-params)
   "Send chat completion via router with fallback."
-  (let ((chain (case (model-router-strategy router)
-                 (:fallback-chain (%router-select-fallback-chain router))
-                 (otherwise (let ((p (router-select-provider router :task-type task-type)))
-                              (when p (list p)))))))
-    (unless chain
-      (error 'pseudopod-error :message "No providers available in router"))
-    (let ((last-error nil))
-      (dolist (provider chain)
-        (handler-case
-            (return-from router-chat-completion
-              (send-chat-completion provider messages
-                                    :model model :temperature temperature
-                                    :max-tokens max-tokens :top-p top-p
-                                    :tools tools :tool-choice tool-choice
-                                    :system-prompt system-prompt
-                                    :extra-params extra-params))
-          (error (c)
-            (setf last-error c)
-            (setf (provider-healthy-p provider) nil
-                  (provider-last-error provider) c))))
-      (error (or last-error
-                 (make-condition 'pseudopod-error
-                                 :message "All providers failed"))))))
+  (multiple-value-bind (task-provider task-model)
+      (%task-route-target router task-type)
+    (let ((chain (case (model-router-strategy router)
+                   (:fallback-chain (%router-select-fallback-chain router))
+                   (:task-based (%router-select-task-chain router task-provider))
+                   (otherwise (let ((p (router-select-provider router
+                                                               :task-type task-type
+                                                               :messages messages)))
+                                (when p (list p)))))))
+      (unless chain
+        (error 'pseudopod-error :message "No providers available in router"))
+      (let ((last-error nil))
+        (dolist (provider chain)
+          (let ((provider-model
+                  (or model
+                      (and task-model
+                           task-provider
+                           (eq provider task-provider)
+                           task-model))))
+            (handler-case
+                (let ((result
+                        (send-chat-completion provider messages
+                                              :model provider-model
+                                              :temperature temperature
+                                              :max-tokens max-tokens
+                                              :top-p top-p
+                                              :tools tools
+                                              :tool-choice tool-choice
+                                              :system-prompt system-prompt
+                                              :extra-params extra-params)))
+                  (setf (provider-healthy-p provider) t
+                        (provider-last-error provider) nil)
+                  (return-from router-chat-completion result))
+              (error (c)
+                (setf last-error c)
+                (setf (provider-healthy-p provider) nil
+                      (provider-last-error provider) c)))))
+        (error (or last-error
+                   (make-condition 'pseudopod-error
+                                   :message "All providers failed")))))))
 
 (defun router-streaming-completion (router messages callback &key model temperature
                                                                   max-tokens top-p
@@ -343,29 +405,46 @@ COST-TIERS is a list of provider names in cost order (cheapest first)."
                                                                   system-prompt task-type
                                                                   extra-params)
   "Send streaming completion via router with fallback."
-  (let ((chain (case (model-router-strategy router)
-                 (:fallback-chain (%router-select-fallback-chain router))
-                 (otherwise (let ((p (router-select-provider router :task-type task-type)))
-                              (when p (list p)))))))
-    (unless chain
-      (error 'pseudopod-error :message "No providers available in router"))
-    (let ((last-error nil))
-      (dolist (provider chain)
-        (handler-case
-            (return-from router-streaming-completion
-              (send-streaming-completion provider messages callback
-                                         :model model :temperature temperature
-                                         :max-tokens max-tokens :top-p top-p
-                                         :tools tools :tool-choice tool-choice
-                                         :system-prompt system-prompt
-                                         :extra-params extra-params))
-          (error (c)
-            (setf last-error c)
-            (setf (provider-healthy-p provider) nil
-                  (provider-last-error provider) c))))
-      (error (or last-error
-                 (make-condition 'pseudopod-error
-                                 :message "All providers failed"))))))
+  (multiple-value-bind (task-provider task-model)
+      (%task-route-target router task-type)
+    (let ((chain (case (model-router-strategy router)
+                   (:fallback-chain (%router-select-fallback-chain router))
+                   (:task-based (%router-select-task-chain router task-provider))
+                   (otherwise (let ((p (router-select-provider router
+                                                               :task-type task-type
+                                                               :messages messages)))
+                                (when p (list p)))))))
+      (unless chain
+        (error 'pseudopod-error :message "No providers available in router"))
+      (let ((last-error nil))
+        (dolist (provider chain)
+          (let ((provider-model
+                  (or model
+                      (and task-model
+                           task-provider
+                           (eq provider task-provider)
+                           task-model))))
+            (handler-case
+                (let ((result
+                        (send-streaming-completion provider messages callback
+                                                   :model provider-model
+                                                   :temperature temperature
+                                                   :max-tokens max-tokens
+                                                   :top-p top-p
+                                                   :tools tools
+                                                   :tool-choice tool-choice
+                                                   :system-prompt system-prompt
+                                                   :extra-params extra-params)))
+                  (setf (provider-healthy-p provider) t
+                        (provider-last-error provider) nil)
+                  (return-from router-streaming-completion result))
+              (error (c)
+                (setf last-error c)
+                (setf (provider-healthy-p provider) nil
+                      (provider-last-error provider) c)))))
+        (error (or last-error
+                   (make-condition 'pseudopod-error
+                                   :message "All providers failed")))))))
 
 ;;; --- Health Management ---
 
