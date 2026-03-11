@@ -177,7 +177,7 @@
                        ((= final 126)
                         ;; ESC [ code ; modifier ~ — modified fn/nav key
                         (let ((fkey (or (%map-csi-fn-key code)
-                                        (case code (1 :home) (4 :end) (5 :pgup) (6 :pgdown) (t nil)))))
+                                        (case code (1 :home) (4 :end) (5 :pgup) (6 :pgdn) (t nil)))))
                           (if fkey
                               (progn (%emit-key-event parser fkey :ctrlp ctrlp :altp altp :shiftp shiftp)
                                      (1+ final-idx))
@@ -190,7 +190,7 @@
            (3 (%emit-key-event parser :delete) (1+ idx))
            (4 (%emit-key-event parser :end) (1+ idx))
            (5 (%emit-key-event parser :pgup) (1+ idx))
-           (6 (%emit-key-event parser :pgdown) (1+ idx))
+           (6 (%emit-key-event parser :pgdn) (1+ idx))
            (otherwise
              (let ((fkey (%map-csi-fn-key code)))
                (if fkey
@@ -279,6 +279,15 @@
          1)
         ((= b0 23)
          (%emit-key-event parser :ctrl-w :ctrlp t)
+         1)
+        ((= b0 14)  ; Ctrl-N
+         (%emit-key-event parser :ctrl-n :ctrlp t)
+         1)
+        ((= b0 16)  ; Ctrl-P
+         (%emit-key-event parser :ctrl-p :ctrlp t)
+         1)
+        ((= b0 18)  ; Ctrl-R
+         (%emit-key-event parser :ctrl-r :ctrlp t)
          1)
         (t
          (multiple-value-bind (codepoint consumed status)

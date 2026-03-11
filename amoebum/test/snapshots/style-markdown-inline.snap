@@ -1,8 +1,8 @@
 --- ptui-snapshot v1 84x20
-| YOU> How do I format text?                                                         |
+| How do I format text?                                                              |
 |                                                                                    |
-| ASSISTANT> Use bold for emphasis, italic for nuance, and inline-code for           |
-|            identifiers.                                                            |
+| Use bold for emphasis, italic for nuance, and inline-code for identifiers.         |
+|                                                                                    |
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
@@ -42,33 +42,28 @@
 0,19:bold
 0,20:bold
 0,21:bold
-0,22:bold
-0,23:bold
-0,24:bold
-0,25:bold
-0,26:bold
-2,16:bold
-2,17:bold
-2,18:bold
-2,19:bold
-2,35:italic
-2,36:italic
-2,37:italic
-2,38:italic
-2,39:italic
-2,40:italic
-2,58:invert
-2,59:invert
-2,60:invert
-2,61:invert
-2,62:invert
-2,63:invert
-2,64:invert
-2,65:invert
-2,66:invert
-2,67:invert
-2,68:invert
-17,2:bold
+2,5:bold
+2,6:bold
+2,7:bold
+2,8:bold
+2,24:italic
+2,25:italic
+2,26:italic
+2,27:italic
+2,28:italic
+2,29:italic
+2,47:invert
+2,48:invert
+2,49:invert
+2,50:invert
+2,51:invert
+2,52:invert
+2,53:invert
+2,54:invert
+2,55:invert
+2,56:invert
+2,57:invert
+17,2:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

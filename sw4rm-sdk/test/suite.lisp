@@ -881,6 +881,103 @@
     (let ((results (funcall (%ab-sym "LIST-BUFFER-ACTIVITIES") buf :task-id "t1")))
       (is (= 1 (length results))))))
 
+(test activity-buffer-reconstruct-timeline-ordering-and-attribution
+  "Timeline reconstruction should preserve deterministic merged order and parent attribution."
+  (let ((buf (%make-ab)))
+    (funcall (%ab-sym "UPSERT-ACTIVITY") buf
+             :agent-id "parent"
+             :activity-id "evt-1"
+             :correlation-id "corr-a"
+             :task-id "p-1" :repo-id "repo" :worktree-id "wt-parent-1"
+             :activity-type :inference
+             :description "Parent planning")
+    (funcall (%ab-sym "UPSERT-ACTIVITY") buf
+             :agent-id "child-a"
+             :activity-id "evt-2"
+             :parent-activity-id "evt-1"
+             :parent-agent-id "parent"
+             :correlation-id "corr-a"
+             :task-id "c-1" :repo-id "repo" :worktree-id "wt-child-1"
+             :activity-type :tool-call
+             :description "Child tool call")
+    (funcall (%ab-sym "UPSERT-ACTIVITY") buf
+             :agent-id "parent"
+             :activity-id "evt-3"
+             :correlation-id "corr-a"
+             :task-id "p-2" :repo-id "repo" :worktree-id "wt-parent-2"
+             :activity-type :waiting
+             :description "Parent waiting")
+    (funcall (%ab-sym "UPSERT-ACTIVITY") buf
+             :agent-id "child-b"
+             :activity-id "evt-4"
+             :parent-activity-id "evt-2"
+             :parent-agent-id "child-a"
+             :correlation-id "corr-a"
+             :task-id "g-1" :repo-id "repo" :worktree-id "wt-grandchild-1"
+             :activity-type :inference
+             :description "Nested delegate")
+    (let ((timeline (funcall (%ab-sym "RECONSTRUCT-ACTIVITY-TIMELINE")
+                             buf
+                             :correlation-id "corr-a")))
+      (is (equal '("evt-1" "evt-2" "evt-3" "evt-4")
+                 (mapcar (lambda (row) (getf row :activity-id)) timeline)))
+      (is (equal '(0 1 0 2)
+                 (mapcar (lambda (row) (getf row :depth)) timeline)))
+      (is (equal '("parent" "child-a" "parent" "child-b")
+                 (mapcar (lambda (row) (getf row :agent-id)) timeline)))
+      (is (equal "child-a"
+                 (getf (car (last timeline)) :parent-agent-id))))))
+
+(test activity-buffer-reconstruct-timeline-deterministic-for-nested-delegation
+  "Nested parent/child reconstruction should be deterministic across repeated calls."
+  (let ((buf (%make-ab)))
+    ;; Deliberately out-of-order timestamps: ordering must still follow sequence IDs.
+    (funcall (%ab-sym "UPSERT-ACTIVITY") buf
+             :agent-id "root"
+             :activity-id "root-evt"
+             :correlation-id "corr-b"
+             :task-id "root-1" :repo-id "repo" :worktree-id "wt-root"
+             :timestamp 300
+             :description "Root starts")
+    (funcall (%ab-sym "UPSERT-ACTIVITY") buf
+             :agent-id "child"
+             :activity-id "child-evt"
+             :parent-activity-id "root-evt"
+             :parent-agent-id "root"
+             :correlation-id "corr-b"
+             :task-id "child-1" :repo-id "repo" :worktree-id "wt-child"
+             :timestamp 100
+             :description "Child starts")
+    (funcall (%ab-sym "UPSERT-ACTIVITY") buf
+             :agent-id "grandchild"
+             :activity-id "grandchild-evt"
+             :parent-activity-id "child-evt"
+             :parent-agent-id "child"
+             :correlation-id "corr-b"
+             :task-id "grandchild-1" :repo-id "repo" :worktree-id "wt-grandchild"
+             :timestamp 50
+             :description "Grandchild starts")
+    ;; Unrelated event should be excluded by correlation/root filters.
+    (funcall (%ab-sym "UPSERT-ACTIVITY") buf
+             :agent-id "other"
+             :activity-id "other-evt"
+             :correlation-id "corr-other"
+             :task-id "other-1" :repo-id "repo" :worktree-id "wt-other"
+             :description "Other stream")
+    (let* ((timeline-a (funcall (%ab-sym "RECONSTRUCT-ACTIVITY-TIMELINE")
+                                buf
+                                :correlation-id "corr-b"
+                                :root-agent-id "root"))
+           (timeline-b (funcall (%ab-sym "RECONSTRUCT-ACTIVITY-TIMELINE")
+                                buf
+                                :correlation-id "corr-b"
+                                :root-agent-id "root")))
+      (is (equal timeline-a timeline-b))
+      (is (equal '("root-evt" "child-evt" "grandchild-evt")
+                 (mapcar (lambda (row) (getf row :activity-id)) timeline-a)))
+      (is (equal '(0 1 2)
+                 (mapcar (lambda (row) (getf row :depth)) timeline-a))))))
+
 
 ;;; =======================================================================
 ;;;  5. Client Behavior

@@ -10,7 +10,7 @@
          (resolved (or (ignore-errors (truename candidate)) candidate))
          (directory (uiop:ensure-directory-pathname resolved)))
     (unless (probe-file directory)
-      (error "Search root does not exist: ~A" (%path-text directory)))
+      (error "Search root does not exist: ~A" (coerce-path-string directory)))
     directory))
 
 (defun %ensure-non-negative-integer (name value)
@@ -22,7 +22,7 @@
   (not (null (search "**" pattern :test #'char=))))
 
 (defun %normalized-path-text (path)
-  (%normalize-slashes (%path-text path)))
+  (%normalize-slashes (coerce-path-string path)))
 
 (defun %relative-path-text (path root)
   (let ((relative (%normalize-slashes (enough-namestring path root))))
@@ -76,7 +76,6 @@
           (unless (gethash key seen)
             (setf (gethash key seen) t)
             (when (cl-ppcre:scan scanner key)
-              (%ensure-tool-path-allowed tool resolved)
               (push resolved matches))))))
     (let ((sorted (sort matches #'> :key #'%path-mtime)))
       (if limit
@@ -91,7 +90,7 @@
 (defun %search-documents-for-files (files)
   (mapcar (lambda (file)
             (ptui.search.engine:make-search-document
-             :path (%path-text file)
+             :path (coerce-path-string file)
              :content (%read-file-content-safe file)))
           files))
 
@@ -137,10 +136,56 @@
           :context-before (ptui.search.engine:search-content-match-context-before match)
           :context-after (ptui.search.engine:search-content-match-context-after match))))
 
-(defun %grep-matches-via-search-widget (files pattern before after limit case-insensitive root)
+(defun %normalize-grep-output-mode (mode)
+  (cond
+    ((or (null mode) (eq mode :content))
+     :content)
+    ((member mode '(:files_with_matches :count) :test #'eq)
+     mode)
+    ((stringp mode)
+     (let ((normalized (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) mode))))
+       (cond
+         ((string= normalized "content") :content)
+         ((string= normalized "files_with_matches") :files_with_matches)
+         ((string= normalized "count") :count)
+         (t (error "Unsupported OUTPUT-MODE ~S. Expected content, files_with_matches, or count."
+                   mode)))))
+    (t
+     (error "Unsupported OUTPUT-MODE ~S. Expected content, files_with_matches, or count."
+            mode))))
+
+(defun %grep-files-with-matches (matches)
+  (let ((seen (make-hash-table :test #'equal))
+        (files '()))
+    (dolist (match matches)
+      (let ((path (getf match :path)))
+        (unless (gethash path seen)
+          (setf (gethash path seen) t)
+          (push path files))))
+    (nreverse files)))
+
+(defun %grep-output-payload (mode matches)
+  (let* ((files (%grep-files-with-matches matches))
+         (match-count (length matches))
+         (file-count (length files)))
+    (append
+     (list :output-mode mode
+           :match-count match-count
+           :file-count file-count)
+     (ecase mode
+       (:content
+        (list :count match-count
+              :matches matches))
+       (:files_with_matches
+        (list :count file-count
+              :matches files))
+       (:count
+        (list :count match-count))))))
+
+(defun %grep-matches-via-search-widget (files pattern before after limit case-insensitive multiline-mode root)
   (let ((mtime-table (make-hash-table :test #'equal)))
     (dolist (file files)
-      (setf (gethash (%path-text file) mtime-table)
+      (setf (gethash (coerce-path-string file) mtime-table)
             (%path-mtime file)))
     (let* ((state (ptui.components.search-widget:make-search-widget-state
                    :mode :content
@@ -148,7 +193,7 @@
                    :limit nil
                    :regex-mode t
                    :case-insensitive case-insensitive
-                   :multiline-mode nil
+                   :multiline-mode multiline-mode
                    :before-context before
                    :after-context after))
            (documents (%search-documents-for-files files)))
@@ -159,7 +204,7 @@
        :limit nil
        :regex-mode t
        :case-insensitive case-insensitive
-       :multiline-mode nil
+       :multiline-mode multiline-mode
        :before-context before
        :after-context after)
       (let* ((raw (copy-list (ptui.components.search-widget:search-widget-content-results state)))
@@ -184,12 +229,12 @@
   (%ensure-non-negative-integer "LIMIT" limit)
   (let* ((root-path (%resolve-search-root root))
          (matches (%matching-files-sorted :glob-files root-path pattern :limit limit)))
-    (list :root (%path-text root-path)
+    (list :root (coerce-path-string root-path)
           :pattern pattern
           :count (length matches)
           :matches
           (mapcar (lambda (path)
-                    (list :path (%path-text path)
+                    (list :path (coerce-path-string path)
                           :relative-path (%relative-path-text path root-path)
                           :modified-at (%path-mtime path)))
                   matches))))
@@ -200,7 +245,11 @@
                        (before integer :description "Context lines before each match" :default 0)
                        (after integer :description "Context lines after each match" :default 0)
                        (limit (or null integer) :description "Maximum matches to return" :default 200)
-                       (case-insensitive boolean :description "Enable case-insensitive regex matching" :default nil))
+                       (case-insensitive boolean :description "Enable case-insensitive regex matching" :default nil)
+                       (multiline boolean :description "Enable multiline regex matching where patterns may span lines" :default nil)
+                       (output-mode (member :content :files_with_matches :count)
+                                    :description "Result mode: :content matches, :files_with_matches paths-only, or :count"
+                                    :default :content))
   "Search file contents with regex and include line-numbered context for each match."
   (:permission :auto)
   (:dangerous nil)
@@ -209,7 +258,8 @@
   (%ensure-non-negative-integer "BEFORE" before)
   (%ensure-non-negative-integer "AFTER" after)
   (%ensure-non-negative-integer "LIMIT" limit)
-  (let* ((root-path (%resolve-search-root root))
+  (let* ((mode (%normalize-grep-output-mode output-mode))
+         (root-path (%resolve-search-root root))
          (files (%matching-files-sorted :grep-content root-path path-glob :limit nil))
          (matches (%grep-matches-via-search-widget files
                                                    pattern
@@ -217,9 +267,11 @@
                                                    after
                                                    limit
                                                    case-insensitive
+                                                   multiline
                                                    root-path)))
-    (list :root (%path-text root-path)
-          :pattern pattern
-          :path-glob path-glob
-          :count (length matches)
-          :matches matches)))
+    (append
+     (list :root (coerce-path-string root-path)
+           :pattern pattern
+           :path-glob path-glob
+           :multiline multiline)
+     (%grep-output-payload mode matches))))

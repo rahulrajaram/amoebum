@@ -56,7 +56,16 @@
   (and (typep event 'ptui.core.events:key-event)
        (or (eql (ptui.core.events:key-event-key event) :ctrl-c)
            (and (eql (ptui.core.events:key-event-key event) :text)
-                (string= (or (ptui.core.events:key-event-text? event) "") "q")))))
+                (string-equal (or (ptui.core.events:key-event-text? event) "") "q")))))
+
+(defun %dispatch-event (state event on-event)
+  (if on-event
+      (multiple-value-bind (next-state event-disposition)
+          (funcall on-event state event)
+        (values next-state
+                (member event-disposition '(:consume :consumed :handled) :test #'eq)
+                (eq event-disposition :quit)))
+      (values state nil nil)))
 
 (defun %resolve-event-bus-drain-fn ()
   (let ((pkg (find-package "EVENT-BUS")))
@@ -109,7 +118,9 @@
               (event-bus nil)
               (on-handler-error :log-and-continue))
   "Start the PTUI event loop. RENDER-FN is called with (state size) each frame.
-Returns when the user presses Ctrl-C/q or PTUI_EXIT_AFTER_MS elapses."
+Returns when the user presses Ctrl-C/q or PTUI_EXIT_AFTER_MS elapses.
+ON-EVENT may return a second value of :CONSUME to suppress default quit
+handling for that event, or :QUIT to request immediate shutdown."
   (check-type render-fn function)
   (setf ptui.util.log:*log-level* (ptui.util.log:resolve-log-level))
   (let* ((backend-obj (%make-backend backend))
@@ -148,10 +159,13 @@ Returns when the user presses Ctrl-C/q or PTUI_EXIT_AFTER_MS elapses."
            (setf backend-started-p t)
            (loop while running do
              (dolist (event (ptui.backend.protocol:backend-poll-events backend-obj))
-               (when (%quit-event-p event)
-                 (setf running nil))
-               (when on-event
-                 (setf state (funcall on-event state event))))
+               (multiple-value-bind (next-state event-consumed-p event-quit-p)
+                   (%dispatch-event state event on-event)
+                 (setf state next-state)
+                 (when (or event-quit-p
+                           (and (not event-consumed-p)
+                                (%quit-event-p event)))
+                   (setf running nil))))
              (%drain-event-bus event-bus on-handler-error)
              (ptui.runtime.scheduler:scheduler-run-due scheduler)
              (when needs-redraw

@@ -20,7 +20,7 @@
 | ╰────────────────────────────────────────────────────────────────────────────────╯ |
 |branch feat/chat-snapshot | mode full-auto | Tokens: 0/128000 (0%) | stream idle | m|
 --- attrs
-17,2:bold
+17,2:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

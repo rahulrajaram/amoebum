@@ -45,12 +45,7 @@
                      (sandbox-read-size-exceeded-size-bytes condition)
                      (sandbox-read-size-exceeded-limit-bytes condition)))))
 
-(defun %sandbox-path-text (path)
-  (typecase path
-    (pathname (namestring path))
-    (string path)
-    (symbol (symbol-name path))
-    (t (princ-to-string path))))
+;; Path coercion delegated to coerce-path-string in util.lisp
 
 (defun %command->string (command)
   (cond
@@ -97,10 +92,14 @@
                                     :dangerous-p dangerous-p
                                     :permission-mode permission-mode
                                     :rules rules)))
-    (unless (eq decision :allow)
+    ;; :allow  → permitted
+    ;; :prompt → interactive approval is the pipeline's responsibility;
+    ;;           the sandbox enforces hard boundaries only.
+    ;; :deny   → hard block
+    (when (eq decision :deny)
       (error 'sandbox-violation
              :operation (or tool :sandbox)
-             :reason (format nil "permission decision ~A" decision)
+             :reason "permission denied by policy"
              :details (or path command)))))
 
 (defun %assert-max-read-size (path max-read-size)
@@ -112,10 +111,10 @@
           (error 'sandbox-read-size-exceeded
                  :operation :safe-open
                  :reason "file exceeds sandbox max read size"
-                 :path (%sandbox-path-text existing)
+                 :path (coerce-path-string existing)
                  :size-bytes size-bytes
                  :limit-bytes max-read-size
-                 :details (list :path (%sandbox-path-text existing)
+                 :details (list :path (coerce-path-string existing)
                                 :size-bytes size-bytes
                                 :limit-bytes max-read-size)))))))
 
@@ -200,51 +199,75 @@
   (or (%sandbox-argument-value arguments "command")
       (%sandbox-argument-value arguments "cmd")))
 
-(defun %sandbox-tool-name-string (tool-name)
-  (string-downcase
-   (string-trim '(#\Space #\Tab #\Newline #\Return)
-                (if (symbolp tool-name)
-                    (symbol-name tool-name)
-                    (princ-to-string tool-name)))))
+;; Name normalization delegated to normalize-name in util.lisp
 
 (defparameter *sandbox-read-guard-tools*
   '("read-file"))
 
-(defun %sandbox-read-only-tool-blocked-p (tool-name command-text)
-  (let ((tool (%sandbox-tool-name-string tool-name)))
-    (or (member tool *sandbox-read-only-write-tools* :test #'string=)
-        (member tool *sandbox-shell-tools* :test #'string=)
-        (and (stringp command-text)
-             (> (length command-text) 0)))))
+;;; ── Declarative sandbox enforcement ────────────────────────────────────
+
+(defparameter *sandbox-enforcement-rules*
+  '((:read-only :write-tools  :deny       "sandbox mode read-only denies mutating or shell tool call")
+    (:read-only :shell-tools  :deny       "sandbox mode read-only denies mutating or shell tool call")
+    (:read-only :has-command   :deny       "sandbox mode read-only denies mutating or shell tool call")
+    (:any       :read-guard-tools :check-size "file exceeds sandbox max read size"))
+  "Declarative enforcement rules for sandbox-check-tool-call.
+Each entry is (MODE TOOL-CLASS ACTION REASON) where:
+  MODE       — :read-only (fires only in read-only sandbox) or :any (always fires)
+  TOOL-CLASS — classification returned by %sandbox-classify-tool
+  ACTION     — :deny signals sandbox-violation; :check-size runs %assert-max-read-size
+  REASON     — human-readable explanation attached to errors")
+
+(defun %sandbox-classify-tool (tool-name command-text path-text)
+  "Return the tool-class keyword for TOOL-NAME given its resolved arguments.
+Returns one of :write-tools, :shell-tools, :has-command, :read-guard-tools,
+or NIL when the tool does not match any classified category."
+  (let ((tool (normalize-name tool-name)))
+    (cond
+      ((member tool *sandbox-read-only-write-tools* :test #'string=)
+       :write-tools)
+      ((member tool *sandbox-shell-tools* :test #'string=)
+       :shell-tools)
+      ((and (stringp command-text) (> (length command-text) 0))
+       :has-command)
+      ((and path-text
+            (member tool *sandbox-read-guard-tools* :test #'string=))
+       :read-guard-tools)
+      (t nil))))
+
+(defun %sandbox-enforce-rule (action tool-name path-text command-text reason)
+  "Execute the ACTION for a matched enforcement rule.
+:deny signals a sandbox-violation; :check-size runs %assert-max-read-size."
+  (ecase action
+    (:deny
+     (error 'sandbox-violation
+            :operation (or tool-name :sandbox)
+            :reason reason
+            :details (or command-text path-text)))
+    (:check-size
+     (when path-text
+       (%assert-max-read-size path-text +sandbox-max-read-size+)))))
 
 (defun sandbox-check-tool-call (tool-name arguments &key permission-mode)
+  "Enforce structural sandbox limits (read-only mode, file size).
+Permission decisions are handled by the pipeline chokepoint; this function
+does NOT re-check permissions.  Walks *sandbox-enforcement-rules* to decide."
+  (declare (ignore permission-mode))
   (when (sandbox-policy-enabled-p)
     (let* ((path (%sandbox-path-argument arguments))
            (command (%sandbox-command-argument arguments))
-           (path-text (and path (%sandbox-path-text path)))
+           (path-text (and path (coerce-path-string path)))
            (command-text (%command->string command))
-           (dangerous-p (dangerous-command-p command-text)))
-      (when (and (sandbox-read-only-p)
-                 (%sandbox-read-only-tool-blocked-p tool-name command-text))
-        (error 'sandbox-violation
-               :operation (or tool-name :sandbox)
-               :reason "sandbox mode read-only denies mutating or shell tool call"
-               :details (or command-text path-text)))
-      (when path-text
-        (%assert-permission-allowed :tool tool-name
-                                    :path path-text
-                                    :permission-mode permission-mode
-                                    :rules *permission-rules*)
-        (when (member (%sandbox-tool-name-string tool-name)
-                      *sandbox-read-guard-tools*
-                      :test #'string=)
-          (%assert-max-read-size path-text +sandbox-max-read-size+)))
-      (when (plusp (length command-text))
-        (%assert-permission-allowed :tool tool-name
-                                    :command command-text
-                                    :dangerous-p dangerous-p
-                                    :permission-mode permission-mode
-                                    :rules *permission-rules*))))
+           (tool-class (%sandbox-classify-tool tool-name command-text path-text))
+           (read-only (sandbox-read-only-p)))
+      (when tool-class
+        (dolist (rule *sandbox-enforcement-rules*)
+          (destructuring-bind (mode rule-class action reason) rule
+            (when (and (eq rule-class tool-class)
+                       (or (eq mode :any)
+                           (and (eq mode :read-only) read-only)))
+              (%sandbox-enforce-rule action tool-name path-text command-text reason)
+              (return)))))))
   t)
 
 (defun safe-open (path &rest options
@@ -254,7 +277,8 @@
                    (rules *permission-rules*)
                    (max-read-size +sandbox-max-read-size+)
                  &allow-other-keys)
-  (let* ((path-text (%sandbox-path-text path))
+  (let* ((path-text (coerce-path-string path))
+         (canonical-path (or (%normalize-path path-text) path-text))
          (tool-name (or tool (%open-direction-tool direction)))
          (open-options (%remove-plist-keys
                         options
@@ -265,13 +289,17 @@
              :operation tool-name
              :reason "sandbox mode read-only denies write access"
              :details path-text))
+    (when (not (%input-direction-p direction))
+      (%assert-path-identity-stable-at-use-time
+       :tool tool-name
+       :path path-text))
     (%assert-permission-allowed :tool tool-name
-                                :path path-text
+                                :path canonical-path
                                 :permission-mode permission-mode
                                 :rules rules)
     (when (%input-direction-p direction)
-      (%assert-max-read-size path-text max-read-size))
-    (apply #'open path open-options)))
+      (%assert-max-read-size canonical-path max-read-size))
+    (apply #'open canonical-path open-options)))
 
 (defun safe-run-program (command &rest options
                         &key

@@ -1,0 +1,40 @@
+     Section 2
+
+     Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore
+     magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo
+     consequat.
+
+     - Item A in section 2
+     - Item B in section 2
+     - Item C in section 2
+
+     Section 3
+
+     Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore
+     magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo
+     consequat.
+
+     - Item A in section 3
+     - Item B in section 3
+     - Item C in section 3
+
+     Section 4
+
+     Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore
+     magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo
+     consequat.
+
+     - Item A in section 4
+     - Item B in section 4
+     - Item C in section 4
+
+     Section 5
+
+     Lorem ipsum dolor █
+
+
+Streaming... Press Ctrl-C to stop early.
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │                                                                                                                    │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+branch master | mode supervised | Tokens: 344/128000 (0%) | stream 27.42 tok/s | model moonshot-v1-128k

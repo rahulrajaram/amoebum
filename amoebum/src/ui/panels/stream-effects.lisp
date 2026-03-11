@@ -3,13 +3,7 @@
 (in-package :amoebum)
 
 (ptui.ui.panel:defpanel stream-effects-panel (chat-state)
-  (:effects
-    (drain-streams (%drain-stream-events chat-state)
-      :deps (chat-state))
-    (publish-summary (%publish-status-bar-stream-summary-if-needed chat-state)
-      :deps (chat-state))
-    (budget-warning (%emit-stream-budget-warning-if-needed chat-state)
-      :deps (chat-state)))
+  ;; Sync effects consolidated in chat-panel and %sync-all-state!
   (:layout
     (:column
       (hint :fixed 1 :when (token-stream-active-p

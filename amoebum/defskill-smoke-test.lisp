@@ -187,7 +187,7 @@
               (run-git repo-path "branch" "-m" "main")
 
               (funcall setconfig-fn :project-root tmp-root)
-              (funcall setconfig-fn :permission-mode :full-auto)
+              (funcall setconfig-fn :permission-mode :yolo)
               (funcall setconfig-fn :model "i68-smoke-model")
 
               (write-text-file (merge-pathnames #P"commit.txt" tmp-root) "commit skill file\n")
@@ -243,7 +243,26 @@
                              output)
                 (assert-true (contains-substring-p "tokens:" output)
                              "Expected /status output tokens line, got ~S."
-                             output)))
+                             output))
+
+              ;; NXT-024: Verify %skill-invoke-tool routes through execute-tool
+              ;; CLOS pipeline by confirming that :supervised mode blocks tool
+              ;; invocation (the :before method enforces permissions).
+              (funcall setconfig-fn :permission-mode :supervised)
+              (let* ((skill-invoke-fn
+                       (funcall fn-in "%SKILL-INVOKE-TOOL" amoebum-pkg))
+                     (permission-denied-sym
+                       (funcall symbol-in "TOOL-PERMISSION-DENIED" amoebum-pkg))
+                     (denied-p nil))
+                (handler-case
+                    (funcall skill-invoke-fn "git-status")
+                  (condition (c)
+                    (when (typep c permission-denied-sym)
+                      (setf denied-p t))))
+                (assert-true denied-p
+                             "Expected %skill-invoke-tool to raise TOOL-PERMISSION-DENIED ~
+                              in :supervised mode, proving execute-tool CLOS routing."))
+              (funcall setconfig-fn :permission-mode :yolo))
           (setf (symbol-value git-generator-sym) old-git-generator
                 (symbol-value review-generator-sym) old-review-generator)
           (funcall setconfig-fn :project-root old-root)

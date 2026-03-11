@@ -6,6 +6,11 @@
 (defparameter *tool-history-max-versions* 10)
 (defparameter *deftool-compile-time-tool-names* (make-hash-table :test #'equal))
 
+(defun find-tool-metadata (tool-name)
+  "Canonical tool-metadata lookup by normalized name."
+  (and (hash-table-p *tool-metadata*)
+       (gethash (normalize-name tool-name) *tool-metadata*)))
+
 (defparameter *cl-type-schema-type-table*
   (let ((table (make-hash-table :test #'eq)))
     (setf (gethash 'string table) "string")

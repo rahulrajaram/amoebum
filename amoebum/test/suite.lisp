@@ -142,7 +142,8 @@
                            prefix
                            (get-universal-time)
                            (random 1000000))))
-    (uiop:ensure-directory-pathname (uiop:temporary-directory)))))
+    (uiop:ensure-directory-pathname
+     (merge-pathnames #P".tmp-test-work/" (%amoebum-system-root))))))
 
 (defun %write-text-file (path content)
   (ensure-directories-exist path)
@@ -564,6 +565,266 @@
             amoebum:*permission-rules* original-rules)
       (amoebum:setconfig :permission-mode original-mode))))
 
+(test integration-chat-step-loop-publishes-tool-error-event-for-caught-tool-failures
+  (let ((original-event-bus amoebum:*event-bus*)
+        (original-mode (amoebum:config-permission-mode (amoebum:current-config))))
+    (unwind-protect
+        (progn
+          (setf amoebum:*event-bus* (amoebum:make-event-bus :capacity 64))
+          (amoebum:setconfig :permission-mode :full-auto)
+          (let ((tool-error-events 0)
+                (captured-payload nil)
+                (error-callback-bound-p nil))
+            (amoebum:subscribe amoebum:*event-bus*
+                               amoebum:+event-type-tool-error+
+                               (lambda (event)
+                                 (setf captured-payload (amoebum:event-payload event))
+                                 (incf tool-error-events)))
+            (let* ((client (pseudopod:make-client :api-key "stub"))
+                   (chat-state (amoebum:make-chat-ui-state
+                                :stream-runner nil
+                                :stream-client client))
+                   (user-message (amoebum:chat-ui-add-message
+                                  chat-state
+                                  "user"
+                                  "Please report the tool failure.")))
+              (let ((original-step-fn (symbol-function 'pseudopod:step)))
+                (unwind-protect
+                    (progn
+                      (setf (symbol-function 'pseudopod:step)
+                            (lambda (_client &rest args &key messages on-tool-error &allow-other-keys)
+                              (declare (ignore _client args))
+                              (setf error-callback-bound-p (functionp on-tool-error))
+                              (when on-tool-error
+                                (funcall on-tool-error
+                                         (pseudopod:make-tool-call
+                                          :id "i211-error-call"
+                                          :name "i211-chat-step-tool"
+                                          :arguments "{\"path\":\"README.md\"}")
+                                         (make-condition 'simple-error
+                                                         :format-control
+                                                         "i211 simulated failure")))
+                              (let ((assistant (pseudopod:make-message
+                                                :role "assistant"
+                                                :content "i211-failure-handled")))
+                                (pseudopod::%make-step-result
+                                 :steps 1
+                                 :history (append messages (list assistant))
+                                 :final-message assistant
+                                 :last-message assistant
+                                 :max-steps-reached nil
+                                 :tool-results
+                                 (list (list :id "i211-error-call"
+                                             :name "i211-chat-step-tool"
+                                             :output
+                                             "Tool \"i211-chat-step-tool\" failed: i211 simulated failure"))))))
+                      (amoebum::%start-streaming-assistant-response chat-state user-message))
+                  (setf (symbol-function 'pseudopod:step) original-step-fn))))
+            (is-true error-callback-bound-p)
+            (is (= tool-error-events 1))
+            (is (typep captured-payload 'amoebum:tool-error-payload))
+            (is (string= "i211-chat-step-tool"
+                         (or (amoebum::tool-error-payload-tool-name captured-payload) "")))
+            (is (search "i211 simulated failure"
+                        (or (amoebum::tool-error-payload-condition captured-payload) "")
+                        :test #'char-equal))))
+      (setf amoebum:*event-bus* original-event-bus)
+      (amoebum:setconfig :permission-mode original-mode))))
+
+(test stream-tool-call-result-uses-preview-key-to-complete-pending-entry
+  (let* ((chat-state (amoebum:make-chat-ui-state
+                      :stream-runner nil
+                      :stream-client (pseudopod:make-client :api-key "stub")))
+         (preview-key "preview:glob-files:0")
+         (table (amoebum:chat-ui-state-stream-tool-calls chat-state))
+         (entry (list :key preview-key
+                      :tool-name "glob-files"
+                      :tool-call-id "glob-files:0"
+                      :arguments "{\"pattern\":\"*\"}"
+                      :executed-p t
+                      :completed-p nil)))
+    (setf (gethash preview-key table) entry)
+    (amoebum::%set-tool-call-result!
+     chat-state
+     (list :kind :tool-call-result
+           :tool-call (pseudopod:make-tool-call
+                       :id "glob-files:0"
+                       :name "glob-files"
+                       :arguments "{}")
+           :preview-key preview-key
+           :result "{\"count\":3}"))
+    (let ((stored (gethash preview-key table)))
+      (is (getf stored :completed-p))
+      (is (string= "{\"count\":3}" (or (getf stored :result) ""))))
+    (is-false (amoebum::%stream-tool-call-completion-pending-p chat-state))))
+
+(test stream-tool-call-result-persists-completed-flag-to-preview-table
+  (let* ((chat-state (amoebum:make-chat-ui-state
+                      :stream-runner nil
+                      :stream-client (pseudopod:make-client :api-key "stub")))
+         (preview-key "preview:glob-files:0")
+         (table (amoebum:chat-ui-state-stream-tool-calls chat-state)))
+    (setf (gethash preview-key table)
+          (list :key preview-key
+                :tool-name "glob-files"
+                :tool-call-id "glob-files:0"
+                :arguments "{\"pattern\":\"*\"}"
+                :executed-p t))
+    (amoebum::%set-tool-call-result!
+     chat-state
+     (list :kind :tool-call-result
+           :tool-call (pseudopod:make-tool-call
+                       :id "glob-files:0"
+                       :name "glob-files"
+                       :arguments "{}")
+           :preview-key preview-key
+           :result "{\"count\":3}"))
+    (let ((stored (gethash preview-key table)))
+      (is-true (getf stored :completed-p))
+      (is (string= "{\"count\":3}" (or (getf stored :result) ""))))
+    (is-false (amoebum::%stream-tool-call-completion-pending-p chat-state))))
+
+(test stream-tool-call-transition-events-publish-once
+  (let* ((bus (amoebum:make-event-bus :capacity 32))
+         (stream-state (amoebum:make-token-stream-state))
+         (chat-state (amoebum:make-chat-ui-state
+                      :stream-runner nil
+                      :stream-client (pseudopod:make-client :api-key "stub")
+                      :stream-state stream-state
+                      :status-bar-state (amoebum:make-status-bar-state
+                                         :event-bus bus
+                                         :model-name "stub-model"
+                                         :branch-name "master")))
+         (tool-call (pseudopod:make-tool-call
+                     :id "glob-files:0"
+                     :name "glob-files"
+                     :arguments "{\"pattern\":\"*\"}"))
+         (started-events 0)
+         (argument-events 0)
+         (execute-calls 0)
+         (original-execute-fn (symbol-function 'amoebum::%execute-stream-tool-call!)))
+    (unwind-protect
+        (progn
+          (amoebum:subscribe bus
+                             amoebum:+event-type-tool-call-started+
+                             (lambda (_event)
+                               (declare (ignore _event))
+                               (incf started-events)))
+          (amoebum:subscribe bus
+                             amoebum:+event-type-tool-call-argument-complete+
+                             (lambda (_event)
+                               (declare (ignore _event))
+                               (incf argument-events)))
+          (setf (symbol-function 'amoebum::%execute-stream-tool-call!)
+                (lambda (_chat-state _event)
+                  (declare (ignore _chat-state _event))
+                  (incf execute-calls)
+                  nil))
+          (amoebum:token-stream-emit-tool-call-started stream-state tool-call)
+          (amoebum:token-stream-emit-tool-call-started stream-state tool-call)
+          (amoebum:token-stream-emit-tool-call-argument-complete stream-state tool-call)
+          (amoebum:token-stream-emit-tool-call-argument-complete stream-state tool-call)
+          (amoebum::%drain-stream-events chat-state)
+          (is (= started-events 1))
+          (is (= argument-events 1))
+          (is (= execute-calls 1)))
+      (setf (symbol-function 'amoebum::%execute-stream-tool-call!) original-execute-fn))))
+
+(test stream-complete-before-argument-complete-defers-finalization-until-result
+  (let* ((stream-state (amoebum:make-token-stream-state))
+         (chat-state (amoebum:make-chat-ui-state
+                      :stream-runner nil
+                      :stream-client (pseudopod:make-client :api-key "stub")
+                      :stream-state stream-state))
+         (tool-call (pseudopod:make-tool-call
+                     :id "late-order:0"
+                     :name "read-file"
+                     :arguments "{\"path\":\"README.md\"}"))
+         (finalize-calls 0)
+         (original-finalize-fn
+           (symbol-function 'amoebum::%maybe-finalize-streaming-assistant-on-complete))
+         (original-execute-fn
+           (symbol-function 'amoebum::%execute-stream-tool-call!)))
+    (unwind-protect
+        (progn
+          (setf (symbol-function 'amoebum::%maybe-finalize-streaming-assistant-on-complete)
+                (lambda (_chat-state)
+                  (setf (amoebum::chat-ui-state-stream-completion-pending-p _chat-state) nil)
+                  (incf finalize-calls)
+                  t))
+          (setf (symbol-function 'amoebum::%execute-stream-tool-call!)
+                (lambda (state event)
+                  (let* ((preview-entry
+                           (amoebum::%update-stream-tool-call-preview! state event))
+                         (preview-key
+                           (and (listp preview-entry) (getf preview-entry :key))))
+                    (amoebum::%set-stream-tool-call-execution-status!
+                     state preview-key :executed-p t)
+                    nil)))
+          (amoebum:token-stream-emit-tool-call-started stream-state tool-call)
+          (amoebum:token-stream-mark-complete stream-state)
+          (amoebum:token-stream-emit-tool-call-argument-complete stream-state tool-call)
+          (amoebum::%drain-stream-events chat-state)
+          (is (= finalize-calls 0))
+          (is-true (amoebum::chat-ui-state-stream-completion-pending-p chat-state))
+          (amoebum:token-stream-emit-tool-call-result
+           stream-state
+           :tool-call tool-call
+           :result "{\"ok\":true}")
+          (amoebum::%drain-stream-events chat-state)
+          (is (= finalize-calls 1))
+          (is-false (amoebum::chat-ui-state-stream-completion-pending-p chat-state)))
+      (setf (symbol-function 'amoebum::%maybe-finalize-streaming-assistant-on-complete)
+            original-finalize-fn
+            (symbol-function 'amoebum::%execute-stream-tool-call!)
+            original-execute-fn))))
+
+(test stream-tool-result-before-complete-finalizes-on-complete
+  (let* ((stream-state (amoebum:make-token-stream-state))
+         (chat-state (amoebum:make-chat-ui-state
+                      :stream-runner nil
+                      :stream-client (pseudopod:make-client :api-key "stub")
+                      :stream-state stream-state))
+         (tool-call (pseudopod:make-tool-call
+                     :id "result-first:0"
+                     :name "exec_command"
+                     :arguments "{\"cmd\":\"pwd\"}"))
+         (finalize-calls 0)
+         (original-finalize-fn
+           (symbol-function 'amoebum::%maybe-finalize-streaming-assistant-on-complete))
+         (original-execute-fn
+           (symbol-function 'amoebum::%execute-stream-tool-call!)))
+    (unwind-protect
+        (progn
+          (setf (symbol-function 'amoebum::%maybe-finalize-streaming-assistant-on-complete)
+                (lambda (_chat-state)
+                  (setf (amoebum::chat-ui-state-stream-completion-pending-p _chat-state) nil)
+                  (incf finalize-calls)
+                  t))
+          (setf (symbol-function 'amoebum::%execute-stream-tool-call!)
+                (lambda (state event)
+                  (let* ((preview-entry
+                           (amoebum::%update-stream-tool-call-preview! state event))
+                         (preview-key
+                           (and (listp preview-entry) (getf preview-entry :key))))
+                    (amoebum::%set-stream-tool-call-execution-status!
+                     state preview-key :executed-p t)
+                    nil)))
+          (amoebum:token-stream-emit-tool-call-started stream-state tool-call)
+          (amoebum:token-stream-emit-tool-call-argument-complete stream-state tool-call)
+          (amoebum:token-stream-emit-tool-call-result
+           stream-state
+           :tool-call tool-call
+           :result "{\"cwd\":\"/workspace\"}")
+          (amoebum:token-stream-mark-complete stream-state)
+          (amoebum::%drain-stream-events chat-state)
+          (is (= finalize-calls 1))
+          (is-false (amoebum::chat-ui-state-stream-completion-pending-p chat-state)))
+      (setf (symbol-function 'amoebum::%maybe-finalize-streaming-assistant-on-complete)
+            original-finalize-fn
+            (symbol-function 'amoebum::%execute-stream-tool-call!)
+            original-execute-fn))))
+
 (test integration-defwidget-render-dirty-rerender-cycle
   (setf *i82-widget-render-count* 0
         (gethash :label *i82-widget-state*) "before")
@@ -680,6 +941,7 @@
           (clrhash amoebum:*disabled-extensions*)
           (%write-text-file extension-file
                             "(in-package :amoebum)
+
 (deftool i82-extension-tool ((text string :required t :description \"text\"))
   \"I82 extension integration tool.\"
   (:permission :auto)
@@ -893,11 +1155,16 @@
 
 (test phase5-self-modify-journal
   "Modification journal should track proposals."
-  (let ((amoebum::*modification-journal* nil))
-    (amoebum:propose-modification "(defun test-fn-xyz () 42)")
-    (is (= 1 (length (amoebum:modification-journal))))
-    (let ((entry (first (amoebum:modification-journal))))
-      (is (eq :proposed (amoebum:modification-entry-status entry))))))
+  (let ((amoebum::*modification-journal* nil)
+        (old-auto-approve-prefixes amoebum::*self-modify-auto-approve-prefixes*))
+    (unwind-protect
+        (progn
+          (setf amoebum::*self-modify-auto-approve-prefixes* nil)
+          (amoebum:propose-modification "(defun test-fn-xyz () 42)")
+          (is (= 1 (length (amoebum:modification-journal))))
+          (let ((entry (first (amoebum:modification-journal))))
+            (is (eq :proposed (amoebum:modification-entry-status entry)))))
+      (setf amoebum::*self-modify-auto-approve-prefixes* old-auto-approve-prefixes))))
 
 (test phase5-image-directory
   "Image directory should be resolvable."
@@ -1040,8 +1307,217 @@
             200)
         "Phase 5 should contribute at least 200 checks.")))
 
+;;; ============================================================
+;;; I332: Streamed turn lifecycle contract and replay fixtures
+;;; ============================================================
+
+(def-suite streamed-turn-lifecycle-contract-suite
+  :description "I332 streamed-turn lifecycle replay verdicting."
+  :in amoebum-suite)
+
+(in-suite streamed-turn-lifecycle-contract-suite)
+
+(defparameter +i332-valid-stream-turn-terminal-outcomes+
+  '(:answer :tool-continuation :retry :explicit-error)
+  "Contract-allowed terminal outcomes for a streamed agentic turn.")
+
+(defparameter +i332-fixture-headless-tool-continuation+
+  '((:kind :text-delta
+     :text "Let me inspect the repository and run a command.")
+    (:kind :tool-call-started
+     :tool-name "exec_command"
+     :tool-call-id "call_healthy_1")
+    (:kind :tool-call-argument-complete
+     :tool-name "exec_command"
+     :tool-call-id "call_healthy_1"
+     :arguments "{\"cmd\":\"pwd\"}")
+    (:kind :tool-call-result
+     :tool-name "exec_command"
+     :tool-call-id "call_healthy_1"
+     :result "/workspace")
+    (:kind :stream-progress :status :completed))
+  "Healthy headless tool-using trace shape: narration + tool lifecycle + completed stream.")
+
+(defparameter +i332-fixture-interactive-silent-completion+
+  '((:kind :text-delta
+     :text "I will think through the next step before acting.")
+    (:kind :text-delta
+     :text "Collecting context from the current run.")
+    (:kind :stream-progress :status :completed))
+  "Reproduced bad trace shape: narration deltas and stream-complete with no tool or final answer.")
+
+(defparameter +i332-fixture-answer+
+  '((:kind :text-delta :text "Working through it.")
+    (:kind :assistant-final :text "Done. The issue is fixed.")
+    (:kind :stream-progress :status :completed))
+  "Finalized assistant answer with no follow-up continuation.")
+
+(defparameter +i332-fixture-retry+
+  '((:kind :tool-call-started :tool-name "read_file" :tool-call-id nil)
+    (:kind :retry-requested
+     :text "Please retry with a valid tool_call_id.")
+    (:kind :stream-progress :status :completed))
+  "Malformed tool call trace that requests an explicit retry.")
+
+(defparameter +i332-fixture-explicit-error+
+  '((:kind :text-delta :text "Attempting operation.")
+    (:kind :failed :error-message "Provider timeout while streaming.")
+    (:kind :stream-progress :status :failed))
+  "Explicitly failed stream trace.")
+
+(defun %i332-blank-string-p (value)
+  (or (null value)
+      (not (stringp value))
+      (zerop (length (string-trim '(#\Space #\Tab #\Newline #\Return) value)))))
+
+(defun %i332-text-contains-retry-marker-p (text)
+  (when (stringp text)
+    (let ((normalized (string-downcase text)))
+      (or (search "retry" normalized :test #'char=)
+          (search "re-issue" normalized :test #'char=)
+          (search "try again" normalized :test #'char=)))))
+
+(defun %i332-text-contains-error-marker-p (text)
+  (when (stringp text)
+    (let ((normalized (string-downcase text)))
+      (or (search "stream failed" normalized :test #'char=)
+          (search "provider timeout" normalized :test #'char=)
+          (search "[stream failed:" normalized :test #'char=)
+          (and (search "tool " normalized :test #'char=)
+               (search " failed" normalized :test #'char=))
+          (search "fatal" normalized :test #'char=)))))
+
+(defun %i332-replay-streamed-turn-trace (events)
+  "Deterministically replay normalized trace EVENTS and produce classifier signals."
+  (let ((saw-stream-complete nil)
+        (saw-stream-progress nil)
+        (saw-text-delta nil)
+        (saw-answer nil)
+        (saw-tool-signal nil)
+        (saw-retry nil)
+        (saw-explicit-error nil))
+    (dolist (event events)
+      (let* ((kind (and (listp event) (getf event :kind)))
+             (text (and (listp event) (getf event :text)))
+             (error-message (and (listp event) (getf event :error-message))))
+        (when (%i332-text-contains-retry-marker-p text)
+          (setf saw-retry t))
+        (when (or (%i332-text-contains-error-marker-p text)
+                  (%i332-text-contains-error-marker-p error-message))
+          (setf saw-explicit-error t))
+        (case kind
+          ((:text-delta :assistant-delta)
+           (unless (%i332-blank-string-p text)
+             (setf saw-text-delta t)))
+          ((:assistant-final :assistant-message)
+           (unless (or (%i332-blank-string-p text)
+                       (getf event :partialp))
+             (setf saw-answer t)))
+          ((:tool-call-delta
+            :tool-call-started
+            :tool-call-argument-complete
+            :tool-call-result
+            :tool-started
+            :tool-completed
+            :tool-error
+            :tool)
+           (setf saw-tool-signal t))
+          ((:retry :retry-requested)
+           (setf saw-retry t))
+          ((:failed :error :explicit-error :cancelled)
+           (setf saw-explicit-error t))
+          (:complete
+           (setf saw-stream-complete t))
+          (:stream-progress
+           (setf saw-stream-progress t)
+           (let ((status (getf event :status)))
+             (when (eq status :completed)
+               (setf saw-stream-complete t))
+             (when (member status '(:failed :cancelled) :test #'eq)
+               (setf saw-explicit-error t))))
+          (otherwise nil))))
+    (list :saw-stream-complete saw-stream-complete
+          :saw-stream-progress saw-stream-progress
+          :saw-text-delta saw-text-delta
+          :saw-answer saw-answer
+          :saw-tool-signal saw-tool-signal
+          :saw-retry saw-retry
+          :saw-explicit-error saw-explicit-error)))
+
+(defun %i332-classify-streamed-turn-outcome (events)
+  "Classify replayed streamed-turn EVENTS into lifecycle terminal outcomes."
+  (let* ((signals (%i332-replay-streamed-turn-trace events))
+         (saw-stream-complete (getf signals :saw-stream-complete))
+         (saw-stream-progress (getf signals :saw-stream-progress))
+         (saw-text-delta (getf signals :saw-text-delta))
+         (saw-answer (getf signals :saw-answer))
+         (saw-tool-signal (getf signals :saw-tool-signal))
+         (saw-retry (getf signals :saw-retry))
+         (saw-explicit-error (getf signals :saw-explicit-error)))
+    (cond
+      (saw-explicit-error :explicit-error)
+      (saw-retry :retry)
+      (saw-answer :answer)
+      (saw-tool-signal :tool-continuation)
+      ((and saw-stream-complete
+            (or saw-stream-progress saw-text-delta)
+            (not saw-answer)
+            (not saw-tool-signal))
+       :silent-completion)
+      (t :silent-completion))))
+
+(test i332-replay-helper-detects-silent-shape-signals
+  (let ((signals (%i332-replay-streamed-turn-trace
+                  +i332-fixture-interactive-silent-completion+)))
+    (is-true (getf signals :saw-stream-complete))
+    (is-true (getf signals :saw-stream-progress))
+    (is-true (getf signals :saw-text-delta))
+    (is (null (getf signals :saw-tool-signal)))
+    (is (null (getf signals :saw-answer)))))
+
+(test i332-headless-tool-trace-classifies-tool-continuation
+  (is (eq :tool-continuation
+          (%i332-classify-streamed-turn-outcome
+           +i332-fixture-headless-tool-continuation+))))
+
+(test i332-interactive-silent-completion-trace-is-detected
+  (let ((outcome (%i332-classify-streamed-turn-outcome
+                  +i332-fixture-interactive-silent-completion+)))
+    (is (eq :silent-completion outcome))
+    (is (null (member outcome
+                      +i332-valid-stream-turn-terminal-outcomes+
+                      :test #'eq)))))
+
+(test i332-answer-outcome-classification
+  (is (eq :answer
+          (%i332-classify-streamed-turn-outcome
+           +i332-fixture-answer+))))
+
+(test i332-retry-outcome-classification
+  (is (eq :retry
+          (%i332-classify-streamed-turn-outcome
+           +i332-fixture-retry+))))
+
+(test i332-explicit-error-outcome-classification
+  (is (eq :explicit-error
+          (%i332-classify-streamed-turn-outcome
+           +i332-fixture-explicit-error+))))
+
+(test i332-contract-valid-terminal-outcomes-covered
+  (let ((observed (list (%i332-classify-streamed-turn-outcome +i332-fixture-answer+)
+                        (%i332-classify-streamed-turn-outcome +i332-fixture-headless-tool-continuation+)
+                        (%i332-classify-streamed-turn-outcome +i332-fixture-retry+)
+                        (%i332-classify-streamed-turn-outcome +i332-fixture-explicit-error+))))
+    (dolist (outcome +i332-valid-stream-turn-terminal-outcomes+)
+      (is-true (member outcome observed :test #'eq)
+               "Expected fixture coverage for contract terminal outcome ~S."
+               outcome))))
+
+(in-suite amoebum-suite)
+
 (defun run-all ()
   "Run all amoebum tests and return T when successful."
-  (let ((results (run 'amoebum-suite)))
+  (let ((amoebum:*desktop-notifications-suppressed* t)
+        (results (run 'amoebum-suite)))
     (explain! results)
     (results-status results)))

@@ -7,6 +7,13 @@
 (defparameter *pipeline-current-request-id* nil)
 (defvar *tool-error-llm-recovery-function* nil
   "When non-nil, a function called with (condition tool-name arguments) to attempt LLM-driven recovery from tool errors.")
+(defparameter +missing-tool-argument-recovery-modes+
+  '(:prompt :structured-error :disabled))
+(defparameter *missing-tool-argument-recovery-mode* :prompt
+  "Controls execute-tool recovery for TOOL-MISSING-ARGUMENT.
+:prompt asks the user for missing required args in supervised interactive runs.
+:structured-error returns a stable JSON error payload instead of signaling.
+:disabled preserves raw tool-missing-argument signaling.")
 
 (defclass tool-execution-context (pseudopod:tool-execution-context)
   ((permission-mode :initarg :permission-mode
@@ -34,6 +41,73 @@
 
 (defclass amoebum-context (tool-execution-context) ()
   (:documentation "Default amoebum tool execution context."))
+
+(defun %effective-missing-tool-argument-recovery-mode ()
+  (let ((mode *missing-tool-argument-recovery-mode*))
+    (if (member mode +missing-tool-argument-recovery-modes+ :test #'eq)
+        mode
+        :prompt)))
+
+(defun %coerce-argument-name-string (name)
+  (let ((text (string-downcase
+               (if (symbolp name)
+                   (symbol-name name)
+                   (princ-to-string (or name ""))))))
+    (when (plusp (length text))
+      text)))
+
+(defun %query-io-readable-p (query-io)
+  (and (streamp query-io)
+       (open-stream-p query-io)))
+
+(defun %prompt-for-missing-tool-argument (condition arguments &key (query-io *query-io*))
+  (let* ((argument-name
+           (%coerce-argument-name-string
+            (tool-argument-error-argument-name condition)))
+         (tool-name (tool-error-tool-name condition)))
+    (when (and argument-name
+               (%query-io-readable-p query-io))
+      (format query-io "~&Tool ~A is missing required argument ~A.~%"
+              (or tool-name "unknown")
+              argument-name)
+      (format query-io "Enter value for ~A (blank to keep error): " argument-name)
+      (finish-output query-io)
+      (let ((line (handler-case
+                      (read-line query-io nil nil)
+                    (error () nil))))
+        (when (and (stringp line)
+                   (plusp (length (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                               line))))
+          (let ((updated (%copy-arguments-to-hash-table arguments)))
+            (setf (gethash argument-name updated) line)
+            updated))))))
+
+(defun %missing-tool-argument-result-payload (condition)
+  (let ((payload (%make-equal-hash-table)))
+    (setf (gethash "kind" payload) "tool_error"
+          (gethash "error_type" payload) "missing_tool_argument"
+          (gethash "tool" payload) (or (tool-error-tool-name condition) "")
+          (gethash "argument" payload)
+          (or (%coerce-argument-name-string
+               (tool-argument-error-argument-name condition))
+              "")
+          (gethash "reason_code" payload) "missing_required_argument"
+          (gethash "message" payload) (princ-to-string condition))
+    payload))
+
+(defun %missing-tool-argument-result-text (condition)
+  (%encode-json-arguments (%missing-tool-argument-result-payload condition)))
+
+(defun %missing-tool-argument-recovery (condition arguments context)
+  (declare (ignore context))
+  (case (%effective-missing-tool-argument-recovery-mode)
+    (:prompt
+     (let ((updated (%prompt-for-missing-tool-argument condition arguments)))
+       (when updated
+         (list :retry updated))))
+    (:structured-error
+     (list :use-value (%missing-tool-argument-result-text condition)))
+    (otherwise nil)))
 
 (defun context-toolset (context)
   (pseudopod:context-toolset context))
@@ -63,9 +137,9 @@
 (defun %make-restart-tool-call (tool-name arguments)
   (pseudopod:make-tool-call
    :id (format nil "restart-~A-~D"
-               (%pipeline-normalize-tool-name tool-name)
+               (normalize-name tool-name)
                (get-universal-time))
-   :name (%pipeline-normalize-tool-name tool-name)
+   :name (normalize-name tool-name)
    :arguments (%encode-json-arguments (%normalize-restart-arguments arguments))))
 
 (defun %handle-tool-error-via-llm (condition tool-name arguments)
@@ -83,7 +157,7 @@ skip-tool-call, abort-step, or ask-user."
     (run-hooks :on-error condition tool-name)))
 
 (defun %execute-tool-with-restarts (tool-name arguments toolset permission-mode)
-  (let* ((normalized-tool-name (%pipeline-normalize-tool-name tool-name))
+  (let* ((normalized-tool-name (normalize-name tool-name))
          (normalized-arguments (%normalize-restart-arguments arguments))
          (context (%make-restart-context toolset permission-mode))
          (tool-call (%make-restart-tool-call normalized-tool-name normalized-arguments)))
@@ -170,15 +244,10 @@ skip-tool-call, abort-step, or ask-user."
       (ensure-notification-manager :event-bus (or event-bus (current-event-bus))))
     context))
 
-(defun %pipeline-normalize-tool-name (tool-name)
-  (string-downcase
-   (string-trim '(#\Space #\Tab #\Newline #\Return)
-                (if (symbolp tool-name)
-                    (symbol-name tool-name)
-                    (princ-to-string tool-name)))))
+;; Name normalization delegated to normalize-name in util.lisp
 
 (defun %tool-call-name-string (call)
-  (%pipeline-normalize-tool-name (pseudopod:tool-call-name call)))
+  (normalize-name (pseudopod:tool-call-name call)))
 
 (defun %tool-call-request-id (call)
   (let ((id (pseudopod:tool-call-id call)))
@@ -254,13 +323,10 @@ skip-tool-call, abort-step, or ask-user."
   (or *pipeline-current-arguments*
       (%decode-tool-call-arguments call)))
 
-(defun %pipeline-tool-metadata-for (tool-name)
-  (and (boundp '*tool-metadata*)
-       (hash-table-p *tool-metadata*)
-       (gethash (%pipeline-normalize-tool-name tool-name) *tool-metadata*)))
+;; Tool metadata lookup delegated to find-tool-metadata in deftool.lisp
 
 (defun %metadata-timeout-seconds (tool-name)
-  (let ((metadata (%pipeline-tool-metadata-for tool-name)))
+  (let ((metadata (find-tool-metadata tool-name)))
     (and metadata
          (tool-metadata-timeout-seconds metadata))))
 
@@ -321,7 +387,7 @@ skip-tool-call, abort-step, or ask-user."
      (ignore-errors (typep value type-spec)))))
 
 (defun %validate-tool-arguments (tool-name arguments)
-  (let ((metadata (%pipeline-tool-metadata-for tool-name)))
+  (let ((metadata (find-tool-metadata tool-name)))
     (when metadata
       (dolist (parameter (tool-metadata-parameter-specs metadata))
         (let* ((name (getf parameter :name))
@@ -334,6 +400,7 @@ skip-tool-call, abort-step, or ask-user."
                    :tool-name tool-name
                    :arguments arguments
                    :argument-name name
+                   :reason-code :missing-required-argument
                    :message (format nil "Missing required argument ~S." name)
                    :reason "missing required argument"))
           (when (and present-p
@@ -402,14 +469,16 @@ skip-tool-call, abort-step, or ask-user."
               :permission-mode (%context-effective-permission-mode context)))))
 
 (defun %check-permission-or-signal (tool-name arguments context)
-  (let* ((effective-mode (%context-effective-permission-mode context))
-         (metadata (%pipeline-tool-metadata-for tool-name))
+  (let* ((path-arg (%coerce-path-string
+                    (%extract-path-argument arguments)))
+         (command-arg (%coerce-command-string
+                       (%extract-command-argument arguments)))
+         (effective-mode (%context-effective-permission-mode context))
+         (metadata (find-tool-metadata tool-name))
          (dangerous-p (and metadata (tool-metadata-dangerous-p metadata)))
          (decision (check-permission :tool tool-name
-                                     :path (%coerce-path-string
-                                            (%extract-path-argument arguments))
-                                     :command (%coerce-command-string
-                                               (%extract-command-argument arguments))
+                                     :path path-arg
+                                     :command command-arg
                                      :dangerous-p dangerous-p
                                      :permission-mode effective-mode))
          (trace (last-permission-decision-trace))
@@ -431,26 +500,47 @@ skip-tool-call, abort-step, or ask-user."
                                      :reason-code reason-code)
        (let* ((pa (wait-for-pending-approval
                    tool-name arguments
-                   :path (%coerce-path-string
-                          (%extract-path-argument arguments))
-                   :command (%coerce-command-string
-                             (%extract-command-argument arguments))
+                   :path path-arg
+                   :command command-arg
                    :reason decision-reason
                    :decision-id (%next-permission-decision-id)
                    :cancel-thunk (context-permission-cancel-thunk context)))
-              (user-decision (pending-approval-decision pa)))
-         ;; Handle "remember" — add a permanent rule
+              (user-decision (pending-approval-decision pa))
+              (decision-source (pending-approval-decision-source pa))
+              (decision-reason-text
+                (case decision-source
+                  (:timeout "approval request timed out")
+                  (:cancelled "approval was cancelled")
+                  (:ui-error "approval dialog failed")
+                  (:noninteractive "approval UI was inactive in non-interactive mode")
+                  (otherwise "denied by user"))))
+         ;; Track exact path approvals in session memory, and persist only
+         ;; explicit "always allow" decisions.
+         (when (and (eq user-decision :allow)
+                    (stringp path-arg)
+                    (plusp (length path-arg)))
+           (remember-path-approval
+            :tool tool-name
+            :path path-arg
+            :scope (if (pending-approval-remember-p pa) :always :session)
+            :persist-p (pending-approval-remember-p pa)))
+         ;; Retain deny memory and non-path "always allow" behavior in rules.
          (when (pending-approval-remember-p pa)
-           (add-permission-rule :effect user-decision
-                                :tool tool-name
-                                :source :user-approval))
+           (when (or (eq user-decision :deny)
+                     (or (null path-arg)
+                         (zerop (length path-arg))))
+             (add-permission-rule :effect user-decision
+                                  :tool tool-name
+                                  :source :user-approval)))
          (unless (eq user-decision :allow)
            (error 'tool-permission-denied
                   :tool-name tool-name
                   :arguments arguments
                   :reason-code reason-code
-                  :message (format nil "User denied tool ~S." tool-name)
-                  :reason "denied by user"))))
+                  :message (format nil "Tool ~S denied: ~A."
+                                   tool-name
+                                   decision-reason-text)
+                  :reason decision-reason-text))))
       (t
        ;; :deny or any other non-allow decision
        (when (eq decision :deny)
@@ -471,14 +561,11 @@ skip-tool-call, abort-step, or ask-user."
                                actionable-reason)
               :reason actionable-reason)))))
 
-(defun %pipeline-monotonic-milliseconds ()
-  (truncate (* 1000
-               (/ (coerce (get-internal-real-time) 'double-float)
-                  (coerce internal-time-units-per-second 'double-float)))))
+;; Monotonic time delegated to monotonic-ms in util.lisp
 
 (defun %elapsed-milliseconds ()
   (if *pipeline-start-time-ms*
-      (max 0 (- (%pipeline-monotonic-milliseconds) *pipeline-start-time-ms*))
+      (max 0 (- (monotonic-ms) *pipeline-start-time-ms*))
       0))
 
 (defun %ensure-tool-registered (context tool-name arguments)
@@ -505,7 +592,7 @@ skip-tool-call, abort-step, or ask-user."
 
 (defun %record-tool-metrics (context tool-name elapsed-ms status)
   (let* ((table (context-metrics context))
-         (key (%pipeline-normalize-tool-name tool-name))
+         (key (normalize-name tool-name))
          (entry (or (gethash key table)
                     (list :count 0 :error-count 0 :total-ms 0 :last-ms 0 :last-status :ok))))
     (incf (getf entry :count 0))
@@ -530,7 +617,7 @@ skip-tool-call, abort-step, or ask-user."
         (format stream "~A=~A;" (car pair) (cdr pair))))))
 
 (defun %cache-key (tool-name arguments)
-  (list (%pipeline-normalize-tool-name tool-name)
+  (list (normalize-name tool-name)
         (%arguments-cache-signature arguments)))
 
 (defun %cache-tool-result (context tool-name arguments result)
@@ -539,7 +626,7 @@ skip-tool-call, abort-step, or ask-user."
         result))
 
 (defun context-tool-metrics (context tool-name)
-  (copy-list (gethash (%pipeline-normalize-tool-name tool-name)
+  (copy-list (gethash (normalize-name tool-name)
                       (context-metrics context))))
 
 (defun cached-tool-result (context tool-name arguments)
@@ -588,6 +675,10 @@ Called from :around after *pipeline-current-result* is set, because CLOS
   (let* ((tool-name *pipeline-current-tool-name*)
          (arguments *pipeline-current-arguments*)
          (elapsed-ms (%elapsed-milliseconds)))
+    (usdt-probe-tool-exit tool-name
+                          *pipeline-current-request-id*
+                          elapsed-ms
+                          :status :ok)
     (ignore-errors
       (note-tool-profiling-sample tool-name elapsed-ms))
     (%record-tool-metrics context tool-name elapsed-ms :ok)
@@ -616,6 +707,10 @@ Called from :around after *pipeline-current-result* is set, because CLOS
                                           condition
                                           timeout-seconds))
                     (elapsed-ms (%elapsed-milliseconds)))
+               (usdt-probe-tool-exit *pipeline-current-tool-name*
+                                     *pipeline-current-request-id*
+                                     elapsed-ms
+                                     :status :error)
                (ignore-errors
                  (note-tool-profiling-sample *pipeline-current-tool-name* elapsed-ms))
                (%record-tool-metrics context *pipeline-current-tool-name* elapsed-ms :error)
@@ -629,24 +724,38 @@ Called from :around after *pipeline-current-result* is set, because CLOS
                          :request-id *pipeline-current-request-id*))
                (error tool-error))))
       (restart-case
-          (handler-case
-              (let* ((raw-result
-                       #+sbcl
-                       (if (and timeout-seconds (> timeout-seconds 0))
-                           (sb-ext:with-timeout timeout-seconds
+          (handler-bind
+              ((tool-missing-argument
+                 (lambda (condition)
+                   (let ((recovery
+                           (%missing-tool-argument-recovery
+                            condition
+                            *pipeline-current-arguments*
+                            context)))
+                     (when recovery
+                       (case (first recovery)
+                         (:retry
+                          (invoke-restart 'retry-tool (second recovery)))
+                         (:use-value
+                          (invoke-restart 'use-value (second recovery)))))))))
+            (handler-case
+                (let* ((raw-result
+                         #+sbcl
+                         (if (and timeout-seconds (> timeout-seconds 0))
+                             (sb-ext:with-timeout timeout-seconds
+                               (call-next-method))
                              (call-next-method))
-                           (call-next-method))
-                       #-sbcl
-                       (call-next-method))
-                     (guarded-result (apply-sandbox-output-guard raw-result)))
-                (setf *pipeline-current-result* guarded-result)
-                (%post-tool-success context)
-                guarded-result)
-            #+sbcl
-            (sb-ext:timeout (condition)
-              (%signal-tool-error condition))
-            (error (condition)
-              (%signal-tool-error condition)))
+                         #-sbcl
+                         (call-next-method))
+                       (guarded-result (apply-sandbox-output-guard raw-result)))
+                  (setf *pipeline-current-result* guarded-result)
+                  (%post-tool-success context)
+                  guarded-result)
+              #+sbcl
+              (sb-ext:timeout (condition)
+                (%signal-tool-error condition))
+              (error (condition)
+                (%signal-tool-error condition))))
         (retry-tool (&optional (new-arguments *pipeline-current-arguments*))
           :report "Retry tool execution."
           (pseudopod:execute-tool (%clone-tool-call-with-arguments call new-arguments)
@@ -684,7 +793,8 @@ Called from :around after *pipeline-current-result* is set, because CLOS
                :message (format nil "Tool ~S blocked by pre-tool-use hook."
                                 tool-name)
                :reason "blocked by pre-tool-use hook")))
-    (setf *pipeline-start-time-ms* (%pipeline-monotonic-milliseconds))
+    (setf *pipeline-start-time-ms* (monotonic-ms))
+    (usdt-probe-tool-enter tool-name *pipeline-current-request-id*)
     (publish (%effective-event-bus context)
              (make-tool-invoked-event
               :tool-name tool-name
@@ -698,4 +808,7 @@ Called from :around after *pipeline-current-result* is set, because CLOS
   ;; %post-tool-success called from :around, because CLOS :after runs
   ;; inside call-next-method before :around can set *pipeline-current-result*.
   (declare (ignore call context))
+  (when (and (plan-mode-active-p)
+             (plan-mode-exploration-tool-p *pipeline-current-tool-name*))
+    (record-plan-mode-exploration *pipeline-current-tool-name* :successful-p t))
   (values))

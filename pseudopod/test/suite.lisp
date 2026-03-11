@@ -707,6 +707,26 @@
         (declare (ignore tool-calls))
         (is (string= "ok" (or content "")))))))
 
+(test completed-stream-without-content-or-tool-calls-signals-parse-error
+  (with-stub-dex
+      (:post (lambda (url &rest args &key want-stream &allow-other-keys)
+               (declare (ignore url args))
+               (unless want-stream
+                 (error "Expected streaming request."))
+               (values
+                (make-string-input-stream
+                 (make-stream-sse-body
+                  (make-stream-sse-payload :role "assistant")))
+                200)))
+    (let ((client (pseudopod:make-client :api-key "stub"))
+          (messages (list (pseudopod:make-message
+                           :role "user"
+                           :content "empty terminal stream test"))))
+      (signals pseudopod:pseudopod-parse-error
+        (pseudopod:stream-chat-completion client "" :messages messages))
+      (signals pseudopod:pseudopod-parse-error
+        (pseudopod:stream-chat-completion* client "" :messages messages)))))
+
 (test invalid-json-tool-arguments-signals-parse-error
   (let ((toolset (pseudopod:make-toolset)))
     (pseudopod:register-tool-function

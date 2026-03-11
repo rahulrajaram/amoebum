@@ -36,8 +36,16 @@ amoebum/.amoebum/
 # Build output
 dist/
 
+# TUI appearance test ephemeral outputs
+tests/tui-appearance/current/
+tests/tui-appearance/diffs/
+
 # Scratch outputs
 *.out
 *.log
 nohup.out
 tmp/
+.tmp-*
+
+# Snapshot fixtures will be removed from history before this ignore takes effect.
+*.snap

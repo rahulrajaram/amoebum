@@ -8,8 +8,7 @@
                                               tree-active-p
                                               plan-active-p
                                               approval-active-p
-                                              picker-active-p
-                                              stream-active-p)
+                                              picker-active-p)
   "Compute the actual allocated history region height for chat-panel."
   (let* ((constraints
            (remove nil
@@ -22,11 +21,9 @@
                       (ptui.layout.constraints:fixed 'plan 12))
                     (ptui.layout.constraints:flex 'history :weight 1)
                     (when approval-active-p
-                      (ptui.layout.constraints:fixed 'approval 4))
+                      (ptui.layout.constraints:fixed 'approval 8))
                     (when picker-active-p
                       (ptui.layout.constraints:fixed 'picker 8))
-                    (when stream-active-p
-                      (ptui.layout.constraints:fixed 'stream-hint 1))
                     (ptui.layout.constraints:fixed 'input 3)
                     (ptui.layout.constraints:fixed 'status 1))))
          (solved (ptui.layout.solver:solve-constraints constraints
@@ -37,21 +34,31 @@
   (:data
     (inner-width (max 20 (- cols 2)) :deps (cols))
     (inner-height (max 8 (- rows 2)) :deps (rows))
+    ;; NOTE: use-memo compares deps with EQUAL, and EQUAL on structs is EQ
+    ;; (identity).  Since chat-state/approval-state/etc. are mutable structs
+    ;; whose references never change, using them as deps would cache values
+    ;; forever.  Instead, use the actual computed value as the dep so the memo
+    ;; invalidates when the underlying field changes.
     (approval-state (chat-ui-state-approval-dialog-state chat-state) :deps (chat-state))
-    (approval-active-p (approval-dialog-state-active-p approval-state) :deps (approval-state))
+    (approval-active-p (approval-dialog-state-active-p approval-state)
+      :deps ((approval-dialog-state-active-p approval-state)))
     (picker-state (%chat-sync-fuzzy-picker! chat-state) :deps (chat-state))
-    (picker-active-p (fuzzy-picker-state-active-p picker-state) :deps (picker-state))
+    (picker-active-p (fuzzy-picker-state-active-p picker-state)
+      :deps ((fuzzy-picker-state-active-p picker-state)))
     (tree-state (%ensure-chat-tree-browser-state chat-state) :deps (chat-state))
     (tree-active-p (and (typep tree-state 'tree-browser-state)
                         (tree-browser-state-active-p tree-state))
-      :deps (tree-state))
+      :deps ((and (typep tree-state 'tree-browser-state)
+                  (tree-browser-state-active-p tree-state))))
     (stream-active-p (token-stream-active-p (chat-ui-state-stream-state chat-state))
+      :deps ((token-stream-active-p (chat-ui-state-stream-state chat-state))))
+    (exit-warning-active-p (%chat-exit-warning-active-p chat-state)
       :deps (chat-state))
-    (plan-state (current-plan-mode-state) :deps (chat-state))
+    (plan-state (current-plan-mode-state) :deps ((current-plan-mode-state)))
     (plan-widget (%chat-plan-presentation-widget plan-state chat-state) :deps (plan-state chat-state))
     (plan-active-p (not (null plan-widget)) :deps (plan-widget))
     (provider-visible-p (chat-ui-state-provider-dashboard-visible-p chat-state)
-      :deps (chat-state))
+      :deps ((chat-ui-state-provider-dashboard-visible-p chat-state)))
     (history-viewport-height
       (%chat-panel-history-viewport-height
        inner-height
@@ -59,10 +66,9 @@
        :tree-active-p tree-active-p
        :plan-active-p plan-active-p
        :approval-active-p approval-active-p
-       :picker-active-p picker-active-p
-       :stream-active-p stream-active-p)
+       :picker-active-p picker-active-p)
       :deps (inner-height provider-visible-p tree-active-p plan-active-p
-             approval-active-p picker-active-p stream-active-p)))
+             approval-active-p picker-active-p)))
   (:effects
     (sync-approval (%sync-pending-approval-dialog! chat-state)
       :deps (chat-state))
@@ -132,19 +138,10 @@
              :viewport-width inner-width
              :viewport-height history-viewport-height
              :offset history-offset))))
-      (approval :fixed 4 :when approval-active-p
-        (make-approval-dialog-widget
-         (list :tool-name (approval-dialog-state-tool-name approval-state)
-               :command (approval-dialog-state-command approval-state)
-               :path (approval-dialog-state-path approval-state)
-               :reason (approval-dialog-state-reason approval-state)
-               :selected-option (approval-dialog-state-selected-option approval-state))))
+      (approval :fixed 8 :when approval-active-p
+        (%chat-approval-dialog-widget chat-state approval-state))
       (picker :fixed 8 :when picker-active-p
         (make-fuzzy-picker-widget picker-state))
-      (stream-hint :fixed 1 :when stream-active-p
-        (%chat-text-widget "Streaming... Press Ctrl-C to stop early."
-                           :chat-stream-stop-hint
-                           :meta))
       (input :fixed 3
         (ptui.components.prompt-box:make-prompt-box-widget
          (chat-ui-state-input-text chat-state)
@@ -157,15 +154,25 @@
          :cursor-position (chat-ui-state-cursor-position chat-state)
          :border-style :rounded))
       (status :fixed 1
-        (make-status-bar-widget
-         (chat-ui-state-status-bar-state chat-state)
-         :id :chat-status-bar
-         :width inner-width))))
+        (if exit-warning-active-p
+            (%chat-text-widget (%chat-exit-warning-text)
+                               :chat-status-warning
+                               :system)
+            (make-status-bar-widget
+             (chat-ui-state-status-bar-state chat-state)
+             :id :chat-status-bar
+             :width inner-width)))))
   (:keys
     (:mode :approval :when approval-active-p
-      (:left (approval-dialog-handle-key! approval-state :left))
-      (:right (approval-dialog-handle-key! approval-state :right))
-      (:enter (approval-dialog-handle-key! approval-state :enter)))
+      (:up (approval-dialog-handle-key! approval-state :up))
+      (:down (approval-dialog-handle-key! approval-state :down))
+      (:left (approval-dialog-handle-key! approval-state :up))
+      (:right (approval-dialog-handle-key! approval-state :down))
+      (:enter (approval-dialog-handle-key! approval-state :enter))
+      (:escape (approval-dialog-handle-key! approval-state :escape))
+      (:text (approval-dialog-handle-text!
+               approval-state
+               (ptui.core.events:key-event-text? ptui.ui.panel::event))))
     (:mode :picker :when picker-active-p
       (:up (chat-panel-handle-fuzzy-picker-key chat-state :up))
       (:down (chat-panel-handle-fuzzy-picker-key chat-state :down))

@@ -211,7 +211,7 @@
     (when entry
       (let ((expires-at (or (first entry) 0))
             (result (second entry)))
-        (if (and (plusp expires-at) (> now expires-at))
+        (if (and (plusp expires-at) (>= now expires-at))
             (progn
               (remhash cache-key *fetch-cache*)
               nil)

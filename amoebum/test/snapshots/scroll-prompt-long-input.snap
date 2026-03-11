@@ -20,7 +20,7 @@
 | ╰────────────────────────────────────────────────────────────────────────────────╯ |
 |branch test/scroll | mode full-auto | Tokens: 0/128000 (0%) | stream idle | model mo|
 --- attrs
-17,37:bold
+17,37:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

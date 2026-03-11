@@ -35,7 +35,6 @@
          (fn-in
            (lambda (name package)
              (symbol-function (funcall symbol-in name package))))
-         (temporary-directory-fn (funcall fn-in "TEMPORARY-DIRECTORY" uiop-pkg))
          (ensure-directory-pathname-fn (funcall fn-in "ENSURE-DIRECTORY-PATHNAME" uiop-pkg))
          (read-file-string-fn (funcall fn-in "READ-FILE-STRING" uiop-pkg))
          (find-tool-fn (funcall fn-in "FIND-TOOL" pseudopod-pkg))
@@ -76,9 +75,10 @@
       (let* ((tmp-root
                (funcall ensure-directory-pathname-fn
                         (merge-pathnames
-                         (make-pathname :directory `(:relative ,(format nil "amoebum-i27-~A"
-                                                                        (get-universal-time))))
-                         (funcall temporary-directory-fn))))
+                         (make-pathname :directory `(:relative ".tmp-file-tools-smokes"
+                                                             ,(format nil "amoebum-i27-~A"
+                                                                      (get-universal-time))))
+                         repo-root)))
              (read-source (merge-pathnames #P"fixtures/read-source.txt" tmp-root))
              (pdf-source (merge-pathnames #P"fixtures/sample.pdf" tmp-root))
              (image-source (merge-pathnames #P"fixtures/sample.png" tmp-root))

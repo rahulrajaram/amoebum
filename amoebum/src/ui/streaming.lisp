@@ -237,6 +237,11 @@
   (token-stream-check-cancel stream-state)
   (let* ((type (and (listp chunk) (getf chunk :type)))
          (tool-call (and (listp chunk) (getf chunk :tool-call)))
+         (tool-call-id
+           (or (and (pseudopod:tool-call-p tool-call)
+                    (pseudopod:tool-call-id tool-call))
+               (and (listp chunk) (getf chunk :tool-call-id))
+               (and (listp chunk) (getf chunk :id))))
          (tool-name
            (or (and (pseudopod:tool-call-p tool-call)
                     (pseudopod:tool-call-name tool-call))
@@ -256,15 +261,30 @@
        (list :kind :tool-call-delta
              :index index
              :tool-call tool-call
+             :tool-call-id tool-call-id
              :tool-name tool-name
              :arguments arguments
-             :arguments-complete-p arguments-complete-p
-             :chunk chunk))))
-  nil)
+             :chunk chunk)))
+    (when (and arguments-complete-p
+               (or (pseudopod:tool-call-p tool-call)
+                   (and (stringp tool-name) (plusp (length tool-name)))))
+      (ptui.runtime.queue:queue-push
+       (token-stream-state-events stream-state)
+       (list :kind :tool-call-argument-complete
+             :index index
+             :tool-call tool-call
+             :tool-call-id tool-call-id
+             :tool-name tool-name
+             :arguments arguments
+             :chunk chunk)))
+  nil))
 
 (defun token-stream-emit-tool-call-started (stream-state tool-call)
   (token-stream-check-cancel stream-state)
   (when (pseudopod:tool-call-p tool-call)
+    (usdt-probe-tool-call :started
+                          (pseudopod:tool-call-name tool-call)
+                          (pseudopod:tool-call-id tool-call))
     (ptui.runtime.queue:queue-push
      (token-stream-state-events stream-state)
      (list :kind :tool-call-started
@@ -277,6 +297,9 @@
 (defun token-stream-emit-tool-call-argument-complete (stream-state tool-call)
   (token-stream-check-cancel stream-state)
   (when (pseudopod:tool-call-p tool-call)
+    (usdt-probe-tool-call :argument-complete
+                          (pseudopod:tool-call-name tool-call)
+                          (pseudopod:tool-call-id tool-call))
     (ptui.runtime.queue:queue-push
      (token-stream-state-events stream-state)
      (list :kind :tool-call-argument-complete
@@ -295,6 +318,10 @@
                                             execution-error)
   "Publish a completed tool call execution result for async tool workers." 
   (when (pseudopod:tool-call-p tool-call)
+    (usdt-probe-tool-call :result
+                          (pseudopod:tool-call-name tool-call)
+                          (pseudopod:tool-call-id tool-call)
+                          :status (if execution-error :error :ok))
     (ptui.runtime.queue:queue-push
      (token-stream-state-events stream-state)
      (list :kind :tool-call-result
@@ -1021,10 +1048,28 @@
                                 client
                                 tools)
   (let ((resolved-client (or client (pseudopod:make-client))))
-    (let* ((emit-stream-chunk
-            (lambda (chunk)
+    (let* ((model (pseudopod:client-model resolved-client))
+           (base-url (pseudopod:client-base-url resolved-client))
+           (stream-request-id (format nil "stream-~D" (%usdt-now-ms)))
+           (stream-mode :stream)
+           (stream-chunk-count 0)
+           (stream-char-count 0)
+           (emit-stream-chunk
+            (lambda (chunk &key (chunk-kind :content))
               (when (functionp *stream-chunk-hook-callback*)
                 (funcall *stream-chunk-hook-callback* chunk))
+              (when (and (stringp chunk) (plusp (length chunk)))
+                (incf stream-chunk-count)
+                (incf stream-char-count (length chunk))
+                (usdt-probe-llm-stream-chunk model
+                                             base-url
+                                             stream-mode
+                                             stream-request-id
+                                             stream-chunk-count
+                                             chunk
+                                             :chunk-kind chunk-kind
+                                             :total-chunks stream-chunk-count
+                                             :total-chars stream-char-count))
               (token-stream-emit-chunk stream-state chunk)))
           (emit-fallback-tool-calls
             (lambda (message)
@@ -1038,44 +1083,78 @@
             (lambda (condition)
               (funcall emit-stream-chunk
                        (format nil "\n[streaming error: ~A. Falling back to non-stream mode]\n"
-                               condition)))))
-    (handler-case
-        (pseudopod:stream-chat-completion*
-         resolved-client
-         prompt
-         :system-prompt system-prompt
-         :messages messages
-         :tools tools
-         :on-content (lambda (chunk)
-                       (funcall emit-stream-chunk chunk))
-         :on-reasoning (lambda (chunk)
-                         (funcall emit-stream-chunk chunk))
-         :on-tool-call-delta (lambda (chunk)
-                               (token-stream-emit-tool-call-delta stream-state chunk))
-         :on-tool-call-started
-         (lambda (tool-call)
-           (token-stream-emit-tool-call-started stream-state tool-call))
-         :on-tool-call (lambda (tool-call)
-                         ;; Fallback for providers that only emit finalized tool calls.
-                         ;; Trigger the same execution path as fully streamed call deltas.
-                         (token-stream-emit-tool-call-started stream-state tool-call)
-                         (token-stream-emit-tool-call-argument-complete stream-state
-                                                                        tool-call))
-         :on-tool-call-argument-complete
-         (lambda (tool-call)
-           (token-stream-emit-tool-call-argument-complete stream-state tool-call)))
-      (token-stream-cancelled ()
-        (error 'token-stream-cancelled))
-        (error (condition)
-        (funcall emit-fallback-error condition)
-        (token-stream-check-cancel stream-state)
-        (let* ((message (pseudopod:chat-completion* resolved-client
-                                                 prompt
-                                                 :system-prompt system-prompt
-                                                 :messages messages
-                                                 :tools tools))
-               (content (and (pseudopod:message-p message)
-                             (pseudopod:message-content message))))
-          (unless (%token-stream-blank-string-p content)
-            (funcall emit-stream-chunk content))
-          (funcall emit-fallback-tool-calls message)))))))
+                               condition)
+                       :chunk-kind :fallback-error)))
+           (stream-status :ok)
+           (stream-start-ms (%usdt-now-ms)))
+      (usdt-probe-llm-request-start model base-url :stream stream-request-id)
+      (unwind-protect
+           (handler-case
+               (pseudopod:stream-chat-completion*
+                resolved-client
+                prompt
+                :system-prompt system-prompt
+                :messages messages
+                :tools tools
+                :on-content (lambda (chunk)
+                              (funcall emit-stream-chunk chunk :chunk-kind :content))
+                :on-reasoning (lambda (chunk)
+                                (funcall emit-stream-chunk chunk :chunk-kind :reasoning))
+                :on-tool-call-delta (lambda (chunk)
+                                      (token-stream-emit-tool-call-delta stream-state chunk))
+                :on-tool-call-started
+                (lambda (tool-call)
+                  (token-stream-emit-tool-call-started stream-state tool-call))
+                :on-tool-call (lambda (tool-call)
+                                ;; Fallback for providers that only emit finalized tool calls.
+                                ;; Trigger the same execution path as fully streamed call deltas.
+                                (token-stream-emit-tool-call-started stream-state tool-call)
+                                (token-stream-emit-tool-call-argument-complete stream-state
+                                                                               tool-call))
+                :on-tool-call-argument-complete
+                (lambda (tool-call)
+                  (token-stream-emit-tool-call-argument-complete stream-state tool-call)))
+             (token-stream-cancelled ()
+               (setf stream-status :cancelled)
+               (error 'token-stream-cancelled))
+             (error (condition)
+               (setf stream-status :error)
+               (token-stream-check-cancel stream-state)
+               (let* ((fallback-request-id (format nil "fallback-~D" (%usdt-now-ms)))
+                      (fallback-status :ok)
+                      (fallback-start-ms (%usdt-now-ms)))
+                 (setf stream-request-id fallback-request-id
+                       stream-mode :fallback
+                       stream-chunk-count 0
+                       stream-char-count 0)
+                 (funcall emit-fallback-error condition)
+                 (usdt-probe-llm-request-start model base-url :fallback fallback-request-id)
+                 (unwind-protect
+                      (handler-case
+                          (let* ((message (pseudopod:chat-completion* resolved-client
+                                                                      prompt
+                                                                      :system-prompt system-prompt
+                                                                      :messages messages
+                                                                      :tools tools))
+                                 (content (and (pseudopod:message-p message)
+                                               (pseudopod:message-content message))))
+                            (unless (%token-stream-blank-string-p content)
+                              (funcall emit-stream-chunk
+                                       content
+                                       :chunk-kind :fallback-content))
+                            (funcall emit-fallback-tool-calls message))
+                        (error (fallback-condition)
+                          (setf fallback-status :error)
+                          (error fallback-condition)))
+                   (usdt-probe-llm-request-end model
+                                               base-url
+                                               :fallback
+                                               fallback-request-id
+                                               (max 0 (- (%usdt-now-ms) fallback-start-ms))
+                                               :status fallback-status))))))
+        (usdt-probe-llm-request-end model
+                                    base-url
+                                    :stream
+                                    stream-request-id
+                                    (max 0 (- (%usdt-now-ms) stream-start-ms))
+                                    :status stream-status))))

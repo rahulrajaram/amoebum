@@ -1,0 +1,40 @@
+[1m[38;2;130;210;255m you> hello
+[0m[39m[49m
+[38;2;150;235;170m ai> [1m[38;2;195;235;255mDemo Response[0m[39m[49m
+[38;2;150;235;170m     [39m
+[38;2;150;235;170m     This is a [1mdemo mode[0m[38;2;150;235;170m[49m response. No API key is required — everything you see is generated locally for TUI testing
+     purposes.
+
+     [1m[38;2;195;235;255mFeatures Being Tested
+[0m[38;2;150;235;170m[49m
+     - [1mBold text[0m[38;2;150;235;170m[49m and [3mitalic text[0m[38;2;150;235;170m[49m rendering
+     - Inline [7mcode spans[0m[38;2;150;235;170m[49m within prose
+     - Nested list items with varying content lengths
+     - Paragraph wrapping across terminal widths
+
+     > This is a blockquote. It should be visually distinct from > regular paragraph text and properly indented.
+
+     Here is a numbered list:
+
+     1. First item with some detail
+     2. Second item — slightly longer to test wrapping behavior
+     3. Third item
+
+     That concludes the default demo response. Try typing [1mtool[0m[38;2;150;235;170m[49m, [1mcode[0m[38;2;150;235;170m[49m, [1mlong[0m[38;2;150;235;170m[49m, or [1merror[0m[38;2;150;235;170m[49m to see other response types.
+
+
+
+
+
+
+
+
+
+
+
+
+
+[39m ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │[1;7m [0m[39m[49m                                                                                                                   │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+[1m[38;2;220;220;220m[48;2;128;0;0mbranch master | mode supervised | [38;2;140;230;150mTokens: 179/128000 (0%)[38;2;220;220;220m | stream done | model moonshot-v1-128k

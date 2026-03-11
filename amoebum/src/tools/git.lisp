@@ -36,7 +36,7 @@
          (resolved (or (ignore-errors (truename base)) base))
          (directory (uiop:ensure-directory-pathname resolved)))
     (unless (probe-file directory)
-      (error "Git project root does not exist: ~A." (%path-text directory)))
+      (error "Git project root does not exist: ~A." (coerce-path-string directory)))
     directory))
 
 (defun %git-run-command (root args)
@@ -93,7 +93,7 @@
 
 (defun %git-ensure-work-tree (root)
   (unless (%git-inside-work-tree-p root)
-    (error "Path is not a git work tree: ~A." (%path-text root)))
+    (error "Path is not a git work tree: ~A." (coerce-path-string root)))
   root)
 
 (defun %git-safe-parse-int (text)
@@ -190,7 +190,7 @@
                         :new-branch (getf parsed :branch)
                         :action :status)
      :severity :debug)
-    (append (list :project-root (%path-text root)) parsed)))
+    (append (list :project-root (coerce-path-string root)) parsed)))
 
 (defun %git-normalize-stage-file (file root)
   (let* ((raw (typecase file
@@ -751,7 +751,7 @@ Commits:~%~A"
                         :new-branch branch
                         :action :diff)
      :severity :debug)
-    (list :project-root (%path-text root)
+    (list :project-root (coerce-path-string root)
           :branch branch
           :base-branch resolved-base
           :merge-base merge-base

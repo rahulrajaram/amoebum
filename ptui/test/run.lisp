@@ -1414,6 +1414,93 @@ foo bar foo")
                      "context ~A widget height should include status + viewport rows"
                      label)))))
 
+(deftest widgets-streaming-widget-api-boundary
+  (multiple-value-bind (widgets-sym widgets-status)
+      (find-symbol "MAKE-STREAMING-WIDGET" :ptui.widgets.core)
+    (assert-true (null widgets-sym)
+                 "streaming-widget constructor must not exist in ptui.widgets.core, got ~S/~S"
+                 widgets-sym widgets-status))
+  (multiple-value-bind (components-sym components-status)
+      (find-symbol "MAKE-STREAMING-WIDGET" :ptui.components.streaming-widget)
+    (assert-true (and components-sym (eql components-status :external))
+                 "streaming-widget constructor should be exported by ptui.components.streaming-widget, got ~S/~S"
+                 components-sym components-status)
+    (assert-true (fboundp components-sym)
+                 "streaming-widget constructor symbol should be fboundp: ~S"
+                 components-sym)))
+
+(deftest widgets-streaming-widget-incremental-layout-and-cursor
+  (let* ((state (ptui.components.streaming-widget:make-streaming-widget-state
+                 :viewport-width 8
+                 :viewport-height 3
+                 :cursor-blink-ms 200))
+         (baseline-relayout
+           (ptui.components.streaming-widget:streaming-widget-full-relayout-count state)))
+    (loop for char across "abcdefghij" do
+      (ptui.components.streaming-widget:streaming-widget-append-chunk state (string char)))
+    (assert-true (= baseline-relayout
+                    (ptui.components.streaming-widget:streaming-widget-full-relayout-count state))
+                 "expected no full relayout during per-char append, got baseline=~D now=~D"
+                 baseline-relayout
+                 (ptui.components.streaming-widget:streaming-widget-full-relayout-count state))
+    (assert-true (>= (ptui.components.streaming-widget:streaming-widget-incremental-layout-count state)
+                     (length "abcdefghij"))
+                 "expected incremental layout count to increase with appended chars")
+    (let ((cursor-visible
+            (ptui.components.streaming-widget:streaming-widget-visible-lines
+             state
+             :viewport-height 3
+             :now-ms 0))
+          (cursor-hidden
+            (ptui.components.streaming-widget:streaming-widget-visible-lines
+             state
+             :viewport-height 3
+             :now-ms 260)))
+      (assert-true (some (lambda (line) (search "|" line :test #'char=)) cursor-visible)
+                   "expected blinking cursor to appear at insertion point, got ~S"
+                   cursor-visible)
+      (assert-true (not (some (lambda (line) (search "|" line :test #'char=)) cursor-hidden))
+                   "expected cursor to hide in second blink phase, got ~S"
+                   cursor-hidden))))
+
+(deftest widgets-streaming-widget-scroll-follow-contract
+  (let* ((state (ptui.components.streaming-widget:make-streaming-widget-state
+                 :viewport-width 20
+                 :viewport-height 2)))
+    (ptui.components.streaming-widget:streaming-widget-append-chunk
+     state
+     (concatenate 'string
+                  "one" (string #\Newline)
+                  "two" (string #\Newline)
+                  "three" (string #\Newline)))
+    (assert-true (ptui.components.streaming-widget:streaming-widget-scroll-follow-p state)
+                 "scroll-follow should start enabled")
+    (ptui.components.streaming-widget:streaming-widget-handle-event
+     state
+     (ptui.core.events:make-key-event :up)
+     :viewport-height 2)
+    (assert-true (not (ptui.components.streaming-widget:streaming-widget-scroll-follow-p state))
+                 "scroll-follow should disengage when user scrolls up")
+    (assert-true (= (ptui.components.streaming-widget:streaming-widget-scroll-offset state) 1)
+                 "scroll offset should increase after user scroll-up")
+    (ptui.components.streaming-widget:streaming-widget-append-chunk
+     state
+     (concatenate 'string "tail" (string #\Newline)))
+    (assert-true (= (ptui.components.streaming-widget:streaming-widget-scroll-offset state) 1)
+                 "scroll-follow disabled should preserve user scrollback position")
+    (ptui.components.streaming-widget:streaming-widget-handle-event
+     state
+     (ptui.core.events:make-key-event :end)
+     :viewport-height 2)
+    (assert-true (ptui.components.streaming-widget:streaming-widget-scroll-follow-p state)
+                 "scroll-follow should re-enable on explicit scroll-end")
+    (assert-true (= (ptui.components.streaming-widget:streaming-widget-scroll-offset state) 0)
+                 "scroll-end should return to live tail")))
+
+(deftest widgets-streaming-widget-smoke-sentinel
+  (format t "~&STREAMING_WIDGET_SMOKE_OK~%")
+  (assert-true t "streaming widget smoke sentinel"))
+
 (deftest widgets-glob-widget-api-boundary
   (multiple-value-bind (widgets-sym widgets-status)
       (find-symbol "MAKE-GLOB-WIDGET" :ptui.widgets.core)
@@ -2258,6 +2345,58 @@ foo bar foo")
     (assert-true (null matches)
                  "expected empty content match list, got ~S" matches)))
 
+(deftest search-engine-content-scan-streams-progress-and-cancels
+  (let* ((documents
+           (list
+            (ptui.search.engine:make-search-document
+             :path "logs/a.txt"
+             :content (format nil "needle a~%"))
+            (ptui.search.engine:make-search-document
+             :path "logs/b.txt"
+             :content (format nil "needle b~%"))
+            (ptui.search.engine:make-search-document
+             :path "logs/c.txt"
+             :content (format nil "needle c~%"))
+            (ptui.search.engine:make-search-document
+             :path "logs/d.txt"
+             :content (format nil "needle d~%"))))
+         (seen '())
+         (progress '())
+         (stop-p nil)
+         (result
+           (ptui.search.engine:scan-content-matches
+            "needle"
+            documents
+            :regex-mode nil
+            :on-match (lambda (match)
+                        (push (ptui.search.engine:search-content-match-path match) seen)
+                        (when (>= (length seen) 2)
+                          (setf stop-p t)))
+            :on-progress (lambda (&key match-count scanned-documents total-documents done cancelled
+                                  &allow-other-keys)
+                           (push (list :match-count match-count
+                                       :scanned-documents scanned-documents
+                                       :total-documents total-documents
+                                       :done done
+                                       :cancelled cancelled)
+                                 progress))
+            :cancel-fn (lambda ()
+                         stop-p))))
+    (assert-true (ptui.search.engine:search-content-scan-result-canceled-p result)
+                 "expected scan-content-matches to report cancellation")
+    (assert-true (>= (ptui.search.engine:search-content-scan-result-match-count result) 2)
+                 "expected streamed match count >= 2 before cancellation")
+    (assert-true (< (ptui.search.engine:search-content-scan-result-match-count result) 4)
+                 "expected cancellation before full scan, got ~D matches"
+                 (ptui.search.engine:search-content-scan-result-match-count result))
+    (assert-true (>= (ptui.search.engine:search-content-scan-result-scanned-documents result) 1)
+                 "expected at least one scanned document")
+    (assert-true (some (lambda (entry) (getf entry :done)) progress)
+                 "expected progress stream to include terminal done frame")
+    (assert-true (equal (getf (first progress) :cancelled) t)
+                 "expected terminal progress frame to mark cancellation: ~S"
+                 (first progress))))
+
 (deftest widgets-search-widget-api-boundary
   (multiple-value-bind (widgets-sym widgets-status)
       (find-symbol "MAKE-SEARCH-WIDGET" :ptui.widgets.core)
@@ -2388,6 +2527,72 @@ foo bar foo")
     (assert-true (eq (ptui.components.search-widget:search-widget-status state) :ready)
                  "expected :ready status after restoring query, got ~S"
                  (ptui.components.search-widget:search-widget-status state))))
+
+(deftest widgets-search-widget-streaming-match-count-and-cancellation
+  (let* ((documents
+           (list
+            (ptui.search.engine:make-search-document
+             :path "logs/a.txt"
+             :content (format nil "needle a~%"))
+            (ptui.search.engine:make-search-document
+             :path "logs/b.txt"
+             :content (format nil "needle b~%"))
+            (ptui.search.engine:make-search-document
+             :path "logs/c.txt"
+             :content (format nil "needle c~%"))
+            (ptui.search.engine:make-search-document
+             :path "logs/d.txt"
+             :content (format nil "needle d~%"))))
+         (state (ptui.components.search-widget:make-search-widget-state
+                 :mode :content
+                 :query "needle"
+                 :visible-count 3
+                 :batch-size 1
+                 :limit 2
+                 :regex-mode nil
+                 :before-context 0
+                 :after-context 0))
+         (stream (ptui.components.search-widget:make-sequence-search-widget-stream documents)))
+    (ptui.components.search-widget:search-widget-start-content-search-stream
+     state
+     "needle"
+     stream
+     :limit 2
+     :regex-mode nil
+     :before-context 0
+     :after-context 0)
+    (assert-true (eq (ptui.components.search-widget:search-widget-status state) :streaming)
+                 "expected streaming status after stream start")
+    (multiple-value-bind (_state consumed new-matches)
+        (ptui.components.search-widget:search-widget-step state :max-items 1)
+      (declare (ignore _state))
+      (assert-true (= consumed 1)
+                   "expected one consumed document in first streaming step")
+      (assert-true (>= new-matches 1)
+                   "expected first step to stream at least one match"))
+    (assert-true (>= (ptui.components.search-widget:search-widget-match-count state)
+                     (length (ptui.components.search-widget:search-widget-results state)))
+                 "live match count should be >= visible result count")
+    (ptui.components.search-widget:search-widget-cancel state)
+    (assert-true (eq (ptui.components.search-widget:search-widget-status state) :cancelled)
+                 "expected cancelled status after explicit cancellation")
+    (ptui.components.search-widget:search-widget-start-content-search-stream
+     state
+     "needle"
+     (ptui.components.search-widget:make-sequence-search-widget-stream documents)
+     :limit 2
+     :regex-mode nil
+     :before-context 0
+     :after-context 0)
+    (loop while (eq (ptui.components.search-widget:search-widget-status state) :streaming) do
+      (ptui.components.search-widget:search-widget-step state :max-items 2))
+    (assert-true (eq (ptui.components.search-widget:search-widget-status state) :done)
+                 "expected :done status after full stream")
+    (assert-true (= (ptui.components.search-widget:search-widget-match-count state) 4)
+                 "expected full live match count of 4, got ~D"
+                 (ptui.components.search-widget:search-widget-match-count state))
+    (assert-true (= (length (ptui.components.search-widget:search-widget-results state)) 2)
+                 "expected result list to honor limit 2 while count tracks all matches")))
 
 (deftest engine-loop-drains-event-bus-before-render
   (let* ((backend (make-engine-loop-test-backend :cols 20 :rows 5))

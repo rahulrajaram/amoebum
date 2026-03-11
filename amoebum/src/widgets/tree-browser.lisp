@@ -398,7 +398,7 @@
          (null slash))))
 
 (defun %tree-root-label (root)
-  (let* ((name (%path-text (uiop:ensure-directory-pathname root)))
+  (let* ((name (coerce-path-string (uiop:ensure-directory-pathname root)))
          (trimmed (string-right-trim "/" name))
          (slash (position #\/ trimmed :from-end t)))
     (if (and slash (< slash (1- (length trimmed))))
@@ -462,7 +462,7 @@
 
 (defun make-git-file-tree-browser-state (&key root
                                               (show-root-p t)
-                                              (active-p t)
+                                              (active-p nil)
                                               (visible-row-count +tree-browser-default-visible-row-count+))
   (let* ((resolved-root (%tree-resolve-root root))
          (state (make-tree-browser-state
@@ -488,7 +488,7 @@
   (make-tree-browser-state
    :root-node (make-tree-node :label label :expanded-p t :children-fn (lambda () '()))
    :show-root-p t
-   :active-p t
+   :active-p nil
    :visible-row-count +tree-browser-default-visible-row-count+))
 
 (defun tree-browser-render-key (state)
@@ -550,7 +550,7 @@
                    (%tree-default-root)))
          (changed-count (hash-table-count (tree-browser-state-git-status-map state)))
          (text (format nil "files: ~A (~D changed) [up/down enter left right]"
-                       (%path-text root)
+                       (coerce-path-string root)
                        changed-count)))
     (ptui.ui.elements:make-element
      :text

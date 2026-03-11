@@ -1,0 +1,2 @@
+{"seq":1,"ts":3981829399,"type":"UI:STREAM-PROGRESS","source":"AMOEBUM","severity":"DEBUG","payload":"#S(STATUS-BAR-STREAM-PAYLOAD :STATUS RUNNING :ACTIVEP T :TOKENS-USED 0)"}
+{"seq":2,"ts":3981829400,"type":"TOOL:ERROR","source":"AMOEBUM","severity":"ERROR","payload":"#S(TOOL-ERROR-PAYLOAD :TOOL-NAME shell :CONDITION timeout)"}

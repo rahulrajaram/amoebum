@@ -151,6 +151,87 @@
           (%strip-leading-system-message (step-result-history result)))
     result))
 
+(defun %emit-conversation-stream-chunk (chunk
+                                        on-chunk
+                                        on-text-delta
+                                        on-tool-call-delta
+                                        on-usage-delta)
+  (when on-chunk
+    (funcall on-chunk chunk))
+  (case (getf chunk :type)
+    (:text-delta
+     (when on-text-delta
+       (funcall on-text-delta chunk)))
+    (:tool-call-delta
+     (when on-tool-call-delta
+       (funcall on-tool-call-delta chunk)))
+    (:usage-delta
+     (when on-usage-delta
+       (funcall on-usage-delta chunk)))))
+
+(defun conversation-step-streaming (conversation &key
+                                                 user-prompt
+                                                 user-name
+                                                 tools
+                                                 stream-id
+                                                 on-chunk
+                                                 on-text-delta
+                                                 on-tool-call-delta
+                                                 on-usage-delta
+                                                 on-done)
+  "Run one streaming assistant turn and append it to conversation history.
+
+Emits streaming chunk events with chunk :TYPE values:
+  :TEXT-DELTA, :TOOL-CALL-DELTA, :USAGE-DELTA, and terminal :DONE.
+
+Returns five values:
+  assistant-message, resolved-stream-id, stream-status, usage, parse-error-count."
+  (unless (conversation-p conversation)
+    (error "Expected conversation struct, got ~S" conversation))
+  (when user-prompt
+    (conversation-add-user conversation user-prompt :name user-name))
+  (let* ((requested-stream-id (or stream-id
+                                  (format nil "conversation-stream-~D"
+                                          (get-universal-time))))
+         (assistant-message nil)
+         (resolved-stream-id nil)
+         (stream-status :completed)
+         (usage nil)
+         (parse-error-count 0))
+    (multiple-value-setq (assistant-message
+                          resolved-stream-id
+                          stream-status
+                          usage
+                          parse-error-count)
+      (stream-chat-completion*
+       (conversation-client conversation)
+       ""
+       :messages (%conversation-request-messages conversation)
+       :tools (%resolve-conversation-tools conversation tools)
+       :stream-id requested-stream-id
+       :on-chunk (lambda (chunk)
+                   (%emit-conversation-stream-chunk chunk
+                                                   on-chunk
+                                                   on-text-delta
+                                                   on-tool-call-delta
+                                                   on-usage-delta))))
+    (%append-conversation-message conversation assistant-message)
+    (let ((done-chunk (list :type :done
+                            :stream-id resolved-stream-id
+                            :status stream-status
+                            :usage usage
+                            :parse-error-count parse-error-count
+                            :message assistant-message)))
+      (when on-chunk
+        (funcall on-chunk done-chunk))
+      (when on-done
+        (funcall on-done done-chunk)))
+    (values assistant-message
+            resolved-stream-id
+            stream-status
+            usage
+            parse-error-count)))
+
 (defun conversation-clear (conversation)
   "Reset conversation history."
   (unless (conversation-p conversation)

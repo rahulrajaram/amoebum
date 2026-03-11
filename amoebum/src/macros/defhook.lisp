@@ -108,10 +108,7 @@
   (last-status :never :type keyword)
   last-error)
 
-(defun %hook-monotonic-milliseconds ()
-  (truncate (* 1000
-               (/ (coerce (get-internal-real-time) 'double-float)
-                  (coerce internal-time-units-per-second 'double-float)))))
+;; Monotonic time delegated to monotonic-ms in util.lisp
 
 (defun %ensure-known-hook-on-error-policy (policy)
   (unless (member policy +known-hook-on-error-policies+ :test #'eq)
@@ -129,7 +126,7 @@
               (subseq *hook-trace-log* 0 *hook-trace-limit*))))))
 
 (defun %record-hook-trace (hook-point hook-id status &key elapsed-ms result detail)
-  (push (list :timestamp (%hook-monotonic-milliseconds)
+  (push (list :timestamp (monotonic-ms)
               :hook-point hook-point
               :hook-id hook-id
               :status status
@@ -397,10 +394,10 @@
   entry)
 
 (defun %invoke-hook-handler-with-budget (entry args)
-  (let ((start-ms (%hook-monotonic-milliseconds))
+  (let ((start-ms (monotonic-ms))
         (budget-ms (hook-entry-max-ms entry)))
     (flet ((elapsed-ms ()
-             (max 0 (- (%hook-monotonic-milliseconds) start-ms))))
+             (max 0 (- (monotonic-ms) start-ms))))
       (handler-case
           (let ((result
                   #+sbcl

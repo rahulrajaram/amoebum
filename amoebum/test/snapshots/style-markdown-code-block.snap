@@ -1,15 +1,15 @@
 --- ptui-snapshot v1 84x20
-| YOU> Show me a hello world function.                                               |
+| Show me a hello world function.                                                    |
 |                                                                                    |
-| ASSISTANT> Here is some code:                                                      |
+| Here is some code:                                                                 |
 |                                                                                    |
-|            ```lisp                                                                 |
-|            (defun hello ()                                                         |
-|              (format t "Hello, world!                                              |
-|            "))                                                                     |
-|            ```                                                                     |
+| ```lisp                                                                            |
+| (defun hello ()                                                                    |
+|   (format t "Hello, world!                                                         |
+| "))                                                                                |
+| ```                                                                                |
 |                                                                                    |
-|            That defines a greeting function.                                       |
+| That defines a greeting function.                                                  |
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
@@ -52,22 +52,17 @@
 0,29:bold
 0,30:bold
 0,31:bold
-0,32:bold
-0,33:bold
-0,34:bold
-0,35:bold
-0,36:bold
-4,12:bold,dim
-4,13:bold,dim
-4,14:bold,dim
-4,15:bold,dim
-4,16:bold,dim
-4,17:bold,dim
-4,18:bold,dim
-8,12:bold,dim
-8,13:bold,dim
-8,14:bold,dim
-17,2:bold
+4,1:bold,dim
+4,2:bold,dim
+4,3:bold,dim
+4,4:bold,dim
+4,5:bold,dim
+4,6:bold,dim
+4,7:bold,dim
+8,1:bold,dim
+8,2:bold,dim
+8,3:bold,dim
+17,2:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

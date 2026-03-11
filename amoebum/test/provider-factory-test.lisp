@@ -116,3 +116,32 @@
                                :api-base-url nil)
     (signals error
       (amoebum:setconfig :provider-override "definitely-invalid-provider"))))
+
+(test provider-factory-agent-scoped-provider-key-isolation
+  (let ((registry (sw4rm-sdk:make-local-registry)))
+    (let ((amoebum::*user-session-registry* registry))
+      (sw4rm-sdk:local-registry-register
+       registry
+       (sw4rm-sdk:make-agent-config :agent-id "agent-a" :name "Agent A"))
+      (sw4rm-sdk:local-registry-register
+       registry
+       (sw4rm-sdk:make-agent-config :agent-id "agent-b" :name "Agent B"))
+      (sw4rm-sdk:local-registry-set-provider-secret
+       registry "agent-a" "OPENAI_API_KEY" "openai-agent-a")
+      (sw4rm-sdk:local-registry-set-provider-secret
+       registry "agent-b" "OPENAI_API_KEY" "openai-agent-b")
+      (with-fake-env (("OPENAI_API_KEY" . "openai-global"))
+        (with-provider-config (:model "gpt-4o"
+                                     :provider-override nil
+                                     :api-base-url nil)
+          (let ((provider-a (amoebum:resolve-provider (amoebum:current-config)
+                                                      :agent-id "agent-a"))
+                (provider-b (amoebum:resolve-provider (amoebum:current-config)
+                                                      :agent-id "agent-b"))
+                (provider-global (amoebum:resolve-provider)))
+            (is (typep provider-a 'pseudopod:openai-compatible-provider))
+            (is (typep provider-b 'pseudopod:openai-compatible-provider))
+            (is (not (eq provider-a provider-b)))
+            (is (string= "openai-agent-a" (pseudopod:provider-api-key provider-a)))
+            (is (string= "openai-agent-b" (pseudopod:provider-api-key provider-b)))
+            (is (string= "openai-global" (pseudopod:provider-api-key provider-global)))))))))

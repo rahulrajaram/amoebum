@@ -271,7 +271,7 @@ PAINT-FN signature: (element buffer x y width height)."
                                     " "
                                     nil
                                     nil
-                                    (ptui.core.types:make-attrs :boldp t))))
+                                    (ptui.core.types:make-attrs :boldp t :invertp t))))
                  (multiple-value-bind (cursor-line cursor-col)
                      (%cursor-to-line-col cursor-pos lines)
                    (let ((visible-line (- cursor-line (or effective-offset 0))))

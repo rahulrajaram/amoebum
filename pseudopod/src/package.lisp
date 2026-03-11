@@ -133,6 +133,7 @@
    #:conversation-add-tool-result
    #:conversation-complete
    #:conversation-step
+   #:conversation-step-streaming
    #:conversation-clear
    #:chat-completion
    #:chat-completion*
@@ -145,6 +146,7 @@
    #:file-content
    #:stream-chat-completion
    #:stream-chat-completion*
+   #:cancel-stream
    #:print-streamed-completion
    #:main
    ;; Provider protocol (I94)
@@ -181,7 +183,10 @@
    ;; OpenAI-compatible provider
    #:openai-compatible-provider
    #:make-openai-compatible-provider
+   #:openai-compat-backend
    #:openai-compat-organization
+   #:list-providers
+   #:provider-models
    ;; Model router (I95)
    #:model-router
    #:model-router-p
@@ -254,6 +259,9 @@
    #:string-replace-result-old-string
    #:string-replace-result-new-string
    #:string-replace-in-file
+   ;; Notebook edit helpers (I343)
+   #:pseudopod-notebook-error
+   #:prepare-notebook-content
    ;; Command execution primitive (I110)
    #:pseudopod-command-error
    #:pseudopod-command-error-command

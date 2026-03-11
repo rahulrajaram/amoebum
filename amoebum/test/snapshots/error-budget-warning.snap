@@ -1,9 +1,9 @@
 --- ptui-snapshot v1 84x20
-| YOU> Continue the analysis.                                                        |
+| Continue the analysis.                                                             |
 |                                                                                    |
 | SYSTEM> Warning: Token budget at 90% (10800/12000). Consider compacting.           |
 |                                                                                    |
-| ASSISTANT> I will try to be concise. The remaining analysis shows...               |
+| I will try to be concise. The remaining analysis shows...                          |
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
@@ -43,11 +43,6 @@
 0,20:bold
 0,21:bold
 0,22:bold
-0,23:bold
-0,24:bold
-0,25:bold
-0,26:bold
-0,27:bold
 2,0:bold
 2,1:bold
 2,2:bold
@@ -121,7 +116,7 @@
 2,70:bold
 2,71:bold
 2,72:bold
-17,2:bold
+17,2:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

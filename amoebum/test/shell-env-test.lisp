@@ -283,3 +283,214 @@ the session working directory."
       (is (not (and (search "API_KEY" (car pair) :test #'char-equal)
                     (not (string= "CUSTOM_VAR" (car pair)))))
           "Expected no API_KEY-style variables in filtered environment."))))
+
+;;; --- I344: profile/env initialization --------------------------------------
+
+(defun %normalize-path-string (value)
+  (let* ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return) (or value "")))
+         (len (length trimmed)))
+    (if (and (> len 1)
+             (char= (char trimmed (1- len)) #\/))
+        (subseq trimmed 0 (1- len))
+        trimmed)))
+
+(defun %i344-temp-root (label)
+  (uiop:ensure-directory-pathname
+   (merge-pathnames
+    (make-pathname
+     :directory `(:relative ".tmp-shell-env-tests"
+                            ,(format nil "~A-~D"
+                                     label
+                                     (get-universal-time))))
+    (%amoebum-system-root))))
+
+(defun %env-entries->alist (env-entries)
+  (loop for entry in env-entries
+        append (cond
+                 ((and (consp entry)
+                       (or (stringp (car entry))
+                           (symbolp (car entry))))
+                  (list (cons (if (symbolp (car entry))
+                                  (symbol-name (car entry))
+                                  (car entry))
+                              (cdr entry))))
+                 ((stringp entry)
+                  (let ((eq-pos (position #\= entry)))
+                    (if (and eq-pos (> eq-pos 0))
+                        (list (cons (subseq entry 0 eq-pos)
+                                    (subseq entry (1+ eq-pos))))
+                        nil)))
+                 (t nil))))
+
+(test shell-env-project-overrides-from-file
+  "load-project-env-overrides should parse valid assignment lines from .amoebum/env."
+  (let* ((tmp-root (%i344-temp-root "amoebum-i344"))
+         (project-root (uiop:ensure-directory-pathname tmp-root))
+         (env-path (merge-pathnames #P".amoebum/env" project-root)))
+    (unwind-protect
+        (progn
+          (ensure-directories-exist env-path)
+          (with-open-file (stream env-path
+                                  :direction :output
+                                  :if-exists :supersede
+                                  :if-does-not-exist :create
+                                  :external-format :utf-8)
+            (write-line "# comment" stream)
+            (write-line "PROJECT_FLAG=enabled" stream)
+            (write-line "export PROJECT_MODE=\"strict\"" stream)
+            (write-line "INVALID LINE" stream)
+            (write-line "BAD-NAME=value" stream))
+          (let ((overrides (amoebum:load-project-env-overrides :cwd project-root)))
+            (is (equal '(("PROJECT_FLAG" . "enabled")
+                         ("PROJECT_MODE" . "strict"))
+                       overrides))))
+      (ignore-errors
+        (uiop:delete-directory-tree project-root :validate t :if-does-not-exist :ignore)))))
+
+(test shell-env-project-path-augmentation-deterministic
+  "PATH augmentation should keep deterministic order: node_modules/.bin then .venv/bin."
+  (let* ((tmp-root (%i344-temp-root "amoebum-i344-path"))
+         (project-root (uiop:ensure-directory-pathname tmp-root))
+         (node-bin (uiop:ensure-directory-pathname (merge-pathnames #P"node_modules/.bin/" project-root)))
+         (venv-bin (uiop:ensure-directory-pathname (merge-pathnames #P".venv/bin/" project-root))))
+    (unwind-protect
+        (progn
+          (ensure-directories-exist (merge-pathnames #P".keep" node-bin))
+          (ensure-directories-exist (merge-pathnames #P".keep" venv-bin))
+          (let ((dirs (amoebum:default-project-path-augmentation-dirs :cwd project-root)))
+            (is (= 2 (length dirs)))
+            (is (string= (%normalize-path-string (namestring node-bin))
+                         (%normalize-path-string (first dirs))))
+            (is (string= (%normalize-path-string (namestring venv-bin))
+                         (%normalize-path-string (second dirs))))))
+      (ignore-errors
+        (uiop:delete-directory-tree project-root :validate t :if-does-not-exist :ignore)))))
+
+(test shell-runtime-env-initialization-precedence
+  "Runtime env should merge inherited env with project overlay, then prepend deterministic PATH dirs."
+  (let* ((tmp-root (%i344-temp-root "amoebum-i344-merge"))
+         (project-root (uiop:ensure-directory-pathname tmp-root))
+         (env-path (merge-pathnames #P".amoebum/env" project-root))
+         (node-bin (uiop:ensure-directory-pathname (merge-pathnames #P"node_modules/.bin/" project-root)))
+         (venv-bin (uiop:ensure-directory-pathname (merge-pathnames #P".venv/bin/" project-root))))
+    (unwind-protect
+        (progn
+          (ensure-directories-exist env-path)
+          (ensure-directories-exist (merge-pathnames #P".keep" node-bin))
+          (ensure-directories-exist (merge-pathnames #P".keep" venv-bin))
+          (with-open-file (stream env-path
+                                  :direction :output
+                                  :if-exists :supersede
+                                  :if-does-not-exist :create
+                                  :external-format :utf-8)
+            (write-line "I344_PROJECT_ENV=1" stream)
+            (write-line "PATH=/project/path" stream))
+          (multiple-value-bind (_directory _shell _profiles env-vars)
+              (amoebum::%prepare-shell-runtime project-root t t t)
+            (declare (ignore _directory _shell _profiles))
+            (let* ((alist (%env-entries->alist env-vars))
+                   (project-flag (assoc "I344_PROJECT_ENV" alist :test #'string=))
+                   (path-entry (assoc "PATH" alist :test #'string=))
+                   (path-text (and path-entry (%normalize-path-string (cdr path-entry))))
+                   (node-index (and path-text
+                                    (search (%normalize-path-string (namestring node-bin))
+                                            path-text
+                                            :test #'char=)))
+                   (venv-index (and path-text
+                                    (search (%normalize-path-string (namestring venv-bin))
+                                            path-text
+                                            :test #'char=)))
+                   (project-index (and path-text
+                                       (search "/project/path" path-text :test #'char=))))
+              (is-true project-flag)
+              (is (string= "1" (cdr project-flag)))
+              (is-true path-entry)
+              (is-true node-index)
+              (is-true venv-index)
+              (is-true project-index)
+              (is (< node-index venv-index))
+              (is (< venv-index project-index)))))
+      (ignore-errors
+        (uiop:delete-directory-tree project-root :validate t :if-does-not-exist :ignore)))))
+
+(test shell-runtime-init-opt-out-behavior
+  "Opting out should disable profile sourcing and project env/path initialization."
+  (let* ((tmp-root (%i344-temp-root "amoebum-i344-optout"))
+         (project-root (uiop:ensure-directory-pathname tmp-root))
+         (env-path (merge-pathnames #P".amoebum/env" project-root))
+         (node-bin (uiop:ensure-directory-pathname (merge-pathnames #P"node_modules/.bin/" project-root))))
+    (unwind-protect
+        (progn
+          (ensure-directories-exist env-path)
+          (ensure-directories-exist (merge-pathnames #P".keep" node-bin))
+          (with-open-file (stream env-path
+                                  :direction :output
+                                  :if-exists :supersede
+                                  :if-does-not-exist :create
+                                  :external-format :utf-8)
+            (write-line "I344_SHOULD_NOT_APPEAR=1" stream))
+          (multiple-value-bind (_directory _shell profiles env-vars)
+              (amoebum::%prepare-shell-runtime project-root nil nil nil)
+            (declare (ignore _directory _shell))
+            (let* ((alist (%env-entries->alist env-vars))
+                   (project-flag (assoc "I344_SHOULD_NOT_APPEAR" alist :test #'string=))
+                   (path-entry (assoc "PATH" alist :test #'string=)))
+              (is (null profiles))
+              (is (null project-flag))
+              (when path-entry
+                (is (not (search (%normalize-path-string (namestring node-bin))
+                                 (%normalize-path-string (cdr path-entry))
+                                 :test #'char=)))))))
+      (ignore-errors
+        (uiop:delete-directory-tree project-root :validate t :if-does-not-exist :ignore)))))
+
+(test shell-runtime-exec-inherits-project-env
+  "Shell command execution should see project .amoebum/env unless init-project-env is disabled."
+  (let* ((tmp-root (%i344-temp-root "amoebum-i344-exec"))
+         (project-root (uiop:ensure-directory-pathname tmp-root))
+         (env-path (merge-pathnames #P".amoebum/env" project-root))
+         (command "printf '%s' \"${I344_EXEC_FLAG:-missing}\"")
+         (old-mode (amoebum:config-permission-mode (amoebum:current-config)))
+         (old-shell-working-directory amoebum::*shell-working-directory*))
+    (unwind-protect
+        (progn
+          (amoebum:setconfig :permission-mode :full-auto)
+          (ensure-directories-exist env-path)
+          (with-open-file (stream env-path
+                                  :direction :output
+                                  :if-exists :supersede
+                                  :if-does-not-exist :create
+                                  :external-format :utf-8)
+            (write-line "I344_EXEC_FLAG=present" stream))
+          (let ((with-overlay (amoebum::%execute-shell-command command
+                                                               project-root
+                                                               30
+                                                               1024
+                                                               nil
+                                                               nil
+                                                               nil
+                                                               t
+                                                               t
+                                                               nil))
+                (without-overlay (amoebum::%execute-shell-command command
+                                                                  project-root
+                                                                  30
+                                                                  1024
+                                                                  nil
+                                                                  nil
+                                                                  nil
+                                                                  t
+                                                                  nil
+                                                                  nil)))
+            (is (eq :completed (getf with-overlay :status)))
+            (is (eq :completed (getf without-overlay :status)))
+            (is (string= "present"
+                         (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                      (getf with-overlay :stdout))))
+            (is (string= "missing"
+                         (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                      (getf without-overlay :stdout))))))
+      (amoebum:setconfig :permission-mode old-mode)
+      (setf amoebum::*shell-working-directory* old-shell-working-directory)
+      (ignore-errors
+        (uiop:delete-directory-tree project-root :validate t :if-does-not-exist :ignore)))))

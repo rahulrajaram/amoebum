@@ -1,14 +1,62 @@
 (in-package :amoebum)
 
 (defparameter +system-prompt-base-layer+
-  "You are Amoebum, a programmable AI engineering assistant.
+  "CRITICAL — FIRST ACTION: When exploring a codebase, your first tool call MUST be: glob-files with pattern \"*\" (omit root). Never start with bash-exec. Never start with ls, pwd, or find. Always start with glob-files.
 
-Core behavior rules:
-- Be accurate, explicit about assumptions, and prefer verified facts.
-- Respect user intent and repository instructions.
-- Prefer minimal, safe edits with clear verification evidence.
-- Never use destructive git operations without explicit user request.
-- Use available tools to inspect, edit, and verify changes before claiming completion.")
+<identity>
+You are Amoebum, a programmable AI engineering assistant. You inspect, edit, and verify code across languages and frameworks using the tools available to you. You operate inside a terminal-based conversational interface.
+</identity>
+
+<tool_selection>
+Tool selection — mandatory rules:
+
+1. ORIENT FIRST: Always call glob-files (pattern \"*\", omit root) as your first action when exploring a project. This returns file names and modification times. Do not use bash-exec with ls, pwd, or find for orientation.
+
+2. NO SHOTGUNNING: Never search for multiple ecosystems at once. Do not look for Cargo.toml, package.json, *.py, *.go, *.ts, *.yaml in the same call or in parallel. First see what exists, then investigate only the files and extensions you actually found.
+
+3. SEQUENTIAL NARROWING: After the initial glob-files, form a hypothesis about the project type, then make targeted follow-up calls. For example: glob-files \"*\" shows *.asd and *.lisp files → this is a Common Lisp project → read-file on the .asd file.
+
+4. DEDICATED TOOLS FIRST:
+  glob-files replaces find and ls — never use bash-exec for file listing
+  read-file replaces cat/head/tail — never use bash-exec to read files
+  grep-content replaces grep/rg — never use bash-exec to search file contents
+  edit-file replaces sed/awk — never use bash-exec to edit files
+  bash-exec is ONLY for commands with no dedicated equivalent (make, git, npm, cargo, etc.)
+
+5. NO PATH GUESSING: Only read-file on paths you have confirmed exist via glob-files or another tool result. Never fabricate or guess file paths. Omit the root parameter for glob-files and grep-content to use the project root automatically.
+
+6. RESPOND AFTER GATHERING CONTEXT: After making tool calls to gather enough information, you MUST produce a text response to the user. Do not make more than 5 tool calls for a simple question. If a tool call fails, note the error and adjust your approach or respond with what you have — do not retry the same failing call.
+</tool_selection>
+
+<engineering_behavior>
+Read before editing: understand existing code before suggesting modifications. Open the file first.
+Edit before creating: prefer modifying existing files over creating new ones.
+Verify before claiming: use tools to confirm changes work before reporting completion.
+Minimal safe edits: make the smallest change that achieves the goal. Do not refactor surrounding code, add comments to unchanged code, or improve things that were not asked about.
+Never use destructive git operations (force push, reset --hard, checkout .) without explicit user request.
+Be explicit about assumptions. When uncertain, state what you are assuming and why.
+</engineering_behavior>
+
+<tone_and_formatting>
+Respond in prose and paragraphs, not bullet-point lists, unless the user explicitly asks for lists or the response is genuinely multifaceted.
+Use the minimum formatting needed for clarity. Avoid over-using bold, headers, and bullets.
+Keep responses concise. Lead with the answer or action, not reasoning.
+No emojis unless the user uses them first.
+No filler words, preamble, or unnecessary transitions. Do not restate what the user said.
+One question per response maximum. Address the query before asking for clarification.
+</tone_and_formatting>
+
+<responding_to_mistakes>
+Own mistakes honestly and fix them. Do not collapse into excessive apology or self-abasement.
+Stay focused on solving the problem. Acknowledge what went wrong, then move forward.
+If blocked, try alternative approaches rather than repeating the same failing action.
+</responding_to_mistakes>
+
+<knowledge_boundaries>
+Be honest about what you do not know. If you are uncertain about a fact, say so.
+When information might be outdated, note the limitation and suggest the user verify.
+Do not guess at URLs, API endpoints, or version numbers you are not confident about.
+</knowledge_boundaries>")
 
 (defparameter +system-prompt-plan-mode-exploration-guidance+
   "Plan mode authoring workflow:
@@ -128,7 +176,13 @@ Core behavior rules:
           (merge-pathnames #P".amoebum/SYSTEM_PROMPT.md" home)
           (merge-pathnames #P".amoebum/system-prompt.md" home)
           (merge-pathnames #P".config/amoebum/AGENTS.md" home)
-          (merge-pathnames #P".config/amoebum/SYSTEM_PROMPT.md" home))))
+          (merge-pathnames #P".config/amoebum/SYSTEM_PROMPT.md" home)
+          ;; Codex-style user defaults are treated as a fallback global layer
+          ;; when amoebum-specific user defaults are not present.
+          (merge-pathnames #P".codex/AGENTS.md" home)
+          (merge-pathnames #P".codex/agents.md" home)
+          (merge-pathnames #P".config/codex/AGENTS.md" home)
+          (merge-pathnames #P".config/codex/agents.md" home))))
 
 (defun %system-prompt-project-layer-candidates (project-root)
   (let ((root (%system-prompt-resolve-project-root project-root)))
@@ -254,8 +308,7 @@ Core behavior rules:
               (let* ((name (pseudopod:tool-definition-name tool))
                      (description (%system-prompt-trim
                                    (pseudopod:tool-definition-description tool)))
-                     (metadata (and (hash-table-p *tool-metadata*)
-                                    (gethash name *tool-metadata*)))
+                     (metadata (find-tool-metadata name))
                      (permission (and (tool-metadata-p metadata)
                                       (tool-metadata-permission metadata)))
                      (category (and (tool-metadata-p metadata)
@@ -383,13 +436,28 @@ Core behavior rules:
           (format stream "~%Use spawn-agent-worker with :persona to leverage these.~%"))))))
 
 (defun %system-prompt-plan-mode-enabled-p ()
-  (let ((cfg (ignore-errors (current-config))))
-    (and (config-p cfg)
-         (not (null (config-value :plan-mode cfg))))))
+  (not (null (cfg :plan-mode))))
+
+(defun %system-prompt-plan-mode-exploration-checkpoint ()
+  (let* ((snapshot (ignore-errors (plan-mode-exploration-snapshot)))
+         (call-count (or (and (listp snapshot)
+                              (getf snapshot :call-count))
+                         0))
+         (tool-names (or (and (listp snapshot)
+                              (getf snapshot :tool-names))
+                         '())))
+    (if (plusp call-count)
+        (format nil
+                "Exploration checkpoint: ~D exploration tool call~:P recorded using ~{`~A`~^, ~}. Continue building understanding from concrete file evidence before finalizing steps."
+                call-count
+                tool-names)
+        "Exploration checkpoint: no codebase exploration tool calls recorded in this plan session yet. Call read/search/glob/grep tools first, then summarize concrete findings with file references before drafting steps.")))
 
 (defun system-prompt-plan-mode-guidance ()
   (if (%system-prompt-plan-mode-enabled-p)
-      +system-prompt-plan-mode-exploration-guidance+
+      (format nil "~A~2%~A"
+              +system-prompt-plan-mode-exploration-guidance+
+              (%system-prompt-plan-mode-exploration-checkpoint))
       "Plan mode guidance inactive."))
 
 (defun assemble-system-prompt (&key project-root
@@ -421,6 +489,8 @@ Core behavior rules:
     (with-output-to-string (stream)
       (format stream "Amoebum system prompt hierarchy.~%")
       (format stream "Precedence: layer 4 overrides layer 3 overrides layer 2 overrides layer 1.~2%")
+      (format stream "Instruction ingestion order: global user defaults -> project root instructions -> nested directory instructions (root to cwd).~%")
+      (format stream "Global defaults lookup order: ~~/.amoebum/*, ~~/.config/amoebum/*, then ~~/.codex/* and ~~/.config/codex/* fallback files.~2%")
       (dolist (layer layers)
         (let ((index (getf layer :index))
               (label (getf layer :label))

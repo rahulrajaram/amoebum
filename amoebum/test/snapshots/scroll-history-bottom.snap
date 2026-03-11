@@ -1,18 +1,18 @@
 --- ptui-snapshot v1 84x20
 |                                                                                    |
-| ASSISTANT> Assistant response to query 12. This is a detailed explanation.         |
+| Assistant response to query 12. This is a detailed explanation.                    |
 |                                                                                    |
-| YOU> User message number 13 about topic 13.                                        |
+| User message number 13 about topic 13.                                             |
 |                                                                                    |
-| ASSISTANT> Assistant response to query 13. This is a detailed explanation.         |
+| Assistant response to query 13. This is a detailed explanation.                    |
 |                                                                                    |
-| YOU> User message number 14 about topic 14.                                        |
+| User message number 14 about topic 14.                                             |
 |                                                                                    |
-| ASSISTANT> Assistant response to query 14. This is a detailed explanation.         |
+| Assistant response to query 14. This is a detailed explanation.                    |
 |                                                                                    |
-| YOU> User message number 15 about topic 15.                                        |
+| User message number 15 about topic 15.                                             |
 |                                                                                    |
-| ASSISTANT> Assistant response to query 15. This is a detailed explanation.         |
+| Assistant response to query 15. This is a detailed explanation.                    |
 |                                                                                    |
 |                                                                                    |
 | ╭────────────────────────────────────────────────────────────────────────────────╮ |
@@ -59,11 +59,6 @@
 3,36:bold
 3,37:bold
 3,38:bold
-3,39:bold
-3,40:bold
-3,41:bold
-3,42:bold
-3,43:bold
 7,0:bold
 7,1:bold
 7,2:bold
@@ -103,11 +98,6 @@
 7,36:bold
 7,37:bold
 7,38:bold
-7,39:bold
-7,40:bold
-7,41:bold
-7,42:bold
-7,43:bold
 11,0:bold
 11,1:bold
 11,2:bold
@@ -147,12 +137,7 @@
 11,36:bold
 11,37:bold
 11,38:bold
-11,39:bold
-11,40:bold
-11,41:bold
-11,42:bold
-11,43:bold
-17,2:bold
+17,2:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

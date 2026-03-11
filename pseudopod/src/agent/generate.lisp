@@ -97,7 +97,8 @@
                       tools
                       (max-steps +default-step-max-steps+)
                       on-tool-call
-                      on-tool-result)
+                      on-tool-result
+                      on-tool-error)
   "Run a tool-aware generation loop until final output or MAX-STEPS."
   (let ((history (%normalize-step-history system-prompt user-prompt messages))
         (resolved-toolset (or toolset (make-toolset)))
@@ -138,14 +139,23 @@
                :max-steps-reached nil
                :tool-results (nreverse tool-results))))
           (dolist (tool-call tool-calls)
-            (multiple-value-bind (handled-p handled-output)
-                (if on-tool-call
-                    (funcall on-tool-call tool-call)
-                    (values nil nil))
-              (let* ((output (if (eq handled-p t)
-                                 handled-output
-                                 (invoke-tool-call resolved-toolset tool-call)))
-                     (result-record (%make-tool-result-record tool-call output))
+            (let ((output
+                    (handler-case
+                        (multiple-value-bind (handled-p handled-output)
+                            (if on-tool-call
+                                (funcall on-tool-call tool-call)
+                                (values nil nil))
+                          (if (eq handled-p t)
+                              handled-output
+                              (invoke-tool-call resolved-toolset tool-call)))
+                      (error (condition)
+                        (when on-tool-error
+                          (ignore-errors
+                            (funcall on-tool-error tool-call condition)))
+                        (format nil "Tool ~S failed: ~A"
+                                (tool-call-name tool-call)
+                                condition)))))
+              (let* ((result-record (%make-tool-result-record tool-call output))
                      (tool-message (make-message
                                     :role "tool"
                                     :name (tool-call-name tool-call)

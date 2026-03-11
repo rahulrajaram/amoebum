@@ -2,42 +2,54 @@
 
 (def-suite permission-argument-granularity-suite
   :in amoebum-suite
-  :description "Argument-level permission policy granularity tests (I133).")
+  :description "Argument-aware shell permission decision tests (I352).")
 
 (in-suite permission-argument-granularity-suite)
 
-(test permission-command-family-matches-program-token
+(test permission-command-argument-profile-decomposes-shell-command
+  (let* ((profile (amoebum:permission-command-argument-profile
+                   "docker run --privileged --name app ubuntu")))
+    (is (string= "docker" (or (getf profile :program) "")))
+    (is (equal '("docker" "run" "--privileged" "--name" "app" "ubuntu")
+               (getf profile :argv)))
+    (is (equal '("run" "--privileged" "--name" "app" "ubuntu")
+               (getf profile :arguments)))
+    (is (equal '("--privileged" "--name")
+               (getf profile :flags)))
+    (is (equal '("run" "app" "ubuntu")
+               (getf profile :positionals)))))
+
+(test permission-program-selector-uses-decomposed-program-token
   (let ((rules (list (amoebum:make-permission-rule
                       :effect :allow
                       :tool :bash
-                      :command "docker"
+                      :command "*"
+                      :arguments '("program:docker")
                       :source :project))))
-    (is (eq (amoebum:evaluate-command-permission
+    (is (eq (amoebum:check-permission
              :tool :bash
              :command "docker run ubuntu"
+             :permission-mode :supervised
              :rules rules)
             :allow))
-    (is (eq (amoebum:evaluate-command-permission
+    (is (eq (amoebum:check-permission
              :tool :bash
-             :command "DOCKER run ubuntu"
+             :command "git status"
+             :permission-mode :supervised
              :rules rules)
-            :allow))
-    (is (null (amoebum:evaluate-command-permission
-               :tool :bash
-               :command "git status"
-               :rules rules)))))
+            :prompt))))
 
 (test permission-argument-deny-overrides-command-allow
   (let ((rules (list (amoebum:make-permission-rule
                       :effect :allow
                       :tool :bash
-                      :command "docker"
+                      :command "docker *"
                       :source :project)
                      (amoebum:make-permission-rule
                       :effect :deny
                       :tool :bash
-                      :command "docker"
-                      :arguments '("--privileged")
+                      :command "docker *"
+                      :arguments '("flag:--privileged")
                       :source :project))))
     (is (eq (amoebum:check-permission
              :tool :bash
@@ -56,13 +68,13 @@
   (let ((rules (list (amoebum:make-permission-rule
                       :effect :allow
                       :tool :bash
-                      :command "curl"
+                      :command "curl *"
                       :source :project)
                      (amoebum:make-permission-rule
                       :effect :deny
                       :tool :bash
-                      :command "curl"
-                      :arguments '("http://internal-api/*")
+                      :command "curl *"
+                      :arguments '("positional:http://internal-api/*")
                       :source :project))))
     (is (eq (amoebum:check-permission
              :tool :bash
@@ -81,13 +93,13 @@
   (let ((rules (list (amoebum:make-permission-rule
                       :effect :allow
                       :tool :bash
-                      :command "customctl"
+                      :command "customctl *"
                       :source :project)
                      (amoebum:make-permission-rule
                       :effect :deny
                       :tool :bash
-                      :command "customctl"
-                      :arguments '("--force*" "main")
+                      :command "customctl *"
+                      :arguments '("flag:--force*" "positional:main")
                       :source :project))))
     (is (eq (amoebum:check-permission
              :tool :bash
@@ -102,15 +114,32 @@
              :rules rules)
             :allow))))
 
-(test permission-command-rules-remain-tool-specific
-  (let ((rules (list (amoebum:make-permission-rule
-                      :effect :allow
-                      :tool :bash
-                      :command "docker"
-                      :source :project))))
-    (is (eq (amoebum:check-permission
-             :tool :sh
-             :command "docker run ubuntu"
-             :permission-mode :supervised
-             :rules rules)
-            :prompt))))
+(test permission-trace-includes-argument-profile-and-rule-arguments
+  (let* ((rules (list (amoebum:make-permission-rule
+                       :effect :allow
+                       :tool :bash
+                       :command "docker *"
+                       :source :project)
+                      (amoebum:make-permission-rule
+                       :effect :deny
+                       :tool :bash
+                       :command "docker *"
+                       :arguments '("flag:--privileged")
+                       :source :project)))
+         (decision (amoebum:check-permission
+                    :tool :bash
+                    :command "docker run --privileged ubuntu"
+                    :permission-mode :supervised
+                    :rules rules))
+         (trace (amoebum:last-permission-decision-trace))
+         (profile (getf trace :command-argument-profile))
+         (command-trace (find :command
+                              (getf trace :evaluation-trace)
+                              :key (lambda (entry) (getf entry :phase))
+                              :test #'eq)))
+    (is (eq decision :deny))
+    (is (string= "docker" (or (getf profile :program) "")))
+    (is (equal '("--privileged")
+               (getf profile :flags)))
+    (is (equal '("flag:--privileged")
+               (getf command-trace :arguments)))))

@@ -57,9 +57,10 @@
       (let* ((tmp-root
                (uiop:ensure-directory-pathname
                 (merge-pathnames
-                 (make-pathname :directory `(:relative ,(format nil "amoebum-i130-~A"
-                                                                (get-universal-time))))
-                 (uiop:ensure-directory-pathname (uiop:temporary-directory)))))
+                 (make-pathname :directory `(:relative ".tmp-permissions-smokes"
+                                                        ,(format nil "amoebum-i130-~A"
+                                                                 (get-universal-time))))
+                 repo-root)))
              (secret-file (merge-pathnames #P"real/secret.txt" tmp-root))
              (public-file (merge-pathnames #P"real/public.txt" tmp-root))
              (symlink-path (merge-pathnames #P"links/secret-link.txt" tmp-root)))
@@ -120,15 +121,15 @@
                               :rules deny-rules)
                      :deny)
                  "Expected mixed-separator variant of secret path to be denied.")
-                (uiop:with-current-directory (tmp-root)
-                  (assert-true
-                   (eq (funcall check-permission
-                                :tool :write-file
-                                :path "real/./../real/secret.txt"
-                                :permission-mode :full-auto
-                                :rules deny-rules)
-                       :deny)
-                   "Expected relative-dot variant of secret path to be denied."))
+                (assert-true
+                 (eq (funcall check-permission
+                              :tool :write-file
+                              :path (format nil "~Areal/./../real/secret.txt"
+                                            (namestring tmp-root))
+                              :permission-mode :full-auto
+                              :rules deny-rules)
+                     :deny)
+                 "Expected dot-segment absolute variant of secret path to be denied.")
                 ;; False-deny prevention: equivalent identity variants of allow path
                 ;; must still match exact allow when mode default would otherwise prompt.
                 (let ((allow-rules
@@ -154,16 +155,16 @@
                                 :rules allow-rules)
                        :allow)
                    "Expected mixed-separator public path to match exact allow.")
-                  (uiop:with-current-directory (tmp-root)
-                    (assert-true
-                     (eq (funcall check-permission
-                                  :tool :write-file
-                                  :path "real/./public.txt"
-                                  :permission-mode :supervised
-                                  :rules allow-rules)
-                         :allow)
-                     "Expected relative public path to match exact allow.")))))
+                  (assert-true
+                   (eq (funcall check-permission
+                                :tool :write-file
+                                :path (format nil "~Areal/./public.txt"
+                                              (namestring tmp-root))
+                                :permission-mode :supervised
+                                :rules allow-rules)
+                       :allow)
+                   "Expected dot-segment absolute public path to match exact allow.")))))
           (ignore-errors
-            (uiop:delete-directory-tree tmp-root :validate t :if-does-not-exist :ignore))))))
+            (uiop:delete-directory-tree tmp-root :validate t :if-does-not-exist :ignore)))))
 
   (format t "AMOEBUM_PERMISSION_PATH_IDENTITY_SMOKE_OK~%"))

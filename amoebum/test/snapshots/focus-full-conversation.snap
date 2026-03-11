@@ -1,13 +1,13 @@
 --- ptui-snapshot v1 84x20
 | SYSTEM> System: respond concisely.                                                 |
 |                                                                                    |
-| YOU> What tools are available?                                                     |
+| What tools are available?                                                          |
 |                                                                                    |
-| ASSISTANT> I have access to file and search tools.                                 |
+| I have access to file and search tools.                                            |
 |                                                                                    |
 | TOOL> glob-files: found 42 matching files                                          |
 |                                                                                    |
-| ASSISTANT> I found 42 files matching your query.                                   |
+| I found 42 files matching your query.                                              |
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
@@ -81,12 +81,7 @@
 2,23:bold
 2,24:bold
 2,25:bold
-2,26:bold
-2,27:bold
-2,28:bold
-2,29:bold
-2,30:bold
-17,2:bold
+17,2:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

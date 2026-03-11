@@ -1,5 +1,5 @@
 --- ptui-snapshot v1 84x20
-| ASSISTANT> I will check symbols in the current tree.                               |
+| I will check symbols in the current tree.                                          |
 |                                                                                    |
 | TOOL> [streaming] search_symbols {"query":"chat", "limit": 3}                      |
 |                                                                                    |
@@ -20,7 +20,7 @@
 | ╰────────────────────────────────────────────────────────────────────────────────╯ |
 |branch feat/chat-snapshot | mode full-auto | Tokens: 11/128000 (0%) | stream idle | |
 --- attrs
-17,2:bold
+17,2:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

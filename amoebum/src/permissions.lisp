@@ -16,6 +16,14 @@
 (defparameter *path-approval-memory-limit* 256)
 (defparameter *path-approval-persistence-relative-path* #P".amoebum/permissions.lisp")
 (defvar *path-approval-memory-loaded-p* nil)
+(defparameter *permission-path-case-sensitive-p*
+  (not (or (member :windows *features*)
+           (member :win32 *features*)
+           (member :mswindows *features*))))
+(defparameter *permission-path-unicode-normalization-form* :nfc)
+(defparameter *permission-path-identity-check-cache* (make-hash-table :test #'equal))
+(defparameter *permission-path-identity-check-cache-limit* 512)
+(defparameter *permission-path-identity-recheck-hook* nil)
 
 (defparameter *dangerous-command-patterns*
   '("(?i)\\brm\\s+[^\\n]*-rf\\b"
@@ -48,12 +56,13 @@
 
 (defstruct (permission-rule
             (:constructor make-permission-rule
-                (&key id effect path command tool (source :project))))
+                (&key id effect path command tool arguments (source :project))))
   id
   effect
   path
   command
   tool
+  arguments
   source)
 
 (defstruct (path-approval-entry
@@ -605,6 +614,62 @@
         :operator-metadata (and canonical
                                 (command-canonical-form-operator-metadata canonical))))
 
+(defun %classify-command-arguments (arguments)
+  (let ((flags '())
+        (positionals '())
+        (end-of-options-p nil))
+    (dolist (argument arguments)
+      (cond
+        ((and (not end-of-options-p)
+              (string= argument "--"))
+         (setf end-of-options-p t))
+        ((and (not end-of-options-p)
+              (> (length argument) 1)
+              (char= (char argument 0) #\-))
+         (push argument flags))
+        (t
+         (push argument positionals))))
+    (values (nreverse flags)
+            (nreverse positionals))))
+
+(defun %command-argument-profile-from-canonical (canonical)
+  (when canonical
+    (let* ((argv (copy-list (or (command-canonical-form-argv canonical) '())))
+           (program (first argv))
+           (arguments (rest argv)))
+      (multiple-value-bind (flags positionals)
+          (%classify-command-arguments arguments)
+        (list :program program
+              :argv argv
+              :arguments arguments
+              :flags flags
+              :positionals positionals
+              :operators (copy-list (or (command-canonical-form-operators canonical) '()))
+              :wrappers (copy-list (or (command-canonical-form-wrappers canonical) '())))))))
+
+(defun permission-command-argument-profile (command)
+  "Return a structured argument profile for COMMAND.
+COMMAND can be a raw command string/list or an existing COMMAND-CANONICAL-FORM."
+  (let ((canonical (if (typep command 'command-canonical-form)
+                       command
+                       (canonicalize-permission-command command))))
+    (%command-argument-profile-from-canonical canonical)))
+
+(defun %policy-command-text (canonical fallback-command)
+  (let* ((policy-key (and canonical
+                          (command-canonical-form-policy-key canonical)))
+         (normalized (and canonical
+                          (command-canonical-form-normalized canonical)))
+         (separator-p (and normalized
+                           (or (search "|" normalized)
+                               (search ";" normalized)
+                               (search "&&" normalized)))))
+    (cond
+      (separator-p normalized)
+      (policy-key policy-key)
+      (normalized normalized)
+      (t (%command-string fallback-command)))))
+
 (defun %normalize-slashes (string)
   (cl-ppcre:regex-replace-all "/+" (substitute #\/ #\\ string) "/"))
 
@@ -783,6 +848,51 @@
                    (subseq path-text 1))
       path-text))
 
+(defun %normalize-request-path (path)
+  (%normalize-path path :resolve-symlinks-p nil))
+
+(defun %project-root-path ()
+  (let ((root (%path-approval-project-root)))
+    (and root
+         (%trim-trailing-slash
+          (%normalize-slashes (namestring root))))))
+
+(defun %relative-path-text-p (path)
+  (let* ((raw (%path-string path))
+         (trimmed (and raw (%trim-path-whitespace raw))))
+    (and trimmed
+         (> (length trimmed) 0)
+         (not (%absolute-path-p (%normalize-slashes (%normalize-drive-letter trimmed)))))))
+
+(defun %resolve-path-against-project-root (path &key (resolve-symlinks-p t))
+  (let* ((raw (%path-string path))
+         (trimmed (and raw (%trim-path-whitespace raw))))
+    (when (and trimmed (> (length trimmed) 0))
+      (let* ((slash-normalized (%normalize-slashes (%normalize-drive-letter trimmed)))
+             (candidate
+               (if (%relative-path-text-p slash-normalized)
+                   (let ((root (%project-root-path)))
+                     (if (and root (> (length root) 0))
+                         (if (string= root "/")
+                             (concatenate 'string "/" slash-normalized)
+                             (concatenate 'string root "/" slash-normalized))
+                         slash-normalized))
+                   slash-normalized)))
+        (%normalize-path candidate :resolve-symlinks-p resolve-symlinks-p)))))
+
+(defun %path-traversal-attempt-p (path)
+  (let* ((raw (%path-string path))
+         (trimmed (and raw (%trim-path-whitespace raw))))
+    (and trimmed
+         (loop for segment in (uiop:split-string (substitute #\/ #\\ trimmed)
+                                                 :separator "/")
+               thereis (string= segment "..")))))
+
+(defun %path-outside-project-root-p (path project-root)
+  (and project-root
+       path
+       (not (%path-under-directory-p path project-root))))
+
 (defun %normalize-path (path &key (resolve-symlinks-p t))
   (let ((raw (%path-string path)))
     (when raw
@@ -799,6 +909,165 @@
                                 (%normalize-slashes (namestring resolved))
                                 collapsed)))
             (%trim-trailing-slash canonical)))))))
+
+(defun %permission-path-parent-directory (path)
+  (let ((text (%path-string path)))
+    (when (and text (> (length text) 0))
+      (let* ((pathname (pathname text))
+             (directory (make-pathname :name nil :type nil :defaults pathname))
+             (directory-text (%path-string directory)))
+        (when (and directory-text (> (length directory-text) 0))
+          (%normalize-path directory-text))))))
+
+(defun %optional-package (designator)
+  (or (find-package designator)
+      (ignore-errors (require designator))
+      (find-package designator)))
+
+(defun %unicode-normalize-path (path)
+  (let ((text (%path-string path)))
+    (if (or (null text)
+            (null *permission-path-unicode-normalization-form*))
+        text
+        (let* ((package (%optional-package :sb-unicode))
+               (normalize-symbol (and package
+                                      (find-symbol "NORMALIZE-STRING" package)))
+               (normalize-fn (and normalize-symbol
+                                  (fboundp normalize-symbol)
+                                  (symbol-function normalize-symbol))))
+          (if normalize-fn
+              (or (ignore-errors
+                    (funcall normalize-fn
+                             text
+                             *permission-path-unicode-normalization-form*))
+                  text)
+              text)))))
+
+(defun %fold-path-identity-text (path)
+  (let ((normalized (%unicode-normalize-path path)))
+    (if (and normalized (not *permission-path-case-sensitive-p*))
+        (string-downcase normalized)
+        normalized)))
+
+(defun %sb-posix-function (name)
+  (let* ((package (%optional-package :sb-posix))
+         (symbol (and package (find-symbol name package))))
+    (and symbol
+         (fboundp symbol)
+         (symbol-function symbol))))
+
+(defun %path-inode-signature (path &key (follow-symlinks-p t))
+  (let* ((candidate (%normalize-request-path path))
+         (stat-fn (%sb-posix-function (if follow-symlinks-p
+                                          "STAT"
+                                          "LSTAT")))
+         (dev-fn (%sb-posix-function "STAT-DEV"))
+         (ino-fn (%sb-posix-function "STAT-INO")))
+    (when (and candidate stat-fn dev-fn ino-fn)
+      (let ((stat (ignore-errors (funcall stat-fn candidate))))
+        (when stat
+          (let ((dev (ignore-errors (funcall dev-fn stat)))
+                (ino (ignore-errors (funcall ino-fn stat))))
+            (when (and dev ino)
+              (list :dev dev :ino ino))))))))
+
+(defun %capture-path-identity (path)
+  (let* ((request-path (%normalize-request-path path))
+         (target-path (%normalize-path path))
+         (effective-path (or target-path request-path))
+         (parent-path (%permission-path-parent-directory effective-path)))
+    (when effective-path
+      (list :request-path request-path
+            :target-path effective-path
+            :target-folded (%fold-path-identity-text effective-path)
+            :target-inode (%path-inode-signature effective-path)
+            :parent-path parent-path
+            :parent-folded (and parent-path
+                                (%fold-path-identity-text parent-path))
+            :parent-inode (and parent-path
+                               (%path-inode-signature parent-path))
+            :captured-at (get-universal-time)))))
+
+(defun %identity-field-matches-p (left right &key (stringp nil))
+  (or (null left)
+      (null right)
+      (if stringp
+          (string= left right)
+          (equal left right))))
+
+(defun %path-identity-records-compatible-p (expected observed)
+  (and expected
+       observed
+       (%identity-field-matches-p (getf expected :target-folded)
+                                  (getf observed :target-folded)
+                                  :stringp t)
+       (%identity-field-matches-p (getf expected :target-inode)
+                                  (getf observed :target-inode))
+       (%identity-field-matches-p (getf expected :parent-folded)
+                                  (getf observed :parent-folded)
+                                  :stringp t)
+       (%identity-field-matches-p (getf expected :parent-inode)
+                                  (getf observed :parent-inode))))
+
+(defun %permission-path-identity-cache-key (tool path)
+  (let ((tool-name (%tool-name tool))
+        (request-path (%normalize-request-path path)))
+    (when (and tool-name request-path)
+      (list :tool tool-name :request-path request-path))))
+
+(defun %trim-permission-path-identity-cache ()
+  (when (> (hash-table-count *permission-path-identity-check-cache*)
+           *permission-path-identity-check-cache-limit*)
+    (clrhash *permission-path-identity-check-cache*)))
+
+(defun %record-permission-path-identity-check (tool path decision decision-id)
+  (let* ((cache-key (%permission-path-identity-cache-key tool path))
+         (snapshot (%capture-path-identity path)))
+    (when (and cache-key snapshot)
+      (setf (gethash cache-key *permission-path-identity-check-cache*)
+            (list :decision decision
+                  :decision-id decision-id
+                  :identity snapshot))
+      (%trim-permission-path-identity-cache))
+    snapshot))
+
+(defun %path-identity-equal-p (left right)
+  (let ((left-text (%path-string left))
+        (right-text (%path-string right)))
+    (and left-text
+         right-text
+         (or (string= left-text right-text)
+             (let ((left-folded (%fold-path-identity-text left-text))
+                   (right-folded (%fold-path-identity-text right-text)))
+               (and left-folded
+                    right-folded
+                    (string= left-folded right-folded)))
+             (let ((left-inode (%path-inode-signature left-text))
+                   (right-inode (%path-inode-signature right-text)))
+               (and left-inode
+                    right-inode
+                    (equal left-inode right-inode)))))))
+
+(defun %assert-path-identity-stable-at-use-time (&key tool path)
+  (let* ((cache-key (%permission-path-identity-cache-key tool path))
+         (cached (and cache-key
+                      (gethash cache-key *permission-path-identity-check-cache*)))
+         (expected (and (listp cached) (getf cached :identity))))
+    (when (and expected (functionp *permission-path-identity-recheck-hook*))
+      (funcall *permission-path-identity-recheck-hook*
+               :tool (%tool-name tool)
+               :request-path (%normalize-request-path path)
+               :expected expected))
+    (let ((observed (and expected (%capture-path-identity path))))
+      (when (and expected
+                 (not (%path-identity-records-compatible-p expected observed)))
+        (error 'tool-permission-denied
+               :tool-name (%tool-name tool)
+               :arguments nil
+               :reason-code :path-identity-changed
+               :message (format nil "Path identity changed for ~A before use-time recheck."
+                                (%path-string path))
+               :reason "canonical path identity changed before file use")))))
 
 (defun %normalize-pattern-path (pattern)
   (let ((raw (%path-string pattern)))
@@ -1092,6 +1361,118 @@
       (t
        :exact))))
 
+(defun %argument-pattern-components (pattern)
+  (let ((normalized (%normalize-permission-command pattern)))
+    (when normalized
+      (flet ((consume (prefix selector)
+               (values selector
+                       (%trim-command-whitespace
+                        (subseq normalized (length prefix))))))
+        (cond
+          ((%string-prefix-ci-p "program:" normalized)
+           (consume "program:" :program))
+          ((%string-prefix-ci-p "prog:" normalized)
+           (consume "prog:" :program))
+          ((%string-prefix-ci-p "flag:" normalized)
+           (consume "flag:" :flag))
+          ((%string-prefix-ci-p "flags:" normalized)
+           (consume "flags:" :flag))
+          ((%string-prefix-ci-p "option:" normalized)
+           (consume "option:" :flag))
+          ((%string-prefix-ci-p "options:" normalized)
+           (consume "options:" :flag))
+          ((%string-prefix-ci-p "positional:" normalized)
+           (consume "positional:" :positional))
+          ((%string-prefix-ci-p "position:" normalized)
+           (consume "position:" :positional))
+          ((%string-prefix-ci-p "pos:" normalized)
+           (consume "pos:" :positional))
+          ((%string-prefix-ci-p "arg:" normalized)
+           (consume "arg:" :argument))
+          ((%string-prefix-ci-p "args:" normalized)
+           (consume "args:" :argument))
+          ((%string-prefix-ci-p "token:" normalized)
+           (consume "token:" :token))
+          ((%string-prefix-ci-p "argv:" normalized)
+           (consume "argv:" :token))
+          (t
+           (values :argument normalized)))))))
+
+(defun %validate-argument-pattern (argument-pattern)
+  (let ((normalized (%normalize-permission-command argument-pattern)))
+    (when normalized
+      (multiple-value-bind (_selector pattern)
+          (%argument-pattern-components normalized)
+        (declare (ignore _selector))
+        (when (string= pattern "")
+          (error "Argument pattern must not be empty, got ~S."
+                 argument-pattern))
+        (let ((kind (%command-pattern-kind pattern)))
+          (when (eq kind :regex)
+            (let ((regex-body (%command-regex-body pattern)))
+              (when (or (null regex-body)
+                        (string= (%trim-command-whitespace regex-body) ""))
+                (error "Argument regex pattern must not be empty, got ~S."
+                       argument-pattern))
+              (handler-case
+                  (cl-ppcre:create-scanner regex-body)
+                (error (condition)
+                  (error "Invalid argument regex pattern ~S: ~A"
+                         argument-pattern
+                         condition))))))))
+    normalized))
+
+(defun %normalize-rule-arguments (arguments)
+  (cond
+    ((null arguments) nil)
+    ((listp arguments)
+     (loop for argument-pattern in arguments
+           for normalized = (%validate-argument-pattern argument-pattern)
+           when normalized
+             collect normalized))
+    (t
+     (let ((normalized (%validate-argument-pattern arguments)))
+       (if normalized
+           (list normalized)
+           nil)))))
+
+(defun %argument-pattern-candidates (argument-profile selector)
+  (case selector
+    (:program
+     (let ((program (getf argument-profile :program)))
+       (if program
+           (list program)
+           '())))
+    (:flag
+     (copy-list (or (getf argument-profile :flags) '())))
+    (:positional
+     (copy-list (or (getf argument-profile :positionals) '())))
+    (:token
+     (copy-list (or (getf argument-profile :argv) '())))
+    (otherwise
+     (copy-list (or (getf argument-profile :arguments) '())))))
+
+(defun %argument-pattern-matches-p (argument-pattern argument-profile)
+  (multiple-value-bind (selector matcher)
+      (%argument-pattern-components argument-pattern)
+    (and matcher
+         (let ((candidates (%argument-pattern-candidates argument-profile selector)))
+           (loop for candidate in candidates
+                 thereis (%command-matches-pattern-p candidate
+                                                    matcher
+                                                    :command-normalized-p t))))))
+
+(defun %rule-arguments-match-p (rule canonical-command)
+  (let ((rule-arguments (permission-rule-arguments rule)))
+    (if (null rule-arguments)
+        t
+        (let ((argument-profile
+                (%command-argument-profile-from-canonical canonical-command)))
+          (and argument-profile
+               (loop for argument-pattern in rule-arguments
+                     always (%argument-pattern-matches-p argument-pattern
+                                                        argument-profile)))))))
+
 (defun %path-kind (pattern)
   (let* ((raw (%path-string pattern))
          (normalized (and raw
@@ -1206,11 +1587,20 @@
          (dir* (%trim-trailing-slash (%normalize-pattern-path directory-pattern)))
          (prefix (if (string= dir* "/")
                      "/"
-                     (concatenate 'string dir* "/"))))
+                     (concatenate 'string dir* "/")))
+         (path-folded (%fold-path-identity-text path*))
+         (dir-folded (%fold-path-identity-text dir*))
+         (prefix-folded (and dir-folded
+                             (if (string= dir-folded "/")
+                                 "/"
+                                 (concatenate 'string dir-folded "/")))))
     (and path*
          dir*
-         (or (string= path* dir*)
-             (uiop:string-prefix-p prefix path*)))))
+         (or (%path-identity-equal-p path* dir*)
+             (uiop:string-prefix-p prefix path*)
+             (and path-folded
+                  prefix-folded
+                  (uiop:string-prefix-p prefix-folded path-folded))))))
 
 (defun %path-matches-pattern-p (path pattern &key (path-normalized-p nil))
   (let ((kind (%path-kind pattern))
@@ -1220,30 +1610,51 @@
     (and candidate
          (case kind
            (:wildcard t)
-           (:exact (string= candidate (%normalize-pattern-path pattern)))
+           (:exact (%path-identity-equal-p candidate
+                                           (%normalize-pattern-path pattern)))
            (:directory (%path-under-directory-p candidate pattern))
            (:glob (cl-ppcre:scan (%glob->regex pattern) candidate))
            (otherwise nil)))))
 
 (defun %command-matches-pattern-p (command pattern &key (command-normalized-p nil))
-  (let* ((candidate (if command-normalized-p
-                        command
-                        (%normalize-permission-command command)))
-         (normalized-pattern (%normalize-permission-command pattern))
-         (kind (%command-pattern-kind normalized-pattern)))
-    (and candidate
-         (case kind
-           (:wildcard t)
-           (:exact (string= candidate normalized-pattern))
-           (:prefix (uiop:string-prefix-p
-                     (subseq normalized-pattern 0 (1- (length normalized-pattern)))
-                     candidate))
-           (:glob (cl-ppcre:scan (%command-glob->regex normalized-pattern)
-                                 candidate))
-           (:regex (let ((regex-body (%command-regex-body normalized-pattern)))
-                     (and regex-body
-                          (cl-ppcre:scan regex-body candidate))))
-           (otherwise nil)))))
+  (labels ((%pipeline-segment-candidates (value)
+             (let ((canonical (canonicalize-permission-command value)))
+               (when canonical
+                 (remove-duplicates
+                  (loop for segment in (command-canonical-form-commands canonical)
+                        for text = (%canonical-argv-string segment)
+                        when (and (stringp text)
+                                  (> (length text) 0))
+                          collect text)
+                  :test #'string=))))
+           (%matches-single-candidate-p (candidate normalized-pattern kind)
+             (case kind
+               (:wildcard t)
+               (:exact (string= candidate normalized-pattern))
+               (:prefix (uiop:string-prefix-p
+                         (subseq normalized-pattern 0 (1- (length normalized-pattern)))
+                         candidate))
+               (:glob (cl-ppcre:scan (%command-glob->regex normalized-pattern)
+                                     candidate))
+               (:regex (let ((regex-body (%command-regex-body normalized-pattern)))
+                         (and regex-body
+                              (cl-ppcre:scan regex-body candidate))))
+               (otherwise nil))))
+    (let* ((candidate (if command-normalized-p
+                          command
+                          (%normalize-permission-command command)))
+           (normalized-pattern (%normalize-permission-command pattern))
+           (kind (%command-pattern-kind normalized-pattern))
+           (candidates (and candidate
+                            (remove-duplicates
+                             (cons candidate
+                                   (%pipeline-segment-candidates candidate))
+                             :test #'string=))))
+      (and candidates
+           (loop for candidate-text in candidates
+                 thereis (%matches-single-candidate-p candidate-text
+                                                     normalized-pattern
+                                                     kind))))))
 
 (defun %tool-matches-rule-p (tool rule-tool)
   (let ((tool-name (%tool-name tool))
@@ -1251,7 +1662,7 @@
     (or (null rule-tool-name)
         (and tool-name (string= tool-name rule-tool-name)))))
 
-(defun %rule-matches-p (rule tool path command)
+(defun %rule-matches-p (rule tool path command canonical-command)
   (and (%tool-matches-rule-p tool (permission-rule-tool rule))
        (let ((rule-path (permission-rule-path rule)))
          (if rule-path
@@ -1262,7 +1673,8 @@
              (%command-matches-pattern-p command
                                          rule-command
                                          :command-normalized-p t)
-             t))))
+             t))
+       (%rule-arguments-match-p rule canonical-command)))
 
 (defun %path-specificity-score (rule)
   (case (%path-kind (permission-rule-path rule))
@@ -1281,9 +1693,30 @@
     (:wildcard 0)
     (otherwise 0)))
 
+(defun %argument-pattern-specificity-score (argument-pattern)
+  (multiple-value-bind (_selector matcher)
+      (%argument-pattern-components argument-pattern)
+    (declare (ignore _selector))
+    (case (%command-pattern-kind matcher)
+      (:exact 70)
+      (:prefix 50)
+      (:glob 40)
+      (:regex 30)
+      (:wildcard 10)
+      (otherwise 0))))
+
+(defun %argument-specificity-score (rule)
+  (let ((arguments (permission-rule-arguments rule)))
+    (if arguments
+        (+ 25
+           (loop for argument-pattern in arguments
+                 sum (%argument-pattern-specificity-score argument-pattern)))
+        0)))
+
 (defun %specificity-score (rule)
   (+ (%path-specificity-score rule)
-     (%command-specificity-score rule)))
+     (%command-specificity-score rule)
+     (%argument-specificity-score rule)))
 
 (defun %scope-score (rule)
   (case (permission-rule-source rule)
@@ -1318,6 +1751,7 @@
                                 (permission-rule-path rule)
                                 (permission-rule-command rule)
                                 (permission-rule-tool rule)
+                                (permission-rule-arguments rule)
                                 (permission-rule-source rule))))))))
 
 (defun %permission-cache-note-invalidation (reason)
@@ -1374,13 +1808,14 @@
                        condition)))))))
     normalized))
 
-(defun add-permission-rule (&key effect path command tool (source :project))
+(defun add-permission-rule (&key effect path command tool arguments (source :project))
   (unless (member effect '(:allow :deny) :test #'eq)
     (error "Permission rule EFFECT must be :allow or :deny, got ~S." effect))
   (let ((rule (make-permission-rule :effect effect
                                     :path path
                                     :command (%validate-command-pattern command)
                                     :tool tool
+                                    :arguments (%normalize-rule-arguments arguments)
                                     :source source)))
     (%permission-rule-id rule)
     (push rule *permission-rules*)
@@ -1405,9 +1840,10 @@
           :source (permission-rule-source rule)
           :tool (%tool-name (permission-rule-tool rule))
           :path (permission-rule-path rule)
-          :command (permission-rule-command rule))))
+          :command (permission-rule-command rule)
+          :arguments (permission-rule-arguments rule))))
 
-(defun %evaluate-rule-phase (phase tool path command rules)
+(defun %evaluate-rule-phase (phase tool path command rules &key canonical-command)
   (let* ((cache-key (%permission-cache-key phase tool path command rules))
          (cached (and cache-key
                       (multiple-value-list
@@ -1427,7 +1863,7 @@
     (let ((best nil))
       (when (or path command)
         (dolist (rule rules)
-          (when (%rule-matches-p rule tool path command)
+          (when (%rule-matches-p rule tool path command canonical-command)
             (when (%better-rule-p rule best)
               (setf best rule)))))
       (let ((trace (append (%rule-trace-entry phase best)
@@ -1449,11 +1885,21 @@
           decision))))
 
 (defun evaluate-command-permission (&key tool command path (rules *permission-rules*)
+                                      canonical-command
                                       (with-trace-p nil))
-  (let ((normalized-command (%normalize-permission-command command))
+  (let* ((canonical (or canonical-command
+                        (and command
+                             (canonicalize-permission-command command))))
+         (policy-command (%policy-command-text canonical command))
+         (normalized-command (%normalize-permission-command policy-command))
         (normalized-path (and path (%normalize-path path))))
     (multiple-value-bind (decision trace)
-        (%evaluate-rule-phase :command tool normalized-path normalized-command rules)
+        (%evaluate-rule-phase :command
+                              tool
+                              normalized-path
+                              normalized-command
+                              rules
+                              :canonical-command canonical)
       (if with-trace-p
           (values decision trace)
           decision))))
@@ -1492,8 +1938,7 @@
     (otherwise nil)))
 
 (defun %configured-approval-policy ()
-  (ignore-errors
-    (config-value :approval-policy (current-config))))
+  (cfg :approval-policy))
 
 (defun %effective-permission-mode (mode &optional approval-policy)
   (or
@@ -1578,8 +2023,7 @@
 
 (defun %mcp-server-config-decision (server-name)
   (let ((pairs (%mcp-permission-config-pairs
-                (ignore-errors (config-value :mcp-server-permissions
-                                             (current-config)))))
+                (cfg :mcp-server-permissions)))
         (default nil))
     (dolist (entry pairs)
       (let* ((kind (%mcp-permission-key-kind (car entry) server-name))
@@ -1606,7 +2050,7 @@
     (otherwise :prompt)))
 
 (defun %plan-mode-enabled-p ()
-  (not (null (ignore-errors (config-value :plan-mode (current-config))))))
+  (not (null (cfg :plan-mode))))
 
 (defun plan-mode-mutating-tools-blocked-p (&optional
                                              (config (ignore-errors (current-config)))
@@ -1676,23 +2120,15 @@
                            (record-history-p t))
   (let* ((tool-name (%tool-name tool))
          (mode (%effective-permission-mode permission-mode approval-policy))
-         (normalized-path (%normalize-path path))
+         (project-root (%project-root-path))
+         (normalized-path (or (%resolve-path-against-project-root path)
+                              (%normalize-path path)))
+         (request-path (or (%resolve-path-against-project-root path :resolve-symlinks-p nil)
+                           (%normalize-request-path path)))
          (canonical-command (canonicalize-permission-command command))
+         (argument-profile (%command-argument-profile-from-canonical canonical-command))
          (command-cache-key (%permission-command-cache-key tool canonical-command))
-         (policy-command-text
-           (let* ((policy-key (and canonical-command
-                                   (command-canonical-form-policy-key canonical-command)))
-                  (normalized (and canonical-command
-                                   (command-canonical-form-normalized canonical-command)))
-                  (separator-p (and normalized
-                                    (or (search "|" normalized)
-                                        (search ";" normalized)
-                                        (search "&&" normalized)))))
-             (cond
-               (separator-p normalized)
-               (policy-key policy-key)
-               (normalized normalized)
-               (t (%command-string command)))))
+         (policy-command-text (%policy-command-text canonical-command command))
          (mcp-server-name (%mcp-tool-server-name tool-name))
          (mcp-decision (and mcp-server-name
                             (or (%mcp-server-config-decision mcp-server-name)
@@ -1706,73 +2142,116 @@
          (decision-reason nil)
          (actionable-reason nil)
          (decision-reason-code nil)
-         (decision nil))
-    (multiple-value-setq (path-decision path-trace)
-      (if normalized-path
-          (evaluate-path-permission :tool tool
-                                    :path normalized-path
-                                    :rules rules
-                                    :with-trace-p t)
-          (values nil nil)))
-    (multiple-value-setq (command-decision command-trace)
-      (if policy-command-text
-          (evaluate-command-permission :tool tool
-                                       :path normalized-path
-                                       :command policy-command-text
-                                       :rules rules
-                                       :with-trace-p t)
-          (values nil nil)))
-    (setf decision
-          (cond
-                     (plan-mode-blocked-p :deny)
-                     ((or (eq path-decision :deny)
-                          (eq command-decision :deny))
-                      :deny)
-                     ((%plan-mode-readonly-allowed-p tool) :allow)
-                     ((and path (%path-memory-allows-p tool path)) :allow)
-                     ((eq command-decision :allow) :allow)
-                     ((eq path-decision :allow) :allow)
-                     (mcp-decision mcp-decision)
-                     (t (%mode-default-decision mode tool normalized-path policy-command-text))))
-    (when plan-mode-blocked-p
-      (setf decision-source :plan-mode
-            decision-reason-code :plan-mode-mutating-command-blocked
-            decision-reason (%plan-mode-block-reason tool-name policy-command-text)
-            actionable-reason (%plan-mode-actionable-reason)))
-    (when *last-command-canonicalization-trace*
-      (setf *last-command-canonicalization-trace*
-            (append *last-command-canonicalization-trace*
-                    (list :command-cache-key command-cache-key))))
-    (let* ((dangerous-reasons (or (and dangerous-p '(:explicit-dangerous-flag))
-                                  (and canonical-command
-                                       (%command-danger-reason-codes canonical-command))))
-           (dangerous-escalation-p (and (eq decision :allow)
-                                        (not (eq mode :yolo))
-                                        dangerous-reasons))
-           (final-decision (if dangerous-escalation-p :prompt decision))
-           (trace
-             (list :decision-id (%next-permission-decision-id)
-                   :timestamp (get-universal-time)
-                   :tool tool-name
-                   :path normalized-path
-                   :command policy-command-text
-                   :permission-mode mode
-                   :decision final-decision
-                   :pre-escalation-decision decision
-                   :decision-source decision-source
-                   :reason-code decision-reason-code
-                   :reason decision-reason
-                   :actionable-reason actionable-reason
-                   :dangerous-escalation-p dangerous-escalation-p
-                   :dangerous-reason-codes dangerous-reasons
-                   :path-decision path-decision
-                   :command-decision command-decision
-                   :mcp-decision mcp-decision
-                   :evaluation-trace (remove nil (list path-trace command-trace)))))
-      (setf *last-permission-decision-trace* trace)
-      (when record-history-p
-        (%record-permission-decision trace))
-      final-decision)))
+         (path-memory-checked-p nil)
+         (path-memory-allowed-p nil)
+         (path-traversal-attempt-p (%path-traversal-attempt-p path))
+         (outside-project-root-p
+           (or (%path-outside-project-root-p request-path project-root)
+               (%path-outside-project-root-p normalized-path project-root)))
+         (project-root-guard-deny-p nil)
+         (decision nil)
+         (decision-id (%next-permission-decision-id))
+         (path-identity-snapshot nil))
+    (labels ((path-memory-allowed-p ()
+               (unless path-memory-checked-p
+                 (setf path-memory-allowed-p (and path (%path-memory-allows-p tool path))
+                       path-memory-checked-p t))
+               path-memory-allowed-p))
+      (multiple-value-setq (path-decision path-trace)
+        (if normalized-path
+            (evaluate-path-permission :tool tool
+                                      :path normalized-path
+                                      :rules rules
+                                      :with-trace-p t)
+            (values nil nil)))
+      (multiple-value-setq (command-decision command-trace)
+        (if policy-command-text
+            (evaluate-command-permission :tool tool
+                                         :path normalized-path
+                                         :command policy-command-text
+                                         :canonical-command canonical-command
+                                         :rules rules
+                                         :with-trace-p t)
+            (values nil nil)))
+      (setf decision
+            (cond
+              (plan-mode-blocked-p :deny)
+              ((or (eq path-decision :deny)
+                   (eq command-decision :deny))
+               :deny)
+              ((%plan-mode-readonly-allowed-p tool) :allow)
+              ((path-memory-allowed-p) :allow)
+              ((eq command-decision :allow) :allow)
+              ((eq path-decision :allow) :allow)
+              (mcp-decision mcp-decision)
+              (t (%mode-default-decision mode tool normalized-path policy-command-text))))
+      (setf project-root-guard-deny-p
+            (and outside-project-root-p
+                 (not plan-mode-blocked-p)
+                 (not (eq path-decision :deny))
+                 (not (eq command-decision :deny))
+                 (not (eq path-decision :allow))
+                 (not (path-memory-allowed-p))))
+      (when project-root-guard-deny-p
+        (setf decision :deny
+              decision-source :project-root-guard
+              decision-reason-code :path-traversal-outside-project-root
+              decision-reason
+              (format nil "Resolved path ~A escapes project root ~A."
+                      (or normalized-path request-path (%path-string path))
+                      project-root)))
+      (when plan-mode-blocked-p
+        (setf decision-source :plan-mode
+              decision-reason-code :plan-mode-mutating-command-blocked
+              decision-reason (%plan-mode-block-reason tool-name policy-command-text)
+              actionable-reason (%plan-mode-actionable-reason)))
+      (when *last-command-canonicalization-trace*
+        (setf *last-command-canonicalization-trace*
+              (append *last-command-canonicalization-trace*
+                      (list :command-cache-key command-cache-key))))
+      (let* ((dangerous-reasons (or (and dangerous-p '(:explicit-dangerous-flag))
+                                    (and canonical-command
+                                         (%command-danger-reason-codes canonical-command))))
+             (dangerous-escalation-p (and (eq decision :allow)
+                                          (not (eq mode :yolo))
+                                          dangerous-reasons))
+             (final-decision (if dangerous-escalation-p :prompt decision))
+             (trace
+               (list :decision-id decision-id
+                     :timestamp (get-universal-time)
+                     :tool tool-name
+                     :path normalized-path
+                     :command policy-command-text
+                     :command-argument-profile argument-profile
+                     :permission-mode mode
+                     :decision final-decision
+                     :pre-escalation-decision decision
+                     :decision-source decision-source
+                     :reason-code decision-reason-code
+                     :reason decision-reason
+                     :actionable-reason actionable-reason
+                     :dangerous-escalation-p dangerous-escalation-p
+                     :dangerous-reason-codes dangerous-reasons
+                     :path-decision path-decision
+                     :command-decision command-decision
+                     :mcp-decision mcp-decision
+                     :project-root project-root
+                     :request-path request-path
+                     :outside-project-root-p outside-project-root-p
+                     :path-traversal-attempt-p path-traversal-attempt-p
+                     :evaluation-trace (remove nil (list path-trace command-trace)))))
+        (setf path-identity-snapshot
+              (%record-permission-path-identity-check tool-name
+                                                      path
+                                                      final-decision
+                                                      decision-id))
+        (when path-identity-snapshot
+          (setf trace (append trace
+                              (list :path-identity path-identity-snapshot))))
+        (setf *last-permission-decision-trace* trace)
+        (when record-history-p
+          (%record-permission-decision trace))
+        final-decision))))
 
 (defun explain-permission-decision (&key decision-id (rules *permission-rules*))
   (let* ((historical

@@ -49,6 +49,29 @@ From repo root:
 1. `make check`
 2. `./bin/amoebum`
 
+## Watch/Nudge Local HTTP CRUD
+
+Start the local API server from repo root:
+
+1. `python3 amoebum/watch_nudge_http_server.py --host 127.0.0.1 --port 8098`
+2. `curl -sS http://127.0.0.1:8098/health`
+
+CRUD examples with `curl` (use a second terminal while the server is running):
+
+1. `BASE=http://127.0.0.1:8098/api`
+2. `curl -sS -X POST "$BASE/watches" -H 'content-type: application/json' --data '{"id":"watch-demo","watch_path":"/tmp/demo","pattern":"*.lisp"}'`
+3. `curl -sS "$BASE/watches/watch-demo"`
+4. `curl -sS -X PUT "$BASE/watches/watch-demo" -H 'content-type: application/json' --data '{"id":"watch-demo","watch_path":"/tmp/demo","pattern":"*.md"}'`
+5. `curl -sS -X DELETE "$BASE/watches/watch-demo"`
+6. `curl -sS -X POST "$BASE/nudges" -H 'content-type: application/json' --data '{"id":"nudge-demo","channel":"desktop","message":"Check demo watch"}'`
+7. `curl -sS "$BASE/nudges"`
+8. `curl -sS -X DELETE "$BASE/nudges/nudge-demo"`
+
+Browser workflow:
+
+1. Open `http://127.0.0.1:8098/health` in a browser, then use DevTools Console for CRUD with `fetch('/api/watches', ...)` and `fetch('/api/nudges', ...)`.
+2. Bundled browser registration UI assets live under `watch_nudge_server/static/` (`registrations.html`, `registrations.js`) for integrations that expose `/api/registrations`.
+
 ## Amoebum CLI
 
 Use the single entrypoint from repo root:
@@ -107,6 +130,10 @@ Post-run memory sync:
 Guard script:
 
 - `./bin/check-dist-ignore.sh` checks `.gitignore` for `dist/` and validates `git check-ignore -q dist`.
+
+Trace helpers:
+
+1. Linux `bpftrace` helper scripts for tool/stream observability are documented in `docs/trace-helper-scripts.md`.
 
 Payload contract (`yarli_postrun_memory_v1`):
 

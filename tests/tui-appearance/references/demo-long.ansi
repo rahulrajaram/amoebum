@@ -1,0 +1,40 @@
+[38;2;150;235;170m     [1m[38;2;195;235;255mSection 2[0m[39m[49m
+[38;2;150;235;170m     [39m
+[38;2;150;235;170m     Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore [39m
+[38;2;150;235;170m     magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo
+     consequat.[39m
+[38;2;150;235;170m     [39m
+[38;2;150;235;170m     - Item A in section 2[39m
+[38;2;150;235;170m     - Item B in section 2[39m
+[38;2;150;235;170m     - Item C in section 2[39m
+[38;2;150;235;170m     [39m
+[38;2;150;235;170m     [1m[38;2;195;235;255mSection 3[0m[39m[49m
+[38;2;150;235;170m     [39m
+[38;2;150;235;170m     Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore [39m
+[38;2;150;235;170m     magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo
+     consequat.[39m
+[38;2;150;235;170m     [39m
+[38;2;150;235;170m     - Item A in section 3[39m
+[38;2;150;235;170m     - Item B in section 3[39m
+[38;2;150;235;170m     - Item C in section 3[39m
+[38;2;150;235;170m     [39m
+[38;2;150;235;170m     [1m[38;2;195;235;255mSection 4[0m[39m[49m
+[38;2;150;235;170m     [39m
+[38;2;150;235;170m     Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore [39m
+[38;2;150;235;170m     magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo
+     consequat.[39m
+[38;2;150;235;170m     [39m
+[38;2;150;235;170m     - Item A in section 4[39m
+[38;2;150;235;170m     - Item B in section 4[39m
+[38;2;150;235;170m     - Item C in section 4[39m
+[38;2;150;235;170m     [39m
+[38;2;150;235;170m     [1m[38;2;195;235;255mSection 5[0m[39m[49m
+[38;2;150;235;170m     [39m
+[38;2;150;235;170m     Lorem ipsum dolor [1;7m█[0m[39m[49m
+
+
+Streaming... Press Ctrl-C to stop early.
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │[1;7m [0m[39m[49m                                                                                                                   │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+[1m[38;2;220;220;220m[48;2;128;0;0mbranch master | mode supervised | [38;2;140;230;150mTokens: 344/128000 (0%)[38;2;220;220;220m | stream 27.42 tok/s | model moonshot-v1-128k

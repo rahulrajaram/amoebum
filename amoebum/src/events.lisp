@@ -328,10 +328,7 @@
     (t
      (%normalize-event-type event-type))))
 
-(defun %monotonic-milliseconds ()
-  (truncate (* 1000
-               (/ (coerce (get-internal-real-time) 'double-float)
-                  (coerce internal-time-units-per-second 'double-float)))))
+;; Monotonic time delegated to monotonic-ms in util.lisp
 
 (defun make-event (&key (type :unknown)
                      (source :unknown)
@@ -402,7 +399,11 @@
     (let ((filter (event-subscription-filter subscription)))
       (when (or (null filter)
                 (funcall filter event))
-        (funcall (event-subscription-handler subscription) event))))
+        (let ((started-ms (monotonic-ms)))
+          (funcall (event-subscription-handler subscription) event)
+          (usdt-probe-event-dispatch (event-type event)
+                                     (event-subscription-id subscription)
+                                     (max 0 (- (monotonic-ms) started-ms)))))))
   event)
 
 (defun %coerce-published-event (event source source-supplied-p
@@ -434,7 +435,7 @@
                                             payload payload-supplied-p))
          (sequence-number (%next-sequence bus)))
     (setf (event-seq prepared) sequence-number
-          (event-ts-mono prepared) (%monotonic-milliseconds)
+          (event-ts-mono prepared) (monotonic-ms)
           (event-timestamp prepared) (get-universal-time))
     (%record-event-history bus prepared)
     (%dispatch-event bus prepared)

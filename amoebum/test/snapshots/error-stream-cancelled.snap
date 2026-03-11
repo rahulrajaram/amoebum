@@ -1,7 +1,7 @@
 --- ptui-snapshot v1 84x20
-| YOU> Explain the architecture.                                                     |
+| Explain the architecture.                                                          |
 |                                                                                    |
-| ASSISTANT> The system is composed of multiple layers...                            |
+| The system is composed of multiple layers...                                       |
 |                                                                                    |
 | SYSTEM> [Stream cancelled by user]                                                 |
 |                                                                                    |
@@ -46,11 +46,6 @@
 0,23:bold
 0,24:bold
 0,25:bold
-0,26:bold
-0,27:bold
-0,28:bold
-0,29:bold
-0,30:bold
 4,0:bold
 4,1:bold
 4,2:bold
@@ -86,7 +81,7 @@
 4,32:bold
 4,33:bold
 4,34:bold
-17,2:bold
+17,2:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

@@ -42,12 +42,7 @@
 
 (defun %event-normalize-tool-name (value)
   (when value
-    (string-downcase
-     (typecase value
-       (string value)
-       (symbol (symbol-name value))
-       (character (string value))
-       (t (return-from %event-normalize-tool-name nil))))))
+    (normalize-name value)))
 
 (defun filter-by-type (type)
   (let ((types (%normalize-filter-values type #'%normalize-event-type)))

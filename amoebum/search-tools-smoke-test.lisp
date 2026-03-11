@@ -35,6 +35,7 @@
          (fn-in
            (lambda (name package)
              (symbol-function (funcall symbol-in name package))))
+         (getenv-fn (funcall fn-in "GETENV" uiop-pkg))
          (temporary-directory-fn (funcall fn-in "TEMPORARY-DIRECTORY" uiop-pkg))
          (ensure-directory-pathname-fn (funcall fn-in "ENSURE-DIRECTORY-PATHNAME" uiop-pkg))
          (find-tool-fn (funcall fn-in "FIND-TOOL" pseudopod-pkg))
@@ -42,7 +43,8 @@
          (toolset-sym (funcall symbol-in "*TOOLSET*" amoebum-pkg))
          (setconfig-fn (funcall fn-in "SETCONFIG" amoebum-pkg))
          (clear-permission-rules-fn (funcall fn-in "CLEAR-PERMISSION-RULES" amoebum-pkg))
-         (add-permission-rule-fn (funcall fn-in "ADD-PERMISSION-RULE" amoebum-pkg)))
+         (add-permission-rule-fn (funcall fn-in "ADD-PERMISSION-RULE" amoebum-pkg))
+         (check-permission-fn (funcall fn-in "CHECK-PERMISSION" amoebum-pkg)))
     (labels ((assert-true (condition format-string &rest format-args)
                (unless condition
                  (error (apply #'format nil format-string format-args))))
@@ -80,6 +82,7 @@
              (glob-new (merge-pathnames #P"src/sub/newer/new.lisp" tmp-root))
              (glob-ignore (merge-pathnames #P"src/sub/ignore.txt" tmp-root))
              (context-file (merge-pathnames #P"ctx/context.txt" tmp-root))
+             (multiline-file (merge-pathnames #P"ctx/multiline.txt" tmp-root))
              (grep-old (merge-pathnames #P"logs/old.txt" tmp-root))
              (grep-new (merge-pathnames #P"logs/new.txt" tmp-root))
              (blocked (merge-pathnames #P"blocked/deny.txt" tmp-root)))
@@ -88,6 +91,7 @@
         (write-text-file glob-new "(defun new ())~%")
         (write-text-file glob-ignore "skip~%")
         (write-text-file context-file (format nil "alpha~%target~%omega~%"))
+        (write-text-file multiline-file (format nil "alpha~%beta~%gamma~%"))
         (write-text-file grep-old "needle old~%")
         (sleep 1)
         (write-text-file grep-new "needle new~%")
@@ -155,21 +159,75 @@
           (assert-true (= (length ci-matches) 2)
                        "Expected case-insensitive grep-content to match uppercase query."))
 
-        (funcall clear-permission-rules-fn)
-        (funcall add-permission-rule-fn
-                 :effect :deny
-                 :tool :glob-files
-                 :path (namestring blocked)
-                 :source :project)
-        (let ((saw-deny nil))
-          (handler-case
-              (invoke-tool "glob-files"
-                           "pattern" "blocked/*.txt"
-                           "root" (namestring tmp-root)
-                           "limit" 10)
-            (error ()
-              (setf saw-deny t)))
-          (assert-true saw-deny
-                       "Expected deny rule to block glob-files on forbidden paths.")))))
+        (let* ((single-line-result (invoke-tool "grep-content"
+                                                "pattern" (format nil "alpha~%beta")
+                                                "path-glob" "ctx/multiline.txt"
+                                                "root" (namestring tmp-root)
+                                                "before" 0
+                                                "after" 0
+                                                "limit" 10))
+               (single-line-matches (getf single-line-result :matches)))
+          (assert-true (null single-line-matches)
+                       "Expected multiline pattern to return no matches when multiline mode is disabled."))
 
-  (format t "AMOEBUM_SEARCH_TOOLS_SMOKE_OK~%"))
+        (let* ((multiline-result (invoke-tool "grep-content"
+                                              "pattern" (format nil "alpha~%beta")
+                                              "path-glob" "ctx/multiline.txt"
+                                              "root" (namestring tmp-root)
+                                              "before" 0
+                                              "after" 0
+                                              "limit" 10
+                                              "multiline" t))
+               (multiline-matches (getf multiline-result :matches))
+               (first-match (first multiline-matches)))
+          (assert-true (= (length multiline-matches) 1)
+                       "Expected multiline grep-content to find one spanning match.")
+          (assert-true (string= (getf first-match :matched-text) (format nil "alpha~%beta"))
+                       "Expected multiline match text to preserve embedded newline."))
+
+        (let* ((files-with-matches-result (invoke-tool "grep-content"
+                                                       "pattern" "needle"
+                                                       "path-glob" "logs/*.txt"
+                                                       "root" (namestring tmp-root)
+                                                       "output-mode" :files_with_matches))
+               (paths (getf files-with-matches-result :matches)))
+          (assert-true (= (getf files-with-matches-result :count) 2)
+                       "Expected files_with_matches mode count to report unique file count.")
+          (assert-true (= (length paths) 2)
+                       "Expected files_with_matches mode to return path-only matches.")
+          (assert-true (string= (normalize-path (first paths))
+                                (normalize-path grep-new))
+                       "Expected files_with_matches mode to preserve deterministic file ordering.")
+          (assert-true (string= (normalize-path (second paths))
+                                (normalize-path grep-old))
+                       "Expected files_with_matches mode to include older match second."))
+
+        (let ((count-result (invoke-tool "grep-content"
+                                         "pattern" "needle"
+                                         "path-glob" "logs/*.txt"
+                                         "root" (namestring tmp-root)
+                                         "output-mode" :count)))
+          (assert-true (= (getf count-result :count) 2)
+                       "Expected count mode to return total match count.")
+          (assert-true (null (getf count-result :matches))
+                       "Expected count mode to omit match payloads."))
+
+        (unless (funcall getenv-fn "AMOEBUM_SKIP_PERMISSION_DENY_CHECK")
+          (funcall setconfig-fn :permission-mode :supervised)
+          (funcall clear-permission-rules-fn)
+          (let ((blocked-dir (funcall ensure-directory-pathname-fn
+                                      (merge-pathnames #P"blocked/" tmp-root))))
+            (funcall add-permission-rule-fn
+                     :effect :deny
+                     :tool :glob-files
+                     :path (namestring blocked-dir)
+                     :source :project)
+            (let ((decision (funcall check-permission-fn
+                                     :tool :glob-files
+                                     :path (namestring blocked-dir)
+                                     :permission-mode :supervised)))
+              (assert-true (eq decision :deny)
+                           "Expected deny rule to block glob-files on forbidden paths.")))
+          (funcall setconfig-fn :permission-mode :full-auto))))
+
+  (format t "AMOEBUM_SEARCH_TOOLS_SMOKE_OK~%")))

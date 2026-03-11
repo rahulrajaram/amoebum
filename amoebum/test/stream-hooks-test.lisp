@@ -137,7 +137,7 @@
                   stream-state
                   "prompt"
                   '()
-                  :client :fake)))
+                  :client (pseudopod::%make-client :api-key "test-key"))))
            (setf (symbol-function 'pseudopod:stream-chat-completion*)
                  original-stream-chat-completion)))
        (amoebum:token-stream-drain-events

@@ -122,28 +122,23 @@
                          (push event-type-error error-events)))
 
               (write-file global-a
-                          "(in-package :amoebum)
-(defvar *extensions-smoke-order* '())
-(setf *extensions-smoke-order* (append *extensions-smoke-order* (list \"global-alpha\")))
+                          "(setf amoebum::*extensions-smoke-order*
+      (append amoebum::*extensions-smoke-order* (list \"global-alpha\")))
 ")
               (write-file global-z
-                          "(in-package :amoebum)
-(defvar *extensions-smoke-order* '())
-(setf *extensions-smoke-order* (append *extensions-smoke-order* (list \"global-zeta\")))
+                          "(setf amoebum::*extensions-smoke-order*
+      (append amoebum::*extensions-smoke-order* (list \"global-zeta\")))
 ")
               (write-file project-a
-                          "(in-package :amoebum)
-(defvar *extensions-smoke-order* '())
-(setf *extensions-smoke-order* (append *extensions-smoke-order* (list \"project-alpha\")))
+                          "(setf amoebum::*extensions-smoke-order*
+      (append amoebum::*extensions-smoke-order* (list \"project-alpha\")))
 ")
               (write-file project-bad
-                          "(in-package :amoebum)
-(error \"I69 project extension boom\")
+                          "(error \"I69 project extension boom\")
 ")
               (write-file project-z
-                          "(in-package :amoebum)
-(defvar *extensions-smoke-order* '())
-(setf *extensions-smoke-order* (append *extensions-smoke-order* (list \"project-gamma\")))
+                          "(setf amoebum::*extensions-smoke-order*
+      (append amoebum::*extensions-smoke-order* (list \"project-gamma\")))
 ")
 
               (let* ((report (funcall load-extensions-fn))

@@ -72,7 +72,7 @@
   (dolist (case '((:home 27 91 49 126)
                   (:end 27 91 52 126)
                   (:pgup 27 91 53 126)
-                  (:pgdown 27 91 54 126)))
+                  (:pgdn 27 91 54 126)))
     (assert-single-key-event (cdr case) (first case))))
 
 (test ptui-input-escape-alone-timeout

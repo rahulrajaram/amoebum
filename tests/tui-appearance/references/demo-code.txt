@@ -1,0 +1,40 @@
+ you> code
+
+ ai> Here's an example of a Common Lisp function:
+
+     ```lisp
+     (defun fibonacci (n)
+       "Return the Nth Fibonacci number."
+       (if (<= n 1)
+           n
+           (+ (fibonacci (- n 1))
+              (fibonacci (- n 2)))))
+     ```
+
+     And a shell command:
+
+     ```bash
+     sbcl --eval '(format t "Hello ~A~%" (lisp-implementation-version))' --quit
+     ```
+
+     Code blocks should preserve indentation and use a monospace font with a distinct background.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │                                                                                                                    │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+branch master | mode supervised | Tokens: 102/128000 (0%) | stream done | model moonshot-v1-128k

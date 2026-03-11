@@ -164,9 +164,19 @@
                          "            self._write(200, html)~%"
                          "            return~%"
                          "~%"
+                         "        if parsed.path == '/ttl':~%"
+                         "            html = \"\"\"<html><head><title>TTL Content</title></head><body><article><h1>TTL Content</h1><p>TTL-sensitive fetch payload.</p></article></body></html>\"\"\"~%"
+                         "            self._write(200, html)~%"
+                         "            return~%"
+                         "~%"
                          "        if parsed.path == '/needs-auth':~%"
-                         "            location = f'http://localhost:{self.server.server_address[1]}/login'~%"
+                         "            location = f'http://localhost:{self.server.server_address[1]}/auth-hop'~%"
                          "            self._write(302, 'redirecting', headers={'Location': location})~%"
+                         "            return~%"
+                         "~%"
+                         "        if parsed.path == '/auth-hop':~%"
+                         "            location = f'http://localhost:{self.server.server_address[1]}/login'~%"
+                         "            self._write(302, 'redirecting again', headers={'Location': location})~%"
                          "            return~%"
                          "~%"
                          "        if parsed.path == '/login':~%"
@@ -213,6 +223,7 @@
                      (base-url (format nil "http://127.0.0.1:~D" port))
                      (article-url (format nil "~A/article" base-url))
                      (long-url (format nil "~A/long" base-url))
+                     (ttl-url (format nil "~A/ttl" base-url))
                      (auth-url (format nil "~A/needs-auth" base-url)))
                 (funcall setconfig-fn :permission-mode :full-auto)
                 (funcall setconfig-fn :web-fetch-timeout-seconds 20)
@@ -260,15 +271,47 @@
                        (long-markdown (getf long-result :markdown)))
                   (assert-true (getf long-result :truncated-p)
                                "Expected oversized page markdown to be truncated.")
+                  (assert-true (getf long-result :summarized-p)
+                               "Expected oversized page markdown to use bounded summarization.")
+                  (assert-true (contains-substring-p "Summary generated for oversized page"
+                                                     long-markdown)
+                               "Expected large-page summary marker in markdown.")
                   (assert-true (<= (length long-markdown) 600)
                                "Expected truncated markdown length <= 600, got ~D."
                                (length long-markdown)))
+
+                (let ((ttl-first (invoke-tool "web-fetch"
+                                              "url" ttl-url
+                                              "cache-ttl-seconds" 1)))
+                  (assert-true (not (getf ttl-first :cached))
+                               "Expected first TTL probe to be uncached."))
+                (sleep 1.2d0)
+                (let ((ttl-second (invoke-tool "web-fetch"
+                                               "url" ttl-url
+                                               "cache-ttl-seconds" 1)))
+                  (assert-true (not (getf ttl-second :cached))
+                               "Expected TTL-expired fetch to refetch instead of serving cache."))
+                (let* ((entries (or (read-json-lines log-file) '()))
+                       (ttl-calls (path-call-count entries "/ttl")))
+                  (assert-true (= ttl-calls 2)
+                               "Expected two /ttl requests after TTL expiry, got ~D."
+                               ttl-calls))
 
                 (let ((auth-result (invoke-tool "web-fetch"
                                                 "url" auth-url
                                                 "cache-ttl-seconds" 30)))
                   (assert-true (getf auth-result :host-changed)
                                "Expected redirect host change detection for login redirect.")
+                  (assert-true (contains-substring-p "127.0.0.1"
+                                                     (or (getf auth-result :redirect-host-diagnostic)
+                                                         ""))
+                               "Expected redirect-host diagnostic to include source host, got ~S."
+                               auth-result)
+                  (assert-true (contains-substring-p "localhost"
+                                                     (or (getf auth-result :redirect-host-diagnostic)
+                                                         ""))
+                               "Expected redirect-host diagnostic to include destination host, got ~S."
+                               auth-result)
                   (assert-true (contains-substring-p "authentication wall"
                                                      (or (getf auth-result :authentication-warning)
                                                          ""))

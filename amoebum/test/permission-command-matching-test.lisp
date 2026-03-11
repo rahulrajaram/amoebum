@@ -2,7 +2,7 @@
 
 (def-suite permission-command-matching-suite
   :in amoebum-suite
-  :description "Command-pattern permission matching tests (I132).")
+  :description "Command-pattern permission matching tests (I132/I351).")
 
 (in-suite permission-command-matching-suite)
 
@@ -41,6 +41,61 @@
                :tool :bash
                :command "python -V"
                :rules rules)))))
+
+(test command-permission-matches-exact-prefix-and-regex-across-pipeline-segments
+  (let ((rules (list (amoebum:make-permission-rule
+                      :effect :allow
+                      :tool :bash
+                      :command "git *"
+                      :source :global)
+                     (amoebum:make-permission-rule
+                      :effect :deny
+                      :tool :bash
+                      :command "git push --force"
+                      :source :project)
+                     (amoebum:make-permission-rule
+                      :effect :deny
+                      :tool :bash
+                      :command "re:rm\\s+-rf\\s+.*"
+                      :source :global))))
+    (is (eq (amoebum:evaluate-command-permission
+             :tool :bash
+             :command "echo prep | git status"
+             :rules rules)
+            :allow))
+    (is (eq (amoebum:evaluate-command-permission
+             :tool :bash
+             :command "echo prep | git push --force"
+             :rules rules)
+            :deny))
+    (is (eq (amoebum:evaluate-command-permission
+             :tool :bash
+             :command "echo prep && rm -rf /tmp/demo"
+             :rules rules)
+            :deny))))
+
+(test command-permission-conflicts-resolve-deterministically-with-deny-precedence
+  (let* ((allow-rule (amoebum:make-permission-rule
+                      :effect :allow
+                      :tool :bash
+                      :command "git push --force"
+                      :source :project))
+         (deny-rule (amoebum:make-permission-rule
+                     :effect :deny
+                     :tool :bash
+                     :command "git push --force"
+                     :source :project))
+         (command "echo prep | git push --force"))
+    (is (eq (amoebum:evaluate-command-permission
+             :tool :bash
+             :command command
+             :rules (list allow-rule deny-rule))
+            :deny))
+    (is (eq (amoebum:evaluate-command-permission
+             :tool :bash
+             :command command
+             :rules (list deny-rule allow-rule))
+            :deny))))
 
 (test command-permission-respects-tool-name
   (let ((rules (list (amoebum:make-permission-rule

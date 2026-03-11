@@ -1,17 +1,17 @@
 --- ptui-snapshot v1 84x20
-| YOU> Summarize the steps.                                                          |
+| Summarize the steps.                                                               |
 |                                                                                    |
-| ASSISTANT> Key points:                                                             |
+| Key points:                                                                        |
 |                                                                                    |
-|            - First bullet item                                                     |
-|            - Second bullet item                                                    |
-|            - Third bullet item                                                     |
+| - First bullet item                                                                |
+| - Second bullet item                                                               |
+| - Third bullet item                                                                |
 |                                                                                    |
-|            Steps:                                                                  |
+| Steps:                                                                             |
 |                                                                                    |
-|            1. Read the file                                                        |
-|            2. Parse the contents                                                   |
-|            3. Write the output                                                     |
+| 1. Read the file                                                                   |
+| 2. Parse the contents                                                              |
+| 3. Write the output                                                                |
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
@@ -41,12 +41,7 @@
 0,18:bold
 0,19:bold
 0,20:bold
-0,21:bold
-0,22:bold
-0,23:bold
-0,24:bold
-0,25:bold
-17,2:bold
+17,2:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

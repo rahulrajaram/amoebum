@@ -1,17 +1,17 @@
 --- ptui-snapshot v1 84x20
-| YOU> User message number 1 about topic 1.                                          |
+| User message number 1 about topic 1.                                               |
 |                                                                                    |
-| ASSISTANT> Assistant response to query 1. This is a detailed explanation.          |
+| Assistant response to query 1. This is a detailed explanation.                     |
 |                                                                                    |
-| YOU> User message number 2 about topic 2.                                          |
+| User message number 2 about topic 2.                                               |
 |                                                                                    |
-| ASSISTANT> Assistant response to query 2. This is a detailed explanation.          |
+| Assistant response to query 2. This is a detailed explanation.                     |
 |                                                                                    |
-| YOU> User message number 3 about topic 3.                                          |
+| User message number 3 about topic 3.                                               |
 |                                                                                    |
-| ASSISTANT> Assistant response to query 3. This is a detailed explanation.          |
+| Assistant response to query 3. This is a detailed explanation.                     |
 |                                                                                    |
-| YOU> User message number 4 about topic 4.                                          |
+| User message number 4 about topic 4.                                               |
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
@@ -57,11 +57,6 @@
 0,34:bold
 0,35:bold
 0,36:bold
-0,37:bold
-0,38:bold
-0,39:bold
-0,40:bold
-0,41:bold
 4,0:bold
 4,1:bold
 4,2:bold
@@ -99,11 +94,6 @@
 4,34:bold
 4,35:bold
 4,36:bold
-4,37:bold
-4,38:bold
-4,39:bold
-4,40:bold
-4,41:bold
 8,0:bold
 8,1:bold
 8,2:bold
@@ -141,11 +131,6 @@
 8,34:bold
 8,35:bold
 8,36:bold
-8,37:bold
-8,38:bold
-8,39:bold
-8,40:bold
-8,41:bold
 12,0:bold
 12,1:bold
 12,2:bold
@@ -183,12 +168,7 @@
 12,34:bold
 12,35:bold
 12,36:bold
-12,37:bold
-12,38:bold
-12,39:bold
-12,40:bold
-12,41:bold
-17,2:bold
+17,2:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

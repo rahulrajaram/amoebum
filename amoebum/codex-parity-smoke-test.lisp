@@ -37,7 +37,6 @@
          (fn-in
            (lambda (name package)
              (symbol-function (funcall symbol-in name package))))
-         (temporary-directory-fn (funcall fn-in "TEMPORARY-DIRECTORY" uiop-pkg))
          (ensure-directory-pathname-fn (funcall fn-in "ENSURE-DIRECTORY-PATHNAME" uiop-pkg))
          (reload-config-fn (funcall fn-in "RELOAD-CONFIG" amoebum-pkg))
          (load-config-fn (funcall fn-in "LOAD-CONFIG" amoebum-pkg))
@@ -53,6 +52,8 @@
          (mcp-server-start-fn (funcall fn-in "MCP-SERVER-START" amoebum-pkg))
          (mcp-server-health-check-fn (funcall fn-in "MCP-SERVER-HEALTH-CHECK" amoebum-pkg))
          (mcp-server-stop-fn (funcall fn-in "MCP-SERVER-STOP" amoebum-pkg))
+         (jsonrpc-deserialize-message-fn (funcall fn-in "JSONRPC-DESERIALIZE-MESSAGE" amoebum-pkg))
+         (jsonrpc-serialize-message-fn (funcall fn-in "JSONRPC-SERIALIZE-MESSAGE" amoebum-pkg))
          (run-cli-json-fn (funcall fn-in "RUN-CLI-JSON" amoebum-pkg))
          (make-conversation-state-fn (funcall fn-in "MAKE-CONVERSATION-STATE" amoebum-pkg))
          (conversation-state-add-message-fn (funcall fn-in "CONVERSATION-STATE-ADD-MESSAGE" amoebum-pkg))
@@ -62,6 +63,8 @@
          (conversation-state-session-id-fn (funcall fn-in "CONVERSATION-STATE-SESSION-ID" amoebum-pkg))
          (find-skill-fn (funcall fn-in "FIND-SKILL" amoebum-pkg))
          (skill-metadata-usage-fn (funcall fn-in "SKILL-METADATA-USAGE" amoebum-pkg))
+         (mcp-http-request-fn-sym
+           (funcall symbol-in "*MCP-STREAMABLE-HTTP-REQUEST-FUNCTION*" amoebum-pkg))
          (make-message-fn (funcall fn-in "MAKE-MESSAGE" pseudopod-pkg))
          (message-content-fn (funcall fn-in "MESSAGE-CONTENT" pseudopod-pkg))
          (content-part-type-fn (funcall fn-in "CONTENT-PART-TYPE" pseudopod-pkg))
@@ -102,10 +105,11 @@
                (funcall ensure-directory-pathname-fn
                         (merge-pathnames
                          (make-pathname :directory `(:relative
+                                                     ".tmp-codex-parity-smokes"
                                                      ,(format nil "amoebum-i125-~A-~A"
                                                               (get-universal-time)
                                                               (random 1000000))))
-                         (funcall temporary-directory-fn))))
+                         repo-root)))
              (project-root (merge-pathnames #P"project/" tmp-root))
              (working-dir (merge-pathnames #P"src/" project-root))
              (global-agents (merge-pathnames #P"global/AGENTS.md" tmp-root))
@@ -188,23 +192,70 @@
                        "Expected directory AGENTS layer content in assembled prompt."))
 
         ;; MCP stdio + streamable-http transport surface
-        (let ((stdio-server (funcall make-mcp-server-fn :name "stdio-smoke"
-                                     :command "cat"))
-              (http-server (funcall make-mcp-server-fn :name "http-smoke"
-                                    :transport :streamable-http
-                                    :endpoint-url "http://127.0.0.1:9999/mcp")))
-          (assert-true (eq (funcall mcp-server-transport-fn stdio-server) :stdio)
-                       "Expected default MCP transport to be :stdio.")
-          (assert-true (eq (funcall mcp-server-transport-fn http-server) :streamable-http)
-                       "Expected HTTP MCP transport to normalize to :streamable-http.")
-          (assert-true (string= (funcall mcp-server-endpoint-url-fn http-server)
-                                "http://127.0.0.1:9999/mcp")
-                       "Expected MCP HTTP endpoint URL to be retained.")
-          (funcall mcp-server-start-fn http-server)
-          (assert-true (funcall mcp-server-health-check-fn http-server)
-                       "Expected started streamable-http MCP server health check to pass.")
-          (assert-true (funcall mcp-server-stop-fn http-server)
-                       "Expected streamable-http MCP server stop to succeed."))
+        (let* ((old-http-request-fn (symbol-value mcp-http-request-fn-sym))
+               (stdio-server (funcall make-mcp-server-fn :name "stdio-smoke"
+                                      :command "cat"))
+               (http-server (funcall make-mcp-server-fn :name "http-smoke"
+                                     :transport :streamable-http
+                                     :endpoint-url "http://127.0.0.1:9999/mcp")))
+          (unwind-protect
+              (progn
+                (setf (symbol-value mcp-http-request-fn-sym)
+                      (lambda (_endpoint-url payload &key headers timeout-seconds)
+                        (declare (ignore _endpoint-url headers timeout-seconds))
+                        (let* ((request (funcall jsonrpc-deserialize-message-fn payload))
+                               (id (gethash "id" request))
+                               (method (or (gethash "method" request) "")))
+                          (cond
+                            ((string= method "initialize")
+                             (values (funcall jsonrpc-serialize-message-fn
+                                              (let ((result (make-hash-table :test #'equal))
+                                                    (capabilities (make-hash-table :test #'equal)))
+                                                (setf (gethash "protocolVersion" result)
+                                                      (symbol-value (funcall symbol-in "*MCP-PROTOCOL-VERSION*" amoebum-pkg))
+                                                (gethash "capabilities" result) capabilities)
+                                                (let ((message (make-hash-table :test #'equal)))
+                                                  (setf (gethash "jsonrpc" message) "2.0"
+                                                        (gethash "id" message) id
+                                                        (gethash "result" message) result)
+                                                  message)))
+                                     200))
+                            ((string= method "ping")
+                             (values (funcall jsonrpc-serialize-message-fn
+                                              (let ((message (make-hash-table :test #'equal))
+                                                    (pong (make-hash-table :test #'equal)))
+                                                (setf (gethash "jsonrpc" message) "2.0"
+                                                      (gethash "id" message) id
+                                                      (gethash "pong" pong) t
+                                                      (gethash "result" message) pong)
+                                                message))
+                                     200))
+                            ((or (string= method "initialized")
+                                 (string= method "shutdown")
+                                 (string= method "exit"))
+                             (values "" 202))
+                            (t
+                             (values (funcall jsonrpc-serialize-message-fn
+                                              (let ((message (make-hash-table :test #'equal))
+                                                    (result (make-hash-table :test #'equal)))
+                                                (setf (gethash "jsonrpc" message) "2.0"
+                                                      (gethash "id" message) id
+                                                      (gethash "result" message) result)
+                                                message))
+                                     200))))))
+                (assert-true (eq (funcall mcp-server-transport-fn stdio-server) :stdio)
+                             "Expected default MCP transport to be :stdio.")
+                (assert-true (eq (funcall mcp-server-transport-fn http-server) :streamable-http)
+                             "Expected HTTP MCP transport to normalize to :streamable-http.")
+                (assert-true (string= (funcall mcp-server-endpoint-url-fn http-server)
+                                      "http://127.0.0.1:9999/mcp")
+                             "Expected MCP HTTP endpoint URL to be retained.")
+                (funcall mcp-server-start-fn http-server)
+                (assert-true (funcall mcp-server-health-check-fn http-server)
+                             "Expected started streamable-http MCP server health check to pass.")
+                (assert-true (funcall mcp-server-stop-fn http-server)
+                             "Expected streamable-http MCP server stop to succeed."))
+            (setf (symbol-value mcp-http-request-fn-sym) old-http-request-fn)))
 
         ;; SW4RM networked delegation mode surface
         (let ((old-mode (funcall config-value-fn :swarm-delegation-mode (funcall current-config-fn))))

@@ -46,6 +46,29 @@
   (let ((result (amoebum::evaluate-shell-safety-policy "chmod -R 777 /")))
     (is (eq :deny (amoebum::shell-safety-result-decision result)))))
 
+(test shell-safety-blocks-rm-flag-variants
+  "rm destructive flag variants are blocked."
+  (let ((result (amoebum::evaluate-shell-safety-policy
+                 "rm -fr --no-preserve-root /")))
+    (is (eq :deny (amoebum::shell-safety-result-decision result)))
+    (is (search "filesystem" (amoebum::shell-safety-result-reason result)
+                :test #'char-equal))))
+
+(test shell-safety-blocks-dangerous-pipeline-upstream
+  "Dangerous upstream command in a pipeline is blocked."
+  (let ((result (amoebum::evaluate-shell-safety-policy "rm -rf / | cat /tmp/x")))
+    (is (eq :deny (amoebum::shell-safety-result-decision result)))
+    (is (search "segment" (amoebum::shell-safety-result-reason result)
+                :test #'char-equal))))
+
+(test shell-safety-blocks-dangerous-pipeline-downstream
+  "Dangerous downstream command in a pipeline is blocked."
+  (let ((result (amoebum::evaluate-shell-safety-policy
+                 "echo safe | rm -rf / | cat /tmp/x")))
+    (is (eq :deny (amoebum::shell-safety-result-decision result)))
+    (is (search "segment 2/3" (amoebum::shell-safety-result-reason result)
+                :test #'char-equal))))
+
 ;;; --- Escalation triggered --------------------------------------------------
 
 (test shell-safety-escalates-sudo
@@ -82,6 +105,14 @@
   (let ((result (amoebum::evaluate-shell-safety-policy "rm /etc/passwd")))
     (is (eq :escalate (amoebum::shell-safety-result-decision result)))
     (is (search "system directories" (amoebum::shell-safety-result-reason result)
+                :test #'char-equal))))
+
+(test shell-safety-escalates-pipeline-sudo
+  "Downstream sudo command in a pipeline is escalated."
+  (let ((result (amoebum::evaluate-shell-safety-policy
+                 "echo safe | sudo tee /etc/hosts")))
+    (is (eq :escalate (amoebum::shell-safety-result-decision result)))
+    (is (search "segment 2/2" (amoebum::shell-safety-result-reason result)
                 :test #'char-equal))))
 
 ;;; --- Safe commands pass through --------------------------------------------

@@ -48,6 +48,7 @@
   ((:file "src/runtime/queue")
    (:file "src/runtime/event-bus")
    (:file "src/runtime/event-filters")
+   (:file "src/runtime/session-multiplex")
    (:file "src/runtime/scheduler")))
 
 (asdf:defsystem "ptui/term"
@@ -186,12 +187,13 @@
   :description "PTUI higher-level composable widgets"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui/widgets" "ptui/search")
+  :depends-on ("ptui/widgets" "ptui/search" "ptui/util")
   :serial t
   :components
   ((:file "src/components/prompt-box")
    (:file "src/components/ansi-parser")
    (:file "src/components/terminal-pane")
+   (:file "src/components/streaming-widget")
    (:file "src/components/plan-presentation")
    (:file "src/components/list-selection")
    (:file "src/components/glob-widget")
@@ -237,6 +239,7 @@
    (:file "src/runtime/queue")
    (:file "src/runtime/event-bus")
    (:file "src/runtime/event-filters")
+   (:file "src/runtime/session-multiplex")
    (:file "src/runtime/scheduler")
    (:file "src/term/tty")
    (:file "src/term/signals")
@@ -280,6 +283,7 @@
   ((:file "src/components/prompt-box")
    (:file "src/components/ansi-parser")
    (:file "src/components/terminal-pane")
+   (:file "src/components/streaming-widget")
    (:file "src/components/plan-presentation")
    (:file "src/components/list-selection")
    (:file "src/components/glob-widget")
@@ -353,6 +357,8 @@
    (:file "test/text-test")
    (:file "test/backend-test")
    (:file "test/input-test")
+   (:file "test/streaming-widget-test")
+   (:file "test/session-multiplex-test")
    (:file "test/panel-test")
    (:file "test/definition-loader-test")
    (:file "test/engine-test")))

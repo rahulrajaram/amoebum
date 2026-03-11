@@ -179,6 +179,12 @@
       (setf (agent-record-cancel-requested-p agent) t)
       (when (member (agent-record-status agent) '(:queued :running) :test #'eq)
         (setf (agent-record-status agent) :cancelling)))
+    (usdt-probe-agent-lifecycle :cancel-requested
+                                (agent-record-id agent)
+                                (agent-record-type agent)
+                                (agent-record-status agent)
+                                0
+                                :parent-message-id (agent-record-parent-message-id agent))
     (%publish-agent-event +event-type-agent-cancelled+
                           (%agent-payload agent)
                           :severity :warning)
@@ -219,6 +225,13 @@
       :cancelled
       :completed))
 
+(defun %agent-status->probe-phase (status)
+  (case status
+    (:completed :complete)
+    (:cancelled :cancelled)
+    (:failed :failed)
+    (otherwise :complete)))
+
 (defun %finish-agent! (agent status result stdout stderr error-message)
   (let ((now (%agent-now-ms)))
     (%with-agent-registry-lock ()
@@ -228,6 +241,16 @@
             (agent-record-stdout agent) stdout
             (agent-record-stderr agent) stderr
             (agent-record-error-message agent) error-message))
+    (let ((elapsed-ms (if (plusp (agent-record-started-ms agent))
+                          (max 0 (- now (agent-record-started-ms agent)))
+                          0)))
+      (usdt-probe-agent-lifecycle (%agent-status->probe-phase status)
+                                  (agent-record-id agent)
+                                  (agent-record-type agent)
+                                  status
+                                  elapsed-ms
+                                  :parent-message-id
+                                  (agent-record-parent-message-id agent)))
     (let ((payload (%agent-payload agent)))
       (ptui.runtime.queue:queue-push *agent-completion-queue* payload)
       (%publish-agent-event +event-type-agent-complete+
@@ -239,6 +262,12 @@
   (%with-agent-registry-lock ()
     (setf (agent-record-status agent) :running
           (agent-record-started-ms agent) (%agent-now-ms)))
+  (usdt-probe-agent-lifecycle :start
+                              (agent-record-id agent)
+                              (agent-record-type agent)
+                              :running
+                              0
+                              :parent-message-id (agent-record-parent-message-id agent))
   (let ((stdout-stream (make-string-output-stream))
         (stderr-stream (make-string-output-stream))
         (result nil)
@@ -292,6 +321,12 @@
     (%with-agent-registry-lock ()
       (setf (gethash agent-id *agent-registry*) agent
             (agent-record-thread agent) thread))
+    (usdt-probe-agent-lifecycle :spawn
+                                (agent-record-id agent)
+                                (agent-record-type agent)
+                                (agent-record-status agent)
+                                0
+                                :parent-message-id (agent-record-parent-message-id agent))
     (%publish-agent-event +event-type-agent-spawn+ (%agent-payload agent) :severity :info)
     agent))
 

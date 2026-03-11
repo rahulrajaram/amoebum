@@ -228,7 +228,7 @@
   (or (mcp-server-jsonrpc-client server)
       (error "MCP server ~A has no active JSON-RPC client." (mcp-server-name server))))
 
-(defun %mcp-tools-list-request (server cursor)
+(defun %mcp-default-tools-list-request (server cursor)
   (let* ((client (%mcp-server-client-or-error server))
          (params (when cursor
                    (let ((payload (make-hash-table :test #'equal)))
@@ -258,6 +258,11 @@
                                             (princ-to-string next-cursor))
                                ""))
                  next-cursor))))
+
+(defparameter *mcp-tools-list-request-function* #'%mcp-default-tools-list-request)
+
+(defun %mcp-tools-list-request (server cursor)
+  (funcall *mcp-tools-list-request-function* server cursor))
 
 (defun %mcp-resolve-tool-binding (tool)
   (cond
@@ -540,22 +545,31 @@
   (let* ((server (%mcp-server-from-designator server-designator))
          (cursor nil)
          (seen-cursors (make-hash-table :test #'equal))
-         (namespaced-tools '()))
+         (namespaced-tools '())
+         (declared-tool-check (and (fboundp 'mcp-server-tool-declared-p)
+                                   (symbol-function 'mcp-server-tool-declared-p)))
+         (update-count (and (fboundp 'mcp-update-server-discovered-tool-count)
+                            (symbol-function 'mcp-update-server-discovered-tool-count))))
     (loop
       (multiple-value-bind (tools next-cursor)
           (%mcp-tools-list-request server cursor)
         (dolist (tool-entry tools)
-          (push (%register-mcp-tool-definition server
-                                               tool-entry
-                                               toolset
-                                               event-bus)
-                namespaced-tools))
+          (let ((tool-name (and (hash-table-p tool-entry) (gethash "name" tool-entry))))
+            (when (or (null declared-tool-check)
+                      (funcall declared-tool-check server tool-name))
+              (push (%register-mcp-tool-definition server
+                                                   tool-entry
+                                                   toolset
+                                                   event-bus)
+                    namespaced-tools))))
         (if (and next-cursor
                  (not (gethash next-cursor seen-cursors)))
             (progn
               (setf (gethash next-cursor seen-cursors) t
                     cursor next-cursor))
             (return))))
+    (when update-count
+      (funcall update-count server (length namespaced-tools)))
     (nreverse namespaced-tools)))
 
 (defun auto-register-mcp-server-tools (server &key
