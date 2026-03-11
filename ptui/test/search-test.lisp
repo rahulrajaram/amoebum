@@ -200,6 +200,37 @@
   (let ((results (ptui.search.engine:search-content-matches "" (%make-search-documents))))
     (is (null results))))
 
+(test search-content-scan-progress-and-cancellation
+  (let* ((documents
+           (list
+            (ptui.search.engine:make-search-document
+             :path "a.txt"
+             :content "needle a")
+            (ptui.search.engine:make-search-document
+             :path "b.txt"
+             :content "needle b")
+            (ptui.search.engine:make-search-document
+             :path "c.txt"
+             :content "needle c")))
+         (progress-count 0)
+         (stop-p nil)
+         (result
+           (ptui.search.engine:scan-content-matches
+            "needle"
+            documents
+            :regex-mode nil
+            :on-match (lambda (_match)
+                        (declare (ignore _match))
+                        (setf stop-p t))
+            :on-progress (lambda (&key done &allow-other-keys)
+                           (declare (ignore done))
+                           (incf progress-count))
+            :cancel-fn (lambda ()
+                         stop-p))))
+    (is (ptui.search.engine:search-content-scan-result-canceled-p result))
+    (is (= 1 (ptui.search.engine:search-content-scan-result-match-count result)))
+    (is (>= progress-count 2))))
+
 (defun run-all ()
   (let ((results (run 'ptui-search-suite)))
     (fiveam:explain! results)

@@ -25,6 +25,15 @@
    #:search-content-match-score
    #:search-content-match-context-before
    #:search-content-match-context-after
+   #:search-content-scan-result
+   #:search-content-scan-result-p
+   #:make-search-content-scan-result
+   #:search-content-scan-result-matches
+   #:search-content-scan-result-match-count
+   #:search-content-scan-result-scanned-documents
+   #:search-content-scan-result-total-documents
+   #:search-content-scan-result-canceled-p
+   #:scan-content-matches
    #:search-content-matches))
 
 (in-package :ptui.search.engine)
@@ -54,6 +63,20 @@
   (score 0 :type integer)
   (context-before '() :type list)
   (context-after '() :type list))
+
+(defstruct (search-content-scan-result
+            (:constructor make-search-content-scan-result
+                (&key
+                  (matches '())
+                  (match-count 0)
+                  (scanned-documents 0)
+                  (total-documents 0)
+                  (canceled-p nil))))
+  (matches '() :type list)
+  (match-count 0 :type fixnum)
+  (scanned-documents 0 :type fixnum)
+  (total-documents 0 :type fixnum)
+  (canceled-p nil :type boolean))
 
 (defun %normalize-path-text (value)
   (let ((text (typecase value
@@ -318,6 +341,106 @@
                   matches)))))
     (nreverse matches)))
 
+(defun scan-content-matches (pattern documents
+                             &key
+                               limit
+                               (regex-mode t)
+                               (case-insensitive nil)
+                               (multiline-mode nil)
+                               (before-context 0)
+                               (after-context 0)
+                               on-match
+                               on-progress
+                               cancel-fn)
+  "Search DOCUMENTS for PATTERN with optional streaming callbacks.
+Returns a SEARCH-CONTENT-SCAN-RESULT."
+  (when (and limit (< limit 0))
+    (error "LIMIT must be non-negative, got ~S." limit))
+  (when (< before-context 0)
+    (error "BEFORE-CONTEXT must be non-negative, got ~S." before-context))
+  (when (< after-context 0)
+    (error "AFTER-CONTEXT must be non-negative, got ~S." after-context))
+  (when on-match
+    (check-type on-match function))
+  (when on-progress
+    (check-type on-progress function))
+  (when cancel-fn
+    (check-type cancel-fn function))
+  (let ((query (or pattern "")))
+    (when (zerop (length query))
+      (return-from scan-content-matches
+        (make-search-content-scan-result
+         :matches '()
+         :match-count 0
+         :scanned-documents 0
+         :total-documents 0
+         :canceled-p nil)))
+    (let* ((effective-pattern (if regex-mode
+                                  query
+                                  (cl-ppcre:quote-meta-chars query)))
+           (scanner (cl-ppcre:create-scanner effective-pattern
+                                             :case-insensitive-mode case-insensitive
+                                             :multi-line-mode multiline-mode
+                                             :single-line-mode multiline-mode))
+           (normalized-documents (map 'list #'%ensure-search-document documents))
+           (total-documents (length normalized-documents))
+           (all-matches '())
+           (match-count 0)
+           (scanned-documents 0)
+           (canceled-p nil))
+      (labels ((cancelled-p ()
+                 (and cancel-fn (funcall cancel-fn)))
+               (emit-progress (&key (done nil) (cancelled canceled-p) latest-match)
+                 (when on-progress
+                   (funcall on-progress
+                            :match-count match-count
+                            :scanned-documents scanned-documents
+                            :total-documents total-documents
+                            :done done
+                            :cancelled cancelled
+                            :latest-match latest-match))))
+        (emit-progress)
+        (block scan
+          (dolist (document normalized-documents)
+            (when (cancelled-p)
+              (setf canceled-p t)
+              (return-from scan nil))
+            (incf scanned-documents)
+            (let ((document-matches
+                    (%document-content-matches scanner
+                                               document
+                                               before-context
+                                               after-context
+                                               multiline-mode)))
+              (dolist (match document-matches)
+                (incf match-count)
+                (push match all-matches)
+                (when on-match
+                  (funcall on-match match))
+                (emit-progress :latest-match match)
+                (when (cancelled-p)
+                  (setf canceled-p t)
+                  (return-from scan nil))))
+            (emit-progress))))
+      (let* ((sorted (sort all-matches #'%content-match-better-p))
+             (limited (if limit
+                          (subseq sorted 0 (min limit (length sorted)))
+                          sorted)))
+        (when on-progress
+          (funcall on-progress
+                   :match-count match-count
+                   :scanned-documents scanned-documents
+                   :total-documents total-documents
+                   :done t
+                   :cancelled canceled-p
+                   :latest-match nil))
+        (make-search-content-scan-result
+         :matches limited
+         :match-count match-count
+         :scanned-documents scanned-documents
+         :total-documents total-documents
+         :canceled-p canceled-p)))))
+
 (defun search-content-matches (pattern documents
                                &key
                                  limit
@@ -327,34 +450,12 @@
                                  (before-context 0)
                                  (after-context 0))
   "Search DOCUMENTS for PATTERN and return ranked search-content-match entries."
-  (when (and limit (< limit 0))
-    (error "LIMIT must be non-negative, got ~S." limit))
-  (when (< before-context 0)
-    (error "BEFORE-CONTEXT must be non-negative, got ~S." before-context))
-  (when (< after-context 0)
-    (error "AFTER-CONTEXT must be non-negative, got ~S." after-context))
-  (let ((query (or pattern "")))
-    (when (zerop (length query))
-      (return-from search-content-matches '()))
-    (let* ((effective-pattern (if regex-mode
-                                  query
-                                  (cl-ppcre:quote-meta-chars query)))
-           (scanner (cl-ppcre:create-scanner effective-pattern
-                                             :case-insensitive-mode case-insensitive
-                                             :multi-line-mode multiline-mode
-                                             :single-line-mode multiline-mode))
-           (matches '()))
-      (map nil
-           (lambda (entry)
-             (let ((document (%ensure-search-document entry)))
-               (dolist (match (%document-content-matches scanner
-                                                         document
-                                                         before-context
-                                                         after-context
-                                                         multiline-mode))
-                 (push match matches))))
-           documents)
-      (let ((sorted (sort matches #'%content-match-better-p)))
-        (if limit
-            (subseq sorted 0 (min limit (length sorted)))
-            sorted)))))
+  (search-content-scan-result-matches
+   (scan-content-matches pattern
+                         documents
+                         :limit limit
+                         :regex-mode regex-mode
+                         :case-insensitive case-insensitive
+                         :multiline-mode multiline-mode
+                         :before-context before-context
+                         :after-context after-context)))

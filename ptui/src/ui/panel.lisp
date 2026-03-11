@@ -509,20 +509,13 @@ Supports :when on regions — conditional regions are omitted when predicate is 
 
 (defun %compile-key-pattern (pattern)
   "Compile a defpanel :keys pattern into a condition form.
-:ctrl-n -> (and (eql key :n) ctrl-p)
+:ctrl-a -> (eql key :ctrl-a)   ; matches input parser's full key name
 :tab -> (eql key :tab)
 :enter -> (eql key :enter)
 :up/:down -> (eql key :up) etc."
   (cond
-    ;; Ctrl+key patterns like :ctrl-n
-    ((and (keywordp pattern)
-          (let ((name (symbol-name pattern)))
-            (and (> (length name) 5)
-                 (string= name "CTRL-" :end1 5))))
-     (let ((key-name (subseq (symbol-name pattern) 5)))
-       `(and (eql key ,(intern key-name :keyword))
-             (ptui.core.events:key-event-ctrlp event))))
-    ;; Simple key patterns
+    ;; All keyword patterns match the key name directly.
+    ;; The input parser emits full key names like :ctrl-a, :ctrl-left, etc.
     ((keywordp pattern)
      `(eql key ,pattern))
     (t

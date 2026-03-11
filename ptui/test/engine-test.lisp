@@ -35,6 +35,9 @@
 (defun quit-key-event ()
   (ptui.core.events:make-key-event :ctrl-c :ctrlp t))
 
+(defun text-key-event (text)
+  (ptui.core.events:make-key-event :text :text? text))
+
 (defmethod ptui.backend.protocol:backend-init ((backend counting-test-backend))
   (declare (ignore backend))
   nil)
@@ -115,6 +118,32 @@
                  (push :called state)))
     (is (= (length seen-events) 1))
     (is (eql (ptui.core.events:key-event-key (first seen-events)) :ctrl-c))))
+
+(test engine-allows-on-event-to-consume-default-quit
+  (let* ((backend (make-counting-test-backend :cols 20 :rows 5))
+         (render-count 0)
+         (seen-dispositions '()))
+    (counting-test-backend-inject-events backend (list (quit-key-event)))
+    (ptui.engine.loop:run
+     (lambda (state size)
+       (declare (ignore state size))
+       (incf render-count)
+       (when (= render-count 2)
+         (counting-test-backend-inject-events backend (list (text-key-event "q"))))
+       (ptui.render.buffer:make-buffer 20 5))
+     :backend backend
+     :fps 120
+     :initial-state nil
+     :on-event (lambda (state event)
+                 (declare (ignore state))
+                 (let ((key (ptui.core.events:key-event-key event)))
+                   (push key seen-dispositions)
+                   (if (eql key :ctrl-c)
+                       (values nil :consume)
+                       nil))))
+    (setf seen-dispositions (nreverse seen-dispositions))
+    (is (= render-count 2))
+    (is (equal seen-dispositions '(:ctrl-c :text)))))
 
 (test engine-updates-layout-after-resize-event
   (let ((backend (make-counting-test-backend :cols 12 :rows 4))

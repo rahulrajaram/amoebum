@@ -1,12 +1,20 @@
 # PTUI defpanel Consumer Guide (I319)
 
-This guide is written for consumers of PTUI `defpanel`, with practical examples from:
-- `ptui/examples/`
-- `amoebum/src/ui/panels/`
+This tutorial is for `defpanel` consumers and uses concrete snippets from:
 
-## 1) Quick Start
+- `ptui/examples/panel-demo.lisp`
+- `ptui/examples/focus-console.lisp`
+- `ptui/examples/ops-wallboard.lisp`
+- `ptui/examples/release-tracker.lisp`
+- `amoebum/src/ui/panels/chat-panel.lisp`
+- `amoebum/src/ui/panels/prompt-input.lisp`
+- `amoebum/src/ui/panels/stream-effects.lisp`
 
-Start from `ptui/examples/panel-demo.lisp` and wire the panel into an app:
+For `:context` and composition (`embed-panel`, `panel-slot`), current canonical examples live in `ptui/test/panel-test.lisp`.
+
+## 1) Quick Start (counter-panel from panel-demo.lisp)
+
+Start with the minimal end-to-end example in `ptui/examples/panel-demo.lisp`:
 
 ```lisp
 (ptui.ui.panel:defpanel counter-panel (items title)
@@ -14,8 +22,7 @@ Start from `ptui/examples/panel-demo.lisp` and wire the panel into an app:
     (selected-index 0 :type fixnum))
   (:data
     (item-count (length items) :deps (items))
-    (status-text (format nil "~A | ~D items" title item-count)
-                 :deps (title item-count)))
+    (status-text (format nil "~A | ~D items" title item-count) :deps (title item-count)))
   (:layout
     (:column
       (header :fixed 1
@@ -25,12 +32,11 @@ Start from `ptui/examples/panel-demo.lisp` and wire the panel into an app:
         (ptui.views:list-view items #'%render-counter-item 10 nil selected-index nil))
       (footer :fixed 1
         (ptui.views:status-bar
-         (list :left status-text
-               :right (format nil "sel:~D" selected-index))
+         (list :left status-text :right (format nil "sel:~D" selected-index))
          nil nil))))
   (:keys
     (:up (funcall set-selected-index (max 0 (1- selected-index))))
-    (:down (funcall set-selected-index (min (1- item-count) (1+ selected-index)))))
+    (:down (funcall set-selected-index (min (1- item-count) (1+ selected-index))))))
 
 (ptui.ui.app:defapp panel-demo-app (:fps 20)
   (counter-panel
@@ -39,55 +45,62 @@ Start from `ptui/examples/panel-demo.lisp` and wire the panel into an app:
    "Panel Demo"))
 ```
 
-## 2) State and Data: `:state`, `:data`, `:deps`
+Use this as the baseline pattern: `:state` + `:data` + `:layout` + `:keys`, then mount via `defapp`.
 
-`:`state` stores mutable panel-local bindings and expands to `use-state`.
+## 2) State and Data (`:state` for mutable, `:data` for derived, `:deps`)
+
+`ptui/examples/focus-console.lisp` shows local mutable state:
 
 ```lisp
 (:state
-  (selected-index 0 :type fixnum)
-  (filter-mode :all :type keyword))
+  (selected-task 0 :type fixnum)
+  (minutes-elapsed 17 :type fixnum)
+  (break-mode nil :type boolean))
 ```
 
-You can call the generated setter inside handlers:
+`defpanel` generates setters like `set-selected-task` and `set-break-mode`, used directly in key handlers:
 
 ```lisp
-(:down (funcall set-selected-index (min (1- service-count) (1+ selected-index))))
+(:enter (funcall set-break-mode (not break-mode)))
 ```
 
-`:data` is derived and memoized. Provide dependency vectors with `:deps` to control
-when it recomputes.
+Derived values go in `:data`; recomputation is controlled by `:deps`:
 
 ```lisp
 (:data
   (session-label (if break-mode
                      (format nil "~A | break window" session-name)
                      (format nil "~A | focus sprint" session-name))
-                :deps (session-name break-mode))
+    :deps (session-name break-mode))
   (task-count (length tasks) :deps (tasks)))
+```
 
+`ptui/examples/ops-wallboard.lisp` demonstrates chained derived values:
+
+```lisp
 (:data
+  (filtered-services
+   (remove-if-not (lambda (row) (%matches-filter-p row filter-mode))
+                  services)
+   :deps (services filter-mode))
   (service-count (length filtered-services) :deps (filtered-services)))
 ```
 
-If a data binding omits `:deps`, PTUI warns because it cannot infer the minimal
-invalidation set safely.
-
 ## 3) Effects (`:effects`, `:deps`, `:cleanup`)
 
-`:`effects` entries compile into `ptui.ui.hooks:use-effect`.
+`amoebum/src/ui/panels/stream-effects.lisp` is a clean production example:
 
 ```lisp
 (:effects
-  (sync-approval (%sync-pending-approval-dialog! chat-state)
-    :deps (chat-state))
   (drain-streams (%drain-stream-events chat-state)
+    :deps (chat-state))
+  (publish-summary (%publish-status-bar-stream-summary-if-needed chat-state)
     :deps (chat-state))
   (budget-warning (%emit-stream-budget-warning-if-needed chat-state)
     :deps (chat-state)))
 ```
 
-You can also bind effects to local data lifecycle, including clamping behavior:
+`ptui/examples/ops-wallboard.lisp` shows effects for state clamping:
 
 ```lisp
 (:effects
@@ -102,56 +115,83 @@ You can also bind effects to local data lifecycle, including clamping behavior:
     :deps (service-count)))
 ```
 
-The effect compiler supports optional `:cleanup` forms for teardown.
+Cleanup is optional and supported by the DSL contract:
 
 ```lisp
-;; shape accepted by the compiler
-(name body-expression :deps (...) :cleanup cleanup-expression)
+;; from ptui/test/panel-test.lisp
+(:effects
+  (tracked (progn
+             (push (list 'effect label) *cleanup-log*)
+             (lambda () (push (list 'cleanup label) *cleanup-log*)))
+    :deps (label)
+    :cleanup nil))
 ```
 
-## 4) Layout (`:column`, `:row`, `:fixed`, `:flex`, `:percentage`, `:when`)
+## 4) Layout (`:column`, `:fixed`/`:flex`/`:percentage`, `:when`)
 
-Use `:column` or `:row` as the root and size each region with one of:
-`:`fixed`, `:flex`, or `:percentage`.
+Column layout with fixed and flex regions (from `panel-demo`):
 
 ```lisp
-(:column
-  (hero :fixed 1 ...)
-  (tasks-region :flex 1 ...)
-  (footer :fixed 1 ...))
+(:layout
+  (:column
+    (header :fixed 1 ...)
+    (content :flex 1 ...)
+    (footer :fixed 1 ...)))
 ```
 
-`:percentage` is available from the DSL implementation:
+Row layout (from `ptui/examples/release-tracker.lisp`):
 
 ```lisp
-(panel-left :percentage 30 ...)
-(panel-right :percentage 70 ...)
+(:layout
+  (:row
+    (queued-col :flex 1 ...)
+    (active-col :flex 1 ...)
+    (done-col :flex 1 ...)))
 ```
 
-Conditionals are expressed with `:when` on a region:
+Conditional regions with `:when` are used heavily in chat UI composition (`amoebum/src/ui/panels/chat-panel.lisp`):
 
 ```lisp
-(:column
-  (tree :fixed 10 :when tree-active-p
-    (make-tree-browser-widget tree-state))
-  (input :fixed 4 ...))
+(:layout
+  (:column
+    (provider :fixed 5 :when provider-visible-p ...)
+    (tree :fixed 10 :when tree-active-p ...)
+    (plan :fixed 12 :when plan-active-p ...)
+    (history :flex 1 ...)
+    (approval :fixed 4 :when approval-active-p ...)
+    (picker :fixed 8 :when picker-active-p ...)
+    (stream-hint :fixed 1 :when stream-active-p ...)
+    (input :fixed 3 ...)
+    (status :fixed 1 ...)))
 ```
 
-When a predicate is false, that region is dropped and the resulting constraints are
-recomputed each render.
+`defpanel` also supports percentage sizing in region specs:
 
-## 5) Key handling (flat keys, modal `:mode` groups)
+```lisp
+(:layout
+  (:row
+    (left :percentage 30 ...)
+    (right :percentage 70 ...)))
+```
 
-Flat key maps: direct key-handler pairs.
+## 5) Key Handling (flat keys, modal `:mode` groups)
+
+Flat key map style from `amoebum/src/ui/panels/prompt-input.lisp`:
 
 ```lisp
 (:keys
-  (:up (funcall set-selected-index (max 0 (1- selected-task))))
-  (:down (funcall set-selected-index (min (1- task-count) (1+ selected-task))))
-  (:enter (funcall set-break-mode (not break-mode))))
+  (:text (chat-panel-handle-input-key
+           chat-state :text
+           (ptui.core.events:key-event-text? ptui.ui.panel::event)
+           inner-width))
+  (:enter (chat-panel-handle-input-key chat-state :enter nil inner-width))
+  (:backspace (chat-panel-handle-input-key chat-state :backspace nil inner-width))
+  (:up (chat-panel-handle-input-key chat-state :up nil inner-width))
+  (:down (chat-panel-handle-input-key chat-state :down nil inner-width))
+  (:ctrl-k (chat-panel-handle-input-key chat-state :ctrl-k nil inner-width)))
 ```
 
-Modal handling groups with `:mode`, optional `:when`, plus `:mode :default` fallback.
+Modal key groups from `amoebum/src/ui/panels/chat-panel.lisp`:
 
 ```lisp
 (:keys
@@ -164,71 +204,97 @@ Modal handling groups with `:mode`, optional `:when`, plus `:mode :default` fall
     (:down (chat-panel-handle-fuzzy-picker-key chat-state :down)))
   (:mode :default
     (:up (let ((has-text (plusp (length (chat-ui-state-input-text chat-state)))))
-           (unless has-text (chat-ui-scroll-history chat-state 1))))
+           (if has-text
+               (chat-panel-handle-input-key chat-state :up nil inner-width)
+               (chat-ui-scroll-history chat-state 1))))
     (:down (let ((has-text (plusp (length (chat-ui-state-input-text chat-state)))))
-             (unless has-text (chat-ui-scroll-history chat-state -1))))))
+             (if has-text
+                 (chat-panel-handle-input-key chat-state :down nil inner-width)
+                 (chat-ui-scroll-history chat-state -1))))))
 ```
 
-Mode clauses are tested in order and the first active mode handles the key.
+Modes are evaluated in order; first active mode wins.
 
-## 6) Context (`provide-context`, `use-context`)
+## 6) Context (`provide-context` / `use-context`)
 
-`:`context` is ambient data plumbing and supports `:provide` / `:from`.
+`defpanel` supports context wiring with `:context` entries:
 
 ```lisp
-(:context
-  (theme :provide theme-value)
-  (current-theme :from theme))
+;; from ptui/test/panel-test.lisp
+(ptui.ui.panel:defpanel context-provider-panel (theme-value)
+  (:context
+    (theme :provide theme-value))
+  (:layout
+    (:column
+      (main :flex 1
+        (ptui.widgets.core:make-text-widget "provider")))))
+
+(ptui.ui.panel:defpanel context-consumer-panel ()
+  (:context
+    (current-theme :from theme))
+  (:layout
+    (:column
+      (main :flex 1
+        (ptui.widgets.core:make-text-widget
+         (format nil "theme: ~A" current-theme))))))
 ```
 
-Provide-first, consume-later semantics are enforced by the compiler while wiring
-panel invocation.
+Equivalent direct hook API:
+
+```lisp
+(ptui.ui.hooks:provide-context 'theme :dark)
+(ptui.ui.hooks:use-context 'theme) ; => :dark
+```
 
 ## 7) Composition (`embed-panel`, `panel-slot`)
 
-Use `embed-panel` to invoke another panel from layout:
+Child panel composition via `embed-panel`:
 
 ```lisp
+;; from ptui/test/panel-test.lisp
 (ptui.ui.panel:embed-panel slot-child-panel :title "Hello")
 ```
 
-`panel-slot` in this tranche refers to the slot contract driven by `:slots` and
-`&key` arguments.
+Slot defaults and overrides:
 
 ```lisp
+;; host panel
 (:slots
-  (sidebar :default (ptui.widgets.core:make-text-widget "Default Sidebar")))
+ (sidebar :default (ptui.widgets.core:make-text-widget "Default Sidebar")))
 
-(sidebar-region :flex 1 sidebar)
-```
+(:layout
+  (:column
+    (header :fixed 1 (ptui.widgets.core:make-text-widget label))
+    (sidebar-region :flex 1 sidebar)))
 
-Render-time override:
-
-```lisp
+;; render-time override
 (render-slot-host-panel
-  "Main"
-  :sidebar (ptui.widgets.core:make-text-widget "Custom Sidebar"))
+ "Main"
+ :sidebar (ptui.widgets.core:make-text-widget "Custom Sidebar"))
 ```
 
-If omitted, the `:default` value is used.
+If a slot argument is omitted, its `:default` value is used.
 
-## 8) Testing patterns
+## 8) Testing Patterns
 
-Use panel-suite regression tests in `ptui/test/panel-test.lisp` and PTUI test
-commands.
+Use `ptui/test/panel-test.lisp` as the main regression map for `defpanel`.
+High-signal tests by feature:
+
+- State/data: `defpanel-state-vars-accessible`, `defpanel-data-recomputes-on-dep-change`
+- Effects: `defpanel-effects-run-on-render`, `defpanel-effects-cleanup-compiles`
+- Layout/conditionals: `compile-layout-produces-constraint-element`, `defpanel-conditional-region-present-when-truthy`
+- Keys: `defpanel-modal-keys-first-active-wins`, `defpanel-modal-keys-fallthrough-to-default`
+- Context: `defpanel-context-parent-to-child-propagation`
+- Composition: `embed-panel-expands-to-child-render-call`, `panel-slot-override-overrides`
+
+For tranche verification, run the PTUI gate sequence:
 
 ```bash
+./ptui/bin/check-systems.sh
 ./ptui/bin/test.sh
+./ptui/bin/build.sh
+PTUI_EXIT_AFTER_MS=500 ./ptui/dist/metrics-dashboard
+PTUI_DASHBOARD_MODE=legacy PTUI_EXIT_AFTER_MS=500 ./ptui/dist/metrics-dashboard
+PTUI_EXIT_AFTER_MS=500 ./ptui/dist/atop-dashboard
 ./ptui/bin/compliance-gate.sh
 ```
-
-Useful targeted checks:
-
-- `defpanel-state-vars-accessible`
-- `defpanel-data-recomputes-on-dep-change`
-- `defpanel-effects-run-on-render`
-- `compile-layout-produces-constraint-element`
-- `defpanel-conditional-region-present-when-truthy`
-- `defpanel-modal-keys-first-active-wins`
-- `defpanel-context-parent-to-child-propagation`
-- `panel-slot-override-overrides`

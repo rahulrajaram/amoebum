@@ -53,6 +53,18 @@ fi
 
 sbcl --non-interactive \
   --load "${QL_SETUP}" \
-  --eval "(ql:quickload '(:cffi :bordeaux-threads :cl-ppcre))" \
+  --eval "(ql:quickload '(:cffi
+                          :bordeaux-threads
+                          :cl-ppcre
+                          :dexador
+                          :jonathan
+                          :usocket
+                          :fiveam
+                          :alexandria
+                          :local-time
+                          :ironclad
+                          :cl-json
+                          :uuid
+                          :split-sequence))" \
   --eval "(when (string= (or (sb-ext:posix-getenv \"PTUI_ENABLE_NCURSES\") \"\") \"1\") (ql:quickload '(:cl-charms)))" \
   --eval "(quit)"
