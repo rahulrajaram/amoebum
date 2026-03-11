@@ -1,7 +1,7 @@
 --- ptui-snapshot v1 84x20
-| YOU> Delete that file.                                                             |
+| Delete that file.                                                                  |
 |                                                                                    |
-| ASSISTANT> I attempted to run the command but it was denied.                       |
+| I attempted to run the command but it was denied.                                  |
 |                                                                                    |
 | TOOL> Error: Permission denied for tool 'bash-exec'. Command: rm -rf /important    |
 |                                                                                    |
@@ -38,12 +38,7 @@
 0,15:bold
 0,16:bold
 0,17:bold
-0,18:bold
-0,19:bold
-0,20:bold
-0,21:bold
-0,22:bold
-17,2:bold
+17,2:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

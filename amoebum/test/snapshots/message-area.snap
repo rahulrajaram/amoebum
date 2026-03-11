@@ -1,10 +1,10 @@
 --- ptui-snapshot v1 84x20
 | SYSTEM> System: respond concisely and cite sources only.                           |
 |                                                                                    |
-| YOU> Can you summarize the module layout for the chat UI?                          |
+| Can you summarize the module layout for the chat UI?                               |
 |                                                                                    |
-| ASSISTANT> The chat UI uses a box container, status bar, message history, and      |
-|            prompt input.                                                           |
+| The chat UI uses a box container, status bar, message history, and prompt input.   |
+|                                                                                    |
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
@@ -130,12 +130,7 @@
 2,50:bold
 2,51:bold
 2,52:bold
-2,53:bold
-2,54:bold
-2,55:bold
-2,56:bold
-2,57:bold
-17,2:bold
+17,2:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

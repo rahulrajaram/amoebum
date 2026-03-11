@@ -20,7 +20,7 @@
 | ╰────────────────────────────────────────────────────────────────────────────────╯ |
 |branch test/input | mode full-auto | Tokens: 0/128000 (0%) | stream idle | model moo|
 --- attrs
-17,15:bold
+17,15:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

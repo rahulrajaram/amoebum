@@ -1,5 +1,5 @@
 --- ptui-snapshot v1 84x20
-| ASSISTANT> I will check the files.                                                 |
+| I will check the files.                                                            |
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
@@ -11,16 +11,16 @@
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
-|╭──────────────────────────────────╮                                                |
-|│Tool approval required: glob-files│                                                |
-|│command: glob-files *.lisp        │                                                |
-|╰──────────────────────────────────╯                                                |
+|                                                                                    |
+|                                                                                    |
+|                                                                                    |
+|                                                                                    |
 | ╭────────────────────────────────────────────────────────────────────────────────╮ |
 | │                                                                                │ |
 | ╰────────────────────────────────────────────────────────────────────────────────╯ |
 |branch test/focus | mode full-auto | Tokens: 6/128000 (0%) | stream idle | model moo|
 --- attrs
-17,2:bold
+17,2:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

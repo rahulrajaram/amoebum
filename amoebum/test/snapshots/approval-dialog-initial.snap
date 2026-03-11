@@ -1,5 +1,5 @@
 --- ptui-snapshot v1 84x20
-| ASSISTANT> Let me check the files in this directory.                               |
+| Let me check the files in this directory.                                          |
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
@@ -11,16 +11,16 @@
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
-|╭──────────────────────────────────╮                                                |
-|│Tool approval required: glob-files│                                                |
-|│command: glob-files src/**/*.lisp │                                                |
-|╰──────────────────────────────────╯                                                |
+|                                                                                    |
+|                                                                                    |
+|                                                                                    |
+|                                                                                    |
 | ╭────────────────────────────────────────────────────────────────────────────────╮ |
 | │                                                                                │ |
 | ╰────────────────────────────────────────────────────────────────────────────────╯ |
 |branch test/overlay | mode full-auto | Tokens: 11/128000 (0%) | stream idle | model |
 --- attrs
-17,2:bold
+17,2:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

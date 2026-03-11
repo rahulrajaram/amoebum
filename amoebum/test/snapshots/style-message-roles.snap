@@ -1,9 +1,9 @@
 --- ptui-snapshot v1 84x20
 | SYSTEM> System: You are a helpful assistant.                                       |
 |                                                                                    |
-| YOU> What is the project structure?                                                |
+| What is the project structure?                                                     |
 |                                                                                    |
-| ASSISTANT> The project has 4 ASDF systems.                                         |
+| The project has 4 ASDF systems.                                                    |
 |                                                                                    |
 | TOOL> glob-files returned: main.lisp, config.lisp, chat.lisp                       |
 |                                                                                    |
@@ -96,12 +96,7 @@
 2,28:bold
 2,29:bold
 2,30:bold
-2,31:bold
-2,32:bold
-2,33:bold
-2,34:bold
-2,35:bold
-17,2:bold
+17,2:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

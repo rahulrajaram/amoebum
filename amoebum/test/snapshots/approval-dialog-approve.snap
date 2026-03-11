@@ -1,5 +1,5 @@
 --- ptui-snapshot v1 84x20
-| ASSISTANT> I will search for matching files.                                       |
+| I will search for matching files.                                                  |
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
@@ -11,16 +11,16 @@
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
-|╭───────────────────────────────────────╮                                           |
-|│Tool approval required: search-files   │                                           |
-|│command: search-files --pattern 'defun'│                                           |
-|╰───────────────────────────────────────╯                                           |
+|                                                                                    |
+|                                                                                    |
+|                                                                                    |
+|                                                                                    |
 | ╭────────────────────────────────────────────────────────────────────────────────╮ |
 | │                                                                                │ |
 | ╰────────────────────────────────────────────────────────────────────────────────╯ |
 |branch test/overlay | mode full-auto | Tokens: 9/128000 (0%) | stream idle | model m|
 --- attrs
-17,2:bold
+17,2:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

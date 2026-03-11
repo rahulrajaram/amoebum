@@ -1,10 +1,10 @@
 --- ptui-snapshot v1 84x20
-| YOU> First question about the codebase structure.                                  |
+| First question about the codebase structure.                                       |
 |                                                                                    |
-| ASSISTANT> The codebase has 4 ASDF systems: pseudopod, amoebum, sw4rm-sdk, and     |
-|            ptui.                                                                   |
+| The codebase has 4 ASDF systems: pseudopod, amoebum, sw4rm-sdk, and ptui.          |
 |                                                                                    |
-| YOU> Can you show me the main entry point?                                         |
+| Can you show me the main entry point?                                              |
+|                                                                                    |
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
@@ -65,55 +65,45 @@
 0,42:bold
 0,43:bold
 0,44:bold
-0,45:bold
-0,46:bold
-0,47:bold
-0,48:bold
-0,49:bold
-5,0:bold
-5,1:bold
-5,2:bold
-5,3:bold
-5,4:bold
-5,5:bold
-5,6:bold
-5,7:bold
-5,8:bold
-5,9:bold
-5,10:bold
-5,11:bold
-5,12:bold
-5,13:bold
-5,14:bold
-5,15:bold
-5,16:bold
-5,17:bold
-5,18:bold
-5,19:bold
-5,20:bold
-5,21:bold
-5,22:bold
-5,23:bold
-5,24:bold
-5,25:bold
-5,26:bold
-5,27:bold
-5,28:bold
-5,29:bold
-5,30:bold
-5,31:bold
-5,32:bold
-5,33:bold
-5,34:bold
-5,35:bold
-5,36:bold
-5,37:bold
-5,38:bold
-5,39:bold
-5,40:bold
-5,41:bold
-5,42:bold
-17,8:bold
+4,0:bold
+4,1:bold
+4,2:bold
+4,3:bold
+4,4:bold
+4,5:bold
+4,6:bold
+4,7:bold
+4,8:bold
+4,9:bold
+4,10:bold
+4,11:bold
+4,12:bold
+4,13:bold
+4,14:bold
+4,15:bold
+4,16:bold
+4,17:bold
+4,18:bold
+4,19:bold
+4,20:bold
+4,21:bold
+4,22:bold
+4,23:bold
+4,24:bold
+4,25:bold
+4,26:bold
+4,27:bold
+4,28:bold
+4,29:bold
+4,30:bold
+4,31:bold
+4,32:bold
+4,33:bold
+4,34:bold
+4,35:bold
+4,36:bold
+4,37:bold
+17,8:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

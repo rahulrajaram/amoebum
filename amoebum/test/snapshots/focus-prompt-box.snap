@@ -1,7 +1,7 @@
 --- ptui-snapshot v1 84x20
-| YOU> Hello                                                                         |
+| Hello                                                                              |
 |                                                                                    |
-| ASSISTANT> Hi! How can I help?                                                     |
+| Hi! How can I help?                                                                |
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
@@ -26,12 +26,7 @@
 0,3:bold
 0,4:bold
 0,5:bold
-0,6:bold
-0,7:bold
-0,8:bold
-0,9:bold
-0,10:bold
-17,13:bold
+17,13:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

@@ -3,20 +3,13 @@
 (in-package :amoebum)
 
 (ptui.ui.panel:defpanel approval-dialog-panel (chat-state)
-  (:effects
-    (sync-approval (%sync-pending-approval-dialog! chat-state)
-      :deps (chat-state)))
+  ;; Sync effects consolidated in chat-panel and %sync-all-state!
   (:layout
     (:column
       (dialog :flex 1 :when (approval-dialog-state-active-p
                               (chat-ui-state-approval-dialog-state chat-state))
         (let ((approval-state (chat-ui-state-approval-dialog-state chat-state)))
-          (make-approval-dialog-widget
-           (list :tool-name (approval-dialog-state-tool-name approval-state)
-                 :command (approval-dialog-state-command approval-state)
-                 :path (approval-dialog-state-path approval-state)
-                 :reason (approval-dialog-state-reason approval-state)
-                 :selected-option (approval-dialog-state-selected-option approval-state)))))))
+          (%chat-approval-dialog-widget chat-state approval-state)))))
   (:keys
     (:mode :active :when (approval-dialog-state-active-p
                            (chat-ui-state-approval-dialog-state chat-state))

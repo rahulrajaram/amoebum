@@ -1,5 +1,5 @@
 --- ptui-snapshot v1 84x20
-| YOU> checking files                                                                |
+| checking files                                                                     |
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
@@ -35,14 +35,9 @@
 0,12:bold
 0,13:bold
 0,14:bold
-0,15:bold
-0,16:bold
-0,17:bold
-0,18:bold
-0,19:bold
 10,9:bold
 10,10:bold
-17,7:bold
+17,7:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold

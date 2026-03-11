@@ -87,7 +87,7 @@
 
 (defun %fuzzy-prime-glob-query! (state &key root)
   (let* ((resolved-root (%fuzzy-resolve-root root))
-         (root-key (%path-text resolved-root)))
+         (root-key (coerce-path-string resolved-root)))
     (setf (fuzzy-picker-state-project-root state) root-key
           (fuzzy-picker-state-ignore-rules state) '()
           (fuzzy-picker-state-files state) #()
@@ -284,7 +284,7 @@
 (defun ensure-fuzzy-picker-index! (state &key root)
   (check-type state fuzzy-picker-state)
   (let* ((resolved-root (%fuzzy-resolve-root root))
-         (root-key (%path-text resolved-root))
+         (root-key (coerce-path-string resolved-root))
          (current-root (fuzzy-picker-state-project-root state)))
     (when (or (not (fuzzy-picker-state-index-ready-p state))
               (not (equal current-root root-key)))

@@ -21,6 +21,9 @@
   (command nil)
   (reason "" :type string)
   (decision-id "" :type string)
+  (created-at-ms (monotonic-ms) :type integer)
+  (resolved-at-ms nil)
+  (decision-source nil)
   (decision nil)       ; nil while waiting, :allow or :deny when resolved
   (remember-p nil :type boolean))   ; t → add to permanent allow/deny list
 
@@ -32,13 +35,79 @@
   "Set to T by the TUI when it starts.  When NIL, wait-for-pending-approval
 falls through immediately with :deny (headless / test mode).")
 
-(defun submit-pending-approval (decision &key remember-p)
+(defparameter +approval-wait-timeout-seconds+ 300)
+(defparameter +approval-wait-poll-seconds+ 1.0)
+
+(defun %approval-wait-timeout-seconds ()
+  (let ((text (%runtime-log-trimmed-env "AMOEBUM_APPROVAL_WAIT_TIMEOUT_SECONDS")))
+    (handler-case
+        (let ((value (and text
+                          (parse-integer text :junk-allowed nil))))
+          (if (and value (>= value 0))
+              value
+              +approval-wait-timeout-seconds+))
+      (error ()
+        +approval-wait-timeout-seconds+))))
+
+(defun %approval-wait-poll-seconds ()
+  (let ((text (%runtime-log-trimmed-env "AMOEBUM_APPROVAL_WAIT_POLL_SECONDS")))
+    (handler-case
+        (let* ((*read-eval* nil)
+               (value (and text (read-from-string text))))
+          (if (and (realp value)
+                   (> value 0))
+              (coerce value 'double-float)
+              +approval-wait-poll-seconds+))
+      (error ()
+        +approval-wait-poll-seconds+))))
+
+(defun %approval-log-details (pending-approval &key extra)
+  (append
+   (when pending-approval
+     (list :tool-name (pending-approval-tool-name pending-approval)
+           :decision-id (pending-approval-decision-id pending-approval)
+           :path (pending-approval-path pending-approval)
+           :command (pending-approval-command pending-approval)
+           :reason (pending-approval-reason pending-approval)
+           :created-at-ms (pending-approval-created-at-ms pending-approval)
+           :resolved-at-ms (pending-approval-resolved-at-ms pending-approval)
+           :decision-source (pending-approval-decision-source pending-approval)))
+   extra))
+
+(defun %resolve-pending-approval! (pending-approval decision &key remember-p source)
+  (setf (pending-approval-decision pending-approval) decision
+        (pending-approval-remember-p pending-approval) remember-p
+        (pending-approval-decision-source pending-approval) source
+        (pending-approval-resolved-at-ms pending-approval) (monotonic-ms))
+  pending-approval)
+
+(defun %approval-ui-error-details (&key operation dialog-state condition)
+  (list :operation operation
+        :tool-name (and dialog-state
+                        (approval-dialog-state-tool-name dialog-state))
+        :decision-id (and dialog-state
+                          (approval-dialog-state-decision-id dialog-state))
+        :condition (and condition
+                        (princ-to-string condition))))
+
+(defun submit-pending-approval (decision &key remember-p (source :user))
   "Called from the TUI thread to resolve the current pending approval.
 DECISION is :allow or :deny.  REMEMBER-P adds the rule permanently."
   (bt:with-lock-held (*pending-approval-lock*)
     (when *pending-approval*
-      (setf (pending-approval-decision *pending-approval*) decision
-            (pending-approval-remember-p *pending-approval*) remember-p)
+      (%resolve-pending-approval! *pending-approval*
+                                  decision
+                                  :remember-p remember-p
+                                  :source source)
+      (log-runtime-event :level :info
+                         :kind "approval-resolved"
+                         :source :approval-dialog
+                         :message "Interactive tool approval resolved."
+                         :details (%approval-log-details
+                                   *pending-approval*
+                                   :extra (list :decision decision
+                                                :source source
+                                                :remember-p remember-p)))
       (bt:condition-notify *pending-approval-condvar*))))
 
 (defun wait-for-pending-approval (tool-name arguments
@@ -46,35 +115,83 @@ DECISION is :allow or :deny.  REMEMBER-P adds the rule permanently."
                                        cancel-thunk)
   "Called from the pipeline thread.  Blocks until the TUI resolves the
 pending approval.  Returns the pending-approval struct with decision set.
-When no TUI is active (*approval-ui-active-p* is NIL), immediately returns
+  When no TUI is active (*approval-ui-active-p* is NIL), immediately returns
 with :deny — this prevents blocking in headless/test mode."
-  (let ((pa (%make-pending-approval
-             :tool-name (or tool-name "unknown")
-             :arguments arguments
-             :path path
-             :command command
-             :reason (or reason "approval required")
-             :decision-id (or decision-id (%next-permission-decision-id)))))
+  (let* ((timeout-seconds (%approval-wait-timeout-seconds))
+         (poll-seconds (%approval-wait-poll-seconds))
+         (pa (%make-pending-approval
+              :tool-name (or tool-name "unknown")
+              :arguments arguments
+              :path path
+              :command command
+              :reason (or reason "approval required")
+              :decision-id (or decision-id (%next-permission-decision-id)))))
     (unless *approval-ui-active-p*
       ;; No TUI running — deny immediately (headless/test mode)
-      (setf (pending-approval-decision pa) :deny)
+      (log-runtime-event :level :warn
+                         :kind "approval-headless-deny"
+                         :source :approval-dialog
+                         :message "Approval request denied because no approval UI was active."
+                         :details (%approval-log-details
+                                   pa
+                                   :extra (list :timeout-seconds timeout-seconds
+                                                :poll-seconds poll-seconds)))
+      (%resolve-pending-approval! pa :deny :source :noninteractive)
       (return-from wait-for-pending-approval pa))
-    (bt:with-lock-held (*pending-approval-lock*)
-      (setf *pending-approval* pa)
-      (let ((deadline (+ (get-internal-real-time)
-                         (* 300 internal-time-units-per-second))))  ; 5 minute timeout
-        (loop until (pending-approval-decision pa)
-              do (bt:condition-wait *pending-approval-condvar*
-                                    *pending-approval-lock*
-                                    :timeout 1)  ; wake every 1s to check deadline
-                 (when (> (get-internal-real-time) deadline)
-                   (setf (pending-approval-decision pa) :deny)
-                   (return))
-                 (when (and (functionp cancel-thunk)
-                            (funcall cancel-thunk))
-                   (setf (pending-approval-decision pa) :deny)
-                   (return))))
-      (setf *pending-approval* nil))
+    (handler-case
+        (unwind-protect
+             (bt:with-lock-held (*pending-approval-lock*)
+               (log-runtime-event :level :info
+                                  :kind "approval-requested"
+                                  :source :approval-dialog
+                                  :message "Tool approval requested."
+                                  :details (%approval-log-details
+                                            pa
+                                            :extra (list :timeout-seconds timeout-seconds
+                                                         :poll-seconds poll-seconds)))
+               (setf *pending-approval* pa)
+               (let ((deadline (+ (get-internal-real-time)
+                                  (* timeout-seconds
+                                     internal-time-units-per-second))))
+                 (loop until (pending-approval-decision pa)
+                       do (bt:condition-wait *pending-approval-condvar*
+                                             *pending-approval-lock*
+                                             :timeout poll-seconds)
+                          (when (> (get-internal-real-time) deadline)
+                            (log-runtime-event :level :warn
+                                               :kind "approval-timeout-deny"
+                                               :source :approval-dialog
+                                               :message "Tool approval timed out; denying by default."
+                                               :details (%approval-log-details
+                                                         pa
+                                                         :extra (list :timeout-seconds timeout-seconds
+                                                                      :poll-seconds poll-seconds)))
+                            (%resolve-pending-approval! pa :deny :source :timeout)
+                            (return))
+                          (when (and (functionp cancel-thunk)
+                                     (funcall cancel-thunk))
+                            (log-runtime-event :level :warn
+                                               :kind "approval-cancel-deny"
+                                               :source :approval-dialog
+                                               :message "Tool approval cancelled; denying by default."
+                                               :details (%approval-log-details
+                                                         pa
+                                                         :extra (list :timeout-seconds timeout-seconds
+                                                                      :poll-seconds poll-seconds)))
+                            (%resolve-pending-approval! pa :deny :source :cancelled)
+                            (return)))))
+          (bt:with-lock-held (*pending-approval-lock*)
+            (when (eq *pending-approval* pa)
+              (setf *pending-approval* nil))))
+      (error (condition)
+        (%resolve-pending-approval! pa :deny :source :ui-error)
+        (log-runtime-condition condition
+                               :kind "approval-wait-failed"
+                               :source :approval-dialog
+                               :message "Approval wait failed; denying by default."
+                               :details (%approval-log-details pa)
+                               :path (crash-log-path)
+                               :include-backtrace-p t)))
     pa))
 
 ;;; ---- TUI dialog state (lives on the chat-ui-state) ----
@@ -145,52 +262,80 @@ with :deny — this prevents blocking in headless/test mode."
 (defun approval-dialog-handle-key! (dialog-state key)
   "Handle a key press when the approval dialog is active.
 Returns T if the key was consumed, NIL otherwise."
-  (when (approval-dialog-state-active-p dialog-state)
-    (case key
-      ((:up)
-       (approval-dialog-move-selection! dialog-state -1)
-       t)
-      ((:down)
-       (approval-dialog-move-selection! dialog-state 1)
-       t)
-      ((:enter :return)
-       (approval-dialog-confirm! dialog-state)
-       t)
-      ((:escape)
-       ;; Escape = deny (safe default)
-       (submit-pending-approval :deny)
-       (approval-dialog-deactivate! dialog-state)
-       t)
-      ;; Single-key shortcuts
-      ((:text)
-       nil)  ; let the text handler below catch it
-      (otherwise
-       t))))  ; consume unknown keys while dialog is active
+  (handler-case
+      (when (approval-dialog-state-active-p dialog-state)
+        (case key
+          ((:up)
+           (approval-dialog-move-selection! dialog-state -1)
+           t)
+          ((:down)
+           (approval-dialog-move-selection! dialog-state 1)
+           t)
+          ((:enter :return)
+           (approval-dialog-confirm! dialog-state)
+           t)
+          ((:escape)
+           ;; Escape = deny (safe default)
+           (submit-pending-approval :deny)
+           (approval-dialog-deactivate! dialog-state)
+           t)
+          ;; Single-key shortcuts
+          ((:text)
+           nil)  ; let the text handler below catch it
+          (otherwise
+           t)))  ; consume unknown keys while dialog is active
+    (error (condition)
+      (log-runtime-condition condition
+                             :kind "approval-key-handler-failed"
+                             :source :approval-dialog
+                             :message "Approval dialog key handling failed; denying by default."
+                             :details (%approval-ui-error-details
+                                       :operation :key
+                                       :dialog-state dialog-state
+                                       :condition condition)
+                             :path (crash-log-path))
+      (ignore-errors (submit-pending-approval :deny :source :ui-error))
+      (ignore-errors (approval-dialog-deactivate! dialog-state))
+      t)))
 
 (defun approval-dialog-handle-text! (dialog-state text)
   "Handle text input shortcuts: y/n/a/d."
-  (when (and (approval-dialog-state-active-p dialog-state)
-             (stringp text)
-             (= (length text) 1))
-    (let ((char (char-downcase (char text 0))))
-      (case char
-        (#\y
-         (submit-pending-approval :allow)
-         (approval-dialog-deactivate! dialog-state)
-         t)
-        (#\n
-         (submit-pending-approval :deny)
-         (approval-dialog-deactivate! dialog-state)
-         t)
-        (#\a
-         (submit-pending-approval :allow :remember-p t)
-         (approval-dialog-deactivate! dialog-state)
-         t)
-        (#\d
-         (submit-pending-approval :deny :remember-p t)
-         (approval-dialog-deactivate! dialog-state)
-         t)
-        (otherwise t)))))  ; consume all text while dialog active
+  (handler-case
+      (when (and (approval-dialog-state-active-p dialog-state)
+                 (stringp text)
+                 (= (length text) 1))
+        (let ((char (char-downcase (char text 0))))
+          (case char
+            (#\y
+             (submit-pending-approval :allow)
+             (approval-dialog-deactivate! dialog-state)
+             t)
+            (#\n
+             (submit-pending-approval :deny)
+             (approval-dialog-deactivate! dialog-state)
+             t)
+            (#\a
+             (submit-pending-approval :allow :remember-p t)
+             (approval-dialog-deactivate! dialog-state)
+             t)
+            (#\d
+             (submit-pending-approval :deny :remember-p t)
+             (approval-dialog-deactivate! dialog-state)
+             t)
+            (otherwise t))))  ; consume all text while dialog active
+    (error (condition)
+      (log-runtime-condition condition
+                             :kind "approval-text-handler-failed"
+                             :source :approval-dialog
+                             :message "Approval dialog text handling failed; denying by default."
+                             :details (%approval-ui-error-details
+                                       :operation :text
+                                       :dialog-state dialog-state
+                                       :condition condition)
+                             :path (crash-log-path))
+      (ignore-errors (submit-pending-approval :deny :source :ui-error))
+      (ignore-errors (approval-dialog-deactivate! dialog-state))
+      t)))
 
 ;;; ---- Widget (rendered in chat-ui-build-tree) ----
 

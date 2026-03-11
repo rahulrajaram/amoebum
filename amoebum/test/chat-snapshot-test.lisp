@@ -44,14 +44,18 @@
 (defun %snapshot-chat-state (&key
                               messages
                               status-bar-state)
-  (let ((state (amoebum:make-chat-ui-state
-                :status-bar-state (or status-bar-state
-                                      (%snapshot-status-bar-state)))))
-    (dolist (message messages)
-      (amoebum:chat-ui-add-message state
-                                   (first message)
-                                   (second message)))
-    state))
+  (let ((*default-pathname-defaults*
+          (pathname "/home/rahul/Documents/amoebum/"))
+        (amoebum::*current-config* nil))
+    (ignore-errors (amoebum::drain-voice-transcriptions))
+    (let ((state (amoebum:make-chat-ui-state
+                  :status-bar-state (or status-bar-state
+                                        (%snapshot-status-bar-state)))))
+      (dolist (message messages)
+        (amoebum:chat-ui-add-message state
+                                     (first message)
+                                     (second message)))
+      state)))
 
 (defun %render-chat-ui (state &key (cols 84) (rows 20))
   (amoebum:render-chat-ui-buffer

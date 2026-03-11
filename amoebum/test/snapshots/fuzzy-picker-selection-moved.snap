@@ -22,7 +22,7 @@
 --- attrs
 11,9:bold
 11,10:bold
-17,6:bold
+17,6:bold,invert
 19,0:bold
 19,1:bold
 19,2:bold
