@@ -1,181 +1,58 @@
 --- ptui-snapshot v1 84x20
+|                                                                                 │  |
+| > Assistant response to query 12. This is a detailed explanation.               │  |
+|                                                                                 │  |
+| > User message number 13 about topic 13.                                        │  |
+|                                                                                 │  |
+| > Assistant response to query 13. This is a detailed explanation.               │  |
+|                                                                                 │  |
+| > User message number 14 about topic 14.                                        │  |
+|                                                                                 │  |
+| > Assistant response to query 14. This is a detailed explanation.               │  |
+|                                                                                 │  |
+| > User message number 15 about topic 15.                                        █  |
+|                                                                                 █  |
+| > Assistant response to query 15. This is a detailed explanation.               █  |
 |                                                                                    |
-| Assistant response to query 12. This is a detailed explanation.                    |
 |                                                                                    |
-| User message number 13 about topic 13.                                             |
-|                                                                                    |
-| Assistant response to query 13. This is a detailed explanation.                    |
-|                                                                                    |
-| User message number 14 about topic 14.                                             |
-|                                                                                    |
-| Assistant response to query 14. This is a detailed explanation.                    |
-|                                                                                    |
-| User message number 15 about topic 15.                                             |
-|                                                                                    |
-| Assistant response to query 15. This is a detailed explanation.                    |
-|                                                                                    |
-|                                                                                    |
-| ╭────────────────────────────────────────────────────────────────────────────────╮ |
-| │                                                                                │ |
-| ╰────────────────────────────────────────────────────────────────────────────────╯ |
+|╭────────────────────────────────────────────────────────────────────────────────╮  |
+|│                                                                                │  |
+|╰────────────────────────────────────────────────────────────────────────────────╯  |
 |branch test/scroll | mode full-auto | Tokens: 381/128000 (0%) | stream idle | model |
 --- attrs
+0,81:dim
+1,0:bold
+1,1:bold
+1,2:bold
+1,81:dim
+2,81:dim
 3,0:bold
 3,1:bold
 3,2:bold
-3,3:bold
-3,4:bold
-3,5:bold
-3,6:bold
-3,7:bold
-3,8:bold
-3,9:bold
-3,10:bold
-3,11:bold
-3,12:bold
-3,13:bold
-3,14:bold
-3,15:bold
-3,16:bold
-3,17:bold
-3,18:bold
-3,19:bold
-3,20:bold
-3,21:bold
-3,22:bold
-3,23:bold
-3,24:bold
-3,25:bold
-3,26:bold
-3,27:bold
-3,28:bold
-3,29:bold
-3,30:bold
-3,31:bold
-3,32:bold
-3,33:bold
-3,34:bold
-3,35:bold
-3,36:bold
-3,37:bold
-3,38:bold
+3,81:dim
+4,81:dim
+5,0:bold
+5,1:bold
+5,2:bold
+5,81:dim
+6,81:dim
 7,0:bold
 7,1:bold
 7,2:bold
-7,3:bold
-7,4:bold
-7,5:bold
-7,6:bold
-7,7:bold
-7,8:bold
-7,9:bold
-7,10:bold
-7,11:bold
-7,12:bold
-7,13:bold
-7,14:bold
-7,15:bold
-7,16:bold
-7,17:bold
-7,18:bold
-7,19:bold
-7,20:bold
-7,21:bold
-7,22:bold
-7,23:bold
-7,24:bold
-7,25:bold
-7,26:bold
-7,27:bold
-7,28:bold
-7,29:bold
-7,30:bold
-7,31:bold
-7,32:bold
-7,33:bold
-7,34:bold
-7,35:bold
-7,36:bold
-7,37:bold
-7,38:bold
+7,81:dim
+8,81:dim
+9,0:bold
+9,1:bold
+9,2:bold
+9,81:dim
+10,81:dim
 11,0:bold
 11,1:bold
 11,2:bold
-11,3:bold
-11,4:bold
-11,5:bold
-11,6:bold
-11,7:bold
-11,8:bold
-11,9:bold
-11,10:bold
-11,11:bold
-11,12:bold
-11,13:bold
-11,14:bold
-11,15:bold
-11,16:bold
-11,17:bold
-11,18:bold
-11,19:bold
-11,20:bold
-11,21:bold
-11,22:bold
-11,23:bold
-11,24:bold
-11,25:bold
-11,26:bold
-11,27:bold
-11,28:bold
-11,29:bold
-11,30:bold
-11,31:bold
-11,32:bold
-11,33:bold
-11,34:bold
-11,35:bold
-11,36:bold
-11,37:bold
-11,38:bold
-17,2:bold,invert
-19,0:bold
-19,1:bold
-19,2:bold
-19,3:bold
-19,4:bold
-19,5:bold
-19,6:bold
-19,7:bold
-19,8:bold
-19,9:bold
-19,10:bold
-19,11:bold
-19,12:bold
-19,13:bold
-19,14:bold
-19,15:bold
-19,16:bold
-19,17:bold
-19,18:bold
-19,19:bold
-19,20:bold
-19,21:bold
-19,22:bold
-19,23:bold
-19,24:bold
-19,25:bold
-19,26:bold
-19,27:bold
-19,28:bold
-19,29:bold
-19,30:bold
-19,31:bold
-19,32:bold
-19,33:bold
-19,34:bold
-19,35:bold
-19,36:bold
-19,37:bold
+13,0:bold
+13,1:bold
+13,2:bold
+17,1:bold,invert
 19,38:bold
 19,39:bold
 19,40:bold
@@ -199,26 +76,3 @@
 19,58:bold
 19,59:bold
 19,60:bold
-19,61:bold
-19,62:bold
-19,63:bold
-19,64:bold
-19,65:bold
-19,66:bold
-19,67:bold
-19,68:bold
-19,69:bold
-19,70:bold
-19,71:bold
-19,72:bold
-19,73:bold
-19,74:bold
-19,75:bold
-19,76:bold
-19,77:bold
-19,78:bold
-19,79:bold
-19,80:bold
-19,81:bold
-19,82:bold
-19,83:bold

@@ -154,7 +154,7 @@
                   (declare (ignore _args))
                   (pseudopod:make-message :role "assistant" :content "fallback")))
           (amoebum:enable-usdt-probes :install-gc-hooks nil :clear-existing t)
-          (amoebum:stream-pseudopod-chat
+          (amoebum.ui:stream-pseudopod-chat
            stream-state
            "hello"
            '()
@@ -231,7 +231,7 @@
       (amoebum:disable-usdt-probes :remove-gc-hooks t))))
 
 (test render-frame-probe-point-fires
-  (let ((state (amoebum:make-chat-ui-state :stream-runner nil))
+  (let ((state (amoebum.ui:make-chat-ui-state :stream-runner nil))
         (size (ptui.core.types:make-size 80 24)))
     (unwind-protect
         (progn

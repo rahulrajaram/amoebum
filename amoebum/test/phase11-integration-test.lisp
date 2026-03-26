@@ -14,15 +14,15 @@
 
 (test sound-backend-emits-no-crash
   "Selecting and using a sound backend doesn't crash."
-  (let ((old-backend amoebum:*sound-backend-instance*))
+  (let ((old-backend amoebum.notifications:*sound-backend-instance*))
     (unwind-protect
          (progn
-           (amoebum:reset-sound-backend)
+           (amoebum.notifications:reset-sound-backend)
            ;; Select builtin backend (always available)
-           (let ((backend (amoebum:select-sound-backend :backend :builtin)))
+           (let ((backend (amoebum.notifications:select-sound-backend :backend :builtin)))
              (is (not (null backend)))
-             (is (eq :builtin (amoebum:sound-backend-kind backend)))))
-      (setf amoebum:*sound-backend-instance* old-backend))))
+             (is (eq :builtin (amoebum.notifications:sound-backend-kind backend)))))
+      (setf amoebum.notifications:*sound-backend-instance* old-backend))))
 
 ;;; --- Worker system end-to-end (without real shell) ---
 
@@ -44,10 +44,10 @@
              ;; Find it
              (is (not (null (amoebum::%find-worker "w-integ-001"))))
              ;; Worker list
-             (is (plusp (length (amoebum:worker-list))))
+             (is (plusp (length (amoebum.workers:worker-list))))
              ;; Clear
              (amoebum:clear-workers)
-             (is (= 0 (length (amoebum:worker-list))))))
+             (is (= 0 (length (amoebum.workers:worker-list))))))
       (setf amoebum:*worker-supervisor* old-sup))))
 
 ;;; --- Worker retry + classification integration ---
@@ -97,16 +97,16 @@
          (progn
            (setf amoebum:*worker-supervisor* nil)
            (amoebum:clear-workers)
-           (amoebum:clear-worker-groups)
+           (amoebum.workers:clear-worker-groups)
            (multiple-value-bind (gid wids)
                (amoebum:fan-out-workers
                 (list (list :type :shell :command "echo a" :cwd "/tmp")))
              (is (stringp gid))
              (is (= 1 (length wids)))
-             (is (not (null (amoebum:find-worker-group gid))))
+             (is (not (null (amoebum.workers:find-worker-group gid))))
              ;; Clear
-             (amoebum:clear-worker-groups)
-             (is (null (amoebum:find-worker-group gid)))))
+             (amoebum.workers:clear-worker-groups)
+             (is (null (amoebum.workers:find-worker-group gid)))))
       (setf amoebum:*worker-supervisor* old-sup))))
 
 ;;; --- Event journal + replay integration ---
@@ -153,8 +153,8 @@
 
 (test session-journal-integration
   "Session lifecycle integrates with journal segment tracking."
-  (let ((old-dir amoebum:*session-directory*)
-        (old-id amoebum:*current-session-id*)
+  (let ((old-dir amoebum.sessions:*session-directory*)
+        (old-id amoebum.sessions:*current-session-id*)
         (old-journal amoebum:*event-journal*)
         (tmp-dir (merge-pathnames
                   (format nil "amoebum-integ-session-~D/" (get-universal-time))
@@ -162,22 +162,22 @@
     (unwind-protect
          (progn
            (ensure-directories-exist tmp-dir)
-           (setf amoebum:*session-directory* tmp-dir
+           (setf amoebum.sessions:*session-directory* tmp-dir
                  amoebum:*event-journal* nil)
            ;; Start session
-           (let ((session-id (amoebum:start-session :model "integration-model"
+           (let ((session-id (amoebum.sessions:start-session :model "integration-model"
                                                     :project-path "/test")))
              (is (stringp session-id))
              ;; Stop session
-             (let ((meta (amoebum:stop-session)))
-               (is (amoebum:session-metadata-p meta))
+             (let ((meta (amoebum.sessions:stop-session)))
+               (is (amoebum.sessions:session-metadata-p meta))
                ;; List should find it
-               (let ((sessions (amoebum:list-sessions)))
+               (let ((sessions (amoebum.sessions:list-sessions)))
                  (is (= 1 (length sessions)))
                  (is (equal session-id
-                            (amoebum:session-metadata-id (first sessions))))))))
-      (setf amoebum:*session-directory* old-dir
-            amoebum:*current-session-id* old-id
+                            (amoebum.sessions:session-metadata-id (first sessions))))))))
+      (setf amoebum.sessions:*session-directory* old-dir
+            amoebum.sessions:*current-session-id* old-id
             amoebum:*event-journal* old-journal)
       (ignore-errors (uiop:delete-directory-tree tmp-dir :validate t)))))
 
@@ -185,23 +185,23 @@
 
 (test conversation-export-round-trip
   "Export conversation to markdown and JSON, verify both readable."
-  (let ((old-dir amoebum:*conversation-export-directory*)
+  (let ((old-dir amoebum.sessions:*conversation-export-directory*)
         (tmp-dir (merge-pathnames
                   (format nil "amoebum-integ-export-~D/" (get-universal-time))
                   #P"/tmp/")))
     (unwind-protect
          (progn
            (ensure-directories-exist tmp-dir)
-           (setf amoebum:*conversation-export-directory* tmp-dir)
+           (setf amoebum.sessions:*conversation-export-directory* tmp-dir)
            (let ((conv (amoebum::%make-conversation-state
                         :session-id "integ-export-001"
                         :entries (list
-                                  (amoebum:make-conversation-history-entry
+                                  (amoebum.sessions:make-conversation-history-entry
                                    :role "user" :content "Hello")
-                                  (amoebum:make-conversation-history-entry
+                                  (amoebum.sessions:make-conversation-history-entry
                                    :role "assistant" :content "Hi there!")))))
              ;; Export markdown
-             (let ((md-path (amoebum:export-conversation conv
+             (let ((md-path (amoebum.sessions:export-conversation conv
                               :format-type :markdown
                               :project-name "integ-test")))
                (is (probe-file md-path))
@@ -209,14 +209,14 @@
                  (is (search "Conversation Export" content))
                  (is (search "Hello" content))))
              ;; Export JSON
-             (let ((json-path (amoebum:export-conversation conv
+             (let ((json-path (amoebum.sessions:export-conversation conv
                                 :format-type :json
                                 :project-name "integ-test")))
                (is (probe-file json-path))
                (let ((content (uiop:read-file-string json-path)))
                  (is (search "messages" content))
                  (is (search "Hello" content))))))
-      (setf amoebum:*conversation-export-directory* old-dir)
+      (setf amoebum.sessions:*conversation-export-directory* old-dir)
       (ignore-errors (uiop:delete-directory-tree tmp-dir :validate t)))))
 
 ;;; --- Adapter resilience ---
@@ -239,20 +239,20 @@
 
 (test hailer-graceful-degradation
   "Hailer CLI backend degrades gracefully when unavailable."
-  (let ((old-runner amoebum:*hailer-cli-runner*))
+  (let ((old-runner amoebum.notifications:*hailer-cli-runner*))
     (unwind-protect
          (progn
            ;; Mock runner that simulates hailer not installed
-           (setf amoebum:*hailer-cli-runner*
+           (setf amoebum.notifications:*hailer-cli-runner*
                  (lambda (&rest _args)
                    (declare (ignore _args))
                    (list :exit-code 127 :stdout "" :stderr "not found")))
-           (let ((backend (amoebum:select-sound-backend :backend :hailer-cli)))
+           (let ((backend (amoebum.notifications:select-sound-backend :backend :hailer-cli)))
              ;; Should still create backend (lazy availability check)
              (is (not (null backend)))
              ;; But availability check should fail
-             (is (not (amoebum:sound-backend-available-p backend)))))
-      (setf amoebum:*hailer-cli-runner* old-runner))))
+             (is (not (amoebum.notifications:sound-backend-available-p backend)))))
+      (setf amoebum.notifications:*hailer-cli-runner* old-runner))))
 
 ;;; --- Worker dashboard integration ---
 

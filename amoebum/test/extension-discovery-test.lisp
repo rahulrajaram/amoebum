@@ -62,23 +62,23 @@
          (global-root (merge-pathnames #P"global/" tmp-root))
          (project-root (merge-pathnames #P"project/" tmp-root))
          (project-local-root (merge-pathnames #P".amoebum/extensions/" project-root))
-         (old-global-override amoebum::*extensions-global-directory-override*)
-         (old-project-override amoebum::*extensions-project-directory-override*)
-         (old-hot-reload-enabled amoebum::*extension-hot-reload-enabled-p*)
-         (old-hot-reload-interval amoebum::*extension-hot-reload-interval-seconds*))
+         (old-global-override amoebum.extensions:*extensions-global-directory-override*)
+         (old-project-override amoebum.extensions:*extensions-project-directory-override*)
+         (old-hot-reload-enabled amoebum.extensions:*extension-hot-reload-enabled-p*)
+         (old-hot-reload-interval amoebum.extensions:*extension-hot-reload-interval-seconds*))
     (unwind-protect
         (progn
           (setf *i240-extension-log* '()
-                amoebum::*extensions-global-directory-override* global-root
-                amoebum::*extensions-project-directory-override* project-local-root
-                amoebum::*extension-hot-reload-enabled-p* nil
-                amoebum::*extension-hot-reload-interval-seconds* 0.05d0
-                amoebum::*extension-load-report* '()
-                amoebum::*loaded-extensions* '()
-                amoebum::*extension-last-discovered* '())
-          (clrhash amoebum::*disabled-extensions*)
-          (clrhash amoebum::*extension-registry*)
-          (clrhash amoebum::*extension-watch-snapshot*)
+                amoebum.extensions:*extensions-global-directory-override* global-root
+                amoebum.extensions:*extensions-project-directory-override* project-local-root
+                amoebum.extensions:*extension-hot-reload-enabled-p* nil
+                amoebum.extensions:*extension-hot-reload-interval-seconds* 0.05d0
+                amoebum.extensions:*extension-load-report* '()
+                amoebum.extensions:*loaded-extensions* '()
+                amoebum.extensions:*extension-last-discovered* '())
+          (clrhash amoebum.extensions:*disabled-extensions*)
+          (clrhash amoebum.extensions:*extension-registry*)
+          (clrhash amoebum.extensions:*extension-watch-snapshot*)
 
           (ensure-directories-exist (merge-pathnames #P".keep" global-root))
           (ensure-directories-exist (merge-pathnames #P".keep" project-local-root))
@@ -91,29 +91,29 @@
                                  :capabilities '(:hooks))
 
           (multiple-value-bind (global-files project-files)
-              (amoebum:discover-user-extension-files :project-root project-root)
+              (amoebum.extensions:discover-user-extension-files :project-root project-root)
             (is (= 1 (length global-files)))
             (is (= 1 (length project-files)))
             (is (string-equal "extension.lisp" (file-namestring (first global-files))))
             (is (string-equal "extension.lisp" (file-namestring (first project-files)))))
 
-          (let ((report (amoebum:load-user-extensions :project-root project-root
-                                                      :start-hot-reload nil)))
-            (is (= (getf (amoebum:extension-report-summary report) :loaded 0) 2))
-            (is (= (length (amoebum:list-extension-registry)) 2))
+          (let ((report (amoebum.extensions:load-user-extensions :project-root project-root
+                                                                 :start-hot-reload nil)))
+            (is (= (getf (amoebum.extensions:extension-report-summary report) :loaded 0) 2))
+            (is (= (length (amoebum.extensions:list-extension-registry)) 2))
             (is (equal *i240-extension-log* '("global-v1" "project-v1")))))
-      (amoebum:stop-extension-hot-reload)
-      (setf amoebum::*extensions-global-directory-override* old-global-override
-            amoebum::*extensions-project-directory-override* old-project-override
-            amoebum::*extension-hot-reload-enabled-p* old-hot-reload-enabled
-            amoebum::*extension-hot-reload-interval-seconds* old-hot-reload-interval
-            amoebum::*extension-load-report* '()
-            amoebum::*loaded-extensions* '()
-            amoebum::*extension-last-discovered* '()
+      (amoebum.extensions:stop-extension-hot-reload)
+      (setf amoebum.extensions:*extensions-global-directory-override* old-global-override
+            amoebum.extensions:*extensions-project-directory-override* old-project-override
+            amoebum.extensions:*extension-hot-reload-enabled-p* old-hot-reload-enabled
+            amoebum.extensions:*extension-hot-reload-interval-seconds* old-hot-reload-interval
+            amoebum.extensions:*extension-load-report* '()
+            amoebum.extensions:*loaded-extensions* '()
+            amoebum.extensions:*extension-last-discovered* '()
             *i240-extension-log* '())
-      (clrhash amoebum::*disabled-extensions*)
-      (clrhash amoebum::*extension-registry*)
-      (clrhash amoebum::*extension-watch-snapshot*)
+      (clrhash amoebum.extensions:*disabled-extensions*)
+      (clrhash amoebum.extensions:*extension-registry*)
+      (clrhash amoebum.extensions:*extension-watch-snapshot*)
       (%delete-directory-tree-safe tmp-root))))
 
 (test extension-hot-reload-detects-manifest-and-entrypoint-changes
@@ -121,23 +121,23 @@
          (global-root (merge-pathnames #P"global/" tmp-root))
          (project-root (merge-pathnames #P"project/" tmp-root))
          (project-local-root (merge-pathnames #P".amoebum/extensions/" project-root))
-         (old-global-override amoebum::*extensions-global-directory-override*)
-         (old-project-override amoebum::*extensions-project-directory-override*)
-         (old-hot-reload-enabled amoebum::*extension-hot-reload-enabled-p*)
-         (old-hot-reload-interval amoebum::*extension-hot-reload-interval-seconds*))
+         (old-global-override amoebum.extensions:*extensions-global-directory-override*)
+         (old-project-override amoebum.extensions:*extensions-project-directory-override*)
+         (old-hot-reload-enabled amoebum.extensions:*extension-hot-reload-enabled-p*)
+         (old-hot-reload-interval amoebum.extensions:*extension-hot-reload-interval-seconds*))
     (unwind-protect
         (progn
           (setf *i240-extension-log* '()
-                amoebum::*extensions-global-directory-override* global-root
-                amoebum::*extensions-project-directory-override* project-local-root
-                amoebum::*extension-hot-reload-enabled-p* nil
-                amoebum::*extension-hot-reload-interval-seconds* 0.05d0
-                amoebum::*extension-load-report* '()
-                amoebum::*loaded-extensions* '()
-                amoebum::*extension-last-discovered* '())
-          (clrhash amoebum::*disabled-extensions*)
-          (clrhash amoebum::*extension-registry*)
-          (clrhash amoebum::*extension-watch-snapshot*)
+                amoebum.extensions:*extensions-global-directory-override* global-root
+                amoebum.extensions:*extensions-project-directory-override* project-local-root
+                amoebum.extensions:*extension-hot-reload-enabled-p* nil
+                amoebum.extensions:*extension-hot-reload-interval-seconds* 0.05d0
+                amoebum.extensions:*extension-load-report* '()
+                amoebum.extensions:*loaded-extensions* '()
+                amoebum.extensions:*extension-last-discovered* '())
+          (clrhash amoebum.extensions:*disabled-extensions*)
+          (clrhash amoebum.extensions:*extension-registry*)
+          (clrhash amoebum.extensions:*extension-watch-snapshot*)
 
           (ensure-directories-exist (merge-pathnames #P".keep" project-local-root))
           (multiple-value-bind (_root manifest-path entry-path)
@@ -145,9 +145,9 @@
                                      :wrapped-manifest-p t
                                      :capabilities '(:tools))
             (declare (ignore _root))
-            (let ((report (amoebum:load-user-extensions :project-root project-root
-                                                        :start-hot-reload nil)))
-              (is (= (getf (amoebum:extension-report-summary report) :loaded 0) 1)))
+            (let ((report (amoebum.extensions:load-user-extensions :project-root project-root
+                                                                   :start-hot-reload nil)))
+              (is (= (getf (amoebum.extensions:extension-report-summary report) :loaded 0) 1)))
 
             (sleep 1)
             (%write-text-file
@@ -161,29 +161,29 @@
 ")
 
             (sleep 1)
-            (is-true (amoebum:check-extension-hot-reload :project-root project-root
-                                                         :reload-on-change t
-                                                         :start-hot-reload nil))
+            (is-true (amoebum.extensions:check-extension-hot-reload :project-root project-root
+                                                                    :reload-on-change t
+                                                                    :start-hot-reload nil))
             (let ((entry (find "hot-reload-ext"
-                               (amoebum:list-extension-registry)
-                               :key #'amoebum:extension-registry-entry-name
+                               (amoebum.extensions:list-extension-registry)
+                               :key #'amoebum.extensions:extension-registry-entry-name
                                :test #'string-equal)))
               (is-true entry)
               (is (string= "1.2.0"
-                           (amoebum:extension-registry-entry-version entry)))
+                           (amoebum.extensions:extension-registry-entry-version entry)))
               (is-true (member "hot-reload-v2" *i240-extension-log* :test #'string=)))))
-      (amoebum:stop-extension-hot-reload)
-      (setf amoebum::*extensions-global-directory-override* old-global-override
-            amoebum::*extensions-project-directory-override* old-project-override
-            amoebum::*extension-hot-reload-enabled-p* old-hot-reload-enabled
-            amoebum::*extension-hot-reload-interval-seconds* old-hot-reload-interval
-            amoebum::*extension-load-report* '()
-            amoebum::*loaded-extensions* '()
-            amoebum::*extension-last-discovered* '()
+      (amoebum.extensions:stop-extension-hot-reload)
+      (setf amoebum.extensions:*extensions-global-directory-override* old-global-override
+            amoebum.extensions:*extensions-project-directory-override* old-project-override
+            amoebum.extensions:*extension-hot-reload-enabled-p* old-hot-reload-enabled
+            amoebum.extensions:*extension-hot-reload-interval-seconds* old-hot-reload-interval
+            amoebum.extensions:*extension-load-report* '()
+            amoebum.extensions:*loaded-extensions* '()
+            amoebum.extensions:*extension-last-discovered* '()
             *i240-extension-log* '())
-      (clrhash amoebum::*disabled-extensions*)
-      (clrhash amoebum::*extension-registry*)
-      (clrhash amoebum::*extension-watch-snapshot*)
+      (clrhash amoebum.extensions:*disabled-extensions*)
+      (clrhash amoebum.extensions:*extension-registry*)
+      (clrhash amoebum.extensions:*extension-watch-snapshot*)
       (%delete-directory-tree-safe tmp-root))))
 
 (test extension-discovery-smoke-sentinel

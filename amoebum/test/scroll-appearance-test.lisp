@@ -101,13 +101,13 @@
     (unwind-protect
         (progn
           ;; Activate plan mode and add steps
-          (amoebum::enter-plan-mode :clear-steps-p t)
-          (amoebum::add-plan-step "Read the config file"
-                                  :file-paths '("amoebum/src/config.lisp"))
-          (amoebum::add-plan-step "Modify the parser"
-                                  :file-paths '("amoebum/src/pipeline.lisp"))
-          (amoebum::add-plan-step "Write unit tests"
-                                  :file-paths '("amoebum/test/config-test.lisp"))
+          (amoebum.plan:enter-plan-mode :clear-steps-p t)
+          (amoebum.plan:add-plan-step "Read the config file"
+                                      :file-paths '("amoebum/src/config.lisp"))
+          (amoebum.plan:add-plan-step "Modify the parser"
+                                      :file-paths '("amoebum/src/pipeline.lisp"))
+          (amoebum.plan:add-plan-step "Write unit tests"
+                                      :file-paths '("amoebum/test/config-test.lisp"))
           (let* ((state (%scroll-test-chat-state
                          :messages '(("system" "PLAN MODE active. Steps below:"))))
                  (buffer (%safe-render-chat-ui state :cols 84 :rows 20)))
@@ -116,3 +116,80 @@
       (setf amoebum::*plan-mode-state* saved-plan-state))
     (when result
       (%assert-scroll-snapshot result "scroll-plan-mode-steps"))))
+
+;;; --- Scroll Step-by-Step Diagnostic Tests ---
+
+(test scroll-up-from-bottom-offset-changes-each-step
+  "Each scroll-up-by-1 from bottom must change the rendered offset."
+  (with-safe-chat-env
+    (let* ((messages (%make-long-conversation))
+           (state (%scroll-test-chat-state :messages messages)))
+      ;; Initial render to establish max-scrollback
+      (%safe-render-chat-ui state :cols 84 :rows 20)
+      (let ((initial-max (amoebum::chat-ui-state-max-message-scrollback-lines
+                           (amoebum::ensure-chat-ui-state state))))
+        ;; Verify we can scroll (content exceeds viewport)
+        (is (> initial-max 0)
+            "Max scrollback should be > 0 for long conversation")
+        ;; Scroll up 1 step at a time and verify offset changes each time
+        (let ((prev-scrollback 0)
+              (failures '()))
+          (loop for step from 1 to (min 15 initial-max) do
+            (amoebum:chat-ui-scroll-history state 1)
+            ;; Re-render to update max-scrollback and clamp scrollback
+            (%safe-render-chat-ui state :cols 84 :rows 20)
+            (let ((cur-scrollback
+                    (amoebum::chat-ui-state-message-scrollback-lines
+                      (amoebum::ensure-chat-ui-state state))))
+              (when (= cur-scrollback prev-scrollback)
+                (push step failures))
+              (setf prev-scrollback cur-scrollback)))
+          (is (null failures)
+              "Scrollback should increase each step, stuck at steps: ~A" failures))))))
+
+(test scroll-up-from-bottom-with-markdown-content
+  "Scroll up from bottom with markdown-style content (trailing newlines)."
+  (with-safe-chat-env
+    (let* ((messages
+             (list (list "user" "Hello, can you help?")
+                   (list "assistant"
+                         (format nil "Sure! Here's a code example:~%~%```python~%def foo():~%    pass~%```~%~%And some more text.~%~%"))
+                   (list "user" "Thanks!")
+                   (list "assistant"
+                         (format nil "You're welcome!~%~%Here's another block:~%~%```~%line 1~%line 2~%line 3~%```~%~%"))
+                   (list "user" "One more question")
+                   (list "assistant"
+                         (format nil "Final answer with trailing newlines.~%~%~%~%~%"))))
+           (state (%scroll-test-chat-state :messages messages)))
+      ;; Render to establish state
+      (%safe-render-chat-ui state :cols 84 :rows 20)
+      (let* ((chat (amoebum::ensure-chat-ui-state state))
+             (max-sb (amoebum::chat-ui-state-max-message-scrollback-lines chat)))
+        ;; If max scrollback is 0, content fits viewport — test still passes
+        (when (> max-sb 0)
+          ;; Scroll up 1 step at a time
+          (let ((prev 0)
+                (failures '()))
+            (loop for step from 1 to (min 10 max-sb) do
+              (amoebum:chat-ui-scroll-history state 1)
+              (%safe-render-chat-ui state :cols 84 :rows 20)
+              (let ((cur (amoebum::chat-ui-state-message-scrollback-lines chat)))
+                (when (= cur prev)
+                  (push step failures))
+                (setf prev cur)))
+            (is (null failures)
+                "Scrollback should increase with markdown content, stuck at: ~A"
+                failures)))))))
+
+(test scroll-debug-flag-reads-runtime-env
+  "Scroll debug logging must consult the live process environment, not a dumped image value."
+  (let ((original (uiop:getenv "AMOEBUM_SCROLL_DEBUG")))
+    (unwind-protect
+        (progn
+          (setf (uiop:getenv "AMOEBUM_SCROLL_DEBUG") "")
+          (is-false (amoebum::%scroll-debug-enabled-p))
+          (setf (uiop:getenv "AMOEBUM_SCROLL_DEBUG") "1")
+          (is-true (amoebum::%scroll-debug-enabled-p))
+          (setf (uiop:getenv "AMOEBUM_SCROLL_DEBUG") "0")
+          (is-false (amoebum::%scroll-debug-enabled-p)))
+      (setf (uiop:getenv "AMOEBUM_SCROLL_DEBUG") (or original "")))))

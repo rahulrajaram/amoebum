@@ -64,6 +64,60 @@
       (let ((status (amoebum:user-handoff-status handoff-id)))
         (is (eq :completed (getf status :status)))))))
 
+(test handoff-rejection-preserves-sw4rm-metadata
+  "Rejected handoffs should keep rejection metadata and clear the pending queue."
+  (with-fresh-user-coordination ()
+    (amoebum:register-user-session-peer "session-from" :user-id "alice")
+    (amoebum:register-user-session-peer "session-to" :user-id "bob")
+    (let* ((response (amoebum:handoff-between-users
+                      "session-from"
+                      "session-to"
+                      "Need a fallback reviewer"))
+           (handoff-id (getf response :handoff-id))
+           (rejected (amoebum:reject-user-handoff
+                      handoff-id
+                      "overloaded"
+                      :rejection-code sw4rm-sdk:+overloaded+
+                      :retry-after-ms 250
+                      :redirect-to-agent-id "user/carol/session/session-carol"))
+           (status (amoebum:user-handoff-status handoff-id)))
+      (is (stringp handoff-id))
+      (is (eq :rejected (getf rejected :status)))
+      (is (string= "overloaded" (getf rejected :reason)))
+      (is (= sw4rm-sdk:+overloaded+ (getf rejected :rejection-code)))
+      (is (= 250 (getf rejected :retry-after-ms)))
+      (is (string= "user/carol/session/session-carol"
+                   (getf rejected :redirect-to-agent-id)))
+      (is (null (amoebum:get-user-pending-handoffs "session-to")))
+      (is (eq :rejected (getf status :status)))
+      (is (= sw4rm-sdk:+overloaded+ (getf status :rejection-code)))
+      (is (string= "overloaded" (getf status :rejection-reason)))
+      (is (= 250 (getf status :retry-after-ms)))
+      (is (string= "user/carol/session/session-carol"
+                   (getf status :redirect-to-agent-id))))))
+
+(test handoff-between-users-signals-missing-peer
+  "Delegation should fail fast when the target peer is not registered."
+  (with-fresh-user-coordination ()
+    (amoebum:register-user-session-peer "session-from" :user-id "alice")
+    (let ((message
+            (handler-case
+                (progn
+                  (amoebum:handoff-between-users
+                   "session-from"
+                   "session-missing"
+                   "Need help")
+                  nil)
+              (error (condition)
+                (princ-to-string condition)))))
+      (is (stringp message))
+      (is (search "No user peer registered for session-id"
+                  message
+                  :test #'char-equal))
+      (is (search "session-missing"
+                  message
+                  :test #'char-equal)))))
+
 (test user-provider-secrets-are-agent-scoped-and-sanitized-in-delegation
   "Provider secrets should stay agent-local and be stripped from delegated context."
   (with-fresh-user-coordination ()
@@ -141,6 +195,119 @@
         (is (= 1 (getf status :completed-decisions)))
         (is (= 0 (getf status :pending-proposals)))
         (is (= 2 (length (getf status :participant-session-ids))))))))
+
+(test negotiation-timeout-surfaces-sw4rm-rpc-timeout
+  "Waiting without critiques should raise the SW4RM timeout error and preserve pending status."
+  (with-fresh-user-coordination ()
+    (amoebum:register-user-session-peer "session-author" :user-id "author")
+    (amoebum:register-user-session-peer "session-reviewer" :user-id "reviewer")
+    (amoebum:create-user-negotiation-room
+     "room-timeout"
+     '("session-author" "session-reviewer")
+     :description "Timeout path room")
+    (let ((artifact-id
+            (amoebum:submit-user-negotiation-artifact
+             "room-timeout"
+             "session-author"
+             "artifact-timeout"
+             "Patch waiting for critique."
+             :requested-critic-session-ids '("session-reviewer")
+             :timeout-ms 50)))
+      (declare (ignore artifact-id))
+      (let ((message
+              (handler-case
+                  (progn
+                    (amoebum:wait-for-user-negotiation-decision
+                     "artifact-timeout"
+                     :timeout-s 0.05
+                     :poll-interval-s 0.01)
+                    nil)
+                (sw4rm-sdk::rpc-timeout (condition)
+                  (princ-to-string condition)))))
+        (is (stringp message))
+        (is (search "Timed out waiting for decision"
+                    message
+                    :test #'char-equal))
+        (let ((status (amoebum:get-user-negotiation-room-status "room-timeout")))
+          (is (= 1 (getf status :pending-proposals)))
+          (is (= 0 (getf status :completed-decisions)))
+          (is (equal '("session-reviewer")
+                     (getf status :active-critic-session-ids))))))))
+
+(test user-coordination-events-feed-agent-activity-and-journal
+  "SW4RM handoff and negotiation events should land in agent activity and the event journal."
+  (with-fresh-user-coordination ()
+    (let* ((original-bus amoebum:*event-bus*)
+           (bus (amoebum:make-event-bus :capacity 256))
+           (dir (merge-pathnames
+                 (format nil "amoebum-user-coordination-journal-~D/" (get-universal-time))
+                 #P"/tmp/"))
+           (journal (amoebum:make-event-journal-instance
+                     :directory dir
+                     :max-segment-bytes 4096)))
+      (unwind-protect
+           (progn
+             (setf amoebum:*event-bus* bus)
+             (amoebum:clear-agent-activity-stream)
+             (amoebum:ensure-agent-activity-stream bus)
+             (amoebum:start-event-journal :journal journal :event-bus bus)
+             (amoebum:register-user-session-peer "session-author" :user-id "author")
+             (amoebum:register-user-session-peer "session-reviewer" :user-id "reviewer")
+             (let* ((handoff (amoebum:handoff-between-users
+                              "session-author"
+                              "session-reviewer"
+                              "Review this patch"))
+                    (handoff-id (getf handoff :handoff-id)))
+               (amoebum:accept-user-handoff handoff-id)
+               (amoebum:complete-user-handoff handoff-id))
+             (amoebum:create-user-negotiation-room
+              "room-i253-events"
+              '("session-author" "session-reviewer")
+              :description "Event propagation room")
+             (amoebum:submit-user-negotiation-artifact
+              "room-i253-events"
+              "session-author"
+              "artifact-events"
+              "Patch for event coverage."
+              :requested-critic-session-ids '("session-reviewer")
+              :timeout-ms 5000)
+             (amoebum:add-user-negotiation-critique
+              "room-i253-events"
+              "artifact-events"
+              "session-reviewer"
+              t
+              :score 0.99
+              :details "Looks good.")
+             (let* ((decision (amoebum:wait-for-user-negotiation-decision
+                               "artifact-events"
+                               :timeout-s 1.0
+                               :poll-interval-s 0.01))
+                    (author-entries (amoebum:list-agent-activity :agent-id "user/author/session/session-author" :limit 20))
+                    (reviewer-entries (amoebum:list-agent-activity :agent-id "user/reviewer/session/session-reviewer" :limit 20)))
+               (is (member (getf decision :outcome) '(:approved :rejected :escalated) :test #'eq))
+               (is (find amoebum:+event-type-user-handoff-requested+
+                         author-entries
+                         :key #'amoebum:agent-activity-entry-source-event-type
+                         :test #'eq))
+               (is (find amoebum:+event-type-user-negotiation-artifact-submitted+
+                         author-entries
+                         :key #'amoebum:agent-activity-entry-source-event-type
+                         :test #'eq))
+               (is (find amoebum:+event-type-user-negotiation-critique-added+
+                         reviewer-entries
+                         :key #'amoebum:agent-activity-entry-source-event-type
+                         :test #'eq))
+               (amoebum:stop-event-journal journal)
+               (let ((content (uiop:read-file-string (first (amoebum:journal-segment-paths journal)))))
+                 (is (search "USER:HANDOFF-REQUESTED" (string-upcase content)))
+                 (is (search "USER:NEGOTIATION-ARTIFACT-SUBMITTED" (string-upcase content)))
+                 (is (search "USER:NEGOTIATION-DECISION" (string-upcase content))))))
+        (setf amoebum:*event-bus* original-bus)
+        (ignore-errors (amoebum:stop-event-journal journal))
+        (ignore-errors
+          (dolist (path (directory (merge-pathnames "*.jsonl" dir)))
+            (delete-file path))
+          (uiop:delete-empty-directory dir))))))
 
 (test user-coordination-smoke-sentinel
   "Smoke sentinel for tranche I253."

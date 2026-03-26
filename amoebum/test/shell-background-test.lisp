@@ -38,17 +38,17 @@
   (%i345-invoke-bash-exec "cleanup-completed" t "include-running" t))
 
 (defmacro %with-i345-shell-state (&body body)
-  `(let ((old-mode (amoebum:config-permission-mode (amoebum:current-config)))
+  `(let ((old-mode (amoebum.config:config-permission-mode (amoebum.config:current-config)))
          (old-shell-working-directory amoebum::*shell-working-directory*))
      (unwind-protect
           (progn
-            (amoebum:setconfig :permission-mode :full-auto)
+            (amoebum.config:setconfig :permission-mode :full-auto)
             (setf amoebum::*shell-working-directory* (%amoebum-system-root))
             (%i345-reset-shell-background-state)
             ,@body)
        (%i345-reset-shell-background-state)
        (setf amoebum::*shell-working-directory* old-shell-working-directory)
-       (amoebum:setconfig :permission-mode old-mode))))
+       (amoebum.config:setconfig :permission-mode old-mode))))
 
 (test i345-background-shell-output-and-exit-status
   "Background bash-exec jobs can be polled and expose deterministic output/exit status."

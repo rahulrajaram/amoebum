@@ -77,20 +77,20 @@
 
 (defmacro with-i342-review-repo ((root) &body body)
   `(let* ((tmp-root (%make-temp-directory "amoebum-i342"))
-          (old-config (amoebum:current-config))
-          (old-project-root (amoebum:config-project-root old-config))
-          (old-mode (amoebum:config-permission-mode old-config))
+          (old-config (amoebum.config:current-config))
+          (old-project-root (amoebum.config:config-project-root old-config))
+          (old-mode (amoebum.config:config-permission-mode old-config))
           (old-analyzer amoebum::*skill-review-analyzer*))
      (unwind-protect
           (progn
             (%i342-setup-repo tmp-root)
-            (amoebum:reload-config :project-root tmp-root)
-            (amoebum:setconfig :permission-mode :full-auto)
+            (amoebum.config:reload-config :project-root tmp-root)
+            (amoebum.config:setconfig :permission-mode :full-auto)
             (let ((,root tmp-root))
               ,@body))
        (setf amoebum::*skill-review-analyzer* old-analyzer)
-       (amoebum:reload-config :project-root old-project-root)
-       (amoebum:setconfig :permission-mode old-mode)
+       (amoebum.config:reload-config :project-root old-project-root)
+       (amoebum.config:setconfig :permission-mode old-mode)
        (%delete-directory-tree-safe tmp-root))))
 
 (test i342-review-missing-diff-path
@@ -103,12 +103,12 @@
     (multiple-value-bind (handled result)
         (amoebum:dispatch-slash-command
          "/review main"
-         :config (amoebum:current-config)
-         :chat-state (amoebum:make-chat-ui-state))
-      (let* ((output (amoebum:slash-command-result-output result))
-             (payload (amoebum:slash-command-result-payload result)))
+         :config (amoebum.config:current-config)
+         :chat-state (amoebum.ui:make-chat-ui-state))
+      (let* ((output (amoebum.commands:slash-command-result-output result))
+             (payload (amoebum.commands:slash-command-result-payload result)))
         (is-true handled)
-        (is (typep result 'amoebum:slash-command-result))
+        (is (typep result 'amoebum.commands:slash-command-result))
         (is-true (search "Status: missing-diff" output :test #'char-equal))
         (is (string= "missing-diff" (or (gethash "status" payload) "")))
         (is (= 0 (or (gethash "findings_count" payload) -1)))))))
@@ -126,10 +126,10 @@
     (multiple-value-bind (handled result)
         (amoebum:dispatch-slash-command
          "/review main"
-         :config (amoebum:current-config)
-         :chat-state (amoebum:make-chat-ui-state))
-      (let* ((output (amoebum:slash-command-result-output result))
-             (payload (amoebum:slash-command-result-payload result))
+         :config (amoebum.config:current-config)
+         :chat-state (amoebum.ui:make-chat-ui-state))
+      (let* ((output (amoebum.commands:slash-command-result-output result))
+             (payload (amoebum.commands:slash-command-result-payload result))
              (json-block-pos (search "```json" output :test #'char-equal)))
         (is-true handled)
         (is-true (search "Status: no-findings" output :test #'char-equal))
@@ -163,10 +163,10 @@
     (multiple-value-bind (handled result)
         (amoebum:dispatch-slash-command
          "/review main"
-         :config (amoebum:current-config)
-         :chat-state (amoebum:make-chat-ui-state))
-      (let* ((output (amoebum:slash-command-result-output result))
-             (payload (amoebum:slash-command-result-payload result))
+         :config (amoebum.config:current-config)
+         :chat-state (amoebum.ui:make-chat-ui-state))
+      (let* ((output (amoebum.commands:slash-command-result-output result))
+             (payload (amoebum.commands:slash-command-result-payload result))
              (findings (gethash "findings" payload))
              (first-finding (and (vectorp findings) (> (length findings) 0)
                                  (aref findings 0))))

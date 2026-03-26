@@ -11,27 +11,27 @@
 
 (test base-config-has-defaults
   "Base config should have all default keys populated."
-  (let ((cfg (amoebum::load-config :project-root "/tmp/"
+  (let ((cfg (amoebum.config:load-config :project-root "/tmp/"
                                     :global-config-path "/nonexistent/global.lisp"
                                     :project-config-path "/nonexistent/project.lisp"
                                     :environment-values nil
                                     :cli-values nil)))
-    (is (amoebum::config-p cfg))
-    (is (stringp (amoebum:config-value :model cfg)))
-    (is (keywordp (amoebum:config-value :permission-mode cfg)))
-    (is (keywordp (amoebum:config-value :memory-backend cfg)))
-    (is (pathnamep (amoebum:config-project-root cfg)))))
+    (is (amoebum.config:config-p cfg))
+    (is (stringp (amoebum.config:config-value :model cfg)))
+    (is (keywordp (amoebum.config:config-value :permission-mode cfg)))
+    (is (keywordp (amoebum.config:config-value :memory-backend cfg)))
+    (is (pathnamep (amoebum.config:config-project-root cfg)))))
 
 (test base-config-default-sources
   "All default values should come from :built-in source."
-  (let ((cfg (amoebum::load-config :project-root "/tmp/"
+  (let ((cfg (amoebum.config:load-config :project-root "/tmp/"
                                     :global-config-path "/nonexistent/global.lisp"
                                     :project-config-path "/nonexistent/project.lisp"
                                     :environment-values nil
                                     :cli-values nil)))
-    (is (eq :built-in (amoebum:config-layer-source :model cfg)))
-    (is (eq :built-in (amoebum:config-layer-source :permission-mode cfg)))
-    (is (eq :built-in (amoebum:config-layer-source :memory-backend cfg)))))
+    (is (eq :built-in (amoebum.config:config-layer-source :model cfg)))
+    (is (eq :built-in (amoebum.config:config-layer-source :permission-mode cfg)))
+    (is (eq :built-in (amoebum.config:config-layer-source :memory-backend cfg)))))
 
 ;;; --- Layer priority ---
 
@@ -43,14 +43,14 @@
          (progn
            (%write-text-file global-path
                              "(configure :model \"global-model\")")
-           (let ((cfg (amoebum::load-config
+           (let ((cfg (amoebum.config:load-config
                        :project-root "/tmp/"
                        :global-config-path global-path
                        :project-config-path "/nonexistent/project.lisp"
                        :environment-values nil
                        :cli-values nil)))
-             (is (string= "global-model" (amoebum:config-value :model cfg)))
-             (is (eq :global (amoebum:config-layer-source :model cfg)))))
+             (is (string= "global-model" (amoebum.config:config-value :model cfg)))
+             (is (eq :global (amoebum.config:config-layer-source :model cfg)))))
       (%delete-directory-tree-safe tmp-dir))))
 
 (test project-layer-overrides-global
@@ -64,14 +64,14 @@
                              "(configure :model \"global-model\")")
            (%write-text-file project-path
                              "(configure :model \"project-model\")")
-           (let ((cfg (amoebum::load-config
+           (let ((cfg (amoebum.config:load-config
                        :project-root "/tmp/"
                        :global-config-path global-path
                        :project-config-path project-path
                        :environment-values nil
                        :cli-values nil)))
-             (is (string= "project-model" (amoebum:config-value :model cfg)))
-             (is (eq :project (amoebum:config-layer-source :model cfg)))))
+             (is (string= "project-model" (amoebum.config:config-value :model cfg)))
+             (is (eq :project (amoebum.config:config-layer-source :model cfg)))))
       (%delete-directory-tree-safe tmp-dir))))
 
 (test env-layer-overrides-project
@@ -84,14 +84,14 @@
          (progn
            (%write-text-file project-path
                              "(configure :model \"project-model\")")
-           (let ((cfg (amoebum::load-config
+           (let ((cfg (amoebum.config:load-config
                        :project-root "/tmp/"
                        :global-config-path "/nonexistent/global.lisp"
                        :project-config-path project-path
                        :environment-values env-values
                        :cli-values nil)))
-             (is (string= "env-model" (amoebum:config-value :model cfg)))
-             (is (eq :env (amoebum:config-layer-source :model cfg)))))
+             (is (string= "env-model" (amoebum.config:config-value :model cfg)))
+             (is (eq :env (amoebum.config:config-layer-source :model cfg)))))
       (%delete-directory-tree-safe tmp-dir))))
 
 (test directory-layer-overrides-project
@@ -113,15 +113,15 @@
                              "(configure :model \"project-model\")")
            (%write-text-file directory-path
                              "(configure :model \"directory-model\")")
-           (let ((cfg (amoebum::load-config
+           (let ((cfg (amoebum.config:load-config
                        :project-root project-root
                        :directory-root directory-root
                        :global-config-path global-path
                        :project-config-path project-path
                        :environment-values nil
                        :cli-values nil)))
-             (is (string= "directory-model" (amoebum:config-value :model cfg)))
-             (is (eq :directory (amoebum:config-layer-source :model cfg)))))
+             (is (string= "directory-model" (amoebum.config:config-value :model cfg)))
+             (is (eq :directory (amoebum.config:config-layer-source :model cfg)))))
       (%delete-directory-tree-safe tmp-dir))))
 
 (test cli-layer-overrides-all
@@ -137,14 +137,14 @@
          (progn
            (%write-text-file global-path "(configure :model \"global-model\")")
            (%write-text-file project-path "(configure :model \"project-model\")")
-           (let ((cfg (amoebum::load-config
+           (let ((cfg (amoebum.config:load-config
                        :project-root "/tmp/"
                        :global-config-path global-path
                        :project-config-path project-path
                        :environment-values env-values
                        :cli-values cli-values)))
-             (is (string= "cli-model" (amoebum:config-value :model cfg)))
-             (is (eq :cli (amoebum:config-layer-source :model cfg)))))
+             (is (string= "cli-model" (amoebum.config:config-value :model cfg)))
+             (is (eq :cli (amoebum.config:config-layer-source :model cfg)))))
       (%delete-directory-tree-safe tmp-dir))))
 
 (test list-merge-directives-append-and-prepend
@@ -171,7 +171,7 @@
                              "(configure :web-search-allow-domains '(:append (\"project.example\")))")
            (%write-text-file directory-path
                              "(configure :web-search-allow-domains '(:prepend (\"directory.example\")))")
-           (let ((cfg (amoebum::load-config
+           (let ((cfg (amoebum.config:load-config
                        :project-root project-root
                        :directory-root directory-root
                        :global-config-path global-path
@@ -183,22 +183,22 @@
                           "project.example"
                           "env.example"
                           "cli.example")
-                        (amoebum:config-value :web-search-allow-domains cfg)))
+                        (amoebum.config:config-value :web-search-allow-domains cfg)))
              (is (eq :cli
-                     (amoebum:config-layer-source :web-search-allow-domains cfg)))))
+                     (amoebum.config:config-layer-source :web-search-allow-domains cfg)))))
       (%delete-directory-tree-safe tmp-dir))))
 
 (test cli-arguments-parsing
   "CLI arguments should be parsed correctly."
-  (let ((cfg (amoebum::load-config
+  (let ((cfg (amoebum.config:load-config
               :project-root "/tmp/"
               :global-config-path "/nonexistent/global.lisp"
               :project-config-path "/nonexistent/project.lisp"
               :environment-values nil
               :cli-arguments '("--model" "cli-arg-model"
                                "--permission-mode" "full-auto"))))
-    (is (string= "cli-arg-model" (amoebum:config-value :model cfg)))
-    (is (eq :full-auto (amoebum:config-value :permission-mode cfg)))))
+    (is (string= "cli-arg-model" (amoebum.config:config-value :model cfg)))
+    (is (eq :full-auto (amoebum.config:config-value :permission-mode cfg)))))
 
 (test per-key-replacement-works
   "Each layer can override individual keys without affecting others."
@@ -211,23 +211,23 @@
                              "(configure :model \"global-model\" :permission-mode :yolo)")
            (%write-text-file project-path
                              "(configure :model \"project-model\")")
-           (let ((cfg (amoebum::load-config
+           (let ((cfg (amoebum.config:load-config
                        :project-root "/tmp/"
                        :global-config-path global-path
                        :project-config-path project-path
                        :environment-values nil
                        :cli-values nil)))
              ;; Model overridden by project
-             (is (string= "project-model" (amoebum:config-value :model cfg)))
+             (is (string= "project-model" (amoebum.config:config-value :model cfg)))
              ;; Permission mode from global (not overridden by project)
-             (is (eq :yolo (amoebum:config-value :permission-mode cfg)))
-             (is (eq :global (amoebum:config-layer-source :permission-mode cfg)))))
+             (is (eq :yolo (amoebum.config:config-value :permission-mode cfg)))
+             (is (eq :global (amoebum.config:config-layer-source :permission-mode cfg)))))
       (%delete-directory-tree-safe tmp-dir))))
 
 (test configure-function-requires-context
   "CONFIGURE should error outside of config file loading context."
   (signals error
-    (amoebum:configure :model "should-fail")))
+    (amoebum.config:configure :model "should-fail")))
 
 (test reload-config-updates-current
   "reload-config should update *current-config*."
@@ -239,6 +239,6 @@
                                     :project-config-path "/nonexistent/p.lisp"
                                     :environment-values nil
                                     :cli-values nil)
-           (is (amoebum::config-p amoebum::*current-config*))
+           (is (amoebum.config:config-p amoebum::*current-config*))
            (is (not (eq old-config amoebum::*current-config*))))
       (setf amoebum::*current-config* old-config))))

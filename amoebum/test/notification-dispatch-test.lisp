@@ -6,7 +6,7 @@
 
 (in-suite notification-dispatch-suite)
 
-(defclass test-notification-backend (amoebum:notification-backend)
+(defclass test-notification-backend (amoebum.notifications:notification-backend)
   ((available-p
     :initarg :available-p
     :initform t
@@ -20,11 +20,11 @@
     :initform 0
     :accessor test-notification-backend-calls)))
 
-(defmethod amoebum:notify-available-p ((backend test-notification-backend))
+(defmethod amoebum.notifications:notify-available-p ((backend test-notification-backend))
   (test-notification-backend-available-p backend))
 
-(defmethod amoebum:notify-send ((backend test-notification-backend)
-                                (notification amoebum:notification))
+(defmethod amoebum.notifications:notify-send ((backend test-notification-backend)
+                                (notification amoebum.notifications:notification))
   (declare (ignore notification))
   (incf (test-notification-backend-calls backend))
   (if (test-notification-backend-success-p backend)
@@ -40,15 +40,15 @@
                                          :name :default
                                          :enabled-p t
                                          :success-p t))
-         (dispatcher (amoebum:make-notification-dispatcher
+         (dispatcher (amoebum.notifications:make-notification-dispatcher
                       :backends
-                      (list (amoebum:make-notification-dispatch-backend
+                      (list (amoebum.notifications:make-notification-dispatch-backend
                              :name :error
                              :backend error-backend
                              :enabled-p t
                              :filter (list amoebum:+event-type-tool-error+)
                              :priority 5)
-                            (amoebum:make-notification-dispatch-backend
+                            (amoebum.notifications:make-notification-dispatch-backend
                              :name :default
                              :backend default-backend
                              :enabled-p t
@@ -60,14 +60,14 @@
                  :condition "failure"
                  :elapsed-ms 1
                  :request-id "i225-route"))
-         (notification (amoebum:make-notification
+         (notification (amoebum.notifications:make-notification
                         :title "Error"
                         :body "Tool failed"
                         :severity :error
                         :source-event event
                         :timestamp (get-universal-time))))
     (multiple-value-bind (ok backend-name)
-        (amoebum:dispatch-notification dispatcher notification :event event)
+        (amoebum.notifications:dispatch-notification dispatcher notification :event event)
       (is-true ok)
       (is (eq backend-name :error))
       (is (= 1 (test-notification-backend-calls error-backend)))
@@ -82,15 +82,15 @@
                                           :name :fallback
                                           :enabled-p t
                                           :success-p t))
-         (dispatcher (amoebum:make-notification-dispatcher
+         (dispatcher (amoebum.notifications:make-notification-dispatcher
                       :backends
-                      (list (amoebum:make-notification-dispatch-backend
+                      (list (amoebum.notifications:make-notification-dispatch-backend
                              :name :primary
                              :backend failing-backend
                              :enabled-p t
                              :filter :*
                              :priority 1)
-                            (amoebum:make-notification-dispatch-backend
+                            (amoebum.notifications:make-notification-dispatch-backend
                              :name :fallback
                              :backend fallback-backend
                              :enabled-p t
@@ -102,14 +102,14 @@
                  :result "ok"
                  :elapsed-ms 1
                  :request-id "i225-fallback"))
-         (notification (amoebum:make-notification
+         (notification (amoebum.notifications:make-notification
                         :title "Complete"
                         :body "Done"
                         :severity :info
                         :source-event event
                         :timestamp (get-universal-time))))
     (multiple-value-bind (ok backend-name)
-        (amoebum:dispatch-notification dispatcher notification :event event)
+        (amoebum.notifications:dispatch-notification dispatcher notification :event event)
       (is-true ok)
       (is (eq backend-name :fallback))
       (is (= 1 (test-notification-backend-calls failing-backend)))
@@ -124,15 +124,15 @@
                                          :name :log
                                          :enabled-p t
                                          :success-p t))
-         (dispatcher (amoebum:make-notification-dispatcher
+         (dispatcher (amoebum.notifications:make-notification-dispatcher
                       :backends
-                      (list (amoebum:make-notification-dispatch-backend
+                      (list (amoebum.notifications:make-notification-dispatch-backend
                              :name :desktop
                              :backend disabled-backend
                              :enabled-p t
                              :filter :*
                              :priority 1)
-                            (amoebum:make-notification-dispatch-backend
+                            (amoebum.notifications:make-notification-dispatch-backend
                              :name :log
                              :backend enabled-backend
                              :enabled-p t
@@ -144,30 +144,30 @@
                  :result "ok"
                  :elapsed-ms 1
                  :request-id "i225-toggle"))
-         (notification (amoebum:make-notification
+         (notification (amoebum.notifications:make-notification
                         :title "Complete"
                         :body "Done"
                         :severity :info
                         :source-event event
                         :timestamp (get-universal-time))))
-    (amoebum:set-notification-dispatch-backend-enabled-p dispatcher :desktop nil)
+    (amoebum.notifications:set-notification-dispatch-backend-enabled-p dispatcher :desktop nil)
     (multiple-value-bind (ok backend-name)
-        (amoebum:dispatch-notification dispatcher notification :event event)
+        (amoebum.notifications:dispatch-notification dispatcher notification :event event)
       (is-true ok)
       (is (eq backend-name :log))
       (is (= 0 (test-notification-backend-calls disabled-backend)))
       (is (= 1 (test-notification-backend-calls enabled-backend))))))
 
 (test dispatcher-subscribes-wildcard-event-bus
-  (let* ((original-dispatcher amoebum:*notification-dispatcher*)
+  (let* ((original-dispatcher amoebum.notifications:*notification-dispatcher*)
          (bus (amoebum:make-event-bus :capacity 64))
          (backend (make-instance 'test-notification-backend
                                  :name :audit
                                  :enabled-p t
                                  :success-p t))
-         (dispatcher (amoebum:make-notification-dispatcher
+         (dispatcher (amoebum.notifications:make-notification-dispatcher
                       :backends
-                      (list (amoebum:make-notification-dispatch-backend
+                      (list (amoebum.notifications:make-notification-dispatch-backend
                              :name :audit
                              :backend backend
                              :enabled-p t
@@ -179,12 +179,12 @@
                  :new-value "b")))
     (unwind-protect
         (progn
-          (setf amoebum:*notification-dispatcher* dispatcher)
-          (amoebum:ensure-notification-dispatcher :event-bus bus)
+          (setf amoebum.notifications:*notification-dispatcher* dispatcher)
+          (amoebum.notifications:ensure-notification-dispatcher :event-bus bus)
           (amoebum:publish bus event)
           (is (= 1 (test-notification-backend-calls backend))))
-      (setf amoebum:*notification-dispatcher* original-dispatcher)
-      (amoebum:stop-notification-dispatcher :event-bus bus))))
+      (setf amoebum.notifications:*notification-dispatcher* original-dispatcher)
+      (amoebum.notifications:stop-notification-dispatcher :event-bus bus))))
 
 (test notification-dispatch-smoke-sentinel
   (is-true t)

@@ -30,7 +30,7 @@
                                    (context-window-limit 12000)
                                    stream-summary)
   (let* ((event-bus (amoebum:make-event-bus :capacity 16))
-         (state (amoebum:make-status-bar-state
+         (state (amoebum.ui:make-status-bar-state
                  :branch-name branch-name
                  :model-name model-name
                  :permission-mode :full-auto
@@ -48,7 +48,7 @@
           (pathname "/home/rahul/Documents/amoebum/"))
         (amoebum::*current-config* nil))
     (ignore-errors (amoebum::drain-voice-transcriptions))
-    (let ((state (amoebum:make-chat-ui-state
+    (let ((state (amoebum.ui:make-chat-ui-state
                   :status-bar-state (or status-bar-state
                                         (%snapshot-status-bar-state)))))
       (dolist (message messages)
@@ -68,7 +68,7 @@
      buffer
      0
      0
-     (amoebum:status-bar-line status-state))
+     (amoebum.ui:status-bar-line status-state))
     buffer))
 
 (test chat-snapshot-message-area
@@ -84,7 +84,7 @@
   (let* ((state (%snapshot-chat-state
                  :messages '(("assistant" "I will check symbols in the current tree."))
                  :status-bar-state (%snapshot-status-bar-state :branch-name "feat/chat-snapshot")))
-         (tool-calls (amoebum:chat-ui-state-stream-tool-calls state)))
+         (tool-calls (amoebum.ui:chat-ui-state-stream-tool-calls state)))
     (setf (gethash :preview tool-calls)
           (list :key :preview
                 :tool-name "search_symbols"
@@ -108,3 +108,12 @@
                  :status-bar-state (%snapshot-status-bar-state :branch-name "feat/chat-snapshot")))
          (buffer (%render-chat-ui state :cols 84 :rows 20)))
     (%assert-chat-snapshot buffer "empty-state")))
+
+(test chat-snapshot-exit-warning-row
+  (let* ((state (%snapshot-chat-state
+                 :status-bar-state (%snapshot-status-bar-state :branch-name "feat/chat-snapshot")))
+         (ignore
+           (setf (amoebum::chat-ui-state-ctrl-c-quit-armed-at-ms state)
+                 (ptui.util.time:monotonic-ms))))
+    (%assert-chat-snapshot (%render-chat-ui state :cols 84 :rows 20)
+                           "exit-warning-row")))

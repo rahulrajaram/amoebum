@@ -100,14 +100,14 @@
                                                    :label "ow test"
                                                    :timeout-seconds 10
                                                    :cwd "/tmp")))
-             (is (amoebum:worker-record-p worker))
-             (is (stringp (amoebum:worker-record-id worker)))
+             (is (amoebum.workers:worker-record-p worker))
+             (is (stringp (amoebum.workers:worker-record-id worker)))
              (is (not (null submitted-url)))
              (is (search "/run" submitted-url))
              ;; Wait for poller thread to complete
-             (amoebum:await-worker (amoebum:worker-record-id worker)
+             (amoebum.workers:await-worker (amoebum.workers:worker-record-id worker)
                                    :timeout-seconds 5)
-             (let ((status (amoebum:worker-record-status worker)))
+             (let ((status (amoebum.workers:worker-record-status worker)))
                (is (eq :completed status)))))
       (setf amoebum:*overwatch-http-request-function* old-http
             amoebum:*worker-supervisor* old-sup))))
@@ -132,10 +132,10 @@
                                                    :timeout-seconds 10
                                                    :cwd "/tmp")))
              ;; Should fall back to in-process backend
-             (is (amoebum:worker-record-p worker))
+             (is (amoebum.workers:worker-record-p worker))
              ;; Backend should be :in-process after fallback
-             (amoebum:await-worker (amoebum:worker-record-id worker)
+             (amoebum.workers:await-worker (amoebum.workers:worker-record-id worker)
                                    :timeout-seconds 15)
-             (is (eq :in-process (amoebum:worker-record-backend worker)))))
+             (is (eq :in-process (amoebum.workers:worker-record-backend worker)))))
       (setf amoebum:*overwatch-http-request-function* old-http
             amoebum:*worker-supervisor* old-sup))))

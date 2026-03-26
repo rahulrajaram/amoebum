@@ -133,7 +133,7 @@
                        (lambda (chunk)
                          (push chunk chunks)
                          nil)))
-                 (amoebum:stream-pseudopod-chat
+                 (amoebum.ui:stream-pseudopod-chat
                   stream-state
                   "prompt"
                   '()
@@ -145,8 +145,10 @@
         (lambda (event)
           (push event events)))
        (is (equal (reverse chunks) '("alpha" "beta gamma")))
-       (is (= (count :text-delta events :key (lambda (event) (getf event :kind)))
-              2))))))
+       ;; Only :content chunks emit :text-delta events, not :reasoning chunks
+       (is (= (count :text-delta events :key (lambda (event) (or (getf event :type)
+                                                                    (getf event :kind))))
+              1))))))
 
 (test stream-hooks-smoke-sentinel
   (is-true t)

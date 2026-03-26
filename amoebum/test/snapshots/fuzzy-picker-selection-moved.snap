@@ -1,67 +1,104 @@
 --- ptui-snapshot v1 84x20
-| No conversation yet. Type below and press Enter.                                   |
+|━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━             │  |
+|                                                                                 │  |
+|              🧬  Single-celled coding assistant 🧬                                │  |
+|                                                                                 │  |
+|                                                                                 █  |
+|              Type below and press Enter to start                                █  |
 |                                                                                    |
 |                                                                                    |
+|                             ╭────────────────────────╮                             |
+|                             │@ file/dir: src (3)     │                             |
+|                             │[fuzzy]   amoebum/src/  │                             |
+|                             │[fuzzy] > ptui/src/     │                             |
+|                             │[fuzzy]   sw4rm-sdk/src/│                             |
+|                             ╰────────────────────────╯                             |
 |                                                                                    |
 |                                                                                    |
-|                                                                                    |
-|                                                                                    |
-|                                                                                    |
-|╭────────────────────────╮                                                          |
-|│@ file/dir: src (3)     │                                                          |
-|│[fuzzy]   amoebum/src/  │                                                          |
-|│[fuzzy] > ptui/src/     │                                                          |
-|│[fuzzy]   sw4rm-sdk/src/│                                                          |
-|╰────────────────────────╯                                                          |
-|                                                                                    |
-|                                                                                    |
-| ╭────────────────────────────────────────────────────────────────────────────────╮ |
-| │@src                                                                            │ |
-| ╰────────────────────────────────────────────────────────────────────────────────╯ |
+|╭────────────────────────────────────────────────────────────────────────────────╮  |
+|│@src                                                                            │  |
+|╰────────────────────────────────────────────────────────────────────────────────╯  |
 |branch test/overlay | mode full-auto | Tokens: 0/128000 (0%) | stream idle | model m|
 --- attrs
-11,9:bold
-11,10:bold
-17,6:bold,invert
-19,0:bold
-19,1:bold
-19,2:bold
-19,3:bold
-19,4:bold
-19,5:bold
-19,6:bold
-19,7:bold
-19,8:bold
-19,9:bold
-19,10:bold
-19,11:bold
-19,12:bold
-19,13:bold
-19,14:bold
-19,15:bold
-19,16:bold
-19,17:bold
-19,18:bold
-19,19:bold
-19,20:bold
-19,21:bold
-19,22:bold
-19,23:bold
-19,24:bold
-19,25:bold
-19,26:bold
-19,27:bold
-19,28:bold
-19,29:bold
-19,30:bold
-19,31:bold
-19,32:bold
-19,33:bold
-19,34:bold
-19,35:bold
-19,36:bold
-19,37:bold
-19,38:bold
+0,0:bold
+0,1:bold
+0,2:bold
+0,3:bold
+0,4:bold
+0,5:bold
+0,6:bold
+0,7:bold
+0,8:bold
+0,9:bold
+0,10:bold
+0,11:bold
+0,12:bold
+0,13:bold
+0,14:bold
+0,15:bold
+0,16:bold
+0,17:bold
+0,18:bold
+0,19:bold
+0,20:bold
+0,21:bold
+0,22:bold
+0,23:bold
+0,24:bold
+0,25:bold
+0,26:bold
+0,27:bold
+0,28:bold
+0,29:bold
+0,30:bold
+0,31:bold
+0,32:bold
+0,33:bold
+0,34:bold
+0,35:bold
+0,36:bold
+0,37:bold
+0,38:bold
+0,39:bold
+0,40:bold
+0,41:bold
+0,42:bold
+0,43:bold
+0,44:bold
+0,45:bold
+0,46:bold
+0,47:bold
+0,48:bold
+0,49:bold
+0,50:bold
+0,51:bold
+0,52:bold
+0,53:bold
+0,54:bold
+0,55:bold
+0,56:bold
+0,57:bold
+0,58:bold
+0,59:bold
+0,60:bold
+0,61:bold
+0,62:bold
+0,63:bold
+0,64:bold
+0,65:bold
+0,66:bold
+0,67:bold
+0,81:dim
+1,81:dim
+2,14:bold
+2,15:bold
+2,48:bold
+2,49:bold
+2,81:dim
+3,81:dim
+11,38:bold
+11,39:bold
+17,5:bold,invert
 19,39:bold
 19,40:bold
 19,41:bold
@@ -83,27 +120,3 @@
 19,57:bold
 19,58:bold
 19,59:bold
-19,60:bold
-19,61:bold
-19,62:bold
-19,63:bold
-19,64:bold
-19,65:bold
-19,66:bold
-19,67:bold
-19,68:bold
-19,69:bold
-19,70:bold
-19,71:bold
-19,72:bold
-19,73:bold
-19,74:bold
-19,75:bold
-19,76:bold
-19,77:bold
-19,78:bold
-19,79:bold
-19,80:bold
-19,81:bold
-19,82:bold
-19,83:bold

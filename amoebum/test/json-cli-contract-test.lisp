@@ -18,14 +18,14 @@
 
 (defmacro with-i337-project-root ((var) &body body)
   `(let* ((tmp-root (%i337-temp-directory))
-          (old-config (amoebum:current-config))
-          (old-project-root (amoebum:config-project-root old-config)))
+          (old-config (amoebum.config:current-config))
+          (old-project-root (amoebum.config:config-project-root old-config)))
      (unwind-protect
           (progn
-            (amoebum:reload-config :project-root tmp-root)
+            (amoebum.config:reload-config :project-root tmp-root)
             (let ((,var tmp-root))
               ,@body))
-       (amoebum:reload-config :project-root old-project-root)
+       (amoebum.config:reload-config :project-root old-project-root)
        (ignore-errors
          (uiop:delete-directory-tree tmp-root
                                      :validate t

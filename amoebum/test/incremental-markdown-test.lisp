@@ -6,6 +6,26 @@
 
 (in-suite incremental-markdown-suite)
 
+(defun %seg-text (segment)
+  "Return text from a compact or plist segment."
+  (if (amoebum::compact-segment-p segment)
+      (amoebum::compact-segment-text segment)
+      (getf segment :text "")))
+
+(defun %seg-field (segment field)
+  "Return a style field from a compact or plist segment."
+  (if (amoebum::compact-segment-p segment)
+      (let ((entry (amoebum::lookup-style (amoebum::compact-segment-style-id segment))))
+        (ecase field
+          (:role (amoebum::style-entry-role entry))
+          (:boldp (amoebum::style-entry-boldp entry))
+          (:italicp (amoebum::style-entry-italicp entry))
+          (:underlinep (amoebum::style-entry-underlinep entry))
+          (:invertp (amoebum::style-entry-invertp entry))
+          (:dimp (amoebum::style-entry-dimp entry))
+          (:strikep (amoebum::style-entry-strikep entry))))
+      (getf segment field)))
+
 (defun %styled-lines->text (styled-lines)
   (with-output-to-string (out)
     (loop for line in styled-lines
@@ -13,7 +33,7 @@
             (when (> line-index 0)
               (write-char #\Newline out))
             (dolist (segment line)
-              (write-string (getf segment :text "") out)))))
+              (write-string (%seg-text segment) out)))))
 
 (defun %styled-lines-any-segment-p (styled-lines predicate)
   (loop for line in styled-lines thereis
@@ -33,7 +53,7 @@
       (is-false (%styled-lines-any-segment-p
                  styled-lines
                  (lambda (segment)
-                   (eq (getf segment :role) :assistant-code-fence)))))
+                   (eq (%seg-field segment :role) :assistant-code-fence)))))
     (amoebum:streaming-markdown-renderer-append-chunk renderer (format nil "`~%"))
     (let ((styled-lines
             (amoebum:streaming-markdown-renderer-render-lines
@@ -44,7 +64,7 @@
       (is-true (%styled-lines-any-segment-p
                 styled-lines
                 (lambda (segment)
-                  (eq (getf segment :role) :assistant-code-fence)))))
+                  (eq (%seg-field segment :role) :assistant-code-fence)))))
     (amoebum:streaming-markdown-renderer-append-chunk renderer (format nil "```~%"))
     (amoebum:streaming-markdown-renderer-append-chunk renderer (format nil "line~%"))
     (amoebum:streaming-markdown-renderer-append-chunk renderer (format nil "**bold** *italic* [link](https://example.com)~%"))
@@ -60,18 +80,18 @@
       (is-true (%styled-lines-any-segment-p
                 styled-lines
                 (lambda (segment)
-                  (and (search "bold" (getf segment :text "") :test #'char=)
-                       (getf segment :boldp)))))
+                  (and (search "bold" (%seg-text segment) :test #'char=)
+                       (%seg-field segment :boldp)))))
       (is-true (%styled-lines-any-segment-p
                 styled-lines
                 (lambda (segment)
-                  (and (search "italic" (getf segment :text "") :test #'char=)
-                       (getf segment :italicp)))))
+                  (and (search "italic" (%seg-text segment) :test #'char=)
+                       (%seg-field segment :italicp)))))
       (is-true (%styled-lines-any-segment-p
                 styled-lines
                 (lambda (segment)
-                  (and (search "link" (getf segment :text "") :test #'char=)
-                       (getf segment :underlinep))))))))
+                  (and (search "link" (%seg-text segment) :test #'char=)
+                       (%seg-field segment :underlinep))))))))
 
 (test incremental-markdown-smoke-sentinel
   (is-true t)

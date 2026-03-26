@@ -78,9 +78,9 @@
 (test git-tools-publish-lifecycle-events
   (let* ((tmp-root (%make-temp-directory "amoebum-i218-git-events"))
          (repo-path (namestring tmp-root))
-         (old-config (amoebum:current-config))
-         (old-project-root (amoebum:config-project-root old-config))
-         (old-permission-mode (amoebum:config-value :permission-mode old-config))
+         (old-config (amoebum.config:current-config))
+         (old-project-root (amoebum.config:config-project-root old-config))
+         (old-permission-mode (amoebum.config:config-value :permission-mode old-config))
          (old-event-bus amoebum:*event-bus*)
          (old-message-generator amoebum::*git-commit-message-generator*)
          (bus (amoebum:make-event-bus :capacity 128)))
@@ -100,8 +100,8 @@
                 (lambda (diff recent-subjects &key model staged-paths project-root)
                   (declare (ignore diff recent-subjects model staged-paths project-root))
                   "feat: publish lifecycle events"))
-          (amoebum:setconfig :project-root tmp-root)
-          (amoebum:setconfig :permission-mode :full-auto)
+          (amoebum.config:setconfig :project-root tmp-root)
+          (amoebum.config:setconfig :permission-mode :full-auto)
 
           (%invoke-git-tool "git-status")
           (%write-text-file (merge-pathnames #P"tracked.txt" tmp-root) "payload\n")
@@ -129,8 +129,8 @@
                         :test #'string=))))
       (setf amoebum:*event-bus* old-event-bus
             amoebum::*git-commit-message-generator* old-message-generator)
-      (amoebum:setconfig :project-root old-project-root)
-      (amoebum:setconfig :permission-mode old-permission-mode)
+      (amoebum.config:setconfig :project-root old-project-root)
+      (amoebum.config:setconfig :permission-mode old-permission-mode)
       (%delete-directory-tree-safe tmp-root))))
 
 (test lifecycle-events-smoke-sentinel

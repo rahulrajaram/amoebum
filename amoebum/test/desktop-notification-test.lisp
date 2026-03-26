@@ -7,18 +7,19 @@
 (in-suite desktop-notification-suite)
 
 (test desktop-notification-linux-path-uses-notify-send
-  (let ((amoebum::*notification-command-prober*
+  (let ((amoebum.notifications:*notification-command-prober*
           (lambda (command)
             (string= command "notify-send")))
-        (amoebum::*desktop-notification-run-command-function* nil)
+        (amoebum.notifications:*desktop-notifications-suppressed* nil)
+        (amoebum.notifications:*desktop-notification-run-command-function* nil)
         (captured-command nil))
-    (setf amoebum::*desktop-notification-run-command-function*
+    (setf amoebum.notifications:*desktop-notification-run-command-function*
           (lambda (command)
             (setf captured-command command)
             (list :exit-code 0 :stdout "" :stderr "")))
     (multiple-value-bind (ok detail)
-        (amoebum:send-desktop-notification
-         (amoebum:make-notification
+        (amoebum.notifications:send-desktop-notification
+         (amoebum.notifications:make-notification
           :title "Build Failed"
           :body "Tool shell failed."
           :urgency :critical
@@ -30,18 +31,19 @@
     (is (search "--icon=/tmp/icon.png" (or captured-command "") :test #'char-equal))))
 
 (test desktop-notification-macos-path-uses-osascript
-  (let ((amoebum::*notification-command-prober*
+  (let ((amoebum.notifications:*notification-command-prober*
           (lambda (command)
             (string= command "osascript")))
-        (amoebum::*desktop-notification-run-command-function* nil)
+        (amoebum.notifications:*desktop-notifications-suppressed* nil)
+        (amoebum.notifications:*desktop-notification-run-command-function* nil)
         (captured-command nil))
-    (setf amoebum::*desktop-notification-run-command-function*
+    (setf amoebum.notifications:*desktop-notification-run-command-function*
           (lambda (command)
             (setf captured-command command)
             (list :exit-code 0 :stdout "" :stderr "")))
     (multiple-value-bind (ok detail)
-        (amoebum:send-desktop-notification
-         (amoebum:make-notification
+        (amoebum.notifications:send-desktop-notification
+         (amoebum.notifications:make-notification
           :title "Done"
           :body "Long-running work finished."
           :urgency :normal))
@@ -69,9 +71,31 @@
          (long-trigger (amoebum::%event-trigger long-running-event))
          (long-notification (amoebum::%notification-from-event long-running-event long-trigger)))
     (is (eq tool-trigger :error))
-    (is (eq (amoebum:notification-urgency tool-notification) :critical))
+    (is (eq (amoebum.notifications:notification-urgency tool-notification) :critical))
     (is (eq long-trigger :long-running-complete))
-    (is (eq (amoebum:notification-urgency long-notification) :normal))))
+    (is (eq (amoebum.notifications:notification-urgency long-notification) :normal))))
+
+(test async-notification-dispatch-preserves-desktop-suppression
+  (let ((amoebum.notifications:*notification-command-prober*
+          (lambda (command)
+            (string= command "notify-send")))
+        (amoebum.notifications:*desktop-notification-run-command-function*
+          (lambda (command)
+            (declare (ignore command))
+            (error "desktop notification runner should stay suppressed during tests")))
+        (amoebum.notifications:*desktop-notifications-suppressed* t)
+        (amoebum.notifications:*notification-async-dispatch-p* t))
+    (let* ((backend (amoebum.notifications:make-desktop-backend))
+           (manager (amoebum::%make-notification-manager :backends (list backend)))
+           (notification
+             (amoebum.notifications:make-notification
+              :title "Suppressed"
+              :body "Should not reach notify-send"
+              :severity :info
+              :timestamp (get-universal-time)))
+           (thread (amoebum::%dispatch-notification manager notification)))
+      (bordeaux-threads:join-thread thread)
+      (pass))))
 
 (test desktop-notification-smoke-sentinel
   (is-true t)

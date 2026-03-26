@@ -8,7 +8,7 @@
 (test conversation-roundtrip-preserves-tool-call-ids
   "Conversation save/load round-trip preserves message sequence and tool call ids."
   (let* ((tmp-root (%make-temp-directory "amoebum-i141-conversation"))
-         (conversation (amoebum:make-conversation-state :project-root tmp-root))
+         (conversation (amoebum.sessions:make-conversation-state :project-root tmp-root))
          (assistant-tool-call-id "tool-call-1")
          (user-message (pseudopod:make-message
                         :role "user"
@@ -28,28 +28,28 @@
                         :tool-call-id assistant-tool-call-id)))
     (unwind-protect
         (progn
-          (amoebum:conversation-state-add-message conversation user-message :save-p nil)
-          (amoebum:conversation-state-add-message conversation assistant-message :save-p nil)
-          (amoebum:conversation-state-add-message conversation tool-message :save-p nil)
-          (let ((saved-path (amoebum:conversation-save conversation))
-                (loaded (amoebum:conversation-load (amoebum:conversation-state-session-path conversation)
+          (amoebum.sessions:conversation-state-add-message conversation user-message :save-p nil)
+          (amoebum.sessions:conversation-state-add-message conversation assistant-message :save-p nil)
+          (amoebum.sessions:conversation-state-add-message conversation tool-message :save-p nil)
+          (let ((saved-path (amoebum.sessions:conversation-save conversation))
+                (loaded (amoebum.sessions:conversation-load (amoebum.sessions:conversation-state-session-path conversation)
                                                    :project-root tmp-root)))
             (is-true (and saved-path (probe-file saved-path))
                      "Expected conversation-save to persist manifest file.")
             (is-true loaded "Expected conversation-load to return restored conversation.")
-            (let ((entries (amoebum:conversation-state-entries loaded))
-                  (messages (amoebum:conversation-state-messages loaded)))
+            (let ((entries (amoebum.sessions:conversation-state-entries loaded))
+                  (messages (amoebum.sessions:conversation-state-messages loaded)))
               (is (= 3 (length entries)))
               (is (= 3 (length messages)))
-              (is (string= "user" (amoebum:conversation-history-entry-role (first entries))))
-              (is (null (amoebum:conversation-history-entry-tool-call-id (first entries))))
-              (is (string= "assistant" (amoebum:conversation-history-entry-role (second entries))))
+              (is (string= "user" (amoebum.sessions:conversation-history-entry-role (first entries))))
+              (is (null (amoebum.sessions:conversation-history-entry-tool-call-id (first entries))))
+              (is (string= "assistant" (amoebum.sessions:conversation-history-entry-role (second entries))))
               (is (string= assistant-tool-call-id
-                           (amoebum:conversation-history-entry-tool-call-id (second entries)))
+                           (amoebum.sessions:conversation-history-entry-tool-call-id (second entries)))
                   "Assistant tool-call-id should survive round-trip.")
-              (is (string= "tool" (amoebum:conversation-history-entry-role (third entries))))
+              (is (string= "tool" (amoebum.sessions:conversation-history-entry-role (third entries))))
               (is (string= assistant-tool-call-id
-                           (amoebum:conversation-history-entry-tool-call-id (third entries)))
+                           (amoebum.sessions:conversation-history-entry-tool-call-id (third entries)))
                   "Tool message tool-call-id should survive round-trip.")
               (is (string= assistant-tool-call-id
                            (pseudopod:message-tool-call-id (second messages)))

@@ -1,5 +1,5 @@
 --- ptui-snapshot v1 84x20
-| Let me check the files in this directory.                                          |
+| > Let me check the files in this directory.                                        |
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
@@ -15,51 +15,15 @@
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
-| ╭────────────────────────────────────────────────────────────────────────────────╮ |
-| │                                                                                │ |
-| ╰────────────────────────────────────────────────────────────────────────────────╯ |
+|╭────────────────────────────────────────────────────────────────────────────────╮  |
+|│                                                                                │  |
+|╰────────────────────────────────────────────────────────────────────────────────╯  |
 |branch test/overlay | mode full-auto | Tokens: 11/128000 (0%) | stream idle | model |
 --- attrs
-17,2:bold,invert
-19,0:bold
-19,1:bold
-19,2:bold
-19,3:bold
-19,4:bold
-19,5:bold
-19,6:bold
-19,7:bold
-19,8:bold
-19,9:bold
-19,10:bold
-19,11:bold
-19,12:bold
-19,13:bold
-19,14:bold
-19,15:bold
-19,16:bold
-19,17:bold
-19,18:bold
-19,19:bold
-19,20:bold
-19,21:bold
-19,22:bold
-19,23:bold
-19,24:bold
-19,25:bold
-19,26:bold
-19,27:bold
-19,28:bold
-19,29:bold
-19,30:bold
-19,31:bold
-19,32:bold
-19,33:bold
-19,34:bold
-19,35:bold
-19,36:bold
-19,37:bold
-19,38:bold
+0,0:bold
+0,1:bold
+0,2:bold
+17,1:bold,invert
 19,39:bold
 19,40:bold
 19,41:bold
@@ -82,26 +46,3 @@
 19,58:bold
 19,59:bold
 19,60:bold
-19,61:bold
-19,62:bold
-19,63:bold
-19,64:bold
-19,65:bold
-19,66:bold
-19,67:bold
-19,68:bold
-19,69:bold
-19,70:bold
-19,71:bold
-19,72:bold
-19,73:bold
-19,74:bold
-19,75:bold
-19,76:bold
-19,77:bold
-19,78:bold
-19,79:bold
-19,80:bold
-19,81:bold
-19,82:bold
-19,83:bold

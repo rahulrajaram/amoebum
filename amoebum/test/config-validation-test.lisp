@@ -70,6 +70,23 @@
             (amoebum::config-schema-entry-default entry)))
     (is (functionp (amoebum::config-schema-entry-validator entry)))))
 
+(test schema-definitions-drive-registration
+  "Declarative schema definitions should register every config key."
+  (clrhash amoebum::*config-schema*)
+  (amoebum::%ensure-config-schema)
+  (let ((defined-keys (sort (mapcar (lambda (definition)
+                                      (getf definition :key))
+                                    amoebum::*config-schema-definitions*)
+                            #'string<
+                            :key #'symbol-name))
+        (registered-keys (sort (loop for key being the hash-keys of amoebum::*config-schema*
+                                     collect key)
+                               #'string<
+                               :key #'symbol-name)))
+    (is (equal defined-keys registered-keys))
+    (is (amoebum::%valid-config-value-p :provider-override "openai"))
+    (is (not (amoebum::%valid-config-value-p :provider-override "bogus-provider")))))
+
 ;;; --- configuration-error condition ---
 
 (test configuration-error-condition
@@ -98,14 +115,14 @@
                              (lambda (c)
                                (declare (ignore c))
                                (invoke-restart 'amoebum::use-default))))
-                        (amoebum::load-config
+                        (amoebum.config:load-config
                          :project-root "/tmp/"
                          :global-config-path "/nonexistent/g.lisp"
                          :project-config-path project-path
                          :environment-values nil
                          :cli-values nil))))
              ;; Should have fallen back to default
-             (is (member (amoebum:config-value :permission-mode cfg)
+             (is (member (amoebum.config:config-value :permission-mode cfg)
                          amoebum::*known-permission-modes*))))
       (%delete-directory-tree-safe tmp-dir))))
 
@@ -114,19 +131,19 @@
 (test setconfig-updates-value
   "setconfig should update the config value."
   (let ((old-config amoebum::*current-config*)
-        (old-model (amoebum:config-value :model)))
+        (old-model (amoebum.config:config-value :model)))
     (unwind-protect
          (progn
-           (amoebum:setconfig :model "test-runtime-model")
-           (is (string= "test-runtime-model" (amoebum:config-value :model)))
-           (is (eq :runtime (amoebum:config-layer-source :model))))
-      (amoebum:setconfig :model old-model)
+           (amoebum.config:setconfig :model "test-runtime-model")
+           (is (string= "test-runtime-model" (amoebum.config:config-value :model)))
+           (is (eq :runtime (amoebum.config:config-layer-source :model))))
+      (amoebum.config:setconfig :model old-model)
       (setf amoebum::*current-config* old-config))))
 
 (test setconfig-emits-event
   "setconfig should emit a config-changed event."
   (let* ((old-config amoebum::*current-config*)
-         (old-model (amoebum:config-value :model))
+         (old-model (amoebum.config:config-value :model))
          (bus (amoebum:make-event-bus))
          (events '()))
     (unwind-protect
@@ -134,9 +151,9 @@
            (amoebum:subscribe bus
                               amoebum:+event-type-config-changed+
                               (lambda (event) (push event events)))
-           (amoebum:setconfig :model "event-test-model")
+           (amoebum.config:setconfig :model "event-test-model")
            (is (= 1 (length events))))
-      (amoebum:setconfig :model old-model)
+      (amoebum.config:setconfig :model old-model)
       (setf amoebum::*current-config* old-config))))
 
 (test setconfig-rejects-invalid-value
@@ -144,47 +161,47 @@
   (let ((old-config amoebum::*current-config*))
     (unwind-protect
          (signals amoebum::configuration-error
-           (amoebum:setconfig :permission-mode :totally-invalid))
+           (amoebum.config:setconfig :permission-mode :totally-invalid))
       (setf amoebum::*current-config* old-config))))
 
 (test describe-config-shows-source-layer
   "describe-config should include value + source layer metadata."
   (let ((old-config amoebum::*current-config*)
-        (old-model (amoebum:config-value :model)))
+        (old-model (amoebum.config:config-value :model)))
     (unwind-protect
          (progn
-           (amoebum:setconfig :model "describe-runtime-model")
-           (let ((description (amoebum:describe-config :model)))
+           (amoebum.config:setconfig :model "describe-runtime-model")
+           (let ((description (amoebum.config:describe-config :model)))
              (is (eq :model (getf description :key)))
              (is (string= "describe-runtime-model"
                           (getf description :value)))
              (is (eq :runtime (getf description :source)))
              (is (string= "runtime"
                           (getf description :source-label)))))
-      (amoebum:setconfig :model old-model)
+      (amoebum.config:setconfig :model old-model)
       (setf amoebum::*current-config* old-config))))
 
 ;;; --- config-value and config-layer-source ---
 
 (test config-value-returns-stored-value
   "config-value should return the stored value for a key."
-  (let ((cfg (amoebum::load-config :project-root "/tmp/"
+  (let ((cfg (amoebum.config:load-config :project-root "/tmp/"
                                     :global-config-path "/nonexistent/g.lisp"
                                     :project-config-path "/nonexistent/p.lisp"
                                     :environment-values nil
                                     :cli-values nil)))
-    (is (stringp (amoebum:config-value :model cfg)))
-    (is (null (amoebum:config-value :nonexistent-key cfg)))))
+    (is (stringp (amoebum.config:config-value :model cfg)))
+    (is (null (amoebum.config:config-value :nonexistent-key cfg)))))
 
 (test config-layer-source-returns-layer
   "config-layer-source should return the layer that set the value."
-  (let ((cfg (amoebum::load-config :project-root "/tmp/"
+  (let ((cfg (amoebum.config:load-config :project-root "/tmp/"
                                     :global-config-path "/nonexistent/g.lisp"
                                     :project-config-path "/nonexistent/p.lisp"
                                     :environment-values nil
                                     :cli-values nil)))
-    (is (eq :built-in (amoebum:config-layer-source :model cfg)))
-    (is (null (amoebum:config-layer-source :nonexistent-key cfg)))))
+    (is (eq :built-in (amoebum.config:config-layer-source :model cfg)))
+    (is (null (amoebum.config:config-layer-source :nonexistent-key cfg)))))
 
 (test config-validation-smoke-sentinel
   (is-true t)

@@ -9,7 +9,7 @@
 
 (test checkpoint-auto-idle-seconds-from-config
   "checkpoint-auto-idle-seconds should read from config."
-  (let ((seconds (amoebum:checkpoint-auto-idle-seconds)))
+  (let ((seconds (amoebum.sessions:checkpoint-auto-idle-seconds)))
     (is (integerp seconds))
     (is (>= seconds 0))))
 
@@ -18,30 +18,30 @@
   (let ((old-config amoebum::*current-config*))
     (unwind-protect
          (progn
-           (amoebum:setconfig :auto-checkpoint-max-count 3)
-           (is (= 3 (amoebum:checkpoint-max-count))))
+           (amoebum.config:setconfig :auto-checkpoint-max-count 3)
+           (is (= 3 (amoebum.sessions:checkpoint-max-count))))
       (setf amoebum::*current-config* old-config))))
 
 (test checkpoint-mark-activity-updates-timestamp
   "checkpoint-mark-activity should update the last activity timestamp."
   (let ((old amoebum::*checkpoint-last-activity-at*))
     (unwind-protect
-         (let ((ts (amoebum:checkpoint-mark-activity 12345)))
+         (let ((ts (amoebum.sessions:checkpoint-mark-activity 12345)))
            (is (= 12345 ts))
            (is (= 12345 amoebum::*checkpoint-last-activity-at*)))
       (setf amoebum::*checkpoint-last-activity-at* old))))
 
 (test maybe-auto-checkpoint-skips-when-busy
   "maybe-auto-checkpoint should skip when busy."
-  (is (null (amoebum:maybe-auto-checkpoint :busy-p t))))
+  (is (null (amoebum.sessions:maybe-auto-checkpoint :busy-p t))))
 
 (test maybe-auto-checkpoint-skips-when-zero-interval
   "maybe-auto-checkpoint should skip when interval is 0."
   (let ((old-config amoebum::*current-config*))
     (unwind-protect
          (progn
-           (amoebum:setconfig :auto-checkpoint-idle-seconds 0)
-           (is (null (amoebum:maybe-auto-checkpoint))))
+           (amoebum.config:setconfig :auto-checkpoint-idle-seconds 0)
+           (is (null (amoebum.sessions:maybe-auto-checkpoint))))
       (setf amoebum::*current-config* old-config))))
 
 (test maybe-auto-checkpoint-fires-when-idle
@@ -58,11 +58,11 @@
            (setf amoebum::*checkpoint-directory-override* tmp-dir
                  amoebum::*event-bus* bus
                  amoebum::*checkpoint-last-auto-checkpoint-at* nil)
-           (amoebum:setconfig :auto-checkpoint-idle-seconds 1)
+           (amoebum.config:setconfig :auto-checkpoint-idle-seconds 1)
            ;; Simulate activity 10 seconds ago
            (let ((now (get-universal-time)))
-             (amoebum:checkpoint-mark-activity (- now 10))
-             (let ((result (amoebum:maybe-auto-checkpoint
+             (amoebum.sessions:checkpoint-mark-activity (- now 10))
+             (let ((result (amoebum.sessions:maybe-auto-checkpoint
                             :project-root tmp-dir
                             :event-bus bus
                             :timestamp now)))
@@ -88,13 +88,13 @@
                  amoebum::*event-bus* bus)
            ;; Create 3 checkpoints
            (dotimes (i 3)
-             (amoebum:checkpoint-session :project-root tmp-dir
+             (amoebum.sessions:checkpoint-session :project-root tmp-dir
                                           :event-bus bus
                                           :trigger :manual
                                           :timestamp (+ (get-universal-time) i)))
-           (let ((all (amoebum:list-session-checkpoints :project-root tmp-dir)))
+           (let ((all (amoebum.sessions:list-session-checkpoints :project-root tmp-dir)))
              (is (= 3 (length all))))
-           (let ((limited (amoebum:list-session-checkpoints
+           (let ((limited (amoebum.sessions:list-session-checkpoints
                            :project-root tmp-dir :limit 2)))
              (is (= 2 (length limited)))))
       (setf amoebum::*checkpoint-directory-override* old-override
@@ -112,19 +112,19 @@
          (progn
            (setf amoebum::*checkpoint-directory-override* tmp-dir
                  amoebum::*event-bus* bus)
-           (amoebum:setconfig :auto-checkpoint-max-count 2)
+           (amoebum.config:setconfig :auto-checkpoint-max-count 2)
            (let ((ids '()))
              (dotimes (i 4)
                (let ((checkpoint
-                       (amoebum:checkpoint-session
+                       (amoebum.sessions:checkpoint-session
                         :project-root tmp-dir
                         :event-bus bus
                         :trigger :manual
                         :timestamp (+ 1700000000 i))))
-                 (push (amoebum:session-checkpoint-id checkpoint) ids)))
+                 (push (amoebum.sessions:session-checkpoint-id checkpoint) ids)))
              (setf ids (nreverse ids))
-             (let* ((remaining (amoebum:list-session-checkpoints :project-root tmp-dir))
-                    (remaining-ids (mapcar #'amoebum:session-checkpoint-id remaining)))
+             (let* ((remaining (amoebum.sessions:list-session-checkpoints :project-root tmp-dir))
+                    (remaining-ids (mapcar #'amoebum.sessions:session-checkpoint-id remaining)))
                (is (= 2 (length remaining-ids)))
                (is (equal (list (fourth ids) (third ids)) remaining-ids))
                (is (null (find (first ids) remaining-ids :test #'string=)))
@@ -147,12 +147,12 @@
                  amoebum::*event-bus* bus)
            (ensure-directories-exist (merge-pathnames #P".keep" project-root))
            (let* ((checkpoint
-                    (amoebum:checkpoint-session
+                    (amoebum.sessions:checkpoint-session
                      :project-root project-root
                      :event-bus bus
                      :trigger :manual
                      :timestamp 1700000010))
-                  (path (amoebum:session-checkpoint-path checkpoint))
+                  (path (amoebum.sessions:session-checkpoint-path checkpoint))
                   (name (or (pathname-name path) "")))
              (is (string= "core" (or (pathname-type path) "")))
              (is (search ".amoebum/checkpoints/" (namestring path) :test #'char-equal))

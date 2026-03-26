@@ -90,9 +90,9 @@
 (test i220-on-commit-hook-fires-after-git-commit
   (let* ((tmp-root (%make-temp-directory "amoebum-i220-commit-hook"))
          (repo-path (namestring tmp-root))
-         (old-config (amoebum:current-config))
-         (old-project-root (amoebum:config-project-root old-config))
-         (old-permission-mode (amoebum:config-value :permission-mode old-config))
+         (old-config (amoebum.config:current-config))
+         (old-project-root (amoebum.config:config-project-root old-config))
+         (old-permission-mode (amoebum.config:config-value :permission-mode old-config))
          (original-hooks amoebum:*hook-registry*)
          (original-generator amoebum::*git-commit-message-generator*)
          (captured-hash nil)
@@ -122,8 +122,8 @@
                                          captured-message message
                                          captured-files files)
                                    :ok))
-          (amoebum:setconfig :project-root tmp-root)
-          (amoebum:setconfig :permission-mode :full-auto)
+          (amoebum.config:setconfig :project-root tmp-root)
+          (amoebum.config:setconfig :permission-mode :full-auto)
           (let* ((tool (pseudopod:find-tool amoebum:*toolset* "git-commit"))
                  (fn (and tool (pseudopod:tool-definition-fn tool)))
                  (result (funcall fn (%i220-args "files" '("tracked.txt")))))
@@ -133,8 +133,8 @@
             (is (member "tracked.txt" (or captured-files '()) :test #'string=))))
       (setf amoebum:*hook-registry* original-hooks
             amoebum::*git-commit-message-generator* original-generator)
-      (amoebum:setconfig :project-root old-project-root)
-      (amoebum:setconfig :permission-mode old-permission-mode)
+      (amoebum.config:setconfig :project-root old-project-root)
+      (amoebum.config:setconfig :permission-mode old-permission-mode)
       (%delete-directory-tree-safe tmp-root))))
 
 (test i220-on-step-complete-hook-fires-from-chat-step-loop
@@ -155,7 +155,7 @@
                                          captured-tool-calls tool-calls-made)
                                    :ok))
           (let* ((client (pseudopod:make-client :api-key "stub"))
-                 (chat-state (amoebum:make-chat-ui-state
+                 (chat-state (amoebum.ui:make-chat-ui-state
                               :stream-runner nil
                               :stream-client client
                               :stream-tools amoebum:*toolset*)))

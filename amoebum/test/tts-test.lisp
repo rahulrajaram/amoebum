@@ -45,19 +45,19 @@
                     (push command calls)
                     (list :exit-code 0 :stdout "" :stderr ""))))
                (chat-state
-                 (amoebum:make-chat-ui-state
+                 (amoebum.ui:make-chat-ui-state
                   :messages (list (pseudopod:make-message :role "user" :content "hi")
                                   (pseudopod:make-message :role "assistant"
                                                           :content "latest reply")))))
           (setf amoebum:*tts-backend* backend)
           (multiple-value-bind (handled result)
               (amoebum:dispatch-slash-command "/speak"
-                                              :config (amoebum:current-config)
+                                              :config (amoebum.config:current-config)
                                               :chat-state chat-state)
             (is-true handled)
-            (is-true (typep result 'amoebum:slash-command-result))
+            (is-true (typep result 'amoebum.commands:slash-command-result))
             (is (search "Speaking last assistant response"
-                        (or (amoebum:slash-command-result-output result) "")
+                        (or (amoebum.commands:slash-command-result-output result) "")
                         :test #'char-equal)))
           (is-true (%wait-until (lambda () (plusp (length calls))) :timeout-seconds 2.0d0))
           (is (search "latest reply" (first calls) :test #'char-equal)))
@@ -66,11 +66,11 @@
 (test auto-speak-hook-respects-configuration
   (let ((calls '())
         (old-backend amoebum:*tts-backend*)
-        (cfg (amoebum:current-config))
+        (cfg (amoebum.config:current-config))
         (old-auto nil))
     (unwind-protect
         (progn
-          (setf old-auto (amoebum:config-value :tts-auto-speak cfg))
+          (setf old-auto (amoebum.config:config-value :tts-auto-speak cfg))
           (setf amoebum:*tts-backend*
                 (amoebum:make-kokoro-tts-backend
                  :voice "af_test"
@@ -79,16 +79,16 @@
                    (push command calls)
                    (list :exit-code 0 :stdout "" :stderr ""))))
           (amoebum:enable-tts-post-receive-hook)
-          (amoebum:setconfig :tts-auto-speak nil)
+          (amoebum.config:setconfig :tts-auto-speak nil)
           (amoebum:run-hooks :post-receive "do not speak")
           (sleep 0.05d0)
           (is (= 0 (length calls)))
-          (amoebum:setconfig :tts-auto-speak t)
+          (amoebum.config:setconfig :tts-auto-speak t)
           (amoebum:run-hooks :post-receive "speak now")
           (is-true (%wait-until (lambda () (= (length calls) 1)) :timeout-seconds 2.0d0))
           (is (search "speak now" (first calls) :test #'char-equal)))
       (setf amoebum:*tts-backend* old-backend)
-      (amoebum:setconfig :tts-auto-speak old-auto))))
+      (amoebum.config:setconfig :tts-auto-speak old-auto))))
 
 (test tts-smoke-sentinel
   (is-true t)

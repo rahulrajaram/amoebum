@@ -175,7 +175,7 @@
               (amoebum:dispatch-slash-command
                (format nil "/index --refresh --system ~A --tokens 700" system-name))
             (is-true handled)
-            (let ((output (or (amoebum:slash-command-result-output result) "")))
+            (let ((output (or (amoebum.commands:slash-command-result-output result) "")))
               (is-true (search "codebase index" output :test #'char-equal))
               (is-true (search "tracked" output :test #'char-equal))
               (is-true (search "repo-map" output :test #'char-equal)))))

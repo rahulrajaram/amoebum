@@ -75,3 +75,13 @@
     (is (member :env-wrapper-expanded reasons :test #'eq))
     (is (stringp (getf trace :canonical-signature)))
     (is (equal reasons (getf trace :dangerous-reason-codes)))))
+
+(test canonicalize-command-preserves-quoted-operators-as-arguments
+  (let* ((canonical (amoebum:canonicalize-permission-command
+                     "printf '%s' 'a && b' \"c | d\""))
+         (argv (amoebum:command-canonical-form-argv canonical))
+         (operators (amoebum:command-canonical-form-operators canonical)))
+    (is (equal argv '("printf" "%s" "a && b" "c | d")))
+    (is (null operators))
+    (is (string= (amoebum:command-canonical-form-normalized canonical)
+                 "printf %s 'a && b' 'c | d'"))))
