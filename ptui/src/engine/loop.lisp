@@ -213,6 +213,11 @@ instead of calling MAKE-BUFFER.  Set by the engine loop before calling RENDER-FN
   (or (%parse-positive-int-env "PTUI_RENDER_DIFF_OPS_THRESHOLD")
       1800))
 
+(defun %render-guard-workload (old-prev diff-op-count cols rows)
+  (if old-prev
+      diff-op-count
+      (max diff-op-count (* cols rows))))
+
 (defun %perf-guard-enabled-p ()
   (let ((raw (uiop:getenv "PTUI_RENDER_PERF_GUARD")))
     (not (and raw
@@ -234,16 +239,19 @@ instead of calling MAKE-BUFFER.  Set by the engine loop before calling RENDER-FN
         (ptui.util.log:render-stats-last-perf-guard-fired-p stats)
         guarded?))
 
-(defun %log-render-guard (frame-ms diff-op-count perf-threshold-ms perf-diff-threshold)
-  (ptui.util.log:log-debug
+(defun %log-render-guard (frame-ms diff-op-count guard-workload
+                          perf-threshold-ms perf-diff-threshold)
+  (ptui.util.log:log-warn
    "~A"
-   (ptui.util.log:log-kv
-    :render_performance_guard t
-    :frame_ms frame-ms
-    :diff_ops diff-op-count
-    :frame_ms_threshold perf-threshold-ms
-    :diff_ops_threshold perf-diff-threshold
-    :slow_p t)))
+   (string-downcase
+    (ptui.util.log:log-kv
+     :render_performance_guard t
+     :frame_ms frame-ms
+     :diff_ops diff-op-count
+     :guard_workload guard-workload
+     :frame_ms_threshold perf-threshold-ms
+     :diff_ops_threshold perf-diff-threshold
+     :slow_p t))))
 
 (defun %log-render-debug (frame-ms diff-op-count commit-bytes)
   (ptui.util.log:log-debug
@@ -276,9 +284,10 @@ instead of calling MAKE-BUFFER.  Set by the engine loop before calling RENDER-FN
                (frame-ms (- (ptui.util.time:monotonic-ms) frame-start))
                (perf-threshold-ms (%runtime-perf-threshold-ms runtime))
                (perf-diff-threshold (%runtime-perf-diff-threshold))
+               (guard-workload (%render-guard-workload old-prev diff-op-count cols rows))
                (guarded? (and (%perf-guard-enabled-p)
                               (or (> frame-ms perf-threshold-ms)
-                                  (> diff-op-count perf-diff-threshold)))))
+                                  (> guard-workload perf-diff-threshold)))))
           ;; Stash old prev as spare (unless render-fn already reused it).
           (setf (loop-runtime-spare-buffer runtime)
                 (if (eq old-prev next-buffer) nil old-prev))
@@ -289,7 +298,8 @@ instead of calling MAKE-BUFFER.  Set by the engine loop before calling RENDER-FN
                                 commit-bytes
                                 guarded?)
           (when guarded?
-            (%log-render-guard frame-ms diff-op-count perf-threshold-ms perf-diff-threshold))
+            (%log-render-guard frame-ms diff-op-count guard-workload
+                               perf-threshold-ms perf-diff-threshold))
           (%log-render-debug frame-ms diff-op-count commit-bytes))))))
 
 (defun %log-runtime-metrics (runtime)
@@ -363,7 +373,10 @@ instead of calling MAKE-BUFFER.  Set by the engine loop before calling RENDER-FN
     (:run-scheduler
      (ptui.runtime.scheduler:scheduler-run-due (loop-runtime-scheduler runtime)))
     (:render
-     (%render-runtime-frame runtime))
+     (%render-runtime-frame runtime)
+     ;; A frame rendered in this transition satisfies any redraw request the
+     ;; scheduler may have re-armed while we were assembling effects.
+     (setf (loop-runtime-needs-redraw runtime) nil))
     (:log-metrics
      (%log-runtime-metrics runtime))
     (:sleep

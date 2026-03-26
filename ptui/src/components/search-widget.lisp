@@ -340,18 +340,22 @@ NEXT must return two values: DOCUMENT and DONE-P."
     (%clamp-selected-index! state)
     state))
 
+(defun %make-content-search-options (state &key (limit (search-widget-state-limit state)))
+  (ptui.search.engine:make-search-content-options
+   :limit limit
+   :regex-mode (search-widget-state-regex-mode state)
+   :case-insensitive (search-widget-state-case-insensitive state)
+   :multiline-mode (search-widget-state-multiline-mode state)
+   :before-context (search-widget-state-before-context state)
+   :after-context (search-widget-state-after-context state)))
+
 (defun %run-content-search! (state)
   (%reset-content-stream-state! state)
   (let* ((scan-result
            (ptui.search.engine:scan-content-matches
             (search-widget-state-query state)
             (search-widget-state-documents state)
-            :limit (search-widget-state-limit state)
-            :regex-mode (search-widget-state-regex-mode state)
-            :case-insensitive (search-widget-state-case-insensitive state)
-            :multiline-mode (search-widget-state-multiline-mode state)
-            :before-context (search-widget-state-before-context state)
-            :after-context (search-widget-state-after-context state)))
+            :options (%make-content-search-options state)))
          (matches (ptui.search.engine:search-content-scan-result-matches scan-result)))
     (setf (search-widget-state-file-results state) '()
           (search-widget-state-stream-all-content-results state) (copy-list matches)
@@ -448,15 +452,10 @@ Use SEARCH-WIDGET-STEP to advance search and SEARCH-WIDGET-CANCEL to interrupt."
              (incf (search-widget-state-scanned-count state))
              (let* ((document (%ensure-search-document entry))
                     (matches
-                      (ptui.search.engine:search-content-matches
+                     (ptui.search.engine:search-content-matches
                        (search-widget-state-query state)
                        (list document)
-                       :limit nil
-                       :regex-mode (search-widget-state-regex-mode state)
-                       :case-insensitive (search-widget-state-case-insensitive state)
-                       :multiline-mode (search-widget-state-multiline-mode state)
-                       :before-context (search-widget-state-before-context state)
-                       :after-context (search-widget-state-after-context state))))
+                       :options (%make-content-search-options state :limit nil))))
                (when matches
                  (setf (search-widget-state-stream-all-content-results state)
                        (nconc (search-widget-state-stream-all-content-results state)

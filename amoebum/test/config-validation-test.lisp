@@ -60,6 +60,14 @@
   (is (amoebum::%valid-config-value-p :sandbox-policy :off))
   (is (not (amoebum::%valid-config-value-p :sandbox-policy :medium))))
 
+(test valid-theme-yaml-values
+  "Theme YAML config should accept booleans or non-empty strings."
+  (is (amoebum::%valid-config-value-p :theme-yaml t))
+  (is (amoebum::%valid-config-value-p :theme-yaml nil))
+  (is (amoebum::%valid-config-value-p :theme-yaml "themes/tokyo-night.yaml"))
+  (is (not (amoebum::%valid-config-value-p :theme-yaml "")))
+  (is (not (amoebum::%valid-config-value-p :theme-yaml 42))))
+
 (test schema-entry-captures-type-default-validator
   "Schema entries should define type, default, and validator metadata."
   (let ((entry (amoebum::%config-schema-entry :permission-mode)))
@@ -86,6 +94,24 @@
     (is (equal defined-keys registered-keys))
     (is (amoebum::%valid-config-value-p :provider-override "openai"))
     (is (not (amoebum::%valid-config-value-p :provider-override "bogus-provider")))))
+
+(test schema-definitions-drive-defaults
+  "Default config values should be generated directly from schema definitions."
+  (let ((schema-default-keys
+          (sort (loop for definition in amoebum::*config-schema-definitions*
+                      for key = (getf definition :key)
+                      unless (eq key :project-root)
+                        collect key)
+                #'string<
+                :key #'symbol-name))
+        (default-keys
+          (sort (loop for (key nil) on amoebum::*default-config-values* by #'cddr
+                      collect key)
+                #'string<
+                :key #'symbol-name)))
+    (is (equal schema-default-keys default-keys))
+    (is (eq t (getf amoebum::*default-config-values* :theme-yaml)))
+    (is (eq t (amoebum::%default-value :theme-yaml #P"/tmp/")))))
 
 ;;; --- configuration-error condition ---
 

@@ -37,7 +37,9 @@
    (:file "src/voice/asr")
    (:file "src/commands-base")
    (:file "src/permissions-command")
+   (:file "src/permissions-path")
    (:file "src/permissions")
+   (:file "src/permissions-evaluation")
    (:file "src/commands-core-builtins")
    (:file "src/commands-agents")
    (:file "src/commands-phase5")
@@ -244,3 +246,7 @@
              (declare (ignore op c))
              (unless (uiop:symbol-call :amoebum/test :run-all)
                (error "Amoebum FiveAM suite failed."))))
+
+(asdf:defsystem "amoebum/tests"
+  :description "Compatibility alias for the Amoebum FiveAM suite."
+  :depends-on ("amoebum/test"))

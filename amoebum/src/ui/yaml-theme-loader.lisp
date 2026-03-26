@@ -457,9 +457,8 @@ CONFIG-VALUE can be:
 
 ;;; Register with config system (if available)
 (eval-when (:load-toplevel :execute)
-  ;; Note: Full integration with config validation schema would require
-  ;; adding an entry to *config-schema-definitions* here.
-  ;; The default value is now set in config.lisp as :theme-yaml t
+  ;; Validation and defaults for :theme-yaml now live in
+  ;; amoebum/src/config.lisp's declarative config schema.
   )
 
 ;;; ----------------------------------------------------------------------------

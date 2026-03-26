@@ -33,6 +33,18 @@
    #:search-content-scan-result-scanned-documents
    #:search-content-scan-result-total-documents
    #:search-content-scan-result-canceled-p
+   #:search-content-options
+   #:search-content-options-p
+   #:make-search-content-options
+   #:search-content-options-limit
+   #:search-content-options-regex-mode
+   #:search-content-options-case-insensitive
+   #:search-content-options-multiline-mode
+   #:search-content-options-before-context
+   #:search-content-options-after-context
+   #:search-content-options-on-match
+   #:search-content-options-on-progress
+   #:search-content-options-cancel-fn
    #:scan-content-matches
    #:search-content-matches))
 
@@ -395,6 +407,11 @@
       (check-type cancel-fn function))
     options))
 
+(defun %resolve-search-content-options (options)
+  (let ((resolved (or options (make-search-content-options))))
+    (check-type resolved search-content-options)
+    (%validate-search-content-options resolved)))
+
 (defun %empty-search-content-scan-result ()
   (make-search-content-scan-result
    :matches '()
@@ -483,50 +500,18 @@
       (%emit-content-scan-progress runtime options))
     (%finalize-search-content-scan runtime options)))
 
-(defun scan-content-matches (pattern documents
-                             &key
-                               limit
-                               (regex-mode t)
-                               (case-insensitive nil)
-                               (multiline-mode nil)
-                               (before-context 0)
-                               (after-context 0)
-                               on-match
-                               on-progress
-                               cancel-fn)
-  "Search DOCUMENTS for PATTERN with optional streaming callbacks.
+(defun scan-content-matches (pattern documents &key options)
+  "Search DOCUMENTS for PATTERN with SEARCH-CONTENT-OPTIONS streaming callbacks.
 Returns a SEARCH-CONTENT-SCAN-RESULT."
-  (let* ((options (%validate-search-content-options
-                   (make-search-content-options
-                    :limit limit
-                    :regex-mode regex-mode
-                    :case-insensitive case-insensitive
-                    :multiline-mode multiline-mode
-                    :before-context before-context
-                    :after-context after-context
-                    :on-match on-match
-                    :on-progress on-progress
-                    :cancel-fn cancel-fn)))
+  (let* ((options (%resolve-search-content-options options))
          (query (or pattern "")))
     (if (zerop (length query))
         (%empty-search-content-scan-result)
         (%scan-content-documents query documents options))))
 
-(defun search-content-matches (pattern documents
-                               &key
-                                 limit
-                                 (regex-mode t)
-                                 (case-insensitive nil)
-                                 (multiline-mode nil)
-                                 (before-context 0)
-                                 (after-context 0))
+(defun search-content-matches (pattern documents &key options)
   "Search DOCUMENTS for PATTERN and return ranked search-content-match entries."
   (search-content-scan-result-matches
    (scan-content-matches pattern
                          documents
-                         :limit limit
-                         :regex-mode regex-mode
-                         :case-insensitive case-insensitive
-                         :multiline-mode multiline-mode
-                         :before-context before-context
-                         :after-context after-context)))
+                         :options options)))

@@ -90,57 +90,86 @@
         (values nil nil (format nil "Trace limit must be positive, got ~S." limit))
         (values limit hook-point nil))))
 
+(defun %hooks-list-point-token (tokens)
+  (and (> (length tokens) 1)
+       (second tokens)))
+
+(defun %hooks-list-extra-token (tokens)
+  (and (> (length tokens) 2)
+       (third tokens)))
+
+(defun %hooks-handle-list-request (tokens)
+  (let* ((point-token (%hooks-list-point-token tokens))
+         (extra-token (%hooks-list-extra-token tokens))
+         (hook-point (and point-token
+                          (%parse-hook-point-token point-token))))
+    (cond
+      (extra-token
+       (%hooks-invalid-usage (format nil "Unexpected extra token ~S." extra-token)))
+      ((and point-token (null hook-point))
+       (%hooks-invalid-usage (format nil "Unknown hook-point ~S." point-token)))
+      (t
+       (make-slash-command-result
+        :echo-input-p t
+        :output (%render-hooks-list hook-point))))))
+
+(defun %hooks-handle-trace-request (tokens)
+  (multiple-value-bind (limit hook-point error-text)
+      (%hooks-parse-trace-args tokens)
+    (if error-text
+        (%hooks-invalid-usage error-text)
+        (make-slash-command-result
+         :echo-input-p t
+         :output (%render-hook-trace :limit limit :hook-point hook-point)))))
+
+(defun %hooks-normalize-action (tokens)
+  (let ((token (and tokens (string-downcase (first tokens)))))
+    (cond
+      ((or (null token) (string= token "list"))
+       "list")
+      ((string= token "trace")
+       "trace")
+      ((%parse-hook-point-token token)
+       "hook-point")
+      (t
+       token))))
+
 (defun %hooks-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
   (let* ((raw (or (gethash :ARGS arguments) ""))
          (tokens (%tokenize-command-arguments raw))
-         (action-token (and tokens (string-downcase (first tokens)))))
+         (action-token (%hooks-normalize-action tokens)))
     (cond
-      ((or (null action-token) (string= action-token "list"))
-       (let* ((point-token (and (> (length tokens) 1) (second tokens)))
-              (extra-token (and (> (length tokens) 2) (third tokens))))
-         (cond
-           (extra-token
-            (%hooks-invalid-usage (format nil "Unexpected extra token ~S." extra-token)))
-           ((and point-token (null (%parse-hook-point-token point-token)))
-            (%hooks-invalid-usage (format nil "Unknown hook-point ~S." point-token)))
-           (t
-            (make-slash-command-result
-             :echo-input-p t
-             :output (%render-hooks-list (%parse-hook-point-token point-token)))))))
+      ((string= action-token "list")
+       (%hooks-handle-list-request tokens))
       ((string= action-token "trace")
-       (multiple-value-bind (limit hook-point error-text)
-           (%hooks-parse-trace-args tokens)
-         (if error-text
-             (%hooks-invalid-usage error-text)
-             (make-slash-command-result
-              :echo-input-p t
-              :output (%render-hook-trace :limit limit :hook-point hook-point)))))
-      ((%parse-hook-point-token action-token)
+       (%hooks-handle-trace-request tokens))
+      ((string= action-token "hook-point")
        (make-slash-command-result
         :echo-input-p t
-        :output (%render-hooks-list (%parse-hook-point-token action-token))))
+        :output (%render-hooks-list (%parse-hook-point-token (first tokens)))))
       (t
        (%hooks-invalid-usage (format nil "Unknown /hooks action ~S." action-token))))))
 
 (defun %hooks-arg-completer (_command _invocation index fragment prefix-tokens)
   (declare (ignore _command _invocation))
-  (let ((head (and prefix-tokens (string-downcase (first prefix-tokens)))))
+  (let* ((head (and prefix-tokens (string-downcase (first prefix-tokens))))
+         (hook-points (%hook-point-token-completions fragment)))
     (cond
       ((= index 0)
        (append (loop for option in '("list" "trace")
                      when (%starts-with-ci-p (%slash-trim fragment) option)
                        collect option)
-               (%hook-point-token-completions fragment)))
+               hook-points))
       ((and (string= head "trace") (= index 1))
        (append (loop for option in '("10" "20" "50")
                      when (%starts-with-ci-p (%slash-trim fragment) option)
                        collect option)
-               (%hook-point-token-completions fragment)))
+               hook-points))
       ((and (string= head "trace") (= index 2))
-       (%hook-point-token-completions fragment))
+       hook-points)
       ((and (string= head "list") (= index 1))
-       (%hook-point-token-completions fragment))
+       hook-points)
       (t
        nil))))
 

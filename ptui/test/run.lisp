@@ -2285,9 +2285,11 @@ foo bar foo")
          (matches (ptui.search.engine:search-content-matches
                    "needle"
                    documents
-                   :regex-mode nil
-                   :before-context 1
-                   :after-context 1))
+                   :options
+                   (ptui.search.engine:make-search-content-options
+                    :regex-mode nil
+                    :before-context 1
+                    :after-context 1)))
          (first-match (first matches)))
     (assert-true (= (length matches) 3)
                  "expected three content matches, got ~D" (length matches))
@@ -2320,13 +2322,17 @@ foo bar foo")
          (line-mode (ptui.search.engine:search-content-matches
                      "alpha\\s+beta"
                      documents
-                     :regex-mode t
-                     :multiline-mode nil))
+                     :options
+                     (ptui.search.engine:make-search-content-options
+                      :regex-mode t
+                      :multiline-mode nil)))
          (multiline-mode (ptui.search.engine:search-content-matches
                           "alpha\\s+beta"
                           documents
-                          :regex-mode t
-                          :multiline-mode t)))
+                          :options
+                          (ptui.search.engine:make-search-content-options
+                           :regex-mode t
+                           :multiline-mode t))))
     (assert-true (null line-mode)
                  "expected no line-mode matches for newline-spanning pattern")
     (assert-true (= (length multiline-mode) 1)
@@ -2341,7 +2347,9 @@ foo bar foo")
          (matches (ptui.search.engine:search-content-matches
                    "not-found"
                    documents
-                   :regex-mode nil)))
+                   :options
+                   (ptui.search.engine:make-search-content-options
+                    :regex-mode nil))))
     (assert-true (null matches)
                  "expected empty content match list, got ~S" matches)))
 
@@ -2367,21 +2375,23 @@ foo bar foo")
            (ptui.search.engine:scan-content-matches
             "needle"
             documents
-            :regex-mode nil
-            :on-match (lambda (match)
-                        (push (ptui.search.engine:search-content-match-path match) seen)
-                        (when (>= (length seen) 2)
-                          (setf stop-p t)))
-            :on-progress (lambda (&key match-count scanned-documents total-documents done cancelled
-                                  &allow-other-keys)
-                           (push (list :match-count match-count
-                                       :scanned-documents scanned-documents
-                                       :total-documents total-documents
-                                       :done done
-                                       :cancelled cancelled)
-                                 progress))
-            :cancel-fn (lambda ()
-                         stop-p))))
+            :options
+            (ptui.search.engine:make-search-content-options
+             :regex-mode nil
+             :on-match (lambda (match)
+                         (push (ptui.search.engine:search-content-match-path match) seen)
+                         (when (>= (length seen) 2)
+                           (setf stop-p t)))
+             :on-progress (lambda (&key match-count scanned-documents total-documents done cancelled
+                                   &allow-other-keys)
+                            (push (list :match-count match-count
+                                        :scanned-documents scanned-documents
+                                        :total-documents total-documents
+                                        :done done
+                                        :cancelled cancelled)
+                                  progress))
+             :cancel-fn (lambda ()
+                          stop-p)))))
     (assert-true (ptui.search.engine:search-content-scan-result-canceled-p result)
                  "expected scan-content-matches to report cancellation")
     (assert-true (>= (ptui.search.engine:search-content-scan-result-match-count result) 2)

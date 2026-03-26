@@ -177,6 +177,21 @@
                            output)))
 
           (multiple-value-bind (handledp result)
+              (funcall dispatch-fn
+                       (format nil "/history deploy --tool --since ~D --until ~D"
+                               base-ts
+                               (+ base-ts 3))
+                       :chat-state chat-state)
+            (let ((output (funcall result-output-fn result)))
+              (assert-true handledp "Expected trailing-option /history query to still be handled.")
+              (assert-true (contains-text-p output "Missing value for --tool.")
+                           "Expected trailing option to report missing tool value, got ~S."
+                           output)
+              (assert-true (contains-text-p output "Usage: /history")
+                           "Expected trailing option to include usage, got ~S."
+                           output)))
+
+          (multiple-value-bind (handledp result)
               (funcall dispatch-fn "/clear" :chat-state chat-state)
             (assert-true handledp "Expected /clear prompt to be handled.")
             (assert-true (eq (funcall result-action-fn result) :none)

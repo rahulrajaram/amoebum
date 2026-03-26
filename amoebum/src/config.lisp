@@ -1,50 +1,6 @@
 (in-package :amoebum)
 
-(defparameter *default-config-values*
-  '(:model "moonshot-v1-128k"
-    :provider-override nil
-    :api-base-url nil
-    :context-window-limit nil
-    :stream-budget-abort-threshold-percent 80
-    :permission-mode :supervised
-    :approval-policy :on-request
-    :sandbox-policy :strict
-    :sandbox-mode :workspace-write
-    :swarm-delegation-mode :local
-    :memory-backend :auto
-    :web-search-searxng-url nil
-    :web-search-duckduckgo-url "https://duckduckgo.com/html/"
-    :web-search-allow-domains nil
-    :web-search-block-domains nil
-    :web-search-user-agent "amoebum-web-search/0.1"
-    :web-fetch-timeout-seconds 20
-    :web-fetch-cache-ttl-seconds 900
-    :web-fetch-max-markdown-bytes 10240
-    :web-fetch-user-agent "amoebum-web-fetch/0.1"
-    :haake-command "haake"
-    :haake-project-id nil
-    :haake-agent "amoebum"
-    :haake-autodetect t
-    :notifications-enabled t
-    :notification-events '(:task-complete :error :approval-needed)
-    :notification-sound-enabled t
-    :notification-desktop-enabled t
-    :notification-log-enabled t
-    :notification-sound-player nil
-    :notification-desktop-command nil
-    :notification-log-path nil
-    :notification-webhooks nil
-    :notification-sound-task-complete nil
-    :notification-sound-error nil
-    :notification-sound-approval-needed nil
-    :tts-command "kokoro-tts"
-    :tts-python-module nil
-    :tts-voice "af_heart"
-    :tts-auto-speak nil
-    :auto-checkpoint-idle-seconds 1800
-    :auto-checkpoint-max-count 10
-    :plan-mode nil
-    :theme-yaml t))
+(defparameter *default-config-values* nil)
 
 (defparameter *known-permission-modes*
   '(:supervised :auto-edit :full-auto :yolo :no-confirm))
@@ -82,132 +38,179 @@
 (defparameter *config-schema-definitions*
   '((:key :model
      :type string
+     :default "moonshot-v1-128k"
      :validator (:predicate %non-empty-string-p))
     (:key :provider-override
      :type (or null string symbol keyword)
+     :default nil
      :validator (:member *known-provider-overrides*
                  :normalize %provider-override-token
                  :test string=
                  :allow-null t))
     (:key :api-base-url
      :type (or null string)
+     :default nil
      :validator (:predicate %non-empty-string-p :allow-null t))
     (:key :context-window-limit
      :type (or null integer)
+     :default nil
      :validator (:integer-range :min 1 :allow-null t))
     (:key :stream-budget-abort-threshold-percent
      :type integer
+     :default 80
      :validator (:integer-range :min 1 :max 100))
     (:key :permission-mode
      :type (or keyword symbol string)
+     :default :supervised
      :validator (:member *known-permission-modes*
                  :normalize %permission-mode-keyword))
     (:key :approval-policy
      :type (or keyword symbol string)
+     :default :on-request
      :validator (:member *known-approval-policies*
                  :normalize %approval-policy-keyword))
     (:key :sandbox-policy
      :type (or keyword symbol string)
+     :default :strict
      :validator (:member *known-sandbox-policies*
                  :normalize %sandbox-policy-keyword))
     (:key :sandbox-mode
      :type (or keyword symbol string)
+     :default :workspace-write
      :validator (:member *known-sandbox-modes*
                  :normalize %sandbox-mode-keyword))
     (:key :swarm-delegation-mode
      :type (or keyword symbol string)
+     :default :local
      :validator (:member *known-swarm-delegation-modes*
                  :normalize %swarm-delegation-mode-keyword))
     (:key :memory-backend
      :type keyword
+     :default :auto
      :validator (:member *known-memory-backends*))
     (:key :web-search-searxng-url
      :type (or null string)
+     :default nil
      :validator (:predicate %non-empty-string-p :allow-null t))
     (:key :web-search-duckduckgo-url
      :type (or null string)
+     :default "https://duckduckgo.com/html/"
      :validator (:predicate %non-empty-string-p :allow-null t))
     (:key :web-search-allow-domains
      :type t
+     :default nil
      :validator (:predicate %string-sequence-p))
     (:key :web-search-block-domains
      :type t
+     :default nil
      :validator (:predicate %string-sequence-p))
     (:key :web-search-user-agent
      :type (or null string)
+     :default "amoebum-web-search/0.1"
      :validator (:predicate %non-empty-string-p :allow-null t))
     (:key :web-fetch-timeout-seconds
      :type integer
+     :default 20
      :validator (:integer-range :min 1))
     (:key :web-fetch-cache-ttl-seconds
      :type integer
+     :default 900
      :validator (:integer-range :min 1))
     (:key :web-fetch-max-markdown-bytes
      :type integer
+     :default 10240
      :validator (:integer-range :min 1))
     (:key :web-fetch-user-agent
      :type (or null string)
+     :default "amoebum-web-fetch/0.1"
      :validator (:predicate %non-empty-string-p :allow-null t))
     (:key :haake-command
      :type string
+     :default "haake"
      :validator (:predicate %non-empty-string-p))
     (:key :haake-project-id
      :type (or null string)
+     :default nil
      :validator (:predicate %non-empty-string-p :allow-null t))
     (:key :haake-agent
      :type string
+     :default "amoebum"
      :validator (:predicate %non-empty-string-p))
     (:key :haake-autodetect
-     :type boolean)
+     :type boolean
+     :default t)
     (:key :notifications-enabled
-     :type boolean)
+     :type boolean
+     :default t)
     (:key :notification-events
      :type t
+     :default (:task-complete :error :approval-needed)
      :validator (:predicate %keyword-like-sequence-p))
     (:key :notification-sound-enabled
-     :type boolean)
+     :type boolean
+     :default t)
     (:key :notification-desktop-enabled
-     :type boolean)
+     :type boolean
+     :default t)
     (:key :notification-log-enabled
-     :type boolean)
+     :type boolean
+     :default t)
     (:key :notification-sound-player
      :type (or null string)
+     :default nil
      :validator (:predicate %non-empty-string-p :allow-null t))
     (:key :notification-desktop-command
      :type (or null string)
+     :default nil
      :validator (:predicate %non-empty-string-p :allow-null t))
     (:key :notification-log-path
      :type (or null pathname string)
+     :default nil
      :validator (:predicate %pathname-or-string-p :allow-null t))
     (:key :notification-webhooks
-     :type (or null list vector))
+     :type (or null list vector)
+     :default nil)
     (:key :notification-sound-task-complete
      :type (or null pathname string)
+     :default nil
      :validator (:predicate %pathname-or-string-p :allow-null t))
     (:key :notification-sound-error
      :type (or null pathname string)
+     :default nil
      :validator (:predicate %pathname-or-string-p :allow-null t))
     (:key :notification-sound-approval-needed
      :type (or null pathname string)
+     :default nil
      :validator (:predicate %pathname-or-string-p :allow-null t))
     (:key :tts-command
      :type (or null string)
+     :default "kokoro-tts"
      :validator (:predicate %non-empty-string-p :allow-null t))
     (:key :tts-python-module
-     :type boolean)
+     :type boolean
+     :default nil)
     (:key :tts-voice
      :type (or null string)
+     :default "af_heart"
      :validator (:predicate %non-empty-string-p :allow-null t))
     (:key :tts-auto-speak
-     :type boolean)
+     :type boolean
+     :default nil)
     (:key :auto-checkpoint-idle-seconds
      :type integer
+     :default 1800
      :validator (:integer-range :min 0))
     (:key :auto-checkpoint-max-count
      :type integer
+     :default 10
      :validator (:integer-range :min 1))
     (:key :plan-mode
-     :type boolean)
+     :type boolean
+     :default nil)
+    (:key :theme-yaml
+     :type (or boolean string)
+     :default t
+     :validator (:predicate %theme-yaml-config-value-p))
     (:key :project-root
      :type (or pathname string)
      :default nil
@@ -290,6 +293,10 @@
   (and (stringp value)
        (> (length (%trim-string value)) 0)))
 
+(defun %theme-yaml-config-value-p (value)
+  (or (typep value 'boolean)
+      (%non-empty-string-p value)))
+
 (defun %provider-override-token (value)
   (when value
     (and (or (stringp value)
@@ -331,6 +338,19 @@
 (defun %plist-contains-key-p (plist key)
   (loop for (entry-key nil) on plist by #'cddr
         thereis (eq entry-key key)))
+
+(defun %schema-definition-default-value (definition)
+  (if (%plist-contains-key-p definition :default)
+      (getf definition :default)
+      nil))
+
+(defun %schema-default-values ()
+  (loop for definition in *config-schema-definitions*
+        for key = (getf definition :key)
+        unless (eq key :project-root)
+          append (list key (%schema-definition-default-value definition))))
+
+(setf *default-config-values* (%schema-default-values))
 
 (defun %make-predicate-validator (predicate allow-null)
   (let ((predicate-fn (%validator-function predicate)))
@@ -382,12 +402,10 @@
      (error "Unsupported config validator spec ~S." spec))))
 
 (defun %register-config-schema-definition (definition)
-  (destructuring-bind (&key key type default validator &allow-other-keys) definition
+  (destructuring-bind (&key key type validator &allow-other-keys) definition
     (%register-config-schema-entry key
                                    type
-                                   (if (%plist-contains-key-p definition :default)
-                                       default
-                                       (getf *default-config-values* key))
+                                   (%schema-definition-default-value definition)
                                    (%validator-from-spec validator))))
 
 (defun %config-schema-entry (key)

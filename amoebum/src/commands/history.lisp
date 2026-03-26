@@ -17,6 +17,17 @@
         (make-history-filter-spec :until '("--until" "-u") '%parse-history-timestamp)
         (make-history-filter-spec :limit '("--limit" "-n") '%parse-history-limit)))
 
+(defstruct (history-parse-state
+            (:constructor make-history-parse-state
+                (&key filters
+                 (query-tokens '())
+                 (errors '())
+                 pending-spec)))
+  filters
+  (query-tokens '() :type list)
+  (errors '() :type list)
+  pending-spec)
+
 (defun %history-filter-key-name (key)
   (string-downcase (symbol-name key)))
 
@@ -65,9 +76,7 @@
   (when (and (stringp token) (plusp (length token)))
     (let ((separator (or (position #\= token)
                          (position #\: token))))
-      (when (and separator
-                 (> separator 0)
-                 (< (1+ separator) (length token)))
+      (when (and separator (> separator 0))
         (values (string-downcase (subseq token 0 separator))
                 (amoebum::%slash-trim (subseq token (1+ separator))))))))
 
@@ -113,56 +122,117 @@
     (when (and since-ts until-ts (> since-ts until-ts))
       "Timestamp range is invalid: --since is later than --until.")))
 
-(defun %history-parse-arguments (raw-arguments)
-  (let ((tokens (amoebum::%tokenize-command-arguments (or raw-arguments "")))
-        (filters (list :query "" :role nil :tool nil :since nil :until nil :limit 20))
-        (query-tokens '())
-        (errors '())
-        (index 0))
-    (labels ((next-token ()
-               (prog1 (nth index tokens)
-                 (incf index)))
-             (consume-option-value (spec)
-               (let ((value (nth index tokens)))
-                 (if (or (null value) (amoebum::%slash-blank-p value))
-                     (values nil
-                             (format nil "Missing value for --~A."
-                                     (%history-filter-key-name
-                                      (history-filter-spec-key spec))))
-                     (progn
-                       (incf index)
-                       (values value nil)))))
-             (record-filter (spec value source-kind)
-               (multiple-value-bind (next-filters error)
-                   (%history-apply-filter filters spec value source-kind)
-                 (setf filters next-filters)
-                 (when error
-                   (push error errors)))))
-      (loop while (< index (length tokens)) do
-        (let ((token (next-token)))
-          (cond
-            ((%history-spec-for-option-token token)
-             (let ((spec (%history-spec-for-option-token token)))
-               (multiple-value-bind (value error)
-                   (consume-option-value spec)
-                 (if error
-                     (push error errors)
-                     (record-filter spec value :option)))))
-            (t
-             (multiple-value-bind (key value)
-                 (%history-token-key-value token)
-               (let ((spec (and key (%history-spec-for-filter-key key))))
-                 (if spec
-                     (record-filter spec value :filter)
-                     (push token query-tokens))))))))
-      (let ((range-error (%history-validate-range filters)))
-        (when range-error
-          (push range-error errors)))
-      (setf (getf filters :query)
-            (if query-tokens
-                (format nil "~{~A~^ ~}" (nreverse query-tokens))
-                ""))
-      (values filters (nreverse errors)))))
+(defun %initial-history-filters ()
+  (list :query "" :role nil :tool nil :since nil :until nil :limit 20))
+
+(defun %copy-history-parse-state (state
+                                  &key
+                                    filters
+                                    query-tokens
+                                    errors
+                                    (pending-spec nil pending-spec-p))
+  (make-history-parse-state
+   :filters (or filters (history-parse-state-filters state))
+   :query-tokens (or query-tokens (history-parse-state-query-tokens state))
+   :errors (or errors (history-parse-state-errors state))
+   :pending-spec (if pending-spec-p
+                     pending-spec
+                     (history-parse-state-pending-spec state))))
+
+(defun %initial-history-parse-state ()
+  (make-history-parse-state :filters (%initial-history-filters)))
+
+(defun %history-state-add-error (state error)
+  (%copy-history-parse-state state
+                             :errors (cons error (history-parse-state-errors state))))
+
+(defun %history-state-add-query-token (state token)
+  (%copy-history-parse-state state
+                             :query-tokens (cons token
+                                                 (history-parse-state-query-tokens state))))
+
+(defun %history-state-set-pending-spec (state spec)
+  (%copy-history-parse-state state :pending-spec spec))
+
+(defun %history-state-clear-pending-spec (state)
+  (%copy-history-parse-state state :pending-spec nil))
+
+(defun %history-missing-option-value-error (spec)
+  (format nil "Missing value for --~A."
+          (%history-filter-key-name (history-filter-spec-key spec))))
+
+(defun %history-next-token-looks-like-option-p (token)
+  (and (stringp token)
+       (%history-spec-for-option-token token)))
+
+(defun %history-record-filter (state spec value source-kind)
+  (multiple-value-bind (filters error)
+      (%history-apply-filter (history-parse-state-filters state)
+                             spec
+                             value
+                             source-kind)
+    (let ((next-state (%copy-history-parse-state state :filters filters)))
+      (if error
+          (%history-state-add-error next-state error)
+          next-state))))
+
+(defun %history-parse-filter-token (state token)
+  (multiple-value-bind (key value)
+      (%history-token-key-value token)
+    (let ((spec (and key (%history-spec-for-filter-key key))))
+      (if spec
+          (%history-record-filter state spec value :filter)
+          (%history-state-add-query-token state token)))))
+
+(defun %history-consume-pending-option (state token)
+  (let* ((pending-spec (history-parse-state-pending-spec state))
+         (cleared-state (%history-state-clear-pending-spec state)))
+    (cond
+      ((amoebum::%slash-blank-p token)
+       (%history-state-add-error cleared-state
+                                 (%history-missing-option-value-error pending-spec)))
+      ((%history-next-token-looks-like-option-p token)
+       (%history-parse-token
+        (%history-state-add-error cleared-state
+                                  (%history-missing-option-value-error pending-spec))
+        token))
+      (t
+       (%history-record-filter cleared-state pending-spec token :option)))))
+
+(defun %history-parse-token (state token)
+  (let ((pending-spec (history-parse-state-pending-spec state)))
+    (if pending-spec
+        (%history-consume-pending-option state token)
+        (let ((option-spec (%history-spec-for-option-token token)))
+          (if option-spec
+              (%history-state-set-pending-spec state option-spec)
+              (%history-parse-filter-token state token))))))
+
+(defun %history-finalize-parse-state (state)
+  (let* ((completed-state
+           (if (history-parse-state-pending-spec state)
+               (%history-state-add-error
+                (%history-state-clear-pending-spec state)
+                (%history-missing-option-value-error
+                 (history-parse-state-pending-spec state)))
+               state))
+         (filters (history-parse-state-filters completed-state))
+         (query-tokens (nreverse (history-parse-state-query-tokens completed-state)))
+         (errors (history-parse-state-errors completed-state))
+         (range-error (%history-validate-range filters)))
+    (when range-error
+      (setf errors (cons range-error errors)))
+    (setf (getf filters :query)
+          (if query-tokens
+              (format nil "~{~A~^ ~}" query-tokens)
+              ""))
+    (values filters (nreverse errors))))
+
+(defun %parse-history-filters (raw-arguments)
+  (%history-finalize-parse-state
+   (reduce #'%history-parse-token
+           (amoebum::%tokenize-command-arguments (or raw-arguments ""))
+           :initial-value (%initial-history-parse-state))))
 
 (defun %history-result-block (result ordinal)
   (check-type result amoebum::conversation-history-search-result)
@@ -212,7 +282,7 @@
          :output "Conversation history is unavailable for this session."
          :echo-input-p t)))
     (multiple-value-bind (filters errors)
-        (%history-parse-arguments raw-arguments)
+        (%parse-history-filters raw-arguments)
       (if errors
           (make-slash-command-result
            :echo-input-p t

@@ -1,3 +1,8 @@
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (unless (find-package :sw4rm-test)
+    (defpackage :sw4rm-test
+      (:use :cl :fiveam :sw4rm-sdk))))
+
 (in-package :sw4rm-test)
 
 (def-suite policy-surface-suite
@@ -61,4 +66,4 @@
     (is (eq :bound-home (sw4rm-sdk::worktree-state wsm)))
     (is (string= "home"
                  (sw4rm-sdk::binding-info-worktree-id
-                  (sw4rm-sdk.worktree:get-current-worktree wsm)))))))
+                  (sw4rm-sdk.worktree:get-current-worktree wsm))))))

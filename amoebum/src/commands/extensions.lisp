@@ -78,6 +78,14 @@
           (remember (file-namestring (pathname target)))))
       (nreverse result))))
 
+(defun %extension-entry-matches-target-p (needle entry)
+  (some (lambda (value)
+          (%extension-match-target-p needle value))
+        (list (or (getf entry :name) "")
+              (or (getf entry :path) "")
+              (or (getf entry :entry-point) "")
+              (or (getf entry :manifest-path) ""))))
+
 (defun %extensions-matching-target (target &optional (extensions (list-extensions)))
   (let ((needle (%slash-trim target)))
     (if (or (%slash-blank-p needle)
@@ -85,10 +93,7 @@
         extensions
         (remove-if-not
          (lambda (entry)
-           (or (%extension-match-target-p needle (or (getf entry :name) ""))
-               (%extension-match-target-p needle (or (getf entry :path) ""))
-               (%extension-match-target-p needle (or (getf entry :entry-point) ""))
-               (%extension-match-target-p needle (or (getf entry :manifest-path) ""))))
+           (%extension-entry-matches-target-p needle entry))
          extensions))))
 
 (defun %count-extensions-by-status (extensions status)
@@ -163,24 +168,41 @@
                                              enabled-count
                                              "No disabled extensions matched ~S.")))))
 
+(defun %extensions-normalize-action (tokens)
+  (let ((token (if tokens
+                   (string-downcase (first tokens))
+                   "list")))
+    (or (loop for (action . aliases) in '(("list" "list" "ls")
+                                          ("reload" "reload")
+                                          ("disable" "disable")
+                                          ("enable" "enable"))
+              thereis (and (member token aliases :test #'string=)
+                           action))
+        token)))
+
+(defun %extensions-dispatch-handler (action)
+  (cdr (assoc action
+              `(("list" . ,(lambda (tokens _context)
+                             (declare (ignore _context))
+                             (%extensions-handle-list tokens)))
+                ("reload" . ,#'%extensions-handle-reload)
+                ("disable" . ,(lambda (tokens _context)
+                                (declare (ignore _context))
+                                (%extensions-handle-disable tokens)))
+                ("enable" . ,(lambda (tokens _context)
+                               (declare (ignore _context))
+                               (%extensions-handle-enable tokens))))
+              :test #'string=)))
+
 (defun %extensions-handler (_invocation arguments context)
   (declare (ignore _invocation))
   (let* ((raw (or (gethash :ARGS arguments) ""))
          (tokens (%tokenize-command-arguments raw))
-         (action-token (if tokens
-                           (string-downcase (first tokens))
-                           "list")))
-    (cond
-      ((member action-token '("list" "ls") :test #'string=)
-       (%extensions-handle-list tokens))
-      ((string= action-token "reload")
-       (%extensions-handle-reload tokens context))
-      ((string= action-token "disable")
-       (%extensions-handle-disable tokens))
-      ((string= action-token "enable")
-       (%extensions-handle-enable tokens))
-      (t
-       (%extensions-invalid-usage (format nil "Unknown /extensions action ~S." action-token))))))
+         (action-token (%extensions-normalize-action tokens))
+         (handler (%extensions-dispatch-handler action-token)))
+    (if handler
+        (funcall handler tokens context)
+        (%extensions-invalid-usage (format nil "Unknown /extensions action ~S." action-token)))))
 
 (defun %ext-load-usage ()
   "/ext-load <all|name|path>")

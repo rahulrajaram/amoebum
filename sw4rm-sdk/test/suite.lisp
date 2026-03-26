@@ -17,7 +17,8 @@
 
 (in-package :sw4rm-test)
 
-(def-suite sw4rm-suite :description "SW4RM CL SDK tests")
+(def-suite :sw4rm-sdk :description "Keyword alias for the SW4RM SDK test tree")
+(def-suite sw4rm-suite :description "SW4RM CL SDK tests" :in :sw4rm-sdk)
 (in-suite sw4rm-suite)
 
 

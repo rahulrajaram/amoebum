@@ -137,219 +137,325 @@
             voice
             (and backend (speaking-p backend)))))
 
+(defun %sounds-invalid-usage (&optional details)
+  (make-slash-command-result
+   :echo-input-p t
+   :output (format nil "~@[~A~%~]Usage: ~A"
+                   details
+                   (%sounds-usage))))
+
+(defun %sounds-normalize-action (tokens)
+  (let ((token (if tokens
+                   (string-downcase (first tokens))
+                   "list")))
+    (or (loop for (action . aliases) in '(("list" "list" "ls")
+                                          ("set" "set")
+                                          ("preview" "preview"))
+              thereis (and (member token aliases :test #'string=)
+                           action))
+        token)))
+
+(defun %sounds-handle-list (tokens)
+  (if (> (length tokens) 1)
+      (%sounds-invalid-usage (format nil "Unexpected argument ~S." (second tokens)))
+      (make-slash-command-result
+       :echo-input-p t
+       :output (%render-sounds-list))))
+
+(defun %sounds-handle-set (tokens)
+  (let ((theme-token (second tokens)))
+    (cond
+      ((/= (length tokens) 2)
+       (%sounds-invalid-usage "Usage: /sounds set <theme>"))
+      ((null (find-sound-theme theme-token))
+       (%sounds-invalid-usage (format nil "Unknown sound theme ~S." theme-token)))
+      (t
+       (let ((active (set-active-sound-theme theme-token)))
+         (make-slash-command-result
+          :echo-input-p t
+          :output (format nil "Active sound theme set to ~A."
+                          (%sound-theme-label active))))))))
+
+(defun %sounds-handle-preview (tokens cfg)
+  (let ((extra (third tokens)))
+    (if extra
+        (%sounds-invalid-usage (format nil "Unexpected argument ~S." extra))
+        (make-slash-command-result
+         :echo-input-p t
+         :output (%preview-sound (or (%parse-sound-category (second tokens)) :error)
+                                 cfg)))))
+
 (defun %sounds-handler (_invocation arguments context)
   (declare (ignore _invocation))
   (let* ((raw (or (gethash :ARGS arguments) ""))
          (tokens (%tokenize-command-arguments raw))
-         (action-token (if tokens
-                           (string-downcase (first tokens))
-                           "list"))
+         (action-token (%sounds-normalize-action tokens))
          (cfg (or (slash-command-context-config context)
                   (%current-config-safe))))
-    (labels ((invalid-usage (&optional details)
-               (make-slash-command-result
-                :echo-input-p t
-                :output (format nil "~@[~A~%~]Usage: ~A"
-                                details
-                                (%sounds-usage)))))
-      (cond
-        ((member action-token '("list" "ls") :test #'string=)
-         (if (> (length tokens) 1)
-             (invalid-usage (format nil "Unexpected argument ~S." (second tokens)))
+    (cond
+      ((string= action-token "list")
+       (%sounds-handle-list tokens))
+      ((string= action-token "set")
+       (%sounds-handle-set tokens))
+      ((string= action-token "preview")
+       (%sounds-handle-preview tokens cfg))
+      (t
+       (%sounds-invalid-usage (format nil "Unknown /sounds action ~S." action-token))))))
+
+(defun %notifications-invalid-usage (&optional details)
+  (make-slash-command-result
+   :echo-input-p t
+   :output (format nil "~@[~A~%~]Usage: ~A"
+                   details
+                   (%notifications-usage))))
+
+(defun %notifications-normalize-action (tokens)
+  (let ((token (if tokens
+                   (string-downcase (first tokens))
+                   "list")))
+    (or (loop for (action . aliases) in '(("list" "list" "ls")
+                                          ("enable" "enable")
+                                          ("disable" "disable")
+                                          ("test-fire" "test-fire"))
+              thereis (and (member token aliases :test #'string=)
+                           action))
+        token)))
+
+(defun %notifications-handle-list (tokens dispatcher)
+  (if (> (length tokens) 1)
+      (%notifications-invalid-usage (format nil "Unexpected argument ~S." (second tokens)))
+      (make-slash-command-result
+       :echo-input-p t
+       :output (%render-notification-backend-list dispatcher))))
+
+(defun %notifications-handle-toggle (tokens dispatcher enablep)
+  (let ((backend-token (second tokens))
+        (extra (third tokens)))
+    (cond
+      ((or (null backend-token) extra)
+       (%notifications-invalid-usage
+        (format nil "Usage: /notifications ~A <backend>"
+                (if enablep "enable" "disable"))))
+      (t
+       (handler-case
+           (let* ((entry (set-notification-dispatch-backend-enabled-p
+                          dispatcher
+                          backend-token
+                          enablep))
+                  (status (if (notification-dispatch-backend-enabled-p entry)
+                              "enabled"
+                              "disabled")))
              (make-slash-command-result
               :echo-input-p t
-              :output (%render-sounds-list))))
-        ((string= action-token "set")
-         (let ((theme-token (second tokens)))
-           (cond
-             ((/= (length tokens) 2)
-              (invalid-usage "Usage: /sounds set <theme>"))
-             ((null (find-sound-theme theme-token))
-              (invalid-usage (format nil "Unknown sound theme ~S." theme-token)))
-             (t
-              (let ((active (set-active-sound-theme theme-token)))
-                (make-slash-command-result
-                 :echo-input-p t
-                 :output (format nil "Active sound theme set to ~A."
-                                 (%sound-theme-label active))))))))
-        ((string= action-token "preview")
-         (let* ((category (or (%parse-sound-category (second tokens)) :error))
-                (extra (third tokens)))
-           (if extra
-               (invalid-usage (format nil "Unexpected argument ~S." extra))
-               (make-slash-command-result
-                :echo-input-p t
-                :output (%preview-sound category cfg)))))
-        (t
-         (invalid-usage (format nil "Unknown /sounds action ~S." action-token)))))))
+              :output (format nil "Notification backend ~A is now ~A."
+                              (%notification-backend-label
+                               (notification-dispatch-backend-name entry))
+                              status)))
+         (error (condition)
+           (%notifications-invalid-usage (princ-to-string condition))))))))
+
+(defun %notifications-handle-test-fire (tokens dispatcher)
+  (let ((extra (third tokens))
+        (event-type (or (%parse-notification-event-type (second tokens))
+                        +event-type-tool-error+)))
+    (if extra
+        (%notifications-invalid-usage (format nil "Unexpected argument ~S." extra))
+        (multiple-value-bind (ok destination)
+            (fire-notification-dispatch-test :dispatcher dispatcher
+                                             :event-type event-type)
+          (make-slash-command-result
+           :echo-input-p t
+           :output (if ok
+                       (format nil "Notification test dispatched via ~A for ~A."
+                               (%notification-backend-label destination)
+                               (string-downcase (symbol-name event-type)))
+                       (format nil "Notification test fallback exhausted (~A) for ~A."
+                               destination
+                               (string-downcase (symbol-name event-type)))))))))
 
 (defun %notifications-handler (_invocation arguments context)
   (declare (ignore _invocation))
   (let* ((raw (or (gethash :ARGS arguments) ""))
          (tokens (%tokenize-command-arguments raw))
-         (action-token (if tokens
-                           (string-downcase (first tokens))
-                           "list"))
+         (action-token (%notifications-normalize-action tokens))
          (dispatcher (%ensure-notification-dispatcher-for-command context)))
-    (labels ((invalid-usage (&optional details)
-               (make-slash-command-result
-                :echo-input-p t
-                :output (format nil "~@[~A~%~]Usage: ~A"
-                                details
-                                (%notifications-usage)))))
-      (cond
-        ((member action-token '("list" "ls") :test #'string=)
-         (if (> (length tokens) 1)
-             (invalid-usage (format nil "Unexpected argument ~S." (second tokens)))
-             (make-slash-command-result
-              :echo-input-p t
-              :output (%render-notification-backend-list dispatcher))))
-        ((member action-token '("enable" "disable") :test #'string=)
-         (let ((backend-token (second tokens))
-               (extra (third tokens)))
-           (cond
-             ((or (null backend-token) extra)
-              (invalid-usage (format nil "Usage: /notifications ~A <backend>"
-                                     action-token)))
-             (t
-              (handler-case
-                  (let* ((entry (set-notification-dispatch-backend-enabled-p
-                                 dispatcher
-                                 backend-token
-                                 (string= action-token "enable")))
-                         (status (if (notification-dispatch-backend-enabled-p entry)
-                                     "enabled"
-                                     "disabled")))
-                    (make-slash-command-result
-                     :echo-input-p t
-                     :output (format nil "Notification backend ~A is now ~A."
-                                     (%notification-backend-label
-                                      (notification-dispatch-backend-name entry))
-                                     status)))
-                (error (condition)
-                  (invalid-usage (princ-to-string condition))))))))
-        ((string= action-token "test-fire")
-         (let* ((event-type (or (%parse-notification-event-type (second tokens))
-                                +event-type-tool-error+))
-                (extra (third tokens)))
-           (if extra
-               (invalid-usage (format nil "Unexpected argument ~S." extra))
-               (multiple-value-bind (ok destination)
-                   (fire-notification-dispatch-test :dispatcher dispatcher
-                                                    :event-type event-type)
-                 (make-slash-command-result
-                  :echo-input-p t
-                  :output (if ok
-                              (format nil "Notification test dispatched via ~A for ~A."
-                                      (%notification-backend-label destination)
-                                      (string-downcase (symbol-name event-type)))
-                              (format nil "Notification test fallback exhausted (~A) for ~A."
-                                      destination
-                                      (string-downcase (symbol-name event-type)))))))))
-        (t
-         (invalid-usage (format nil "Unknown /notifications action ~S." action-token)))))))
+    (cond
+      ((string= action-token "list")
+       (%notifications-handle-list tokens dispatcher))
+      ((string= action-token "enable")
+       (%notifications-handle-toggle tokens dispatcher t))
+      ((string= action-token "disable")
+       (%notifications-handle-toggle tokens dispatcher nil))
+      ((string= action-token "test-fire")
+       (%notifications-handle-test-fire tokens dispatcher))
+      (t
+       (%notifications-invalid-usage (format nil "Unknown /notifications action ~S." action-token))))))
+
+(defun %speak-invalid-usage (&optional details)
+  (make-slash-command-result
+   :echo-input-p t
+   :output (format nil "~@[~A~%~]Usage: ~A"
+                   details
+                   (%speak-usage))))
+
+(defun %speak-normalize-action (tokens)
+  (let ((token (if tokens
+                   (string-downcase (first tokens))
+                   "last")))
+    (or (loop for (action . aliases) in '(("last" "last" "say" "speak")
+                                          ("on" "on")
+                                          ("off" "off")
+                                          ("status" "status" "show")
+                                          ("stop" "stop")
+                                          ("voice" "voice"))
+              thereis (and (member token aliases :test #'string=)
+                           action))
+        token)))
+
+(defun %speak-handle-last (chat-state)
+  (multiple-value-bind (ok text)
+      (speak-last-assistant-response :chat-state chat-state)
+    (make-slash-command-result
+     :echo-input-p t
+     :output (if ok
+                 (format nil "Speaking last assistant response (~D chars)."
+                         (length (or text "")))
+                 "No assistant response available to speak yet."))))
+
+(defun %speak-handle-auto (enablep)
+  (setconfig :tts-auto-speak enablep)
+  (make-slash-command-result
+   :echo-input-p t
+   :output (format nil "TTS auto-speak ~:[disabled~;enabled~]." enablep)))
+
+(defun %speak-handle-status (tokens)
+  (if (> (length tokens) 1)
+      (%speak-invalid-usage (format nil "Unexpected argument ~S." (second tokens)))
+      (make-slash-command-result
+       :echo-input-p t
+       :output (%render-tts-status))))
+
+(defun %speak-handle-stop ()
+  (let ((backend (or *tts-backend* (ensure-tts-backend))))
+    (stop-speaking backend)
+    (make-slash-command-result
+     :echo-input-p t
+     :output "TTS playback stopped.")))
+
+(defun %speak-handle-voice (tokens)
+  (let ((voice-token (second tokens))
+        (extra (third tokens)))
+    (if (or (null voice-token) extra)
+        (%speak-invalid-usage "Usage: /speak voice <name>")
+        (let* ((trimmed (%slash-trim voice-token))
+               (backend (or *tts-backend*
+                            (ensure-tts-backend))))
+          (setconfig :tts-voice trimmed)
+          (set-voice backend trimmed)
+          (make-slash-command-result
+           :echo-input-p t
+           :output (format nil "TTS voice set to ~A." trimmed))))))
+
+(defun %speak-dispatch-handler (action)
+  (cdr (assoc action
+              `(("last" . ,(lambda (tokens chat-state)
+                             (declare (ignore tokens))
+                             (%speak-handle-last chat-state)))
+                ("on" . ,(lambda (tokens _chat-state)
+                           (declare (ignore tokens _chat-state))
+                           (%speak-handle-auto t)))
+                ("off" . ,(lambda (tokens _chat-state)
+                            (declare (ignore tokens _chat-state))
+                            (%speak-handle-auto nil)))
+                ("status" . ,(lambda (tokens _chat-state)
+                               (declare (ignore _chat-state))
+                               (%speak-handle-status tokens)))
+                ("stop" . ,(lambda (tokens _chat-state)
+                             (declare (ignore tokens _chat-state))
+                             (%speak-handle-stop)))
+                ("voice" . ,(lambda (tokens _chat-state)
+                              (declare (ignore _chat-state))
+                              (%speak-handle-voice tokens))))
+              :test #'string=)))
 
 (defun %speak-handler (_invocation arguments context)
   (declare (ignore _invocation))
   (let* ((raw (or (gethash :ARGS arguments) ""))
          (tokens (%tokenize-command-arguments raw))
-         (action-token (if tokens
-                           (string-downcase (first tokens))
-                           "last"))
-         (chat-state (slash-command-context-chat-state context)))
-    (labels ((invalid-usage (&optional details)
-               (make-slash-command-result
-                :echo-input-p t
-                :output (format nil "~@[~A~%~]Usage: ~A"
-                                details
-                                (%speak-usage)))))
-      (cond
-        ((member action-token '("last" "say" "speak") :test #'string=)
-         (multiple-value-bind (ok text)
-             (speak-last-assistant-response :chat-state chat-state)
-           (make-slash-command-result
-            :echo-input-p t
-            :output (if ok
-                        (format nil "Speaking last assistant response (~D chars)."
-                                (length (or text "")))
-                        "No assistant response available to speak yet."))))
-        ((member action-token '("on" "off") :test #'string=)
-         (let ((value (string= action-token "on")))
-           (setconfig :tts-auto-speak value)
-           (make-slash-command-result
-            :echo-input-p t
-            :output (format nil "TTS auto-speak ~:[disabled~;enabled~]." value))))
-        ((member action-token '("status" "show") :test #'string=)
-         (if (> (length tokens) 1)
-             (invalid-usage (format nil "Unexpected argument ~S." (second tokens)))
-             (make-slash-command-result
-              :echo-input-p t
-              :output (%render-tts-status))))
-        ((string= action-token "stop")
-         (let ((backend (or *tts-backend* (ensure-tts-backend))))
-           (stop-speaking backend)
-           (make-slash-command-result
-            :echo-input-p t
-            :output "TTS playback stopped.")))
-        ((string= action-token "voice")
-         (let ((voice-token (second tokens))
-               (extra (third tokens)))
-           (if (or (null voice-token) extra)
-               (invalid-usage "Usage: /speak voice <name>")
-               (let* ((trimmed (%slash-trim voice-token))
-                      (backend (or *tts-backend*
-                                   (ensure-tts-backend))))
-                 (setconfig :tts-voice trimmed)
-                 (set-voice backend trimmed)
-                 (make-slash-command-result
-                  :echo-input-p t
-                  :output (format nil "TTS voice set to ~A." trimmed))))))
-        (t
-         (invalid-usage (format nil "Unknown /speak action ~S." action-token)))))))
+         (action-token (%speak-normalize-action tokens))
+         (chat-state (slash-command-context-chat-state context))
+         (handler (%speak-dispatch-handler action-token)))
+    (if handler
+        (funcall handler tokens chat-state)
+        (%speak-invalid-usage (format nil "Unknown /speak action ~S." action-token)))))
+
+(defun %voice-status-output (backend)
+  (format nil "Voice input ~:[disabled~;enabled~], listening=~:[no~;yes~], language=~A."
+          (voice-input-mode-enabled-p)
+          (listening-p backend)
+          (whisper-asr-backend-language backend)))
+
+(defun %voice-invalid-usage (&optional detail)
+  (make-slash-command-result
+   :echo-input-p t
+   :output (format nil "~@[~A~%~]Usage: ~A"
+                   detail
+                   (%voice-usage))))
+
+(defun %voice-normalize-action (tokens)
+  (let ((token (if tokens
+                   (string-downcase (first tokens))
+                   "toggle")))
+    (or (loop for (action . aliases) in '(("on" "on" "enable")
+                                          ("off" "off" "disable")
+                                          ("toggle" "toggle")
+                                          ("status" "status")
+                                          ("language" "language" "lang"))
+              thereis (and (member token aliases :test #'string=)
+                           action))
+        token)))
+
+(defun %voice-handle-toggle-state (backend action)
+  (funcall (cdr (assoc action
+                       `(("on" . ,(lambda ()
+                                    (enable-voice-input-mode :backend backend)))
+                         ("off" . ,(lambda ()
+                                     (disable-voice-input-mode :backend backend)))
+                         ("toggle" . ,(lambda ()
+                                        (toggle-voice-input-mode :backend backend))))
+                       :test #'string=)))
+  (make-slash-command-result
+   :echo-input-p t
+   :output (%voice-status-output backend)))
+
+(defun %voice-handle-language (tokens backend)
+  (let ((language (second tokens)))
+    (if (or (null language)
+            (%slash-blank-p language))
+        (%voice-invalid-usage "Missing language code.")
+        (progn
+          (set-language backend language)
+          (make-slash-command-result
+           :echo-input-p t
+           :output (%voice-status-output backend))))))
 
 (defun %voice-handler (_invocation arguments _context)
   (declare (ignore _invocation _context))
   (let* ((args-text (or (gethash :ARGS arguments) ""))
          (tokens (%tokenize-command-arguments args-text))
-         (action (if tokens
-                     (string-downcase (first tokens))
-                     "toggle"))
+         (action (%voice-normalize-action tokens))
          (backend (ensure-asr-backend)))
-    (labels ((status-output ()
-               (format nil "Voice input ~:[disabled~;enabled~], listening=~:[no~;yes~], language=~A."
-                       (voice-input-mode-enabled-p)
-                       (listening-p backend)
-                       (whisper-asr-backend-language backend)))
-             (invalid-usage (&optional detail)
-               (make-slash-command-result
-                :echo-input-p t
-                :output (format nil "~@[~A~%~]Usage: ~A"
-                                detail
-                                (%voice-usage)))))
-      (cond
-        ((member action '("on" "enable") :test #'string=)
-         (enable-voice-input-mode :backend backend)
-         (make-slash-command-result :echo-input-p t :output (status-output)))
-        ((member action '("off" "disable") :test #'string=)
-         (disable-voice-input-mode :backend backend)
-         (make-slash-command-result :echo-input-p t :output (status-output)))
-        ((string= action "toggle")
-         (toggle-voice-input-mode :backend backend)
-         (make-slash-command-result :echo-input-p t :output (status-output)))
-        ((string= action "status")
-         (make-slash-command-result :echo-input-p t :output (status-output)))
-        ((member action '("language" "lang") :test #'string=)
-         (let ((language (second tokens)))
-           (if (or (null language)
-                   (%slash-blank-p language))
-               (invalid-usage "Missing language code.")
-               (progn
-                 (set-language backend language)
-                 (make-slash-command-result
-                  :echo-input-p t
-                  :output (status-output))))))
-        (t
-         (invalid-usage (format nil "Unknown /voice action ~S." action)))))))
+    (cond
+      ((member action '("on" "off" "toggle") :test #'string=)
+       (%voice-handle-toggle-state backend action))
+      ((string= action "status")
+       (make-slash-command-result
+        :echo-input-p t
+        :output (%voice-status-output backend)))
+      ((string= action "language")
+       (%voice-handle-language tokens backend))
+      (t
+       (%voice-invalid-usage (format nil "Unknown /voice action ~S." action))))))
 
 (defun %sounds-arg-completer (_command _invocation index fragment prefix-tokens)
   (declare (ignore _command _invocation))

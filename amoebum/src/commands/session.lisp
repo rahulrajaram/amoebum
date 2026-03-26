@@ -96,26 +96,44 @@
              :echo-input-p t
              :output (format nil "Checkpoint restore failed: ~A" condition)))))))
 
+(defun %checkpoint-normalize-action (tokens)
+  (let ((token (if tokens
+                   (string-downcase (first tokens))
+                   "save")))
+    (or (loop for (action . aliases) in '(("save" "save" "now")
+                                          ("list" "list" "ls")
+                                          ("restore" "restore"))
+              thereis (and (member token aliases :test #'string=)
+                           action))
+        token)))
+
+(defun %checkpoint-dispatch-handler (action)
+  (cdr (assoc action
+              `(("save" . ,(lambda (tokens context)
+                             (%checkpoint-handle-save tokens
+                                                      (%checkpoint-context-conversation context)
+                                                      (or (slash-command-context-config context)
+                                                          (%current-config-safe)))))
+                ("list" . ,(lambda (tokens _context)
+                             (declare (ignore _context))
+                             (%checkpoint-handle-list tokens)))
+                ("restore" . ,(lambda (tokens context)
+                                (%checkpoint-handle-restore
+                                 tokens
+                                 (slash-command-context-chat-state context)
+                                 (or (slash-command-context-config context)
+                                     (%current-config-safe))))))
+              :test #'string=)))
+
 (defun %checkpoint-handler (_invocation arguments context)
   (declare (ignore _invocation))
   (let* ((raw (or (gethash :ARGS arguments) ""))
          (tokens (%tokenize-command-arguments raw))
-         (action-token (if tokens
-                           (string-downcase (first tokens))
-                           "save"))
-         (chat-state (slash-command-context-chat-state context))
-         (conversation (%checkpoint-context-conversation context))
-         (cfg (or (slash-command-context-config context)
-                  (%current-config-safe))))
-    (cond
-      ((member action-token '("save" "now") :test #'string=)
-       (%checkpoint-handle-save tokens conversation cfg))
-      ((member action-token '("list" "ls") :test #'string=)
-       (%checkpoint-handle-list tokens))
-      ((string= action-token "restore")
-       (%checkpoint-handle-restore tokens chat-state cfg))
-      (t
-       (%checkpoint-invalid-usage (format nil "Unknown /checkpoint action ~S." action-token))))))
+         (action-token (%checkpoint-normalize-action tokens))
+         (handler (%checkpoint-dispatch-handler action-token)))
+    (if handler
+        (funcall handler tokens context)
+        (%checkpoint-invalid-usage (format nil "Unknown /checkpoint action ~S." action-token)))))
 
 (defun %checkpoint-id-completions (fragment)
   (let ((prefix (%slash-trim fragment)))
@@ -250,27 +268,49 @@
          :output (format nil "Started session ~A."
                          (conversation-state-session-id active))))))
 
+(defun %session-normalize-action (tokens)
+  (let ((token (if tokens
+                   (string-downcase (first tokens))
+                   "current")))
+    (or (loop for (action . aliases) in '(("current" "current" "show")
+                                          ("list" "list" "ls")
+                                          ("resume" "resume")
+                                          ("new" "new"))
+              thereis (and (member token aliases :test #'string=)
+                           action))
+        token)))
+
+(defun %session-dispatch-handler (action)
+  (cdr (assoc action
+              `(("current" . ,(lambda (tokens context)
+                                (%session-handle-current
+                                 tokens
+                                 (%session-context-conversation context))))
+                ("list" . ,(lambda (tokens context)
+                             (%session-handle-list
+                              tokens
+                              (%session-context-project-root context))))
+                ("resume" . ,(lambda (tokens context)
+                               (%session-handle-resume
+                                tokens
+                                (%session-context-project-root context)
+                                (slash-command-context-chat-state context))))
+                ("new" . ,(lambda (tokens context)
+                            (%session-handle-new
+                             tokens
+                             (%session-context-project-root context)
+                             (slash-command-context-chat-state context)))))
+              :test #'string=)))
+
 (defun %session-handler (_invocation arguments context)
   (declare (ignore _invocation))
   (let* ((raw (or (gethash :ARGS arguments) ""))
          (tokens (%tokenize-command-arguments raw))
-         (action-token (if tokens
-                           (string-downcase (first tokens))
-                           "current"))
-         (chat-state (slash-command-context-chat-state context))
-         (project-root (%session-context-project-root context))
-         (conversation (%session-context-conversation context)))
-    (cond
-      ((member action-token '("current" "show") :test #'string=)
-       (%session-handle-current tokens conversation))
-      ((member action-token '("list" "ls") :test #'string=)
-       (%session-handle-list tokens project-root))
-      ((string= action-token "resume")
-       (%session-handle-resume tokens project-root chat-state))
-      ((string= action-token "new")
-       (%session-handle-new tokens project-root chat-state))
-      (t
-       (%session-invalid-usage (format nil "Unknown /session action ~S." action-token))))))
+         (action-token (%session-normalize-action tokens))
+         (handler (%session-dispatch-handler action-token)))
+    (if handler
+        (funcall handler tokens context)
+        (%session-invalid-usage (format nil "Unknown /session action ~S." action-token)))))
 
 (defun %session-id-completions (fragment)
   (let ((prefix (%slash-trim fragment)))

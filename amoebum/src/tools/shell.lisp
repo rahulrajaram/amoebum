@@ -127,24 +127,27 @@
                 (subseq entry (1+ pos)))
         (values entry ""))))
 
+(defun %coerce-process-env-pair (name value)
+  (cons (intern (string-upcase name) :keyword)
+        (or value "")))
+
+(defun %coerce-process-env-entry (entry)
+  (cond
+    ((and (consp entry) (keywordp (car entry)))
+     entry)
+    ((and (consp entry) (stringp (car entry)))
+     (%coerce-process-env-pair (car entry) (cdr entry)))
+    ((stringp entry)
+     (multiple-value-bind (name value)
+         (%split-env-assignment entry)
+       (%coerce-process-env-pair name value)))
+    (t
+     (error "Unsupported environment entry ~S." entry))))
+
 (defun %coerce-process-env (env-vars)
   "Normalize ENV-VARS into the alist shape expected by RUN-PROGRAM :ENV."
   (when env-vars
-    (mapcar (lambda (entry)
-              (cond
-                ((and (consp entry) (keywordp (car entry)))
-                 entry)
-                ((and (consp entry) (stringp (car entry)))
-                 (cons (intern (string-upcase (car entry)) :keyword)
-                       (or (cdr entry) "")))
-                ((stringp entry)
-                 (multiple-value-bind (name value)
-                     (%split-env-assignment entry)
-                   (cons (intern (string-upcase name) :keyword)
-                         value)))
-                (t
-                 (error "Unsupported environment entry ~S." entry))))
-            env-vars)))
+    (mapcar #'%coerce-process-env-entry env-vars)))
 
 (defun %utf8-char-size (char)
   (let ((code (char-code char)))
@@ -317,6 +320,34 @@
       (%terminate-shell-process (shell-run-state-process state)))))
 
 #+sbcl
+(defun %shell-permission-trace-reason (trace)
+  (or (and (listp trace) (getf trace :actionable-reason))
+      (and (listp trace) (getf trace :reason))
+      "approval required"))
+
+#+sbcl
+(defun %shell-signal-prompt-denial (decision)
+  (let* ((trace (last-permission-decision-trace))
+         (reason (%shell-permission-trace-reason trace))
+         (reason-code (and (listp trace) (getf trace :reason-code))))
+    (error 'tool-permission-denied
+           :tool-name :bash-exec
+           :arguments nil
+           :reason-code reason-code
+           :reason reason
+           :message (format nil
+                            "Permission decision ~A for tool ~S: ~A."
+                            decision
+                            :bash-exec
+                            reason))))
+
+#+sbcl
+(defun %shell-permission-decision (policy-command-text)
+  (check-permission :tool :bash-exec
+                    :command policy-command-text
+                    :dangerous-p (dangerous-command-p policy-command-text)))
+
+#+sbcl
 (defun %shell-ensure-execution-permitted (context)
   (let ((policy-command-text (shell-run-context-policy-command-text context)))
     (when (sandbox-read-only-p)
@@ -324,26 +355,10 @@
              :operation :bash-exec
              :reason "sandbox mode read-only denies shell execution"
              :details (shell-run-context-invocation-text context)))
-    (let ((decision (check-permission :tool :bash-exec
-                                      :command policy-command-text
-                                      :dangerous-p (dangerous-command-p policy-command-text))))
+    (let ((decision (%shell-permission-decision policy-command-text)))
       (when (and (eq decision :prompt)
                  (not (%bash-exec-running-under-pipeline-p)))
-        (let* ((trace (last-permission-decision-trace))
-               (reason (or (and (listp trace) (getf trace :actionable-reason))
-                           (and (listp trace) (getf trace :reason))
-                           "approval required"))
-               (reason-code (and (listp trace) (getf trace :reason-code))))
-          (error 'tool-permission-denied
-                 :tool-name :bash-exec
-                 :arguments nil
-                 :reason-code reason-code
-                 :reason reason
-                 :message (format nil
-                                  "Permission decision ~A for tool ~S: ~A."
-                                  decision
-                                  :bash-exec
-                                  reason)))))
+        (%shell-signal-prompt-denial decision)))
     (%assert-permission-allowed :tool :bash-exec
                                 :command policy-command-text
                                 :dangerous-p (dangerous-command-p policy-command-text))))
@@ -767,45 +782,79 @@
      :name (format nil "amoebum-shell-task-~A" task-id))
     (%snapshot-shell-task task)))
 
+(defstruct (shell-execution-options
+            (:constructor make-shell-execution-options
+                (&key shell-executable background-p
+                 enable-profile-init-p enable-project-env-p)))
+  shell-executable
+  background-p
+  enable-profile-init-p
+  enable-project-env-p)
+
+(defun %decode-shell-execution-options (shell-or-background
+                                        init-shell-profile-p
+                                        init-project-env-p
+                                        background)
+  (let ((legacy-call-p (and (null init-shell-profile-p)
+                            (null init-project-env-p)
+                            (null background))))
+    (make-shell-execution-options
+     :shell-executable (unless legacy-call-p shell-or-background)
+     :background-p (if legacy-call-p shell-or-background background)
+     :enable-profile-init-p (and (not legacy-call-p) init-shell-profile-p)
+     :enable-project-env-p (and (not legacy-call-p) init-project-env-p))))
+
+(defun %run-shell-command-with-runtime (command directory timeout-seconds
+                                        max-output-chars max-output-bytes max-output-lines
+                                        resolved-shell profiles env-vars background-p)
+  (if background-p
+      (%start-background-shell-task command
+                                    directory
+                                    timeout-seconds
+                                    max-output-chars
+                                    max-output-bytes
+                                    max-output-lines
+                                    :shell-executable resolved-shell
+                                    :profile-files profiles
+                                    :env-vars env-vars)
+      (%run-shell-command command
+                          directory
+                          timeout-seconds
+                          max-output-chars
+                          :max-output-bytes max-output-bytes
+                          :max-output-lines max-output-lines
+                          :shell-executable resolved-shell
+                          :profile-files profiles
+                          :env-vars env-vars)))
+
 (defun %execute-shell-command (command cwd timeout-seconds
                                max-output-chars max-output-bytes max-output-lines
                                &optional shell-or-background
                                  init-shell-profile-p
                                  init-project-env-p
                                  background)
-  (let* ((legacy-call-p (and (null init-shell-profile-p)
-                             (null init-project-env-p)
-                             (null background)))
-         (shell-executable (unless legacy-call-p shell-or-background))
-         (background-p (if legacy-call-p shell-or-background background))
-         (enable-profile-init-p (and (not legacy-call-p) init-shell-profile-p))
-         (enable-project-env-p (and (not legacy-call-p) init-project-env-p)))
+  (let ((options (%decode-shell-execution-options shell-or-background
+                                                  init-shell-profile-p
+                                                  init-project-env-p
+                                                  background)))
     (multiple-value-bind (directory resolved-shell profiles env-vars)
         (%prepare-shell-runtime cwd
-                                enable-profile-init-p
-                                enable-project-env-p
-                                enable-project-env-p
-                                shell-executable)
+                                (shell-execution-options-enable-profile-init-p options)
+                                (shell-execution-options-enable-project-env-p options)
+                                (shell-execution-options-enable-project-env-p options)
+                                (shell-execution-options-shell-executable options))
       (%persist-shell-directory directory)
-      (if background-p
-          (%start-background-shell-task command
-                                        directory
-                                        timeout-seconds
-                                        max-output-chars
-                                        max-output-bytes
-                                        max-output-lines
-                                        :shell-executable resolved-shell
-                                        :profile-files profiles
-                                        :env-vars env-vars)
-          (%run-shell-command command
-                              directory
-                              timeout-seconds
-                              max-output-chars
-                              :max-output-bytes max-output-bytes
-                              :max-output-lines max-output-lines
-                              :shell-executable resolved-shell
-                              :profile-files profiles
-                              :env-vars env-vars)))))
+      (%run-shell-command-with-runtime
+       command
+       directory
+       timeout-seconds
+       max-output-chars
+       max-output-bytes
+       max-output-lines
+       resolved-shell
+       profiles
+       env-vars
+       (shell-execution-options-background-p options)))))
 
 (defun %fetch-shell-task (task-id)
   (let ((normalized-task-id (%trim-whitespace task-id)))
