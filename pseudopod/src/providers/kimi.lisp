@@ -56,17 +56,53 @@
         (setf (kimi-provider-client provider) c)
         c)))
 
+(defun %kimi-empty-assistant-message-p (msg)
+  "Return T if MSG is an assistant message with empty content and no tool_calls.
+Moonshot API rejects these with 'must not be empty'."
+  (when (hash-table-p msg)
+    (let ((role (gethash "role" msg))
+          (content (gethash "content" msg))
+          (tool-calls (gethash "tool_calls" msg)))
+      (and (string= role "assistant")
+           (null tool-calls)
+           (or (null content)
+               (and (stringp content) (zerop (length content)))
+               (and (vectorp content) (zerop (length content))))))))
+
+(defun %kimi-ensure-reasoning-content (messages)
+  "Ensure every assistant message with tool_calls has a reasoning_content field.
+Moonshot rejects these when thinking is enabled without it."
+  (dolist (msg messages messages)
+    (when (hash-table-p msg)
+      (let ((role (gethash "role" msg))
+            (tool-calls (gethash "tool_calls" msg)))
+        (when (and (stringp role)
+                   (string= role "assistant")
+                   tool-calls)
+          (let ((reasoning (or (%non-empty-reasoning-content
+                                (gethash "reasoning_content" msg))
+                               (%extract-reasoning-content
+                                (gethash "content" msg)))))
+            (setf (gethash "reasoning_content" msg)
+                  (%tool-call-reasoning-content-or-fallback reasoning))))))))
+
 (defun %kimi-build-messages (messages system-prompt)
-  "Build raw message list from MESSAGES, prepending SYSTEM-PROMPT if given."
-  (let ((raw (mapcar (lambda (m)
-                       (cond ((message-p m) (message-to-hash m))
-                             ((hash-table-p m) m)
-                             ((stringp m) (%make-raw-message "user" m))
-                             (t m)))
-                     messages)))
+  "Build raw message list from MESSAGES, prepending SYSTEM-PROMPT if given.
+Sanitizes tool_calls to ensure every assistant tool_call has a matching tool response.
+Drops empty assistant messages that Moonshot would reject.
+Ensures reasoning_content on assistant tool_call messages for thinking mode."
+  (let* ((sanitized (%sanitize-tool-calls messages))
+         (raw (mapcar (lambda (m)
+                        (cond ((message-p m) (message-to-hash m))
+                              ((hash-table-p m) m)
+                              ((stringp m) (%make-raw-message "user" m))
+                              (t m)))
+                      sanitized))
+         (filtered (remove-if #'%kimi-empty-assistant-message-p raw)))
+    (%kimi-ensure-reasoning-content filtered)
     (if system-prompt
-        (cons (%make-raw-message "system" system-prompt) raw)
-        raw)))
+        (cons (%make-raw-message "system" system-prompt) filtered)
+        filtered)))
 
 (defmethod send-chat-completion ((provider kimi-provider) messages
                                  &key model temperature max-tokens top-p

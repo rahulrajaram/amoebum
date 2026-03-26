@@ -4,7 +4,11 @@
 
 (in-package :pseudopod/test)
 
+(def-suite :pseudopod
+  :description "Pseudopod SDK test suite compatibility root")
+
 (def-suite pseudopod-suite
+  :in :pseudopod
   :description "Pseudopod SDK test suite")
 
 (in-suite pseudopod-suite)
@@ -213,6 +217,59 @@
       (is (string= "assistant" (pseudopod:message-role message)))
       (is (string= "I15 typed reply" (or (message-first-text message) ""))))))
 
+(test chat-completion-drops-empty-assistant-messages-after-tool-call-sanitization
+  (let ((captured-messages nil))
+    (with-stub-dex
+        (:post (lambda (url &rest args &key content want-stream &allow-other-keys)
+                 (declare (ignore url args want-stream))
+                 (let* ((request (jonathan:parse content :as :hash-table))
+                        (messages (and (hash-table-p request)
+                                       (gethash "messages" request)))
+                        (response (make-hash-table :test #'equal))
+                        (choice (make-hash-table :test #'equal))
+                        (message (make-hash-table :test #'equal)))
+                   (setf captured-messages (if (vectorp messages)
+                                               (coerce messages 'list)
+                                               messages))
+                   (setf (gethash "role" message) "assistant"
+                         (gethash "content" message) "ok"
+                         (gethash "message" choice) message
+                         (gethash "choices" response) (vector choice))
+                   (values (jonathan:to-json response) 200))))
+      (let* ((client (pseudopod:make-client :api-key "stub"))
+             (assistant-tool-call (pseudopod:make-tool-call
+                                   :id "call_1"
+                                   :name "bash-exec"
+                                   :arguments "{\"cmd\":\"pwd\"}"))
+             (messages (list
+                        (pseudopod:make-message :role "user"
+                                                :content "continue")
+                        (pseudopod:make-message :role "assistant"
+                                                :content "   ")
+                        (pseudopod:make-message :role "assistant"
+                                                :content ""
+                                                :tool-calls (list assistant-tool-call)))))
+        (pseudopod:chat-completion client "" :messages messages)
+        (is (= 1 (length captured-messages)))
+        (is (string= "user"
+                     (or (gethash "role" (first captured-messages)) "")))
+        (is-false
+         (find-if (lambda (raw-message)
+                    (and (hash-table-p raw-message)
+                         (string= "assistant" (or (gethash "role" raw-message) ""))
+                         (let ((tool-calls (gethash "tool_calls" raw-message)))
+                           (or (null tool-calls)
+                               (and (listp tool-calls) (null tool-calls))
+                               (and (vectorp tool-calls) (zerop (length tool-calls)))))
+                         (let ((message-content (gethash "content" raw-message)))
+                           (or (null message-content)
+                               (and (stringp message-content)
+                                    (zerop (length (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                                message-content))))
+                               (and (vectorp message-content)
+                                    (zerop (length message-content)))))))
+                  captured-messages))))))
+
 ;;; ---- I16 Tests: Tool Loop ----
 
 (test step-loop-invokes-tool-and-returns-final-message
@@ -266,9 +323,10 @@
              "2026-02-13T00:00:00Z"))
       (let* ((result (pseudopod:step
                       client
-                      :user-prompt "What time is it?"
-                      :toolset toolset
-                      :max-steps 4))
+                      (pseudopod:make-agent-step-context
+                       :user-prompt "What time is it?"
+                       :toolset toolset
+                       :max-steps 4)))
              (final-message (pseudopod:step-result-final-message result))
              (final-text (and (pseudopod:message-p final-message)
                               (message-first-text final-message)))
@@ -316,9 +374,10 @@
              "2026-02-13T00:00:00Z"))
       (let ((result (pseudopod:step
                      client
-                     :user-prompt "Loop forever."
-                     :toolset toolset
-                     :max-steps 2)))
+                     (pseudopod:make-agent-step-context
+                      :user-prompt "Loop forever."
+                      :toolset toolset
+                      :max-steps 2))))
         (is-true (pseudopod:step-result-max-steps-reached result))
         (is (= 2 (pseudopod:step-result-steps result)))
         (is-false (pseudopod:step-result-final-message result))))))
@@ -359,14 +418,15 @@
              "registry-output"))
       (let* ((result (pseudopod:step
                       client
-                      :user-prompt "Invoke tool via callback handling."
-                      :toolset toolset
-                      :max-steps 1
-                      :on-tool-call
-                      (lambda (tool-call)
-                        (declare (ignore tool-call))
-                        (incf callback-call-count)
-                        (values t "callback-output"))))
+                      (pseudopod:make-agent-step-context
+                       :user-prompt "Invoke tool via callback handling."
+                       :toolset toolset
+                       :max-steps 1
+                       :on-tool-call
+                       (lambda (tool-call)
+                         (declare (ignore tool-call))
+                         (incf callback-call-count)
+                         (values t "callback-output")))))
              (tool-results (pseudopod:step-result-tool-results result)))
         (is (= callback-call-count 1))
         (is (= registry-call-count 0))

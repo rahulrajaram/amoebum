@@ -396,191 +396,218 @@ Returns two values:
       (setf (gethash "thinking" response) thinking))
     response))
 
+(defstruct (anthropic-stream-block-state
+             (:constructor %make-anthropic-stream-block-state
+                 (&key type (id "") (name "") (arguments ""))))
+  type
+  (id "" :type string)
+  (name "" :type string)
+  (arguments "" :type string))
+
+(defstruct (anthropic-stream-state
+             (:constructor %make-anthropic-stream-state (&key callback)))
+  (thinking-stream (make-string-output-stream))
+  (block-states (make-hash-table :test #'eql))
+  (snapshot (make-stream-turn-snapshot) :type stream-turn-snapshot)
+  callback)
+
+(defun %anthropic-stream-emit-text (state text)
+  (when (%anthropic-non-empty-string-p text)
+    (stream-turn-apply-event! (anthropic-stream-state-snapshot state)
+                              (list :type :text-delta
+                                    :text text))
+    (when (anthropic-stream-state-callback state)
+      (funcall (anthropic-stream-state-callback state) text))))
+
+(defun %anthropic-stream-emit-thinking (state text)
+  (when (%anthropic-non-empty-string-p text)
+    (write-string text (anthropic-stream-state-thinking-stream state))
+    (stream-turn-apply-event! (anthropic-stream-state-snapshot state)
+                              (list :type :reasoning-delta
+                                    :text text))))
+
+(defun %anthropic-stream-ensure-block-state (state index)
+  (or (gethash index (anthropic-stream-state-block-states state))
+      (setf (gethash index (anthropic-stream-state-block-states state))
+            (%make-anthropic-stream-block-state))))
+
+(defun %anthropic-stream-block-type (block-state)
+  (%anthropic-normalize-block-type
+   (and (anthropic-stream-block-state-p block-state)
+        (anthropic-stream-block-state-type block-state))))
+
+(defun %anthropic-stream-set-block-type (block-state type)
+  (let ((normalized (%anthropic-normalize-block-type type)))
+    (when (and (anthropic-stream-block-state-p block-state) normalized)
+      (setf (anthropic-stream-block-state-type block-state) normalized)))
+  block-state)
+
+(defun %anthropic-stream-infer-block-type (delta-type)
+  (cond
+    ((string= delta-type "text_delta") "text")
+    ((string= delta-type "thinking_delta") "thinking")
+    ((string= delta-type "input_json_delta") "tool_use")
+    (t nil)))
+
+(defun %anthropic-stream-extract-usage (payload)
+  (let ((payload-usage (and (hash-table-p payload) (gethash "usage" payload)))
+        (message (and (hash-table-p payload) (gethash "message" payload))))
+    (or (and (hash-table-p payload-usage) payload-usage)
+        (let ((message-usage (and (hash-table-p message)
+                                  (gethash "usage" message))))
+          (and (hash-table-p message-usage) message-usage)))))
+
+(defun %anthropic-stream-note-usage (state payload)
+  (let ((next-usage (%anthropic-stream-extract-usage payload)))
+    (when (hash-table-p next-usage)
+      (stream-turn-apply-event! (anthropic-stream-state-snapshot state)
+                                (%make-stream-usage-delta-chunk next-usage)))))
+
+(defun %anthropic-stream-finalize-tool-call (state index)
+  (let ((block-state (and (integerp index)
+                          (gethash index (anthropic-stream-state-block-states state)))))
+    (when (anthropic-stream-block-state-p block-state)
+	      (when (string= (or (%anthropic-stream-block-type block-state) "") "tool_use")
+        (let ((tool-call (make-hash-table :test #'equal))
+              (function-body (make-hash-table :test #'equal)))
+          (setf (gethash "id" tool-call) (anthropic-stream-block-state-id block-state)
+                (gethash "type" tool-call) "function"
+                (gethash "name" function-body) (anthropic-stream-block-state-name block-state)
+                (gethash "arguments" function-body) (anthropic-stream-block-state-arguments block-state)
+                (gethash "function" tool-call) function-body)
+          (stream-turn-apply-event! (anthropic-stream-state-snapshot state)
+                                    (list :type :tool-call-delta
+                                          :tool-call (hash-to-tool-call tool-call)
+                                          :tool-call-id (gethash "id" tool-call)
+                                          :name (anthropic-stream-block-state-name block-state)
+	                                          :arguments (anthropic-stream-block-state-arguments block-state)
+	                                          :arguments-complete-p t))))
+	      (remhash index (anthropic-stream-state-block-states state)))))
+
+(defun %handle-message-start (state payload)
+  (let* ((message (and (hash-table-p payload) (gethash "message" payload)))
+         (message-role (and (hash-table-p message) (gethash "role" message))))
+    (when (stringp message-role)
+      (stream-turn-apply-event! (anthropic-stream-state-snapshot state)
+                                (list :type :role
+                                      :role message-role)))
+    (%anthropic-stream-note-usage state payload)))
+
+(defun %handle-message-delta (state payload)
+  (%anthropic-stream-note-usage state payload))
+
+(defun %handle-message-stop (state payload)
+  (%anthropic-stream-note-usage state payload))
+
+(defun %handle-content-block-start (state payload)
+  (let* ((index (%anthropic-parse-int (and (hash-table-p payload) (gethash "index" payload))))
+         (content-block (and (hash-table-p payload) (gethash "content_block" payload)))
+         (block-type (%anthropic-normalize-block-type
+                      (and (hash-table-p content-block)
+                           (gethash "type" content-block))))
+         (block-id (and (hash-table-p content-block) (gethash "id" content-block)))
+         (name (and (hash-table-p content-block) (gethash "name" content-block))))
+    (when (integerp index)
+      (let ((block-state (%anthropic-stream-ensure-block-state state index)))
+        (%anthropic-stream-set-block-type block-state block-type)
+        (when (string= (or (%anthropic-stream-block-type block-state) "") "tool_use")
+          (setf (anthropic-stream-block-state-id block-state) (or block-id "")
+                (anthropic-stream-block-state-name block-state) (or name "")))))))
+
+(defun %handle-content-block-delta (state payload)
+  (let* ((index (%anthropic-parse-int (and (hash-table-p payload) (gethash "index" payload))))
+         (block-state (and (integerp index)
+                           (%anthropic-stream-ensure-block-state state index)))
+         (delta (and (hash-table-p payload) (gethash "delta" payload)))
+         (delta-type (%anthropic-normalize-block-type
+                      (and (hash-table-p delta) (gethash "type" delta))))
+         (block-type (or (%anthropic-stream-block-type block-state)
+                         (%anthropic-stream-infer-block-type (or delta-type "")))))
+    (when (and (anthropic-stream-block-state-p block-state) block-type)
+      (%anthropic-stream-set-block-type block-state block-type))
+    (cond
+      ((and (string= (or block-type "") "text")
+            (string= (or delta-type "") "text_delta"))
+       (%anthropic-stream-emit-text state
+                                    (and (hash-table-p delta) (gethash "text" delta))))
+      ((and (string= (or block-type "") "thinking")
+            (string= (or delta-type "") "thinking_delta"))
+       (%anthropic-stream-emit-thinking state
+                                        (and (hash-table-p delta) (gethash "text" delta))))
+      ((and (string= (or block-type "") "tool_use")
+            (string= (or delta-type "") "input_json_delta")
+            (anthropic-stream-block-state-p block-state))
+       (let ((partial-json (and (hash-table-p delta) (gethash "partial_json" delta))))
+         (when (stringp partial-json)
+           (setf (anthropic-stream-block-state-arguments block-state)
+                 (concatenate 'string
+                              (anthropic-stream-block-state-arguments block-state)
+                              partial-json))))))))
+
+(defun %handle-content-block-stop (state payload)
+  (let ((index (%anthropic-parse-int (and (hash-table-p payload) (gethash "index" payload)))))
+    (when (integerp index)
+      (%anthropic-stream-finalize-tool-call state index))))
+
+(defparameter +anthropic-stream-event-handlers+
+  '(("message_start" . %handle-message-start)
+    ("message_delta" . %handle-message-delta)
+    ("message_stop" . %handle-message-stop)
+    ("content_block_start" . %handle-content-block-start)
+    ("content_block_delta" . %handle-content-block-delta)
+    ("content_block_stop" . %handle-content-block-stop)))
+
+(defun %anthropic-stream-resolve-event (event-name event-data)
+  (or (%anthropic-normalize-block-type event-name)
+      (%anthropic-normalize-block-type
+       (and (hash-table-p event-data)
+            (gethash "type" event-data)))))
+
+(defun %anthropic-stream-dispatch-event (state event-name event-data)
+  (let* ((event-key (%anthropic-stream-resolve-event event-name event-data))
+         (handler-name (cdr (assoc event-key +anthropic-stream-event-handlers+
+                                   :test #'string=))))
+    (when handler-name
+      (funcall (symbol-function handler-name) state event-data))
+    (%anthropic-stream-note-usage state event-data)))
+
+(defun %anthropic-stream-consume-event (state event-name payload)
+  (handler-case
+      (let ((event-data (jonathan:parse payload :as :hash-table :junk-allowed t)))
+        (%anthropic-stream-dispatch-event state event-name event-data))
+    (error ()
+      nil)))
+
+(defun %anthropic-handle-sse-line (state line current-event)
+  (let ((trimmed (string-right-trim '(#\Return #\Newline) line)))
+    (cond
+      ((string= trimmed "")
+       nil)
+      ((uiop:string-prefix-p "event:" trimmed)
+       (%anthropic-normalize-block-type
+        (if (>= (length trimmed) 6)
+            (string-trim '(#\Space #\Tab) (subseq trimmed 6))
+            "")))
+      ((uiop:string-prefix-p "data:" trimmed)
+       (let ((payload (%anthropic-trim-sse-data trimmed)))
+         (unless (or (string= payload "")
+                     (string= payload "[DONE]"))
+           (%anthropic-stream-consume-event state current-event payload))
+         current-event))
+      (t
+       current-event))))
+
 (defun %anthropic-collect-stream (body-stream callback)
-  (let ((role "assistant")
-        (content-stream (make-string-output-stream))
-        (thinking-stream (make-string-output-stream))
-        (usage nil)
-        (block-states (make-hash-table :test #'eql))
-        (tool-calls '())
+  (let ((state (%make-anthropic-stream-state :callback callback))
         (current-event nil))
-    (labels ((emit-text (text)
-               (when (%anthropic-non-empty-string-p text)
-                 (write-string text content-stream)
-                 (when callback
-                   (funcall callback text))))
-             (emit-thinking (text)
-               (when (%anthropic-non-empty-string-p text)
-                 (write-string text thinking-stream)))
-             (ensure-block-state (index)
-               (or (gethash index block-states)
-                   (setf (gethash index block-states)
-                         (let ((state (make-hash-table :test #'equal)))
-                           (setf (gethash "type" state) nil
-                                 (gethash "id" state) ""
-                                 (gethash "name" state) ""
-                                 (gethash "arguments" state) "")
-                           state))))
-             (state-type (state)
-               (%anthropic-normalize-block-type
-                (and (hash-table-p state) (gethash "type" state))))
-             (set-state-type (state type)
-               (let ((normalized (%anthropic-normalize-block-type type)))
-                 (when (and (hash-table-p state) normalized)
-                   (setf (gethash "type" state) normalized)))
-               state)
-             (infer-block-type-from-delta (delta-type)
-               (cond
-                 ((string= delta-type "text_delta") "text")
-                 ((string= delta-type "thinking_delta") "thinking")
-                 ((string= delta-type "input_json_delta") "tool_use")
-                 (t nil)))
-             (extract-usage (payload)
-               (let ((payload-usage (and (hash-table-p payload)
-                                         (gethash "usage" payload)))
-                     (message (and (hash-table-p payload)
-                                   (gethash "message" payload))))
-                 (or (and (hash-table-p payload-usage) payload-usage)
-                     (let ((message-usage (and (hash-table-p message)
-                                               (gethash "usage" message))))
-                       (and (hash-table-p message-usage) message-usage)))))
-             (finalize-tool-call (index)
-               (let ((state (and (integerp index) (gethash index block-states))))
-                 (when (hash-table-p state)
-                   (when (string= (or (state-type state) "") "tool_use")
-                     (let* ((tool-id (or (gethash "id" state) ""))
-                            (tool-name (or (gethash "name" state) ""))
-                            (arguments (or (gethash "arguments" state) ""))
-                            (tool-call (make-hash-table :test #'equal))
-                            (function-body (make-hash-table :test #'equal)))
-                       (setf (gethash "id" tool-call) tool-id
-                             (gethash "type" tool-call) "function"
-                             (gethash "name" function-body) tool-name
-                             (gethash "arguments" function-body) arguments
-                             (gethash "function" tool-call) function-body)
-                       (push tool-call tool-calls)))
-                   (remhash index block-states))))
-             (consume-message-start (payload)
-               (let* ((message (and (hash-table-p payload)
-                                    (gethash "message" payload)))
-                      (message-role (and (hash-table-p message)
-                                         (gethash "role" message)))
-                      (next-usage (extract-usage payload)))
-                 (when (stringp message-role)
-                   (setf role message-role))
-                 (when (hash-table-p next-usage)
-                   (setf usage next-usage))))
-             (consume-content-block-start (payload)
-               (let* ((index (%anthropic-parse-int (and (hash-table-p payload)
-                                                        (gethash "index" payload))))
-                      (content-block (and (hash-table-p payload)
-                                          (gethash "content_block" payload)))
-                      (block-type (%anthropic-normalize-block-type
-                                   (and (hash-table-p content-block)
-                                        (gethash "type" content-block))))
-                      (block-id (and (hash-table-p content-block)
-                                     (gethash "id" content-block)))
-                      (name (and (hash-table-p content-block)
-                                 (gethash "name" content-block))))
-                 (when (integerp index)
-                   (let ((state (ensure-block-state index)))
-                     (when (and (hash-table-p state) block-type)
-                       (set-state-type state block-type))
-                     (when (and (hash-table-p state) (string= (or (state-type state) "") "tool_use"))
-                       (setf (gethash "id" state) (or block-id "")
-                             (gethash "name" state) (or name "")))))))
-             (consume-content-block-delta (payload)
-               (let* ((index (%anthropic-parse-int (and (hash-table-p payload)
-                                                        (gethash "index" payload))))
-                      (state (and (integerp index) (ensure-block-state index)))
-                      (delta (and (hash-table-p payload)
-                                  (gethash "delta" payload)))
-                      (delta-type (%anthropic-normalize-block-type
-                                   (and (hash-table-p delta)
-                                        (gethash "type" delta))))
-                      (block-type (or (state-type state)
-                                      (infer-block-type-from-delta (or delta-type "")))))
-                 (when (and (hash-table-p state) block-type)
-                   (set-state-type state block-type))
-                 (cond
-                   ((and (string= (or block-type "") "text")
-                         (string= (or delta-type "") "text_delta"))
-                    (emit-text (and (hash-table-p delta)
-                                    (gethash "text" delta))))
-                   ((and (string= (or block-type "") "thinking")
-                         (string= (or delta-type "") "thinking_delta"))
-                    (emit-thinking (and (hash-table-p delta)
-                                        (gethash "text" delta))))
-                   ((and (string= (or block-type "") "tool_use")
-                         (string= (or delta-type "") "input_json_delta"))
-                    (let ((partial-json (and (hash-table-p delta)
-                                             (gethash "partial_json" delta)))
-                          (existing (and (hash-table-p state)
-                                         (gethash "arguments" state ""))))
-                      (when (and (stringp partial-json)
-                                 (hash-table-p state))
-                        (setf (gethash "arguments" state)
-                              (concatenate 'string existing partial-json))))))))
-             (consume-content-block-stop (payload)
-               (let ((index (%anthropic-parse-int (and (hash-table-p payload)
-                                                       (gethash "index" payload)))))
-                 (when (integerp index)
-                   (finalize-tool-call index))))
-             (consume-message-usage (payload)
-               (let ((next-usage (extract-usage payload)))
-                 (when (hash-table-p next-usage)
-                   (setf usage next-usage))))
-             (consume-event (event-name payload)
-               (handler-case
-                   (let* ((event-data (jonathan:parse payload
-                                                      :as :hash-table
-                                                      :junk-allowed t))
-                         (effective-event (or (%anthropic-normalize-block-type event-name)
-                                              (%anthropic-normalize-block-type
-                                               (and (hash-table-p event-data)
-                                                    (gethash "type" event-data)))))
-                         (next-usage nil))
-                     (cond
-                       ((string= (or effective-event "") "message_start")
-                        (consume-message-start event-data))
-                       ((string= (or effective-event "") "content_block_start")
-                        (consume-content-block-start event-data))
-                       ((string= (or effective-event "") "content_block_delta")
-                        (consume-content-block-delta event-data))
-                       ((string= (or effective-event "") "content_block_stop")
-                        (consume-content-block-stop event-data))
-                       ((or (string= (or effective-event "") "message_delta")
-                            (string= (or effective-event "") "message_stop"))
-                        (consume-message-usage event-data)))
-                     (setf next-usage (extract-usage event-data))
-                     (when (hash-table-p next-usage)
-                       (setf usage next-usage)))
-                 (error ()
-                   nil))))
-      (let ()
-        (loop for line = (read-line body-stream nil nil)
-              while line
-              do (let ((trimmed (string-right-trim '(#\Return #\Newline) line)))
-                   (cond
-                     ((string= trimmed "")
-                      (setf current-event nil))
-                     ((uiop:string-prefix-p "event:" trimmed)
-                      (setf current-event
-                            (%anthropic-normalize-block-type
-                             (if (>= (length trimmed) 6)
-                                 (string-trim '(#\Space #\Tab)
-                                              (subseq trimmed 6))
-                                 ""))))
-                     ((uiop:string-prefix-p "data:" trimmed)
-                      (let ((payload (%anthropic-trim-sse-data trimmed)))
-                        (unless (or (string= payload "")
-                                    (string= payload "[DONE]"))
-                          (consume-event current-event payload)))))))
-        (values role
-                (get-output-stream-string content-stream)
-                (nreverse tool-calls)
-                usage
-                (get-output-stream-string thinking-stream))))))
+    (loop for line = (read-line body-stream nil nil)
+          while line
+          do (setf current-event (%anthropic-handle-sse-line state line current-event)))
+    (let ((snapshot (finalize-stream-turn-snapshot!
+                     (anthropic-stream-state-snapshot state))))
+      (multiple-value-bind (role content tool-calls usage reasoning)
+          (stream-turn-snapshot-values snapshot :include-reasoning-p t)
+        (values role content tool-calls usage reasoning snapshot)))))
 
 (defmethod send-chat-completion ((provider anthropic-provider) messages
                                    &key model temperature max-tokens top-p
@@ -643,18 +670,20 @@ Returns two values:
               (handler-case (close body-stream)
                 (error () nil))
               (%signal-http-status-error status error-body :streamp t)))
-          (unwind-protect
-               (multiple-value-bind (parsed-role parsed-content parsed-tool-calls parsed-usage thinking)
-                   (%anthropic-collect-stream body-stream callback)
-                 (setf result
-                       (%anthropic-normalize-stream-result parsed-role
-                                                         parsed-content
-                                                         parsed-tool-calls
-                                                         parsed-usage
-                                                         thinking)))
-            (handler-case (close body-stream)
-              (error () nil)))
-          result)))))
+          (let ((snapshot nil))
+            (unwind-protect
+                 (multiple-value-bind (parsed-role parsed-content parsed-tool-calls parsed-usage thinking snap)
+                     (%anthropic-collect-stream body-stream callback)
+                   (setf result
+                         (%anthropic-normalize-stream-result parsed-role
+                                                           parsed-content
+                                                           parsed-tool-calls
+                                                           parsed-usage
+                                                           thinking)
+                         snapshot snap))
+              (handler-case (close body-stream)
+                (error () nil)))
+            (values result snapshot)))))))
 
 (defmethod list-provider-models ((provider anthropic-provider))
   "Anthropic does not have a public models endpoint; return known models."

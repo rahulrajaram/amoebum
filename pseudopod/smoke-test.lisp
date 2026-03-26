@@ -391,9 +391,10 @@
                    "2026-02-13T00:00:00Z"))
             (let* ((result (pseudopod:step
                             client
-                            :user-prompt "What time is it?"
-                            :toolset toolset
-                            :max-steps 4))
+                            (pseudopod:make-agent-step-context
+                             :user-prompt "What time is it?"
+                             :toolset toolset
+                             :max-steps 4)))
                    (final-message (pseudopod:step-result-final-message result))
                    (final-text (and (pseudopod:message-p final-message)
                                     (message-first-text final-message)))
@@ -460,9 +461,10 @@
                    "2026-02-13T00:00:00Z"))
             (let ((result (pseudopod:step
                            client
-                           :user-prompt "Loop forever."
-                           :toolset toolset
-                           :max-steps 2)))
+                           (pseudopod:make-agent-step-context
+                            :user-prompt "Loop forever."
+                            :toolset toolset
+                            :max-steps 2))))
               (unless (pseudopod:step-result-max-steps-reached result)
                 (error "Expected max-steps termination, got ~S" result))
               (unless (= 2 (pseudopod:step-result-steps result))

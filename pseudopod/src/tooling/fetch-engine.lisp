@@ -78,6 +78,23 @@
   (cached-p nil :type (member t nil))
   (fetched-at 0 :type integer))
 
+(defstruct (fetch-options
+             (:constructor make-fetch-options
+                 (&key
+                   (timeout-seconds *default-fetch-timeout-seconds*)
+                   (cache-ttl-seconds *default-fetch-cache-ttl-seconds*)
+                   (max-body-bytes *default-fetch-max-body-bytes*)
+                   (user-agent *default-fetch-user-agent*)
+                   (follow-redirects t)
+                   http-get-fn)))
+  "Configuration bundle for FETCH-URL."
+  (timeout-seconds *default-fetch-timeout-seconds* :type integer)
+  (cache-ttl-seconds *default-fetch-cache-ttl-seconds* :type integer)
+  (max-body-bytes *default-fetch-max-body-bytes* :type integer)
+  (user-agent *default-fetch-user-agent* :type string)
+  (follow-redirects t :type (member t nil))
+  (http-get-fn nil :type t))
+
 (defun %fetch-trim (value)
   (string-trim '(#\Space #\Tab #\Newline #\Return) (or value "")))
 
@@ -223,14 +240,94 @@
           (list (+ now ttl-seconds)
                 (%fetch-copy-result result :cached-p nil)))))
 
-(defun fetch-url (url
-                  &key
-                    (timeout-seconds *default-fetch-timeout-seconds*)
-                    (cache-ttl-seconds *default-fetch-cache-ttl-seconds*)
-                    (max-body-bytes *default-fetch-max-body-bytes*)
-                    (user-agent *default-fetch-user-agent*)
-                    (follow-redirects t)
-                    http-get-fn)
+(defun %fetch-resolve-options (options)
+  (let ((resolved (or options (make-fetch-options))))
+    (check-type resolved fetch-options)
+    (make-fetch-options
+     :timeout-seconds (if (and (integerp (fetch-options-timeout-seconds resolved))
+                               (> (fetch-options-timeout-seconds resolved) 0))
+                          (fetch-options-timeout-seconds resolved)
+                          *default-fetch-timeout-seconds*)
+     :cache-ttl-seconds (if (and (integerp (fetch-options-cache-ttl-seconds resolved))
+                                 (> (fetch-options-cache-ttl-seconds resolved) 0))
+                            (fetch-options-cache-ttl-seconds resolved)
+                            0)
+     :max-body-bytes (if (and (integerp (fetch-options-max-body-bytes resolved))
+                              (> (fetch-options-max-body-bytes resolved) 0))
+                         (fetch-options-max-body-bytes resolved)
+                         *default-fetch-max-body-bytes*)
+     :user-agent (fetch-options-user-agent resolved)
+     :follow-redirects (fetch-options-follow-redirects resolved)
+     :http-get-fn (or (fetch-options-http-get-fn resolved)
+                      #'%fetch-default-http-get))))
+
+(defun %fetch-runner-response (url options)
+  (handler-case
+      (funcall (fetch-options-http-get-fn options)
+               url
+               :timeout-seconds (fetch-options-timeout-seconds options)
+               :max-body-bytes (fetch-options-max-body-bytes options)
+               :user-agent (fetch-options-user-agent options)
+               :follow-redirects (fetch-options-follow-redirects options))
+    (pseudopod-fetch-error (condition)
+      (error condition))
+    (error (condition)
+      (error 'pseudopod-fetch-error
+             :url url
+             :cause condition
+             :message (princ-to-string condition)))))
+
+(defun %process-fetch-response (url response options now)
+  (let* ((status (getf response :status 0))
+         (effective-url (or (getf response :effective-url) url))
+         (content-type (or (getf response :content-type) ""))
+         (raw-body (or (getf response :body) "")))
+    (unless (and (integerp status) (<= 100 status 599))
+      (error 'pseudopod-fetch-error
+             :url url
+             :effective-url effective-url
+             :message (format nil "Invalid HTTP status value: ~S" status)))
+    (unless (<= 200 status 299)
+      (error 'pseudopod-fetch-http-error
+             :url url
+             :effective-url effective-url
+             :status-code status
+             :body raw-body
+             :content-type content-type
+             :message (format nil "Fetch returned HTTP status ~A." status)))
+    (multiple-value-bind (body truncated-p)
+        (%fetch-truncate-body raw-body (fetch-options-max-body-bytes options))
+      (%make-fetch-result
+       :url url
+       :effective-url effective-url
+       :status-code status
+       :content-type content-type
+       :body body
+       :body-bytes (%fetch-string-byte-length body)
+       :truncated-p truncated-p
+       :redirected-p (not (string= url effective-url))
+       :host-changed-p (%fetch-host-changed-p url effective-url)
+       :cached-p nil
+       :fetched-at now))))
+
+(defun %fetch-url-cache-key (url options)
+  (%fetch-cache-key url
+                    (fetch-options-max-body-bytes options)
+                    (fetch-options-follow-redirects options)
+                    (fetch-options-user-agent options)))
+
+(defun %fetch-url-cache-hit (url options now)
+  (and (> (fetch-options-cache-ttl-seconds options) 0)
+       (%fetch-cache-get (%fetch-url-cache-key url options) now)))
+
+(defun %fetch-store-result (url options result now)
+  (%fetch-cache-put (%fetch-url-cache-key url options)
+                    result
+                    now
+                    (fetch-options-cache-ttl-seconds options))
+  result)
+
+(defun fetch-url (url &optional options)
   "Fetch URL and return a typed FETCH-RESULT.
 
 Signals:
@@ -239,78 +336,18 @@ Signals:
   - PSEUDOPOD-FETCH-ERROR for other failures."
   (check-type url string)
   (let* ((normalized-url (%fetch-trim url))
-         (resolved-timeout (if (and (integerp timeout-seconds) (> timeout-seconds 0))
-                               timeout-seconds
-                               *default-fetch-timeout-seconds*))
-         (resolved-cache-ttl (if (and (integerp cache-ttl-seconds)
-                                      (> cache-ttl-seconds 0))
-                                 cache-ttl-seconds
-                                 0))
-         (resolved-max-body-bytes (if (and (integerp max-body-bytes)
-                                           (> max-body-bytes 0))
-                                      max-body-bytes
-                                      *default-fetch-max-body-bytes*))
-         (runner (or http-get-fn #'%fetch-default-http-get)))
+         (resolved-options (%fetch-resolve-options options)))
     (when (%fetch-empty-string-p normalized-url)
       (error 'pseudopod-fetch-error
              :url normalized-url
              :message "Fetch URL must not be empty."))
-    (let* ((now (get-universal-time))
-           (cache-key (%fetch-cache-key normalized-url
-                                        resolved-max-body-bytes
-                                        follow-redirects
-                                        user-agent))
-           (cached (and (> resolved-cache-ttl 0)
-                        (%fetch-cache-get cache-key now))))
-      (if cached
-          cached
-          (let* ((response
-                   (handler-case
-                       (funcall runner
-                                normalized-url
-                                :timeout-seconds resolved-timeout
-                                :max-body-bytes resolved-max-body-bytes
-                                :user-agent user-agent
-                                :follow-redirects follow-redirects)
-                     (pseudopod-fetch-error (condition)
-                       (error condition))
-                     (error (condition)
-                       (error 'pseudopod-fetch-error
-                              :url normalized-url
-                              :cause condition
-                              :message (princ-to-string condition)))))
-                 (status (getf response :status 0))
-                 (effective-url (or (getf response :effective-url)
-                                    normalized-url))
-                 (content-type (or (getf response :content-type) ""))
-                 (raw-body (or (getf response :body) "")))
-            (unless (and (integerp status) (<= 100 status 599))
-              (error 'pseudopod-fetch-error
-                     :url normalized-url
-                     :effective-url effective-url
-                     :message (format nil "Invalid HTTP status value: ~S" status)))
-            (unless (<= 200 status 299)
-              (error 'pseudopod-fetch-http-error
-                     :url normalized-url
-                     :effective-url effective-url
-                     :status-code status
-                     :body raw-body
-                     :content-type content-type
-                     :message (format nil "Fetch returned HTTP status ~A." status)))
-            (multiple-value-bind (body truncated-p)
-                (%fetch-truncate-body raw-body resolved-max-body-bytes)
-              (let ((result
-                      (%make-fetch-result
-                       :url normalized-url
-                       :effective-url effective-url
-                       :status-code status
-                       :content-type content-type
-                       :body body
-                       :body-bytes (%fetch-string-byte-length body)
-                       :truncated-p truncated-p
-                       :redirected-p (not (string= normalized-url effective-url))
-                       :host-changed-p (%fetch-host-changed-p normalized-url effective-url)
-                       :cached-p nil
-                       :fetched-at now)))
-                (%fetch-cache-put cache-key result now resolved-cache-ttl)
-                result)))))))
+    (let ((now (get-universal-time)))
+      (or (%fetch-url-cache-hit normalized-url resolved-options now)
+          (%fetch-store-result
+           normalized-url
+           resolved-options
+           (%process-fetch-response normalized-url
+                                    (%fetch-runner-response normalized-url resolved-options)
+                                    resolved-options
+                                    now)
+           now)))))

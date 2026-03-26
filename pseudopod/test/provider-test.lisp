@@ -85,6 +85,65 @@
       (is (eq client (pseudopod:kimi-provider-client p)))
       (is (string= "kimi" (pseudopod:provider-name p))))))
 
+(test kimi-provider-adds-reasoning-content-and-drops-empty-assistant-messages
+  (let ((captured-messages nil)
+        (original-chat-completion (symbol-function 'pseudopod:chat-completion)))
+    (unwind-protect
+         (progn
+           (setf (symbol-function 'pseudopod:chat-completion)
+                 (lambda (client user-prompt &rest args &key messages &allow-other-keys)
+                   (declare (ignore client user-prompt args))
+                   (setf captured-messages messages)
+                   (let ((response (make-hash-table :test #'equal)))
+                     (setf (gethash "role" response) "assistant"
+                           (gethash "content" response) "ok")
+                     response)))
+           (let* ((provider (pseudopod:make-kimi-provider :api-key "sk-kimi-test"))
+                  (assistant-tool-call (pseudopod:make-tool-call
+                                        :id "call_1"
+                                        :name "lookup"
+                                        :arguments "{\"query\":\"status\"}"))
+                  (messages (list
+                             (pseudopod:make-message :role "user"
+                                                     :content "hi")
+                             (pseudopod:make-message :role "assistant"
+                                                     :content "")
+                             (pseudopod:make-message :role "assistant"
+                                                     :content ""
+                                                     :tool-calls (list assistant-tool-call))
+                             (pseudopod:make-message :role "tool"
+                                                     :tool-call-id "call_1"
+                                                     :content "tool-output"))))
+             (pseudopod:send-chat-completion provider messages)
+             (let* ((message-list (if (vectorp captured-messages)
+                                      (coerce captured-messages 'list)
+                                      captured-messages))
+                    (assistant-message (find "assistant"
+                                             message-list
+                                             :key (lambda (message)
+                                                    (and (hash-table-p message)
+                                                         (gethash "role" message)))
+                                             :test #'string=)))
+               (is (= 3 (length message-list)))
+               (is (hash-table-p assistant-message))
+               (multiple-value-bind (reasoning-content presentp)
+                   (gethash "reasoning_content" assistant-message)
+                 (is-true presentp)
+                 (is (stringp reasoning-content))
+                 (is (plusp (length (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                 reasoning-content)))))
+               (is-false
+                (find-if (lambda (message)
+                           (and (hash-table-p message)
+                                (string= "assistant" (or (gethash "role" message) ""))
+                                (null (gethash "tool_calls" message))
+                                (let ((content (gethash "content" message)))
+                                  (or (null content)
+                                      (and (stringp content) (zerop (length content)))
+                                      (and (vectorp content) (zerop (length content)))))))
+                         message-list)))))
+      (setf (symbol-function 'pseudopod:chat-completion) original-chat-completion))))
+
 ;;; --- Anthropic Provider ---
 
 (test anthropic-provider-creation

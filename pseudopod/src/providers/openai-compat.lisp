@@ -428,10 +428,7 @@ BACKEND can be one of: :openai, :openrouter, :together, :vllm, :ollama."
     (t nil)))
 
 (defun %openai-compat-collect-stream (body-stream callback)
-  (let ((role "assistant")
-        (content-stream (make-string-output-stream))
-        (usage nil)
-        (tool-call-partials (make-hash-table :test #'eql)))
+  (let ((snapshot (make-stream-turn-snapshot)))
     (labels ((consume-payload (payload)
                (let* ((json (jonathan:parse payload :as :hash-table :junk-allowed t))
                       (choices (and (hash-table-p json) (gethash "choices" json)))
@@ -442,16 +439,31 @@ BACKEND can be one of: :openai, :openrouter, :together, :vllm, :ollama."
                       (delta-tool-calls (and (hash-table-p delta) (gethash "tool_calls" delta)))
                       (event-usage (and (hash-table-p json) (gethash "usage" json))))
                  (when (%non-empty-string-p delta-role)
-                   (setf role delta-role))
-                 (when (%non-empty-string-p delta-content)
-                   (write-string delta-content content-stream)
-                   (when callback
-                     (funcall callback delta-content)))
-                 (dolist (tool-call (%sequence->list delta-tool-calls))
-                   (when (hash-table-p tool-call)
-                     (%merge-stream-tool-call-delta tool-call-partials tool-call)))
-                 (when (hash-table-p event-usage)
-                   (setf usage event-usage)))))
+                   (stream-turn-apply-event! snapshot
+                                             (list :type :role
+                                                   :role delta-role)))
+	                 (when (%non-empty-string-p delta-content)
+	                   (stream-turn-apply-event! snapshot
+	                                             (list :type :text-delta
+	                                                   :text delta-content))
+	                   (when callback
+	                     (funcall callback delta-content)))
+	                 (dolist (tool-call (%sequence->list delta-tool-calls))
+	                   (when (hash-table-p tool-call)
+	                     (stream-turn-apply-event! snapshot
+	                                               (list :type :tool-call-delta
+	                                                     :index (%parse-stream-tool-call-index
+	                                                             (gethash "index" tool-call))
+	                                                     :tool-call (hash-to-tool-call tool-call)
+	                                                     :tool-call-id (gethash "id" tool-call)
+	                                                     :name (%stream-tool-call-name tool-call)
+	                                                     :arguments (%stream-tool-call-arguments tool-call)
+	                                                     :arguments-complete-p
+	                                                     (%stream-tool-call-arguments-complete-p
+	                                                      (%stream-tool-call-arguments tool-call))))))
+	                 (when (hash-table-p event-usage)
+	                   (stream-turn-apply-event! snapshot
+	                                             (%make-stream-usage-delta-chunk event-usage))))))
       (loop for line = (read-line body-stream nil nil)
             while line do
               (let ((payload (%openai-compat-trim-sse-data line)))
@@ -464,10 +476,10 @@ BACKEND can be one of: :openai, :openrouter, :together, :vllm, :ollama."
                        (handler-case
                            (consume-payload trimmed)
                          (error () nil))))))))
-      (values role
-              (get-output-stream-string content-stream)
-              (%finalize-stream-tool-call-partials tool-call-partials)
-              usage))))
+      (finalize-stream-turn-snapshot! snapshot)
+      (multiple-value-bind (role content tool-calls usage)
+          (stream-turn-snapshot-values snapshot)
+        (values role content tool-calls usage snapshot)))))
 
 (defun %openai-compat-coerce-message (m)
   "Coerce a message to hash-table format for OpenAI API."
@@ -480,7 +492,8 @@ BACKEND can be one of: :openai, :openrouter, :together, :vllm, :ollama."
   "Build JSON payload for OpenAI-compatible chat completions."
   (let ((payload (make-hash-table :test #'equal)))
     (setf (gethash "model" payload) (or model (provider-default-model provider)))
-    (let ((all-messages (mapcar #'%openai-compat-coerce-message messages)))
+    (let ((all-messages (mapcar #'%openai-compat-coerce-message
+                                (%sanitize-tool-calls messages))))
       (when system-prompt
         (push (%make-raw-message "system" system-prompt) all-messages))
       (setf (gethash "messages" payload) all-messages))
@@ -573,17 +586,19 @@ BACKEND can be one of: :openai, :openrouter, :together, :vllm, :ollama."
               (handler-case (close body-stream)
                 (error () nil))
               (%signal-http-status-error status error-body :streamp t)))
-          (unwind-protect
-              (multiple-value-bind (parsed-role parsed-content tool-call-partials parsed-usage)
-                  (%openai-compat-collect-stream body-stream callback)
-                (setf result
-                      (%openai-compat-normalize-stream-result parsed-role
-                                                            parsed-content
-                                                            tool-call-partials
-                                                            parsed-usage)))
-            (handler-case (close body-stream)
-              (error () nil)))
-          result)))))
+          (let ((snapshot nil))
+            (unwind-protect
+                (multiple-value-bind (parsed-role parsed-content tool-call-partials parsed-usage snap)
+                    (%openai-compat-collect-stream body-stream callback)
+                  (setf result
+                        (%openai-compat-normalize-stream-result parsed-role
+                                                              parsed-content
+                                                              tool-call-partials
+                                                              parsed-usage)
+                        snapshot snap))
+              (handler-case (close body-stream)
+                (error () nil)))
+            (values result snapshot)))))))
 
 (defmethod list-provider-models ((provider openai-compatible-provider))
   "List models from /models endpoint."

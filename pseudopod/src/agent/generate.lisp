@@ -16,6 +16,34 @@
   (max-steps-reached nil)
   (tool-results nil :type list))
 
+(defstruct (agent-step-context
+            (:constructor make-agent-step-context
+                (&key
+                 (system-prompt "You are a helpful assistant.")
+                 (user-prompt "")
+                 messages
+                 toolset
+                 tools
+                 (max-steps +default-step-max-steps+)
+                 on-tool-call
+                 on-tool-result
+                 on-tool-error)))
+  (system-prompt "You are a helpful assistant." :type string)
+  (user-prompt "" :type string)
+  (messages nil)
+  (toolset nil)
+  (tools nil)
+  (max-steps +default-step-max-steps+ :type integer)
+  (on-tool-call nil)
+  (on-tool-result nil)
+  (on-tool-error nil)
+  (history nil :type list)
+  (new-messages nil :type list)
+  (resolved-toolset nil)
+  (tool-results nil :type list)
+  (steps 0 :type integer)
+  (last-message nil))
+
 (defun %coerce-history-message (message)
   (cond
     ((message-p message) message)
@@ -89,86 +117,109 @@
         :name (tool-call-name tool-call)
         :output output))
 
-(defun step (client &key
-                      (system-prompt "You are a helpful assistant.")
-                      (user-prompt "")
-                      messages
-                      toolset
-                      tools
-                      (max-steps +default-step-max-steps+)
-                      on-tool-call
-                      on-tool-result
-                      on-tool-error)
+(defun %prepare-agent-step-context (context)
+  (unless (agent-step-context-p context)
+    (error "Expected AGENT-STEP-CONTEXT, got ~S" context))
+  (unless (and (integerp (agent-step-context-max-steps context))
+               (>= (agent-step-context-max-steps context) 1))
+    (error "MAX-STEPS must be an integer >= 1, got ~S"
+           (agent-step-context-max-steps context)))
+  (setf (agent-step-context-history context)
+        (%normalize-step-history (agent-step-context-system-prompt context)
+                                 (agent-step-context-user-prompt context)
+                                 (agent-step-context-messages context)))
+  (setf (agent-step-context-resolved-toolset context)
+        (or (agent-step-context-toolset context) (make-toolset)))
+  (setf (agent-step-context-new-messages context) nil)
+  (setf (agent-step-context-tool-results context) nil)
+  (setf (agent-step-context-steps context) 0)
+  (setf (agent-step-context-last-message context) nil)
+  context)
+
+(defun %step-current-history (context)
+  (let ((new-messages (agent-step-context-new-messages context)))
+    (if new-messages
+        (append (agent-step-context-history context)
+                (nreverse (copy-list new-messages)))
+        (agent-step-context-history context))))
+
+(defun %step-push-message (context message)
+  (push message (agent-step-context-new-messages context))
+  context)
+
+(defun %finalize-step-history (context)
+  (let ((new-messages (agent-step-context-new-messages context)))
+    (when new-messages
+      (setf (agent-step-context-history context)
+            (append (agent-step-context-history context)
+                    (nreverse new-messages)))
+      (setf (agent-step-context-new-messages context) nil)))
+  (agent-step-context-history context))
+
+(defun %dispatch-tool-call (context tool-call)
+  (multiple-value-bind (handled-p handled-output)
+      (if (agent-step-context-on-tool-call context)
+          (funcall (agent-step-context-on-tool-call context) tool-call)
+          (values nil nil))
+    (if (eq handled-p t)
+        handled-output
+        (invoke-tool-call (agent-step-context-resolved-toolset context)
+                          tool-call))))
+
+(defun %handle-tool-call-error (context tool-call condition)
+  (when (agent-step-context-on-tool-error context)
+    (ignore-errors
+      (funcall (agent-step-context-on-tool-error context) tool-call condition)))
+  (format nil "Tool ~S failed: ~A"
+          (tool-call-name tool-call)
+          condition))
+
+(defun %execute-tool-calls (context tool-calls)
+  (dolist (tool-call tool-calls)
+    (let* ((output (handler-case
+                       (%dispatch-tool-call context tool-call)
+                     (error (condition)
+                       (%handle-tool-call-error context tool-call condition))))
+           ;; I369: Sanitize tool output to prevent ANSI escape codes reaching LLM APIs
+           (sanitized-output (sanitize-string-for-llm output))
+           (result-record (%make-tool-result-record tool-call sanitized-output))
+           (tool-message (make-message
+                          :role "tool"
+                          :name (tool-call-name tool-call)
+                          :tool-call-id (tool-call-id tool-call)
+                          :content sanitized-output)))
+      (push result-record (agent-step-context-tool-results context))
+      (%step-push-message context tool-message)
+      (when (agent-step-context-on-tool-result context)
+        (funcall (agent-step-context-on-tool-result context) result-record))))
+  context)
+
+(defun %assemble-step-response (context &key final-message max-steps-reached)
+  (%make-step-result
+   :steps (agent-step-context-steps context)
+   :history (%finalize-step-history context)
+   :final-message final-message
+   :last-message (or final-message (agent-step-context-last-message context))
+   :max-steps-reached max-steps-reached
+   :tool-results (nreverse (agent-step-context-tool-results context))))
+
+(defun step (client context)
   "Run a tool-aware generation loop until final output or MAX-STEPS."
-  (let ((history (%normalize-step-history system-prompt user-prompt messages))
-        (resolved-toolset (or toolset (make-toolset)))
-        (tool-results nil)
-        (steps 0)
-        (last-message nil)
-        (new-messages nil))
-    (unless (and (integerp max-steps) (>= max-steps 1))
-      (error "MAX-STEPS must be an integer >= 1, got ~S" max-steps))
-    (labels ((%current-history ()
-               (if new-messages
-                   (append history (nreverse (copy-list new-messages)))
-                   history))
-             (%push-message (msg)
-               (push msg new-messages))
-             (%finalize-history ()
-               (when new-messages
-                 (setf history (append history (nreverse new-messages)))
-                 (setf new-messages nil))
-               history))
-      (loop while (< steps max-steps) do
-        (incf steps)
-        (let* ((result (generate client
-                                 :messages (%current-history)
-                                 :tools tools
-                                 :toolset resolved-toolset))
-               (assistant-message (generate-result-message result))
-               (tool-calls (message-tool-calls assistant-message)))
-          (setf last-message assistant-message)
-          (%push-message assistant-message)
-          (unless tool-calls
-            (return-from step
-              (%make-step-result
-               :steps steps
-               :history (%finalize-history)
-               :final-message assistant-message
-               :last-message assistant-message
-               :max-steps-reached nil
-               :tool-results (nreverse tool-results))))
-          (dolist (tool-call tool-calls)
-            (let ((output
-                    (handler-case
-                        (multiple-value-bind (handled-p handled-output)
-                            (if on-tool-call
-                                (funcall on-tool-call tool-call)
-                                (values nil nil))
-                          (if (eq handled-p t)
-                              handled-output
-                              (invoke-tool-call resolved-toolset tool-call)))
-                      (error (condition)
-                        (when on-tool-error
-                          (ignore-errors
-                            (funcall on-tool-error tool-call condition)))
-                        (format nil "Tool ~S failed: ~A"
-                                (tool-call-name tool-call)
-                                condition)))))
-              (let* ((result-record (%make-tool-result-record tool-call output))
-                     (tool-message (make-message
-                                    :role "tool"
-                                    :name (tool-call-name tool-call)
-                                    :tool-call-id (tool-call-id tool-call)
-                                    :content output)))
-                (push result-record tool-results)
-                (%push-message tool-message)
-                (when on-tool-result
-                  (funcall on-tool-result result-record)))))))
-      (%make-step-result
-       :steps steps
-       :history (%finalize-history)
-       :final-message nil
-       :last-message last-message
-       :max-steps-reached t
-       :tool-results (nreverse tool-results)))))
+  (%prepare-agent-step-context context)
+  (loop while (< (agent-step-context-steps context)
+                 (agent-step-context-max-steps context))
+        do
+           (incf (agent-step-context-steps context))
+           (let* ((result (generate client
+                                    :messages (%step-current-history context)
+                                    :tools (agent-step-context-tools context)
+                                    :toolset (agent-step-context-resolved-toolset context)))
+                  (assistant-message (generate-result-message result))
+                  (tool-calls (message-tool-calls assistant-message)))
+             (setf (agent-step-context-last-message context) assistant-message)
+             (%step-push-message context assistant-message)
+             (unless tool-calls
+               (return-from step
+                 (%assemble-step-response context :final-message assistant-message)))
+             (%execute-tool-calls context tool-calls)))
+  (%assemble-step-response context :max-steps-reached t))
