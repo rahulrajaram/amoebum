@@ -10,6 +10,13 @@
 (defparameter +default-context-window-tokens+ +default-context-window-limit+)
 (defparameter +plan-mode-read-only-banner+ "PLAN MODE -- read-only")
 (defparameter +plan-mode-lock-badge+ "[LOCK mutating tools blocked]")
+(defparameter +known-status-bar-focus-modes+ '(:lean :code :docs :arch))
+(defparameter +default-status-bar-focus-mode+ :arch)
+(defparameter +status-bar-focus-mode-segments+
+  '((:lean . (:branch :stream :model))
+    (:code . (:branch :permission :context :stream :model :worker))
+    (:docs . (:branch :context :stream :model :provider))
+    (:arch . (:branch :permission :context :stream :model :provider :worker))))
 
 (defstruct (status-bar-stream-payload
             (:constructor make-status-bar-stream-payload
@@ -27,6 +34,7 @@
             (:constructor %make-status-bar-state
                 (&key
                    permission-mode
+                   (focus-mode +default-status-bar-focus-mode+)
                    (plan-mode-active-p nil)
                    (plan-mode-mutating-tools-blocked-p nil)
                    branch-name
@@ -39,6 +47,7 @@
                    event-bus
                    (subscription-ids '()))))
   permission-mode
+  (focus-mode +default-status-bar-focus-mode+)
   (plan-mode-active-p nil :type boolean)
   (plan-mode-mutating-tools-blocked-p nil :type boolean)
   (branch-name "-" :type string)
@@ -62,6 +71,15 @@
 
 (defun %mode-string (mode)
   (string-downcase (%safe-string mode "supervised")))
+
+(defun %normalize-status-bar-focus-mode (value)
+  (let* ((text (string-trim '(#\Space #\Tab #\Newline #\Return)
+                            (%safe-string value
+                                          (symbol-name +default-status-bar-focus-mode+))))
+         (candidate (intern (string-upcase text) :keyword)))
+    (if (member candidate +known-status-bar-focus-modes+ :test #'eq)
+        candidate
+        +default-status-bar-focus-mode+)))
 
 (defun %coerce-nonnegative-integer (value &optional (fallback 0))
   (cond
@@ -118,6 +136,10 @@
       (:permission-mode
        (setf (status-bar-state-permission-mode state)
              (config-changed-payload-new-value payload)))
+      (:status-bar-mode
+       (setf (status-bar-state-focus-mode state)
+             (%normalize-status-bar-focus-mode
+              (config-changed-payload-new-value payload))))
       (:plan-mode
        (let ((active-p (not (null (config-changed-payload-new-value payload)))))
          (setf (status-bar-state-plan-mode-active-p state) active-p
@@ -212,6 +234,7 @@
                                 (config (current-config))
                                 event-bus
                                 permission-mode
+                                focus-mode
                                 model-name
                                 branch-name
                                 context-window-limit
@@ -224,6 +247,8 @@
            (or permission-mode
                (and (config-p config) (config-permission-mode config))
                :supervised))
+         (resolved-focus-mode
+           (%normalize-status-bar-focus-mode focus-mode))
          (resolved-plan-mode-active-p
            (and (config-p config)
                 (not (null (config-value :plan-mode config)))))
@@ -245,6 +270,7 @@
          (state
            (%make-status-bar-state
             :permission-mode resolved-mode
+            :focus-mode resolved-focus-mode
             :plan-mode-active-p resolved-plan-mode-active-p
             :plan-mode-mutating-tools-blocked-p resolved-plan-mode-mutating-tools-blocked-p
             :branch-name (%safe-string (or branch-name
@@ -316,25 +342,48 @@
     (:yellow :context-yellow)
     (otherwise :context-red)))
 
+(defun %status-bar-focus-mode-segment-keys (state)
+  (or (cdr (assoc (status-bar-state-focus-mode state)
+                  +status-bar-focus-mode-segments+
+                  :test #'eq))
+      (cdr (assoc +default-status-bar-focus-mode+
+                  +status-bar-focus-mode-segments+
+                  :test #'eq))
+      '()))
+
+(defun %status-segment-spec (state segment-key)
+  (case segment-key
+    (:branch
+     (list :text (format nil "branch ~A" (%safe-string (status-bar-state-branch-name state) "-"))
+           :role :meta))
+    (:permission
+     (list :text (format nil "mode ~A" (%mode-string (status-bar-state-permission-mode state)))
+           :role :meta))
+    (:context
+     (list :text (%context-budget-segment-text state)
+           :role (%context-budget-role state)))
+    (:stream
+     (list :text (%stream-segment state)
+           :role :meta))
+    (:model
+     (list :text (format nil "model ~A" (%safe-string (status-bar-state-model-name state) "unknown"))
+           :role :meta))
+    (:provider
+     (let ((provider-indicator (provider-health-compact-indicator)))
+       (when provider-indicator
+         (list :text (getf provider-indicator :text)
+               :role (or (getf provider-indicator :role) :meta)))))
+    (:worker
+     (let ((worker-segment (worker-status-bar-segment)))
+       (when (and (stringp worker-segment)
+                  (plusp (length worker-segment)))
+         (list :text worker-segment
+               :role :meta))))))
+
 (defun %status-segment-specs (state)
-  (let ((segments
-          (list
-           (list :text (format nil "branch ~A" (%safe-string (status-bar-state-branch-name state) "-"))
-                 :role :meta)
-           (list :text (format nil "mode ~A" (%mode-string (status-bar-state-permission-mode state)))
-                 :role :meta)
-           (list :text (%context-budget-segment-text state)
-                 :role (%context-budget-role state))
-           (list :text (%stream-segment state)
-                 :role :meta)
-           (list :text (format nil "model ~A" (%safe-string (status-bar-state-model-name state) "unknown"))
-                 :role :meta))))
-    (let ((provider-indicator (provider-health-compact-indicator)))
-      (if provider-indicator
-          (append segments
-                  (list (list :text (getf provider-indicator :text)
-                              :role (or (getf provider-indicator :role) :meta))))
-          segments))))
+  (remove nil
+          (loop for segment-key in (%status-bar-focus-mode-segment-keys state)
+                collect (%status-segment-spec state segment-key))))
 
 (defun status-bar-segments (state)
   (check-type state status-bar-state)
@@ -371,7 +420,7 @@
                               role))
                     segments)))
     (let ((result (nreverse segments)))
-      ;; Pad to full width so maroon background fills the line
+      ;; Pad to full width so status-bar background fills the line
       (when (and width (> width 0))
         (let* ((used (loop for seg in result
                            sum (ptui.text.width:string-width (car seg))))
@@ -401,6 +450,7 @@
 (defun status-bar-render-key (state)
   (check-type state status-bar-state)
   (list (status-bar-state-permission-mode state)
+        (status-bar-state-focus-mode state)
         (status-bar-state-plan-mode-active-p state)
         (status-bar-state-plan-mode-mutating-tools-blocked-p state)
         (status-bar-state-branch-name state)
@@ -411,7 +461,8 @@
                              (status-bar-state-context-max-tokens state))
         (status-bar-state-stream-status state)
         (truncate (* 100 (status-bar-state-stream-tokens-per-second state)))
-        (provider-health-signature)))
+        (provider-health-signature)
+        (worker-status-bar-segment)))
 
 (defun make-status-bar-widget (state &key id key width)
   (ptui.ui.elements:make-element

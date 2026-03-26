@@ -514,6 +514,15 @@
     (t
      "+")))
 
+(defun %tree-row-expander-role (node)
+  (cond
+    ((not (%tree-node-has-children-p node))
+     :tree-glyph-open)
+    ((tree-node-expanded-p node)
+     :tree-glyph-expanded)
+    (t
+     :tree-glyph-collapsed)))
+
 (defun %tree-status-role (status)
   (case (and status (char status 0))
     (#\M :context-yellow)
@@ -521,6 +530,12 @@
     (#\D :context-red)
     (#\? :tool)
     (otherwise :meta)))
+
+(defun %tree-row-label-role (directory-p selected-p)
+  (cond
+    (selected-p :assistant-label)
+    (directory-p :tree-directory-name)
+    (t :tree-file-name)))
 
 (defun %tree-row-segments (state entry selected-p)
   (let* ((node (getf entry :node))
@@ -534,11 +549,12 @@
                     (concatenate 'string (tree-node-label node) "/")
                     (tree-node-label node))))
     (list (cons (%tree-row-prefix selected-p) base-role)
-          (cons (make-string (* 2 (max 0 depth)) :initial-element #\Space) :meta)
-          (cons (%tree-row-expander node) :meta)
+          (cons (make-string (* 2 (max 0 depth)) :initial-element #\Space) :tree-row-indent)
+          (cons (%tree-row-expander node) (%tree-row-expander-role node))
           (cons " " :meta)
-          (cons (format nil "[~A] " (or status " ")) (%tree-status-role status))
-          (cons label base-role))))
+          (cons (format nil "[~A] " (or status " "))
+                (if status (%tree-status-role status) :tree-status-empty))
+          (cons label (%tree-row-label-role directory-p selected-p)))))
 
 (defun %tree-segments->text (segments)
   (with-output-to-string (stream)

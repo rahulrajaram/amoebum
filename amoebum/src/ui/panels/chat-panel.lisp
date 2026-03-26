@@ -2,6 +2,70 @@
 ;;; Replaces chat-ui-build-tree + handle-chat-ui-event with declarative layout.
 (in-package :amoebum)
 
+;;; Forward declaration - defined in prompt-input.lisp which is loaded after this file
+(declaim (ftype function chat-panel-handle-input-key))
+
+(defparameter +chat-panel-layout-aliases+
+  '((:provider "provider-dashboard" "provider")
+    (:tree "tree-browser" "tree")
+    (:plan "plan-view" "plan")
+    (:history "message-history" "history")
+    (:approval "approval-dialog" "approval")
+    (:picker "fuzzy-picker" "picker")
+    (:input "input-prompt" "prompt" "input")
+    (:status "status-bar" "status"))
+  "Aliases that map chat panel regions to YAML layout child names.")
+
+(defun %chat-panel-layout-child (region-key &optional (layout *yaml-layout-loaded*))
+  "Return the YAML layout child for REGION-KEY, or NIL when no override exists."
+  (let ((aliases (rest (assoc region-key +chat-panel-layout-aliases+ :test #'eq))))
+    (when (and layout aliases)
+      (%yaml-layout-find-first-child layout aliases))))
+
+(defun %chat-panel-layout-visible-p (region-key default &optional (layout *yaml-layout-loaded*))
+  "Return the configured visibility for REGION-KEY, falling back to DEFAULT."
+  (let ((child (%chat-panel-layout-child region-key layout)))
+    (and default
+         (if child
+             (yaml-layout-child-visible child)
+             t))))
+
+(defun %chat-panel-fixed-height (region-key default &optional (layout *yaml-layout-loaded*))
+  "Return the fixed height override for REGION-KEY, or DEFAULT."
+  (let* ((child (%chat-panel-layout-child region-key layout))
+         (height (and child (yaml-layout-child-height child))))
+    (cond
+      ((integerp height)
+       (max 0 height))
+      ((and (stringp height)
+            (string= (string-downcase height) "content"))
+       1)
+      (t
+       default))))
+
+(defun %chat-panel-flex-weight (region-key default &optional (layout *yaml-layout-loaded*))
+  "Return the fill weight override for REGION-KEY, or DEFAULT."
+  (let* ((child (%chat-panel-layout-child region-key layout))
+         (height (and child (yaml-layout-child-height child))))
+    (if (and (stringp height)
+             (member (string-downcase height) '("fill" "flex") :test #'string=))
+        (or (yaml-layout-child-fill-weight child) default)
+        default)))
+
+(defun %chat-panel-prompt-border-style (&optional (layout *yaml-layout-loaded*))
+  "Return the prompt box border style requested by the loaded YAML layout."
+  (let* ((child (%chat-panel-layout-child :input layout))
+         (border (and child (yaml-layout-child-border child))))
+    (cond
+      ((null border) :rounded)
+      ((string= border "rounded") :rounded)
+      ((member border '("single" "square" "ascii" "double") :test #'string=) :square)
+      (t :rounded))))
+
+(defun %chat-panel-input-content-rows (&optional (layout *yaml-layout-loaded*))
+  "Convert the configured input panel height into prompt-box content rows."
+  (max 1 (- (%chat-panel-fixed-height :input 3 layout) 2)))
+
 (defun %chat-panel-history-viewport-height (inner-height
                                             &key
                                               provider-active-p
@@ -13,19 +77,35 @@
   (let* ((constraints
            (remove nil
                    (list
-                    (when provider-active-p
-                      (ptui.layout.constraints:fixed 'provider 5))
-                    (when tree-active-p
-                      (ptui.layout.constraints:fixed 'tree 10))
-                    (when plan-active-p
-                      (ptui.layout.constraints:fixed 'plan 12))
-                    (ptui.layout.constraints:flex 'history :weight 1)
-                    (when approval-active-p
-                      (ptui.layout.constraints:fixed 'approval 8))
-                    (when picker-active-p
-                      (ptui.layout.constraints:fixed 'picker 8))
-                    (ptui.layout.constraints:fixed 'input 3)
-                    (ptui.layout.constraints:fixed 'status 1))))
+                    (when (%chat-panel-layout-visible-p :provider provider-active-p)
+                      (ptui.layout.constraints:fixed
+                       'provider
+                       (%chat-panel-fixed-height :provider 5)))
+                    (when (%chat-panel-layout-visible-p :tree tree-active-p)
+                      (ptui.layout.constraints:fixed
+                       'tree
+                       (%chat-panel-fixed-height :tree 10)))
+                    (when (%chat-panel-layout-visible-p :plan plan-active-p)
+                      (ptui.layout.constraints:fixed
+                       'plan
+                       (%chat-panel-fixed-height :plan 12)))
+                    (ptui.layout.constraints:flex
+                     'history
+                     :weight (%chat-panel-flex-weight :history 1))
+                    (when (%chat-panel-layout-visible-p :approval approval-active-p)
+                      (ptui.layout.constraints:fixed
+                       'approval
+                       (%chat-panel-fixed-height :approval 8)))
+                    (when (%chat-panel-layout-visible-p :picker picker-active-p)
+                      (ptui.layout.constraints:fixed
+                       'picker
+                       (%chat-panel-fixed-height :picker 8)))
+                    (ptui.layout.constraints:fixed
+                     'input
+                     (%chat-panel-fixed-height :input 3))
+                    (ptui.layout.constraints:fixed
+                     'status
+                     (%chat-panel-fixed-height :status 1)))))
          (solved (ptui.layout.solver:solve-constraints constraints
                                                        (max 0 inner-height))))
     (max 0 (or (cdr (assoc 'history solved :test #'eq)) 0))))
@@ -98,66 +178,97 @@
       :deps (provider-visible-p)))
   (:layout
     (:column
-      (provider :fixed 5 :when provider-visible-p
+      (provider :fixed (%chat-panel-fixed-height :provider 5)
+        :when (%chat-panel-layout-visible-p :provider provider-visible-p)
         (provider-health-panel
          (list :entries (provider-health-entries)
                :updated-at (provider-health-last-updated-at))))
-      (tree :fixed 10 :when tree-active-p
+      (tree :fixed (%chat-panel-fixed-height :tree 10)
+        :when (%chat-panel-layout-visible-p :tree tree-active-p)
         (make-tree-browser-widget tree-state))
-      (plan :fixed 12 :when plan-active-p
+      (plan :fixed (%chat-panel-fixed-height :plan 12)
+        :when (%chat-panel-layout-visible-p :plan plan-active-p)
         plan-widget)
-      (history :flex 1
+      (history :flex (%chat-panel-flex-weight :history 1)
         (let* ((message-lines (%message-line-entries chat-state
                                                      (chat-ui-state-messages chat-state)
                                                      inner-width))
-               (message-widgets
-                 (mapcar (lambda (entry)
-                           (%chat-text-widget (getf entry :text)
-                                              (getf entry :id)
-                                              (getf entry :role)
-                                              :styled-segments (getf entry :styled-segments)))
-                         message-lines))
-               (history-stack (ptui.widgets.core:make-stack-widget
-                               message-widgets
-                               :id :chat-history-stack
-                               :direction :column :gap 0))
-               (history-total-lines
-                 (ptui.layout:layout-size-height
-                  (ptui.widgets.core:widget-measure history-stack)))
+               ;; Each entry = 1 line of height, so total lines = entry count.
+               ;; This avoids creating widgets + stack + widget-measure (all O(n)).
+               (history-total-lines (length message-lines))
                (scrollback (chat-ui-state-message-scrollback-lines chat-state)))
           (multiple-value-bind (history-offset new-scrollback max-scrollback)
               (%compute-scroll-offset history-total-lines history-viewport-height scrollback)
+            (when (and (amoebum::%scroll-debug-enabled-p)
+                       (not (zerop scrollback)))
+              (amoebum::%scroll-debug-log
+               "RENDER total=~D viewport=~D scrollback-in=~D offset=~D new-sb=~D max-sb=~D msgs=~D lines=~D"
+               history-total-lines history-viewport-height scrollback
+               history-offset new-scrollback max-scrollback
+               (length (chat-ui-state-messages chat-state))
+               history-total-lines))
             (setf (chat-ui-state-message-scrollback-lines chat-state) new-scrollback
                   (chat-ui-state-max-message-scrollback-lines chat-state) max-scrollback)
             (when stream-active-p
               (setf (chat-ui-state-stream-scroll-follow-p chat-state)
                     (zerop new-scrollback)))
-            (ptui.widgets.core:make-scroll-widget
-             history-stack
-             :id :chat-history-scroll
-             :viewport-width inner-width
-             :viewport-height history-viewport-height
-             :offset history-offset))))
-      (approval :fixed 8 :when approval-active-p
+            ;; Virtual scroll: only create widgets for the visible window.
+            ;; Use spacers above/below to preserve total height for scroll bar.
+            (let* ((vis-start (max 0 history-offset))
+                   (vis-end (min history-total-lines (+ vis-start history-viewport-height)))
+                   (visible-entries (nthcdr vis-start message-lines))
+                   (visible-widgets
+                     (loop for entry in visible-entries
+                           for i from vis-start below vis-end
+                           collect (%chat-text-widget
+                                    (getf entry :text)
+                                    (getf entry :id)
+                                    (getf entry :role)
+                                    :styled-segments (getf entry :styled-segments))))
+                   (top-spacer-h vis-start)
+                   (bottom-spacer-h (max 0 (- history-total-lines vis-end)))
+                   (stack-children
+                     (append (when (> top-spacer-h 0)
+                               (list (ptui.widgets.core:make-spacer-widget
+                                      0 top-spacer-h :key :vscroll-top)))
+                             visible-widgets
+                             (when (> bottom-spacer-h 0)
+                               (list (ptui.widgets.core:make-spacer-widget
+                                      0 bottom-spacer-h :key :vscroll-bottom)))))
+                   (history-stack (ptui.widgets.core:make-stack-widget
+                                   stack-children
+                                   :id :chat-history-stack
+                                   :direction :column :gap 0)))
+              (ptui.widgets.core:make-scroll-widget
+               history-stack
+               :id :chat-history-scroll
+               :viewport-width inner-width
+               :viewport-height history-viewport-height
+               :offset history-offset
+               :scroll-bar :auto)))))
+      (approval :fixed (%chat-panel-fixed-height :approval 8)
+        :when (%chat-panel-layout-visible-p :approval approval-active-p)
         (%chat-approval-dialog-widget chat-state approval-state))
-      (picker :fixed 8 :when picker-active-p
+      (picker :fixed (%chat-panel-fixed-height :picker 8)
+        :when (%chat-panel-layout-visible-p :picker picker-active-p)
         (make-fuzzy-picker-widget picker-state))
-      (input :fixed 3
+      (input :fixed (%chat-panel-fixed-height :input 3)
         (ptui.components.prompt-box:make-prompt-box-widget
          (chat-ui-state-input-text chat-state)
          :id :chat-input
          :min-width 18
          :max-width inner-width
-         :min-rows 1
-         :max-rows 4
+         :min-rows (%chat-panel-input-content-rows)
+         :max-rows (%chat-panel-input-content-rows)
          :scroll-offset (chat-ui-state-prompt-scroll-offset chat-state)
          :cursor-position (chat-ui-state-cursor-position chat-state)
-         :border-style :rounded))
-      (status :fixed 1
+         :cursor-visible-p t
+         :border-style (%chat-panel-prompt-border-style)))
+      (status :fixed (%chat-panel-fixed-height :status 1)
         (if exit-warning-active-p
             (%chat-text-widget (%chat-exit-warning-text)
                                :chat-status-warning
-                               :system)
+                               :warning)
             (make-status-bar-widget
              (chat-ui-state-status-bar-state chat-state)
              :id :chat-status-bar
@@ -166,8 +277,8 @@
     (:mode :approval :when approval-active-p
       (:up (approval-dialog-handle-key! approval-state :up))
       (:down (approval-dialog-handle-key! approval-state :down))
-      (:left (approval-dialog-handle-key! approval-state :up))
-      (:right (approval-dialog-handle-key! approval-state :down))
+      (:left (approval-dialog-handle-key! approval-state :left))
+      (:right (approval-dialog-handle-key! approval-state :right))
       (:enter (approval-dialog-handle-key! approval-state :enter))
       (:escape (approval-dialog-handle-key! approval-state :escape))
       (:text (approval-dialog-handle-text!
@@ -214,19 +325,34 @@
       (:ctrl-u (chat-panel-handle-input-key chat-state :ctrl-u nil inner-width))
       (:ctrl-k (chat-panel-handle-input-key chat-state :ctrl-k nil inner-width))
       (:up (let ((has-text (plusp (length (chat-ui-state-input-text chat-state)))))
+             (amoebum::%scroll-debug-log "KEY :up has-text=~A input-len=~D"
+                                          has-text
+                                          (length (chat-ui-state-input-text chat-state)))
              (if has-text
                  (chat-panel-handle-input-key chat-state :up nil inner-width)
-                 (chat-ui-scroll-history chat-state 1))))
+                 (chat-ui-scroll-history chat-state 3))))
       (:down (let ((has-text (plusp (length (chat-ui-state-input-text chat-state)))))
+               (amoebum::%scroll-debug-log "KEY :down has-text=~A input-len=~D"
+                                            has-text
+                                            (length (chat-ui-state-input-text chat-state)))
                (if has-text
                    (chat-panel-handle-input-key chat-state :down nil inner-width)
-                   (chat-ui-scroll-history chat-state -1))))
-      (:pgup (chat-ui-scroll-history chat-state 5))
-      (:pgdn (chat-ui-scroll-history chat-state -5))
+                   (chat-ui-scroll-history chat-state -3))))
+      (:pgup (chat-ui-scroll-history chat-state
+               (max 5 (floor history-viewport-height 2))))
+      (:pgdn (chat-ui-scroll-history chat-state
+               (- (max 5 (floor history-viewport-height 2)))))
       (:ctrl-c (when stream-active-p
                   (token-stream-request-cancel
                    (chat-ui-state-stream-state chat-state))))
       (:escape (if stream-active-p
-                   (token-stream-request-cancel
-                    (chat-ui-state-stream-state chat-state))
+                   ;; I369: First try cancel, then force reset if stream might be stuck
+                   (progn
+                     (token-stream-request-cancel
+                      (chat-ui-state-stream-state chat-state))
+                     ;; Also try force reset as a safety net
+                     (ignore-errors
+                       (token-stream-force-reset-if-stuck
+                        (chat-ui-state-stream-state chat-state)))
+                     t)
                    (chat-panel-handle-input-key chat-state :escape nil inner-width))))))

@@ -665,9 +665,14 @@
 
 (ptui.widgets.defwidget:defwidget make-fuzzy-picker-widget (state)
   (:memoize nil)
-  (box
-   (vstack
-    (%fuzzy-header-element state)
-    (map-widget #'identity (%fuzzy-render-children state)))
-   :id :fuzzy-picker
-   :border t))
+  (let* ((content (vstack
+                   (%fuzzy-header-element state)
+                   (map-widget #'identity (%fuzzy-render-children state))))
+         (content-size (ptui.widgets.core:widget-measure content))
+         (box-width (+ 2 (ptui.layout:layout-size-width content-size))))
+    (ptui.ui.elements:make-element
+     :box
+     :id :fuzzy-picker
+     :props (list :border :rounded
+                  :max-width box-width)
+     :children (list content))))
