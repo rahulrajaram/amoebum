@@ -196,6 +196,26 @@
     (is (some #'plusp (mapcar #'length
                               (counting-test-backend-pop-commit-ops backend))))))
 
+(test engine-emits-performance-guard-when-diff-ops-spike
+  (let ((backend (make-counting-test-backend :cols 80 :rows 30))
+        (frame 0))
+    (let ((log-output
+           (with-output-to-string (err-out)
+             (let ((*error-output* err-out))
+               (ptui.engine.loop:run
+                (lambda (state size)
+                  (declare (ignore state size))
+                  (incf frame)
+                  (when (= frame 1)
+                    (counting-test-backend-inject-events
+                     backend
+                     (list (ptui.core.events:make-key-event :ctrl-c))))
+                  (ptui.render.buffer:make-buffer 80 30))
+                :backend backend
+                :fps 120
+                :initial-state nil)))))
+      (is (search "render_performance_guard" log-output)))))
+
 (test engine-minimal-ops-on-idle-unchanged-frames
   (let ((backend (make-counting-test-backend :cols 10 :rows 2))
         (frame 0)
@@ -216,6 +236,33 @@
       (is (plusp (first ops-counts)))
       (is (= (second ops-counts) 0))
       (is (= (third ops-counts) 0)))))
+
+(test engine-step-transition-builds-ordered-effect-plan
+  (let* ((snapshot (ptui.engine.loop::make-loop-step-snapshot
+                    :quit-requested-p nil
+                    :exit-deadline-reached-p nil
+                    :needs-redraw-p t
+                    :metrics-poll-due-p t))
+         (transition (ptui.engine.loop::%evaluate-loop-step-transition snapshot)))
+    (is-true (ptui.engine.loop::loop-step-transition-continue-p transition))
+    (is (equal (ptui.engine.loop::loop-step-transition-flag-updates transition)
+               '((:needs-redraw . nil)
+                 (:metrics-poll-due-p . nil))))
+    (is (equal (mapcar #'ptui.engine.loop::loop-step-effect-kind
+                       (ptui.engine.loop::loop-step-transition-effects transition))
+               '(:run-scheduler :render :log-metrics :sleep)))))
+
+(test engine-step-transition-stops-scheduler-and-sleep-after-quit
+  (let* ((snapshot (ptui.engine.loop::make-loop-step-snapshot
+                    :quit-requested-p t
+                    :exit-deadline-reached-p nil
+                    :needs-redraw-p t
+                    :metrics-poll-due-p t))
+         (transition (ptui.engine.loop::%evaluate-loop-step-transition snapshot)))
+    (is-false (ptui.engine.loop::loop-step-transition-continue-p transition))
+    (is (equal (mapcar #'ptui.engine.loop::loop-step-effect-kind
+                       (ptui.engine.loop::loop-step-transition-effects transition))
+               '(:render :log-metrics)))))
 
 (defun run-all ()
   (run! 'ptui-engine-suite))

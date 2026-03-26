@@ -139,76 +139,136 @@
                         (or (parse-integer token :junk-allowed t)
                             0)))))
 
+(defun %reset-style! (style)
+  (setf (ansi-style-fg style) ptui.core.color:color-default
+        (ansi-style-bg style) ptui.core.color:color-default
+        (ansi-style-boldp style) nil
+        (ansi-style-italicp style) nil
+        (ansi-style-underlinep style) nil
+        (ansi-style-invertp style) nil
+        (ansi-style-dimp style) nil
+        (ansi-style-strikep style) nil))
+
+(defun %set-sgr-flag! (style code value)
+  (case code
+    (1 (setf (ansi-style-boldp style) value))
+    (2 (setf (ansi-style-dimp style) value))
+    (3 (setf (ansi-style-italicp style) value))
+    (4 (setf (ansi-style-underlinep style) value))
+    (7 (setf (ansi-style-invertp style) value))
+    (9 (setf (ansi-style-strikep style) value))
+    (23 (setf (ansi-style-italicp style) value))
+    (24 (setf (ansi-style-underlinep style) value))
+    (27 (setf (ansi-style-invertp style) value))
+    (29 (setf (ansi-style-strikep style) value))
+    (t nil)))
+
+(defun %apply-basic-sgr-code! (style code)
+  (case code
+    (0 (progn (%reset-style! style) t))
+    ((1 2 3 4 7 9) (%set-sgr-flag! style code t) t)
+    (22 (setf (ansi-style-boldp style) nil
+              (ansi-style-dimp style) nil)
+        t)
+    ((23 24 27 29) (%set-sgr-flag! style code nil) t)
+    (39 (setf (ansi-style-fg style) ptui.core.color:color-default) t)
+    (49 (setf (ansi-style-bg style) ptui.core.color:color-default) t)
+    (t nil)))
+
+(defun %apply-indexed-sgr-color! (style code)
+  (cond
+    ((<= 30 code 37)
+     (setf (ansi-style-fg style) (ansi-index->color (- code 30)))
+     t)
+    ((<= 40 code 47)
+     (setf (ansi-style-bg style) (ansi-index->color (- code 40)))
+     t)
+    ((<= 90 code 97)
+     (setf (ansi-style-fg style) (ansi-index->color (+ 8 (- code 90))))
+     t)
+    ((<= 100 code 107)
+     (setf (ansi-style-bg style) (ansi-index->color (+ 8 (- code 100))))
+     t)
+    (t nil)))
+
+(defun %set-extended-sgr-color! (style foregroundp color)
+  (if foregroundp
+      (setf (ansi-style-fg style) color)
+      (setf (ansi-style-bg style) color)))
+
+(defun %consume-sgr-8bit-color! (style foregroundp codes)
+  (unless codes
+    (return-from %consume-sgr-8bit-color! codes))
+  (%set-extended-sgr-color! style foregroundp (ansi-index->color (pop codes)))
+  codes)
+
+(defun %consume-sgr-truecolor! (style foregroundp codes)
+  (when (< (length codes) 3)
+    (return-from %consume-sgr-truecolor! codes))
+  (let ((r (pop codes))
+        (g (pop codes))
+        (b (pop codes)))
+    (when (and (integerp r) (integerp g) (integerp b)
+               (<= 0 r 255) (<= 0 g 255) (<= 0 b 255))
+      (%set-extended-sgr-color! style foregroundp
+                                (ptui.core.color:make-color-rgb r g b))))
+  codes)
+
+(defun %consume-extended-sgr! (style code codes)
+  (unless (member code '(38 48))
+    (return-from %consume-extended-sgr! codes))
+  (unless codes
+    (return-from %consume-extended-sgr! codes))
+  (let ((mode (pop codes))
+        (foregroundp (= code 38)))
+    (cond
+      ((= mode 5)
+       (%consume-sgr-8bit-color! style foregroundp codes))
+      ((= mode 2)
+       (%consume-sgr-truecolor! style foregroundp codes))
+      (t codes))))
+
 (defun apply-sgr! (style params)
   (let ((codes (parse-sgr-codes params)))
     (loop while codes do
       (let ((code (pop codes)))
-        (cond
-          ((= code 0)
-           (setf (ansi-style-fg style) ptui.core.color:color-default
-                 (ansi-style-bg style) ptui.core.color:color-default
-                 (ansi-style-boldp style) nil
-                 (ansi-style-italicp style) nil
-                 (ansi-style-underlinep style) nil
-                 (ansi-style-invertp style) nil
-                 (ansi-style-dimp style) nil
-                 (ansi-style-strikep style) nil))
-          ((= code 1)
-           (setf (ansi-style-boldp style) t))
-          ((= code 2)
-           (setf (ansi-style-dimp style) t))
-          ((= code 3)
-           (setf (ansi-style-italicp style) t))
-          ((= code 4)
-           (setf (ansi-style-underlinep style) t))
-          ((= code 7)
-           (setf (ansi-style-invertp style) t))
-          ((= code 9)
-           (setf (ansi-style-strikep style) t))
-          ((= code 22)
-           (setf (ansi-style-boldp style) nil
-                 (ansi-style-dimp style) nil))
-          ((= code 23)
-           (setf (ansi-style-italicp style) nil))
-          ((= code 24)
-           (setf (ansi-style-underlinep style) nil))
-          ((= code 27)
-           (setf (ansi-style-invertp style) nil))
-          ((= code 29)
-           (setf (ansi-style-strikep style) nil))
-          ((<= 30 code 37)
-           (setf (ansi-style-fg style) (ansi-index->color (- code 30))))
-          ((= code 39)
-           (setf (ansi-style-fg style) ptui.core.color:color-default))
-          ((<= 40 code 47)
-           (setf (ansi-style-bg style) (ansi-index->color (- code 40))))
-          ((= code 49)
-           (setf (ansi-style-bg style) ptui.core.color:color-default))
-          ((<= 90 code 97)
-           (setf (ansi-style-fg style) (ansi-index->color (+ 8 (- code 90)))))
-          ((<= 100 code 107)
-           (setf (ansi-style-bg style) (ansi-index->color (+ 8 (- code 100)))))
-          ((or (= code 38) (= code 48))
-           (let ((fgp (= code 38)))
-             (when codes
-               (let ((mode (pop codes)))
-                 (cond
-                   ((and (= mode 5) codes)
-                    (let ((value (pop codes)))
-                      (if fgp
-                          (setf (ansi-style-fg style) (ansi-index->color value))
-                          (setf (ansi-style-bg style) (ansi-index->color value)))))
-                   ((and (= mode 2) (>= (length codes) 3))
-                    (let ((r (pop codes))
-                          (g (pop codes))
-                          (b (pop codes)))
-                      (when (and (integerp r) (integerp g) (integerp b)
-                                 (<= 0 r 255) (<= 0 g 255) (<= 0 b 255))
-                        (if fgp
-                            (setf (ansi-style-fg style)
-                                  (ptui.core.color:make-color-rgb r g b))
-                            (setf (ansi-style-bg style)
-                                  (ptui.core.color:make-color-rgb r g b))))))))))))))))
+        (unless (or (%apply-basic-sgr-code! style code)
+                    (%apply-indexed-sgr-color! style code))
+          (setf codes (%consume-extended-sgr! style code codes)))))))
+
+(defun %flush-ansi-run (run-text style on-text)
+  (when (> (length run-text) 0)
+    (when on-text
+      (funcall on-text run-text style))
+    (return-from %flush-ansi-run ""))
+  "")
+
+(defun %ansi-csi-end (combined start limit)
+  (loop for scan from start below limit
+        for ch = (char combined scan)
+        when (and (char<= #\@ ch) (char<= ch #\~))
+          do (return scan)))
+
+(defun %consume-csi-escape (combined index limit style run-text)
+  (let ((end (%ansi-csi-end combined (+ index 2) limit)))
+    (unless end
+      (return-from %consume-csi-escape
+        (values limit "" (subseq combined index))))
+    (when (char= (char combined end) #\m)
+      (apply-sgr! style (subseq combined (+ index 2) end)))
+    (values (1+ end) "" "")))
+
+(defun %consume-escape-sequence (combined index limit style run-text on-text)
+  (let ((flushed (%flush-ansi-run run-text style on-text)))
+    (if (and (< (1+ index) limit)
+             (char= (char combined (1+ index)) #\[))
+        (%consume-csi-escape combined index limit style flushed)
+        (if (= (1+ index) limit)
+            (values limit flushed (string +esc-char+))
+            (progn
+              (when on-text
+                (funcall on-text (string +esc-char+) style))
+              (values (1+ index) flushed ""))))))
 
 (defun consume-ansi-output (output style pending-escape
                             &key on-text on-newline on-incomplete-escape)
@@ -221,50 +281,23 @@ Returns (values updated-style updated-pending-escape)."
          (index 0)
          (new-pending-escape "")
          (run-text ""))
-    (labels ((flush-run ()
-               (when (> (length run-text) 0)
-                 (when on-text
-                   (funcall on-text run-text style))
-                 (setf run-text ""))))
-      (loop while (< index length) do
-        (let ((ch (char combined index)))
-          (cond
-            ((char= ch +esc-char+)
-             (if (and (< (1+ index) length)
-                      (char= (char combined (1+ index)) #\[))
-                 (let ((end (loop for scan from (+ index 2) below length
-                                  for c = (char combined scan)
-                                  when (and (char<= #\@ c) (char<= c #\~))
-                                    do (return scan))))
-                   (if end
-                       (progn
-                         (flush-run)
-                         (when (char= (char combined end) #\m)
-                           (apply-sgr! style
-                                       (subseq combined (+ index 2) end)))
-                         (setf index (1+ end)))
-                       (progn
-                         (flush-run)
-                         (setf new-pending-escape (subseq combined index))
-                         (setf index length))))
-                 (progn
-                   (flush-run)
-                   (if (= (1+ index) length)
-                       (setf new-pending-escape (string +esc-char+))
-                       (when on-text
-                         (funcall on-text (string ch) style)))
-                   (incf index))))
-            ((char= ch #\Newline)
-             (flush-run)
-             (when on-newline
-               (funcall on-newline))
-             (incf index))
-            ((char= ch #\Return)
-             (incf index))
-            (t
-             (setf run-text (concatenate 'string run-text (string ch)))
-             (incf index)))))
-      (flush-run))
+    (loop while (< index length) do
+      (let ((ch (char combined index)))
+        (cond
+          ((char= ch +esc-char+)
+           (multiple-value-setq (index run-text new-pending-escape)
+             (%consume-escape-sequence combined index length style run-text on-text)))
+          ((char= ch #\Newline)
+           (setf run-text (%flush-ansi-run run-text style on-text))
+           (when on-newline
+             (funcall on-newline))
+           (incf index))
+          ((char= ch #\Return)
+           (incf index))
+          (t
+           (setf run-text (concatenate 'string run-text (string ch)))
+           (incf index)))))
+    (setf run-text (%flush-ansi-run run-text style on-text))
     (when (and on-incomplete-escape
                (> (length new-pending-escape) 0))
       (funcall on-incomplete-escape new-pending-escape))

@@ -2,6 +2,7 @@
   (:use :cl)
   (:export
    #:color #:color-rgb #:make-color-rgb
+   #:color-rgb-r #:color-rgb-g #:color-rgb-b
    #:color-default
    #:resolve-color-mode
    #:color->sgr))

@@ -1,0 +1,66 @@
+# preview-test.tui-spec.yaml
+#
+# Test layout for the YAML preview tool.
+# Edit this file while the preview is running to see live updates.
+
+layout:
+  children:
+    - name: history
+      height: fill
+      overflow-y: scroll
+      scroll-follow: true
+      scroll-bar: auto
+      gutter: 1
+      padding: [0, 1]
+    - name: prompt
+      height: 3
+      border: single
+      focusable: true
+      focus-order: 1
+    - name: status
+      height: 1
+
+palette:
+  bg:        "16 18 24"
+  surface:   "30 36 100"
+  code-bg:   "36 42 54"
+  border:    "58 70 86"
+  meta:      "116 124 138"
+  text:      "220 226 236"
+  muted:     "160 170 186"
+  amber:     "224 175 104"
+  blue:      "122 162 247"
+  cyan:      "125 207 255"
+  green:     "158 206 106"
+  yellow:    "240 198 116"
+  rose:      "242 143 173"
+  red:       "220 50 47"
+  steel:     "109 140 189"
+
+roles:
+  user-label:       { fg: amber,  bold: true }
+  assistant-label:  { fg: blue,   bold: true }
+  tool-label:       { fg: cyan,   bold: true }
+  user:             { fg: text }
+  assistant:        { fg: text }
+  tool:             { fg: cyan }
+  system:           { fg: muted }
+  heading:          { fg: blue,   bold: true }
+  inline-code:      { fg: text,   bg: code-bg }
+  code-body:        { fg: text }
+  code-fence:       { fg: border, dim: true }
+  status-bar:       { fg: muted,  bg: surface }
+  context-ok:       { fg: green,  bg: surface, bold: true }
+  context-warn:     { fg: yellow, bg: surface, bold: true }
+  context-danger:   { fg: rose,   bg: surface, bold: true }
+  prompt-border:    { fg: steel }
+  heading-1:        { fg: blue,  bold: true }
+  heading-2:        { fg: blue,  bold: true }
+  heading-3:        { fg: blue,  bold: true }
+  code-keyword:     { fg: rose,  bold: true }
+  code-string:      { fg: green }
+  code-function:    { fg: blue }
+  tool-hint:        { fg: muted, italic: true }
+  warning:          { fg: yellow, bold: true }
+  error:            { fg: red,    bold: true }
+  meta:             { fg: meta }

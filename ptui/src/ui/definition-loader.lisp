@@ -6,6 +6,14 @@
    #:definition-loader-error-index
    #:definition-loader-error-form
    #:definition-loader-error-detail
+   #:definition-unit
+   #:make-definition-unit
+   #:definition-unit-kind
+   #:definition-unit-name
+   #:definition-unit-lambda-list
+   #:definition-unit-options
+   #:definition-unit-body
+   #:definition-unit-source-form
    #:definition-load-result
    #:definition-load-result-path
    #:definition-load-result-form-count
@@ -17,6 +25,10 @@
    #:read-definition-forms
    #:validate-packet-form
    #:validate-packet-forms
+   #:packet-form-definition-units
+   #:packet-forms-definition-units
+   #:compile-definition-unit
+   #:compile-definition-units
    #:translate-packet-form
    #:translate-packet-forms
    #:expand-definition-forms
@@ -65,12 +77,74 @@
   (app-names '() :type list)
   (widget-names '() :type list))
 
+(defstruct (definition-unit
+            (:constructor make-definition-unit
+                (&key kind name lambda-list options body source-form)))
+  (kind :raw-form :type keyword)
+  (name nil)
+  (lambda-list '() :type list)
+  (options '() :type list)
+  (body '() :type list)
+  (source-form nil))
+
+(defstruct (packet-argument-rule
+            (:constructor make-packet-argument-rule (&key position predicate detail)))
+  (position 0 :type fixnum)
+  predicate
+  (detail "" :type string))
+
+(defstruct (packet-option-rule
+            (:constructor make-packet-option-rule (&key key predicate detail)))
+  key
+  predicate
+  (detail "" :type string))
+
+(defstruct (packet-directive-schema
+            (:constructor make-packet-directive-schema
+                (&key name wrapper-p min-children child-detail argument-rules option-rules)))
+  (name "" :type string)
+  (wrapper-p nil :type boolean)
+  (min-children 0 :type fixnum)
+  child-detail
+  (argument-rules '() :type list)
+  (option-rules '() :type list))
+
 (defun %loader-error (path index form detail)
   (error 'definition-loader-error
          :path path
          :index index
          :form form
          :detail detail))
+
+(defun %make-raw-form-unit (form &key source-form)
+  (make-definition-unit
+   :kind :raw-form
+   :body (list form)
+   :source-form (or source-form form)))
+
+(defun %make-widget-definition-unit (name lambda-list body source-form)
+  (make-definition-unit
+   :kind :widget
+   :name name
+   :lambda-list lambda-list
+   :body body
+   :source-form source-form))
+
+(defun %make-panel-definition-unit (name lambda-list sections source-form)
+  (make-definition-unit
+   :kind :panel
+   :name name
+   :lambda-list lambda-list
+   :body sections
+   :source-form source-form))
+
+(defun %make-app-definition-unit (name options body source-form)
+  (make-definition-unit
+   :kind :app
+   :name name
+   :options options
+   :body body
+   :source-form source-form))
 
 (defun %form-operator-name (form)
   (when (and (consp form) (symbolp (car form)))
@@ -138,6 +212,188 @@
                       key allowed-keys)
               context))))
 
+(defun %package-designator-p (value)
+  (typep value '(or symbol string)))
+
+(defun %one-symbol-lambda-list-p (value)
+  (and (listp value)
+       (= (length value) 1)
+       (symbolp (first value))))
+
+(defun %project-tree-lambda-list-p (value)
+  (and (listp value)
+       (>= (length value) 2)
+       (symbolp (first value))
+       (symbolp (second value))))
+
+(defun %positive-integer-p (value)
+  (and (integerp value) (> value 0)))
+
+(defparameter *packet-directive-schemas*
+  (list
+   (make-packet-directive-schema
+    :name "PTUI"
+    :wrapper-p t
+    :min-children 1
+    :child-detail "Wrapper children must be keyword directives.")
+   (make-packet-directive-schema
+    :name "PTUI-DEFINITION"
+    :wrapper-p t
+    :min-children 1
+    :child-detail "Wrapper children must be keyword directives.")
+   (make-packet-directive-schema
+    :name "DEFINITION"
+    :wrapper-p t
+    :min-children 1
+    :child-detail "Wrapper children must be keyword directives.")
+   (make-packet-directive-schema
+    :name "DEFPACKAGE"
+    :argument-rules
+    (list (make-packet-argument-rule
+           :position 1
+           :predicate #'%package-designator-p
+           :detail "Directive :defpackage requires a symbol or string package name.")))
+   (make-packet-directive-schema
+    :name "IN-PACKAGE"
+    :argument-rules
+    (list (make-packet-argument-rule
+           :position 1
+           :predicate #'%package-designator-p
+           :detail "Directive :in-package requires a symbol or string package designator.")))
+   (make-packet-directive-schema
+    :name "PANEL"
+    :argument-rules
+    (list (make-packet-argument-rule
+           :position 1
+           :predicate #'symbolp
+           :detail "Directive :panel requires a symbol name as its second argument.")
+          (make-packet-argument-rule
+           :position 2
+           :predicate #'listp
+           :detail "Directive :panel requires a lambda-list as its third argument.")))
+   (make-packet-directive-schema
+    :name "APP"
+    :argument-rules
+    (list (make-packet-argument-rule
+           :position 1
+           :predicate #'symbolp
+           :detail "Directive :app requires a symbol name as its second argument.")
+          (make-packet-argument-rule
+           :position 2
+           :predicate #'listp
+           :detail "Directive :app requires an option plist list as its third argument.")))
+   (make-packet-directive-schema
+    :name "WIDGET"
+    :argument-rules
+    (list (make-packet-argument-rule
+           :position 1
+           :predicate #'symbolp
+           :detail "Directive :widget requires a symbol name as its second argument.")
+          (make-packet-argument-rule
+           :position 2
+           :predicate #'listp
+           :detail "Directive :widget requires a lambda-list as its third argument.")))
+   (make-packet-directive-schema
+    :name "BREADCRUMBS"
+    :argument-rules
+    (list (make-packet-argument-rule
+           :position 1
+           :predicate #'symbolp
+           :detail "Directive :breadcrumbs requires a symbol widget name as its second argument.")
+          (make-packet-argument-rule
+           :position 2
+           :predicate #'%one-symbol-lambda-list-p
+           :detail "Directive :breadcrumbs requires a one-symbol lambda-list (segments)."))
+    :option-rules
+    (list (make-packet-option-rule
+           :key :prefix
+           :predicate #'stringp
+           :detail "Directive :breadcrumbs option :prefix must be a string.")
+          (make-packet-option-rule
+           :key :separator
+           :predicate #'stringp
+           :detail "Directive :breadcrumbs option :separator must be a string.")))
+   (make-packet-directive-schema
+    :name "PROJECT-TREE"
+    :argument-rules
+    (list (make-packet-argument-rule
+           :position 1
+           :predicate #'symbolp
+           :detail "Directive :project-tree requires a symbol widget name as its second argument.")
+          (make-packet-argument-rule
+           :position 2
+           :predicate #'%project-tree-lambda-list-p
+           :detail "Directive :project-tree requires a lambda-list beginning with (rows selected-index ...)."))
+    :option-rules
+    (list (make-packet-option-rule
+           :key :height
+           :predicate #'%positive-integer-p
+           :detail "Directive :project-tree option :height must be a positive integer.")
+          (make-packet-option-rule
+           :key :marker
+           :predicate #'stringp
+           :detail "Directive :project-tree option :marker must be a string."))))
+  "Declarative packet-validation schema keyed by directive name.")
+
+(defun %find-packet-directive-schema (directive-name)
+  (find directive-name *packet-directive-schemas*
+        :test #'string=
+        :key #'packet-directive-schema-name))
+
+(defun %validate-packet-argument-rules (path index form schema context)
+  (dolist (rule (packet-directive-schema-argument-rules schema))
+    (let ((value (nth (packet-argument-rule-position rule) form)))
+      (unless (funcall (packet-argument-rule-predicate rule) value)
+        (%packet-schema-error path index form
+                              (packet-argument-rule-detail rule)
+                              context)))))
+
+(defun %validate-packet-option-rules (path index form schema context)
+  (let* ((options (%packet-directive-options form))
+         (option-rules (packet-directive-schema-option-rules schema))
+         (allowed-keys (mapcar #'packet-option-rule-key option-rules)))
+    (when option-rules
+      (%validate-directive-options path index form options allowed-keys context)
+      (dolist (rule option-rules)
+        (let ((marker (gensym "MISSING"))
+              (key (packet-option-rule-key rule)))
+          (let ((value (getf options key marker)))
+            (unless (eq value marker)
+              (unless (funcall (packet-option-rule-predicate rule) value)
+                (%packet-schema-error path index form
+                                      (packet-option-rule-detail rule)
+                                      context)))))))))
+
+(defun %validate-wrapper-directive (form path index allowed-directives context directive-name schema)
+  (let ((children (cdr form)))
+    (when (< (length children) (packet-directive-schema-min-children schema))
+      (%packet-schema-error path index form
+                            "Wrapper directive requires at least one child directive."
+                            context))
+    (loop for child in children
+          for child-index from 1
+          do (unless (and (consp child) (keywordp (car child)))
+               (%packet-schema-error
+                path index child
+                (or (packet-directive-schema-child-detail schema)
+                    "Wrapper children must be keyword directives.")
+                (format nil ":~(~A~) child #~D"
+                        directive-name child-index)))
+             (validate-packet-form child
+                                   :path path
+                                   :index index
+                                   :allowed-directives allowed-directives
+                                   :context
+                                   (format nil ":~(~A~) child #~D"
+                                           directive-name child-index)))))
+
+(defun %validate-directive-with-schema (form path index allowed-directives context directive-name schema)
+  (if (packet-directive-schema-wrapper-p schema)
+      (%validate-wrapper-directive form path index allowed-directives context directive-name schema)
+      (progn
+        (%validate-packet-argument-rules path index form schema context)
+        (%validate-packet-option-rules path index form schema context))))
+
 (defun validate-packet-form (form &key (path "<memory>") (index 0)
                                   (allowed-directives +default-packet-directives+)
                                   context)
@@ -154,113 +410,16 @@ Non-keyword top-level forms are accepted for backward compatibility."
                 directive-name
                 (%packet-supported-directives-string allowed-directives))
         context))
-      ((%directive-wrapper-p directive-name)
-       (let ((children (cdr form)))
-         (when (null children)
-           (%packet-schema-error path index form
-                                 "Wrapper directive requires at least one child directive."
-                                 context))
-         (loop for child in children
-               for child-index from 1
-               do (unless (and (consp child) (keywordp (car child)))
-                    (%packet-schema-error
-                     path index child
-                     "Wrapper children must be keyword directives."
-                     (format nil ":~(~A~) child #~D"
-                             directive-name child-index)))
-                  (validate-packet-form child
-                                        :path path
-                                        :index index
-                                        :allowed-directives allowed-directives
-                                        :context
-                                        (format nil ":~(~A~) child #~D"
-                                                directive-name child-index)))))
-      ((string= directive-name "DEFPACKAGE")
-       (unless (and (consp (cdr form))
-                    (typep (second form) '(or symbol string)))
-         (%packet-schema-error path index form
-                               "Directive :defpackage requires a symbol or string package name."
-                               context)))
-      ((string= directive-name "IN-PACKAGE")
-       (unless (and (consp (cdr form))
-                    (typep (second form) '(or symbol string)))
-         (%packet-schema-error path index form
-                               "Directive :in-package requires a symbol or string package designator."
-                               context)))
-      ((string= directive-name "PANEL")
-       (unless (and (consp (cdr form)) (symbolp (second form)))
-         (%packet-schema-error path index form
-                               "Directive :panel requires a symbol name as its second argument."
-                               context))
-       (unless (listp (third form))
-         (%packet-schema-error path index form
-                               "Directive :panel requires a lambda-list as its third argument."
-                               context)))
-      ((string= directive-name "APP")
-       (unless (and (consp (cdr form)) (symbolp (second form)))
-         (%packet-schema-error path index form
-                               "Directive :app requires a symbol name as its second argument."
-                               context))
-       (unless (listp (third form))
-         (%packet-schema-error path index form
-                               "Directive :app requires an option plist list as its third argument."
-                               context)))
-      ((string= directive-name "WIDGET")
-       (unless (and (consp (cdr form)) (symbolp (second form)))
-         (%packet-schema-error path index form
-                               "Directive :widget requires a symbol name as its second argument."
-                               context))
-       (unless (listp (third form))
-         (%packet-schema-error path index form
-                               "Directive :widget requires a lambda-list as its third argument."
-                               context)))
-      ((string= directive-name "BREADCRUMBS")
-       (unless (and (consp (cdr form)) (symbolp (second form)))
-         (%packet-schema-error path index form
-                               "Directive :breadcrumbs requires a symbol widget name as its second argument."
-                               context))
-       (unless (and (listp (third form))
-                    (= (length (third form)) 1)
-                    (symbolp (first (third form))))
-         (%packet-schema-error path index form
-                               "Directive :breadcrumbs requires a one-symbol lambda-list (segments)."
-                               context))
-       (let ((options (%packet-directive-options form)))
-         (%validate-directive-options path index form options '(:prefix :separator) context)
-         (let ((prefix (%option-value options :prefix "Path: "))
-               (separator (%option-value options :separator " / ")))
-           (unless (stringp prefix)
-             (%packet-schema-error path index form
-                                   "Directive :breadcrumbs option :prefix must be a string."
-                                   context))
-           (unless (stringp separator)
-             (%packet-schema-error path index form
-                                   "Directive :breadcrumbs option :separator must be a string."
-                                   context)))))
-      ((string= directive-name "PROJECT-TREE")
-       (unless (and (consp (cdr form)) (symbolp (second form)))
-         (%packet-schema-error path index form
-                               "Directive :project-tree requires a symbol widget name as its second argument."
-                               context))
-       (unless (and (listp (third form))
-                    (>= (length (third form)) 2)
-                    (symbolp (first (third form)))
-                    (symbolp (second (third form))))
-         (%packet-schema-error path index form
-                               "Directive :project-tree requires a lambda-list beginning with (rows selected-index ...)."
-                               context))
-       (let ((options (%packet-directive-options form)))
-         (%validate-directive-options path index form options '(:height :marker) context)
-         (let ((height (%option-value options :height 10))
-               (marker (%option-value options :marker ">")))
-           (unless (and (integerp height) (> height 0))
-             (%packet-schema-error path index form
-                                   "Directive :project-tree option :height must be a positive integer."
-                                   context))
-           (unless (stringp marker)
-             (%packet-schema-error path index form
-                                   "Directive :project-tree option :marker must be a string."
-                                   context))))))
+      (t
+       (let ((schema (%find-packet-directive-schema directive-name)))
+         (unless schema
+           (%packet-schema-error
+            path index form
+            (format nil
+                    "No validation schema registered for :~(~A~)."
+                    directive-name)
+            context))
+         (%validate-directive-with-schema form path index allowed-directives context directive-name schema))))
   t))
 
 (defun validate-packet-forms (forms &key (path "<memory>")
@@ -274,7 +433,7 @@ Non-keyword top-level forms are accepted for backward compatibility."
                                  :allowed-directives allowed-directives))
   t)
 
-(defun %translate-breadcrumbs-directive (form path index)
+(defun %breadcrumbs-definition-units (form path index)
   (destructuring-bind (directive name lambda-list &rest options) form
     (declare (ignore directive))
     (unless (symbolp name)
@@ -296,17 +455,21 @@ Non-keyword top-level forms are accepted for backward compatibility."
         (%loader-error path index form
                        "Declarative :breadcrumbs option :separator must be a string."))
       (list
-       `(ptui.widgets.defwidget:defwidget ,name ,lambda-list
-          (ptui.widgets.core:make-text-widget
+       (%make-widget-definition-unit
+        name
+        lambda-list
+        (list
+         `(ptui.widgets.core:make-text-widget
            (with-output-to-string (stream)
              (write-string ,prefix stream)
              (loop for segment in ,segments-var
                    for firstp = t then nil
                    do (unless firstp
                         (write-string ,separator stream))
-                      (princ segment stream)))))))))
+                      (princ segment stream)))))
+        form)))))
 
-(defun %translate-project-tree-directive (form path index)
+(defun %project-tree-definition-units (form path index)
   (destructuring-bind (directive name lambda-list &rest options) form
     (declare (ignore directive))
     (unless (symbolp name)
@@ -330,8 +493,11 @@ Non-keyword top-level forms are accepted for backward compatibility."
         (%loader-error path index form
                        "Declarative :project-tree option :marker must be a string."))
       (list
-       `(ptui.widgets.defwidget:defwidget ,name ,lambda-list
-          (ptui.views:list-view
+       (%make-widget-definition-unit
+        name
+        lambda-list
+        (list
+         `(ptui.views:list-view
            ,rows-var
            (lambda (entry index selected-p)
              (declare (ignore index))
@@ -339,21 +505,24 @@ Non-keyword top-level forms are accepted for backward compatibility."
               (format nil "~A ~A"
                       (if selected-p ,marker " ")
                       entry)))
-           ,height nil ,selected-index-var nil))))))
+           ,height nil ,selected-index-var nil))
+        form)))))
 
-(defun %expand-declarative-form (form path index)
+(defun %packet-form-definition-units (form path index)
   (let ((directive-name (%declarative-directive-name form)))
     (cond
       ((null directive-name)
-       (list form))
+       (list (%make-raw-form-unit form)))
       ((%directive-wrapper-p directive-name)
        (mapcan (lambda (inner)
-                 (%expand-declarative-form inner path index))
+                 (%packet-form-definition-units inner path index))
                (cdr form)))
       ((string= directive-name "DEFPACKAGE")
-       (list `(defpackage ,@(cdr form))))
+       (list (%make-raw-form-unit `(defpackage ,@(cdr form))
+                                  :source-form form)))
       ((string= directive-name "IN-PACKAGE")
-       (list `(in-package ,@(cdr form))))
+       (list (%make-raw-form-unit `(in-package ,@(cdr form))
+                                  :source-form form)))
       ((string= directive-name "PANEL")
        (destructuring-bind (directive name lambda-list &rest sections) form
          (declare (ignore directive))
@@ -363,7 +532,7 @@ Non-keyword top-level forms are accepted for backward compatibility."
          (unless (listp lambda-list)
            (%loader-error path index form
                           "Declarative :panel requires a lambda-list list."))
-         (list `(ptui.ui.panel:defpanel ,name ,lambda-list ,@sections))))
+         (list (%make-panel-definition-unit name lambda-list sections form))))
       ((string= directive-name "APP")
        (destructuring-bind (directive name options &rest body) form
          (declare (ignore directive))
@@ -373,7 +542,7 @@ Non-keyword top-level forms are accepted for backward compatibility."
          (unless (listp options)
            (%loader-error path index form
                           "Declarative :app requires an option plist list."))
-         (list `(ptui.ui.app:defapp ,name ,options ,@body))))
+         (list (%make-app-definition-unit name options body form))))
       ((string= directive-name "WIDGET")
        (destructuring-bind (directive name lambda-list &rest widget-body) form
          (declare (ignore directive))
@@ -383,17 +552,87 @@ Non-keyword top-level forms are accepted for backward compatibility."
          (unless (listp lambda-list)
            (%loader-error path index form
                           "Declarative :widget requires a lambda-list list."))
-         (list `(ptui.widgets.defwidget:defwidget ,name ,lambda-list
-                  ,@widget-body))))
+         (list (%make-widget-definition-unit name lambda-list widget-body form))))
       ((string= directive-name "BREADCRUMBS")
-       (%translate-breadcrumbs-directive form path index))
+       (%breadcrumbs-definition-units form path index))
       ((string= directive-name "PROJECT-TREE")
-       (%translate-project-tree-directive form path index))
+       (%project-tree-definition-units form path index))
       (t
        (%loader-error path index form
                       (format nil
                               "Unknown declarative directive :~A. Supported directives: :ptui, :panel, :app, :widget, :breadcrumbs, :project-tree, :defpackage, :in-package."
                               (string-downcase directive-name)))))))
+
+(defun packet-form-definition-units (form &key (path "<memory>") (index 1))
+  "Translate one packet FORM into explicit PTUI definition units."
+  (%packet-form-definition-units form path index))
+
+(defun packet-forms-definition-units (forms &key (path "<memory>"))
+  "Translate packet FORMS into explicit PTUI definition units."
+  (let ((units '()))
+    (loop for form in forms
+          for index from 1
+          do (setf units
+                   (nconc units
+                          (packet-form-definition-units form :path path :index index))))
+    units))
+
+(defun %compile-raw-form-unit (unit path index)
+  (declare (ignore path index))
+  (copy-list (definition-unit-body unit)))
+
+(defun %compile-widget-definition-unit (unit path index)
+  (declare (ignore path index))
+  (list
+   `(ptui.widgets.defwidget:defwidget
+      ,(definition-unit-name unit)
+      ,(definition-unit-lambda-list unit)
+      ,@(definition-unit-body unit))))
+
+(defun %compile-panel-definition-unit (unit path index)
+  (declare (ignore path index))
+  (list
+   `(ptui.ui.panel:defpanel
+      ,(definition-unit-name unit)
+      ,(definition-unit-lambda-list unit)
+      ,@(definition-unit-body unit))))
+
+(defun %compile-app-definition-unit (unit path index)
+  (declare (ignore path index))
+  (list
+   `(ptui.ui.app:defapp
+      ,(definition-unit-name unit)
+      ,(definition-unit-options unit)
+      ,@(definition-unit-body unit))))
+
+(defparameter *definition-unit-compilers*
+  '((:raw-form . %compile-raw-form-unit)
+    (:widget . %compile-widget-definition-unit)
+    (:panel . %compile-panel-definition-unit)
+    (:app . %compile-app-definition-unit))
+  "Compiler registry for PTUI definition units.")
+
+(defun compile-definition-unit (unit &key (path "<memory>") (index 1))
+  "Compile one explicit definition UNIT into executable Lisp forms."
+  (check-type unit definition-unit)
+  (let ((compiler-name (cdr (assoc (definition-unit-kind unit)
+                                   *definition-unit-compilers*
+                                   :test #'eq))))
+    (unless compiler-name
+      (%loader-error path index unit
+                     (format nil "No compiler registered for definition unit kind ~S."
+                             (definition-unit-kind unit))))
+    (funcall compiler-name unit path index)))
+
+(defun compile-definition-units (units &key (path "<memory>"))
+  "Compile explicit PTUI definition UNITS into executable Lisp forms."
+  (let ((forms '()))
+    (loop for unit in units
+          for index from 1
+          do (setf forms
+                   (nconc forms
+                          (compile-definition-unit unit :path path :index index))))
+    forms))
 
 (defun read-definition-forms (path)
   "Read all forms from PATH and return them as a list."
@@ -409,17 +648,15 @@ Non-keyword top-level forms are accepted for backward compatibility."
 
 (defun translate-packet-form (form &key (path "<memory>") (index 1))
   "Translate one packet FORM into executable forms."
-  (%expand-declarative-form form path index))
+  (compile-definition-units
+   (packet-form-definition-units form :path path :index index)
+   :path path))
 
 (defun translate-packet-forms (forms &key (path "<memory>"))
   "Translate packet FORMS into executable defwidget/defpanel/defapp forms."
-  (let ((expanded '()))
-    (loop for form in forms
-          for index from 1
-          do (setf expanded
-                   (nconc expanded
-                          (translate-packet-form form :path path :index index))))
-    expanded))
+  (compile-definition-units
+   (packet-forms-definition-units forms :path path)
+   :path path))
 
 (defun expand-definition-forms (forms &key (path "<memory>"))
   "Expand declarative PTUI directives into executable Lisp forms."
@@ -522,7 +759,8 @@ and wrappers like (:ptui ...)."
     (validate-packet-forms forms
                            :path path
                            :allowed-directives packet-directives))
-  (let* ((expanded-forms (expand-definition-forms forms :path path))
+  (let* ((definition-units (packet-forms-definition-units forms :path path))
+         (expanded-forms (compile-definition-units definition-units :path path))
          (widget-names '())
          (panel-names '())
          (app-names '()))
@@ -533,7 +771,7 @@ and wrappers like (:ptui ...)."
                          *package*)))
       (loop for form in expanded-forms
             for index from 1
-             for normalized-form =
+            for normalized-form =
                (%rehome-form-for-package form source-package *package*)
              do (when validate
                   (validate-definition-form normalized-form

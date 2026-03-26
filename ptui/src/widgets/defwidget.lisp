@@ -335,8 +335,10 @@
    (%normalize-widget-children children)
    :direction :row))
 
-(defun %widget-text (content &key style (wrap nil wrap-supplied-p) id key role)
-  (let ((base (ptui.widgets.core:make-text-widget content :id id :key key :role role)))
+(defun %widget-text (content &key style (wrap nil wrap-supplied-p) id key role
+                                   styled-segments)
+  (let ((base (ptui.widgets.core:make-text-widget content :id id :key key :role role
+                                                  :styled-segments styled-segments)))
     (if (or style wrap-supplied-p)
         (let ((props (copy-list (ptui.ui.elements:ui-element-props base))))
           (when style

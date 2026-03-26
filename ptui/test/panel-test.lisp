@@ -681,5 +681,91 @@
           (funcall handler (ptui.core.events:make-key-event :enter) nil)
           (is (eq *slot-key-value* :default-action)))))))
 
+;;; ===================================================================
+;;; Padding and Gutter DSL Tests
+;;; ===================================================================
+
+(test normalize-padding-nil
+  (is (equal (ptui.ui.panel::%normalize-padding nil) '(0 0 0 0))))
+
+(test normalize-padding-shorthand-1
+  (is (equal (ptui.ui.panel::%normalize-padding 1) '(1 1 1 1))))
+
+(test normalize-padding-shorthand-2
+  (is (equal (ptui.ui.panel::%normalize-padding '(1 2)) '(1 2 1 2))))
+
+(test normalize-padding-shorthand-4
+  (is (equal (ptui.ui.panel::%normalize-padding '(1 2 3 4)) '(1 2 3 4))))
+
+(test container-padding-parsed
+  "(:column :padding (1 2) ...) emits :padding in element props."
+  (let ((form (ptui.ui.panel::%compile-layout-tree
+               '((:column :padding (1 2)
+                   (header :fixed 2
+                     (ptui.widgets.core:make-text-widget "Title"))
+                   (content :flex 1
+                     (ptui.widgets.core:make-text-widget "Body")))))))
+    (is (not (null form)))
+    ;; The form should contain :padding in the props list
+    (let ((form-str (format nil "~S" form)))
+      (is (search ":PADDING" form-str)))))
+
+(test region-gutter-parsed
+  "(history :flex 1 :gutter 2 ...) emits gutter in :gutters prop."
+  (let ((form (ptui.ui.panel::%compile-layout-tree
+               '((:column
+                   (history :flex 1 :gutter 2
+                     (ptui.widgets.core:make-text-widget "Messages"))
+                   (status :fixed 1
+                     (ptui.widgets.core:make-text-widget "OK")))))))
+    (is (not (null form)))
+    (let ((form-str (format nil "~S" form)))
+      (is (search ":GUTTERS" form-str)))))
+
+(test container-padding-absent
+  "No :padding keyword -> no :padding prop (backward compat)."
+  (let ((form (ptui.ui.panel::%compile-layout-tree
+               '((:column
+                   (main :flex 1
+                     (ptui.widgets.core:make-text-widget "Body")))))))
+    (is (not (null form)))
+    (let ((form-str (format nil "~S" form)))
+      (is (null (search ":PADDING" form-str))))))
+
+;; Panel with padding and gutter to verify compilation
+(ptui.ui.panel:defpanel padded-panel (label)
+  (:layout
+    (:column :padding (1 2)
+      (header :fixed 1
+        (ptui.widgets.core:make-text-widget label))
+      (body :flex 1 :gutter 2
+        (ptui.widgets.core:make-text-widget "Content")))))
+
+(test defpanel-padding-gutter-compiles-and-renders
+  (let ((rt (%make-test-runtime)))
+    (%with-widget-context rt 'padded-panel 'pp-1
+      (lambda ()
+        (let ((elem (render-padded-panel "Padded")))
+          (is (typep elem 'ptui.ui.elements:ui-element))
+          (is (eq (ptui.ui.elements:ui-element-type elem) :constraint-layout))
+          ;; Should have padding in props
+          (let ((padding (getf (ptui.ui.elements:ui-element-props elem) :padding)))
+            (is (equal padding '(1 2 1 2))))
+          ;; Should have gutters in props
+          (let ((gutters (getf (ptui.ui.elements:ui-element-props elem) :gutters)))
+            (is (not (null gutters)))
+            (is (= (cdr (assoc 'body gutters)) 2)))
+          ;; Should have 2 children
+          (is (= (length (ptui.ui.elements:ui-element-children elem)) 2)))))))
+
+(test defpanel-padding-gutter-paints-without-error
+  (let ((rt (%make-test-runtime)))
+    (%with-widget-context rt 'padded-panel 'pp-2
+      (lambda ()
+        (let* ((elem (render-padded-panel "Paint"))
+               (buf (ptui.render.buffer:make-buffer 80 24)))
+          (ptui.ui.app::%paint-element elem buf 0 0 80 24)
+          (is (not (null buf))))))))
+
 (defun run-all ()
   (run! 'panel-suite))

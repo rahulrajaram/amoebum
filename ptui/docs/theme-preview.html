@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Amoebum Dark — Theme Preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Space+Grotesk:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    /* Theme palette — mirrors amoebum-dark define-theme */
+    --bg:            #101218;
+    --fg:            #DCE2EC;
+    --surface-2:     #1E242E;
+    --border:        #3A4656;
+    --meta:          #747C8A;
+    --user-label:    #E0AF68;
+    --asst-label:    #7AA2F7;
+    --tool-label:    #7DCFFF;
+    --system:        #A0AABA;
+    --warning:       #F0C674;
+    --error:         #F28FAD;
+    --green:         #9ECE6A;
+    --yellow:        #F0C674;
+    --red:           #F28FAD;
+    --code-bg:       #242A36;
+    --fence:         #3A4656;
+    --kw:            #F0C674;
+    --heading:       #7AA2F7;
+    --prompt-border: #6D8CBD;
+    --inline-code-bg:#242A36;
+
+    /* Page chrome */
+    --page-bg:       #0a0b10;
+    --page-rule:     #1c1f28;
+    --page-ink:      #c8cdd8;
+    --page-ink-2:    #8890a0;
+    --page-ink-3:    #5a6070;
+    --page-accent:   #7AA2F7;
+
+    /* Typography */
+    --font-mono:     'DM Mono', 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+    --font-sans:     'Space Grotesk', system-ui, sans-serif;
+    --font-serif:    'Playfair Display', Georgia, serif;
+
+    /* Spacing */
+    --space-xs: 4px;
+    --space-sm: 8px;
+    --space-md: 12px;
+    --space-lg: 18px;
+    --space-xl: 24px;
+    --space-2xl: 32px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--page-bg);
+    color: var(--page-ink);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  /* ─── PAGE HEADER ─── */
+  .page-header {
+    padding: 72px 48px 56px;
+    border-bottom: 1px solid var(--page-rule);
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+
+  .page-title {
+    font-family: var(--font-sans);
+    font-size: 48px;
+    font-weight: 700;
+    letter-spacing: -2px;
+    line-height: 1;
+    color: var(--fg);
+  }
+
+  .page-title span {
+    color: var(--page-accent);
+  }
+
+  .page-sub {
+    margin-top: 14px;
+    color: var(--page-ink-2);
+    font-size: 14px;
+    font-family: var(--font-sans);
+    letter-spacing: 0.02em;
+    max-width: 600px;
+    line-height: 1.5;
+  }
+
+  .page-tags {
+    margin-top: 16px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .page-tag {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    color: var(--page-ink-2);
+    background: rgba(255,255,255,0.02);
+  }
+
+  /* ─── SECTION DIVIDER ─── */
+  .section-divider {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px 48px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--page-ink-3);
+    border-bottom: 1px solid var(--page-rule);
+    background: rgba(255,255,255,0.01);
+  }
+
+  /* ─── SECTION ─── */
+  .section {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 48px 48px 56px;
+    border-bottom: 1px solid var(--page-rule);
+  }
+
+  .section-label {
+    font-family: var(--font-sans);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--page-accent);
+    margin-bottom: 6px;
+  }
+
+  .section-title {
+    font-family: var(--font-serif);
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: var(--fg);
+    margin-bottom: 12px;
+    line-height: 1.15;
+  }
+
+  .section-desc {
+    color: var(--page-ink-2);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    margin-bottom: 32px;
+    max-width: 640px;
+    line-height: 1.5;
+  }
+
+  /* ─── GROUP ENTRY ─── */
+  .group-entry {
+    margin-bottom: 32px;
+  }
+
+  .group-label {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--page-ink-2);
+    margin-bottom: 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--page-rule);
+  }
+
+  .group-note {
+    color: var(--page-ink-3);
+    font-size: 12px;
+    margin-top: 10px;
+    line-height: 1.5;
+    max-width: 640px;
+  }
+
+  /* ─── TERMINAL MOCK ─── */
+  .term {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    max-width: 82ch;
+  }
+
+  .term--wide { max-width: 100%; }
+
+  .term-titlebar {
+    background: var(--surface-2);
+    padding: 8px 14px;
+    font-size: 11px;
+    color: var(--meta);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    font-family: var(--font-mono);
+  }
+
+  .term-dots {
+    display: flex;
+    gap: 6px;
+    margin-right: 4px;
+  }
+
+  .term-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .term-dot.r { background: #F28FAD; opacity: 0.6; }
+  .term-dot.y { background: #F0C674; opacity: 0.6; }
+  .term-dot.g { background: #9ECE6A; opacity: 0.6; }
+
+  .term-body {
+    padding: 14px 18px;
+    white-space: pre;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.2;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .term-body .line {
+    display: block;
+  }
+
+  .term-body .line.blank {
+    height: 0.45em;
+    font-size: 0;
+    line-height: 0;
+  }
+
+  /* ─── ROLE COLORS ─── */
+  .r-user-label  { color: var(--user-label); font-weight: bold; }
+  .r-asst-label  { color: var(--asst-label); font-weight: bold; }
+  .r-tool-label  { color: var(--tool-label); font-weight: bold; }
+  .r-system      { color: var(--system); }
+  .r-asst        { color: var(--fg); }
+  .r-user        { color: var(--fg); }
+  .r-tool        { color: var(--tool-label); }
+  .r-meta        { color: var(--meta); }
+  .r-warning     { color: var(--warning); font-weight: bold; }
+  .r-error       { color: var(--error); font-weight: bold; }
+  .r-heading     { color: var(--heading); font-weight: bold; }
+  .r-code        { color: var(--fg); }
+  .r-kw          { color: var(--kw); font-weight: bold; }
+  .r-fence       { color: var(--fence); opacity: 0.7; }
+  .r-prompt-border { color: var(--prompt-border); }
+
+  .inline-code {
+    background: var(--inline-code-bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  .code-block {
+    background: var(--code-bg);
+    display: block;
+    padding: 0 10px;
+  }
+
+  .left-rule {
+    color: var(--fence);
+    opacity: 0.5;
+  }
+
+  .status-bar {
+    background: var(--surface-2);
+    color: var(--system);
+    display: block;
+    padding: 2px 10px;
+  }
+
+  .ctx-green  { color: var(--green); font-weight: bold; }
+  .ctx-yellow { color: var(--yellow); font-weight: bold; }
+  .ctx-red    { color: var(--red); font-weight: bold; }
+
+  .separator { color: var(--meta); }
+
+  .approval-box {
+    border: 1px solid var(--border);
+    padding: 10px 14px;
+    margin: 4px 0;
+    border-radius: 4px;
+  }
+
+  /* ─── COLOR PALETTE GRID ─── */
+  .palette-row {
+    display: flex;
+    gap: 2px;
+    margin-bottom: 16px;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .palette-chip {
+    flex: 1;
+    min-width: 0;
+    height: 56px;
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    padding: 4px 8px;
+    transition: flex 0.2s ease;
+    cursor: default;
+  }
+
+  .palette-chip:hover {
+    flex: 2;
+  }
+
+  .palette-chip-label {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: rgba(0,0,0,0.6);
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .palette-chip:hover .palette-chip-label {
+    opacity: 1;
+  }
+
+  .palette-chip--light .palette-chip-label {
+    color: rgba(255,255,255,0.7);
+  }
+
+  .color-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 8px;
+    margin-top: 16px;
+  }
+
+  .color-swatch {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: rgba(255,255,255,0.02);
+    border: 1px solid var(--page-rule);
+    border-radius: 6px;
+    transition: border-color 0.15s;
+  }
+
+  .color-swatch:hover {
+    border-color: var(--border);
+  }
+
+  .swatch-box {
+    width: 32px;
+    height: 32px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+
+  .swatch-info { font-size: 12px; }
+  .swatch-name { color: var(--fg); font-weight: 500; }
+  .swatch-hex  { color: var(--page-ink-3); font-size: 11px; }
+
+  /* ─── COMPARISON ─── */
+  .comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+
+  .comparison-label {
+    font-family: var(--font-mono);
+    color: var(--page-ink-3);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    margin-bottom: 8px;
+  }
+
+  /* ─── ROLE TABLE ─── */
+  .role-table {
+    width: 100%;
+    max-width: 82ch;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+
+  .role-table th {
+    padding: 8px 10px;
+    color: var(--page-ink-3);
+    font-weight: 500;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .role-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--page-rule);
+  }
+
+  .role-table tr:last-child td {
+    border-bottom: none;
+  }
+
+  .role-table .td-used {
+    color: var(--page-ink-3);
+    font-size: 11px;
+  }
+
+  /* ─── DSL PREVIEW ─── */
+  .dsl-block {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px 20px;
+    overflow-x: auto;
+    max-width: 82ch;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--fg);
+  }
+
+  .dsl-kw   { color: var(--kw); }
+  .dsl-sym  { color: var(--asst-label); }
+  .dsl-str  { color: var(--green); }
+  .dsl-num  { color: var(--error); }
+  .dsl-role { color: var(--tool-label); }
+  .dsl-cmt  { color: var(--meta); font-style: italic; }
+
+  /* ─── LAYOUT ANATOMY ─── */
+  .anatomy {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    max-width: 82ch;
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .anatomy-row {
+    display: flex;
+    align-items: center;
+    padding: 10px 14px;
+    gap: 12px;
+    border-bottom: 1px solid var(--page-rule);
+  }
+
+  .anatomy-row:last-child { border-bottom: none; }
+
+  .anatomy-label {
+    font-size: 10px;
+    color: var(--page-ink-3);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    width: 100px;
+    flex-shrink: 0;
+  }
+
+  .anatomy-visual {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 10px;
+    border-radius: 4px;
+    white-space: pre;
+  }
+
+  .anatomy-fill { background: var(--bg); flex: 1; min-height: 60px; display: flex; align-items: center; }
+  .anatomy-status { background: var(--surface-2); color: var(--system); }
+  .anatomy-prompt { border: 1px solid var(--prompt-border); color: var(--fg); }
+
+  /* ─── RESPONSIVE ─── */
+  @media (max-width: 800px) {
+    .page-header { padding: 40px 20px 32px; }
+    .page-title { font-size: 32px; }
+    .section { padding: 32px 20px; }
+    .section-divider { padding: 16px 20px; }
+    .comparison { grid-template-columns: 1fr; }
+    .section-title { font-size: 24px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ───── PAGE HEADER ───── -->
+<div class="page-header">
+  <div class="page-title">Amoebum <span>Dark</span></div>
+  <div class="page-sub">
+    Tokyo Night-inspired theme for the amoebum TUI.
+    Built with ptui's <code style="color:var(--fg);background:var(--code-bg);padding:1px 5px;border-radius:3px;font-size:13px">define-theme</code> DSL —
+    every color, role, and style controlled through a single Lisp form.
+  </div>
+  <div class="page-tags">
+    <span class="page-tag">ptui</span>
+    <span class="page-tag">Common Lisp</span>
+    <span class="page-tag">24-bit color</span>
+    <span class="page-tag">theme inheritance</span>
+    <span class="page-tag">role-based styling</span>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════ -->
+<div class="section-divider">01 — Conversation Flow</div>
+<!-- ═══════════════════════════════════════ -->
+
+<section class="section">
+  <div class="section-label">Chat Rendering</div>
+  <div class="section-title">Roles, Prefixes & Body Text</div>
+  <div class="section-desc">
+    Each message gets a colored <code style="color:var(--fg);background:var(--code-bg);padding:1px 4px;border-radius:3px">&gt;</code> prefix
+    using the role's label color. Body text is neutral light gray for all roles —
+    color signals who is speaking, not what they said.
+  </div>
+
+  <div class="group-entry">
+    <div class="group-label">Multi-role conversation</div>
+    <div class="term">
+      <div class="term-titlebar">
+        <div class="term-dots"><span class="term-dot r"></span><span class="term-dot y"></span><span class="term-dot g"></span></div>
+        amoebum —demo
+      </div>
+      <div class="term-body"><span class="line"> <span class="r-system">&gt;</span> <span class="r-system">Session initialized. Type below to begin.</span></span>
+<span class="line blank"></span>
+<span class="line"> <span class="r-user-label">&gt;</span> <span class="r-user">What files changed in the last commit?</span></span>
+<span class="line blank"></span>
+<span class="line"> <span class="r-asst-label">&gt;</span> <span class="r-asst">I found </span><span class="r-asst inline-code">3 files</span><span class="r-asst"> changed in commit </span><span class="r-asst inline-code">cd1f7b2</span><span class="r-asst">:</span></span>
+<span class="line">   <span class="r-asst">- </span><span class="r-asst inline-code">theme.lisp</span><span class="r-asst"> (new, 316 lines)</span></span>
+<span class="line">   <span class="r-asst">- </span><span class="r-asst inline-code">chat.lisp</span><span class="r-asst"> (modified, 105 lines changed)</span></span>
+<span class="line">   <span class="r-asst">- </span><span class="r-asst inline-code">streaming.lisp</span><span class="r-asst"> (modified, 79 lines changed)</span></span>
+<span class="line blank"></span>
+<span class="line"> <span class="r-tool-label">&gt;</span> <span class="r-tool">git diff --stat HEAD~1 HEAD</span></span>
+<span class="line blank"></span>
+<span class="line"> <span class="r-user-label">&gt;</span> <span class="r-user">Show me the theme struct definition.</span></span></div>
+    </div>
+    <div class="group-note">
+      Four distinct prefix colors: <span style="color:var(--user-label)">amber</span> (user),
+      <span style="color:var(--asst-label)">blue</span> (assistant),
+      <span style="color:var(--tool-label)">cyan</span> (tool),
+      <span style="color:var(--system)">silver</span> (system).
+      Body text stays <span style="color:var(--fg)">#DCE2EC</span> throughout.
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ -->
+<div class="section-divider">02 — Markdown Rendering</div>
+<!-- ═══════════════════════════════════════ -->
+
+<section class="section">
+  <div class="section-label">Streaming Parser</div>
+  <div class="section-title">Headings, Emphasis & Inline Code</div>
+  <div class="section-desc">
+    Markdown is parsed incrementally as tokens stream in. Headings use the assistant-label blue,
+    inline code gets a subtle dark background instead of reverse video, and bold/italic
+    work as expected.
+  </div>
+
+  <div class="group-entry">
+    <div class="group-label">Formatted assistant response</div>
+    <div class="term">
+      <div class="term-titlebar">
+        <div class="term-dots"><span class="term-dot r"></span><span class="term-dot y"></span><span class="term-dot g"></span></div>
+        markdown rendering
+      </div>
+      <div class="term-body"><span class="line"> <span class="r-asst-label">&gt;</span> <span class="r-heading">Theme Infrastructure</span></span>
+<span class="line blank"></span>
+<span class="line">   <span class="r-asst">The </span><span class="r-asst inline-code">define-theme</span><span class="r-asst"> macro creates a named theme with </span><span class="r-asst" style="font-weight:bold">parent inheritance</span><span class="r-asst">.</span></span>
+<span class="line">   <span class="r-asst">Each role maps to a </span><span class="r-asst inline-code">role-style</span><span class="r-asst"> struct containing colors and</span></span>
+<span class="line">   <span class="r-asst">attributes like </span><span class="r-asst" style="font-weight:bold">bold</span><span class="r-asst"> and </span><span class="r-asst" style="font-style:italic">italic</span><span class="r-asst">.</span></span>
+<span class="line blank"></span>
+<span class="line">   <span class="r-fence left-rule">&gt; </span><span class="r-asst" style="opacity:0.85">Themes inherit from a parent chain, so you only</span></span>
+<span class="line">   <span class="r-fence left-rule">  </span><span class="r-asst" style="opacity:0.85">need to override the roles you want to change.</span></span></div>
+    </div>
+  </div>
+
+  <div class="group-entry">
+    <div class="group-label">Fenced code block with left rule</div>
+    <div class="term">
+      <div class="term-titlebar">
+        <div class="term-dots"><span class="term-dot r"></span><span class="term-dot y"></span><span class="term-dot g"></span></div>
+        code block
+      </div>
+      <div class="term-body"><span class="line">   <span class="r-asst">Here is the theme definition:</span></span>
+<span class="line blank"></span>
+<span class="line"><span class="code-block">   <span class="left-rule">&#9474; </span><span class="r-fence">```lisp</span></span></span>
+<span class="line"><span class="code-block">   <span class="left-rule">&#9474; </span><span class="r-code">(</span><span class="r-kw">define-theme</span><span class="r-code"> amoebum-dark</span></span></span>
+<span class="line"><span class="code-block">   <span class="left-rule">&#9474; </span><span class="r-code">  (:base :dark)</span></span></span>
+<span class="line"><span class="code-block">   <span class="left-rule">&#9474; </span><span class="r-code">  (:background (rgb 16 18 24))</span></span></span>
+<span class="line"><span class="code-block">   <span class="left-rule">&#9474; </span><span class="r-code">  (:roles</span></span></span>
+<span class="line"><span class="code-block">   <span class="left-rule">&#9474; </span><span class="r-code">    (:user-label :fg (rgb 224 175 104) :boldp t)</span></span></span>
+<span class="line"><span class="code-block">   <span class="left-rule">&#9474; </span><span class="r-code">    (:assistant  :fg (rgb 220 226 236))))</span></span></span>
+<span class="line"><span class="code-block">   <span class="left-rule">&#9474; </span><span class="r-fence">```</span></span></span>
+<span class="line blank"></span>
+<span class="line">   <span class="r-asst">The </span><span class="r-asst inline-code">:base :dark</span><span class="r-asst"> clause inherits from the built-in dark theme.</span></span></div>
+    </div>
+    <div class="group-note">
+      Code blocks: dark <span style="background:var(--code-bg);padding:1px 6px;border-radius:3px">#242A36</span> background,
+      dimmed <span style="color:var(--fence)">&#9474;</span> left rule, amber keyword highlighting.
+      Inline code: subtle bg instead of the old reverse-video hack.
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ -->
+<div class="section-divider">03 — Status Bar</div>
+<!-- ═══════════════════════════════════════ -->
+
+<section class="section">
+  <div class="section-label">Chrome</div>
+  <div class="section-title">Context, Mode & Activity Indicators</div>
+  <div class="section-desc">
+    A single row at the bottom showing context usage with color-coded percentage,
+    permission mode, and streaming status. The dark surface background replaces
+    the old high-contrast maroon.
+  </div>
+
+  <div class="group-entry">
+    <div class="group-label">Three context states</div>
+    <div class="term">
+      <div class="term-titlebar">
+        <div class="term-dots"><span class="term-dot r"></span><span class="term-dot y"></span><span class="term-dot g"></span></div>
+        status bar states
+      </div>
+      <div class="term-body"><span class="line"><span class="status-bar"> <span class="ctx-green">12%</span> context   supervised   <span class="r-meta">idle</span>                                          </span></span>
+<span class="line blank"></span>
+<span class="line"><span class="status-bar"> <span class="ctx-yellow">67%</span> context   supervised   <span class="r-meta">streaming 42 tok/s</span>                              </span></span>
+<span class="line blank"></span>
+<span class="line"><span class="status-bar"> <span class="ctx-red">91%</span> context   supervised   <span class="r-warning">budget warning</span>                                </span></span></div>
+    </div>
+    <div class="group-note">
+      Context percentage transitions
+      <span class="ctx-green">green</span> (&lt;50%) →
+      <span class="ctx-yellow">yellow</span> (50-80%) →
+      <span class="ctx-red">red</span> (&gt;80%).
+      All on <span style="background:var(--surface-2);padding:1px 6px;border-radius:3px">#1E242E</span> surface.
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ -->
+<div class="section-divider">04 — Dialogs & Input</div>
+<!-- ═══════════════════════════════════════ -->
+
+<section class="section">
+  <div class="section-label">Overlays</div>
+  <div class="section-title">Approval Dialog & Prompt Box</div>
+  <div class="section-desc">
+    The approval dialog captures focus when a tool call needs permission.
+    The prompt box sits below the status bar with a box-drawing border.
+  </div>
+
+  <div class="group-entry">
+    <div class="group-label">Tool approval overlay</div>
+    <div class="term">
+      <div class="term-titlebar">
+        <div class="term-dots"><span class="term-dot r"></span><span class="term-dot y"></span><span class="term-dot g"></span></div>
+        approval dialog
+      </div>
+      <div class="term-body"><span class="line">   <span class="approval-box"><span class="r-warning">Tool approval required: shell</span>
+   <span class="r-meta">command: git diff --stat HEAD~1</span>
+   <span class="r-meta">Tool wants to execute a shell command.</span>
+   <span class="separator">&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;</span>
+   <span class="r-asst-label">  &gt; Approve</span>
+   <span class="r-meta">    Deny</span>
+   <span class="r-meta">    Approve always</span>
+   <span class="r-meta">    Deny always</span></span></span></div>
+    </div>
+    <div class="group-note">
+      Title: <span class="r-warning">warning amber</span>.
+      Selected option: <span class="r-asst-label">assistant blue</span>.
+      Separator between info and choices.
+    </div>
+  </div>
+
+  <div class="group-entry">
+    <div class="group-label">Prompt box with cursor</div>
+    <div class="term">
+      <div class="term-titlebar">
+        <div class="term-dots"><span class="term-dot r"></span><span class="term-dot y"></span><span class="term-dot g"></span></div>
+        prompt input
+      </div>
+      <div class="term-body"><span class="line"><span class="status-bar"> <span class="ctx-green">12%</span> context   supervised   <span class="r-meta">idle</span>                                          </span></span>
+<span class="line"> <span class="r-prompt-border">&#9484;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9488;</span></span>
+<span class="line"> <span class="r-prompt-border">&#9474;</span> <span class="r-user">explain the theme struct&#9608;</span><span style="color:var(--bg)">&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;</span> <span class="r-prompt-border">&#9474;</span></span>
+<span class="line"> <span class="r-prompt-border">&#9492;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9496;</span></span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ -->
+<div class="section-divider">05 — Layout Anatomy</div>
+<!-- ═══════════════════════════════════════ -->
+
+<section class="section">
+  <div class="section-label">Structure</div>
+  <div class="section-title">Viewport Panel Layout</div>
+  <div class="section-desc">
+    The viewport is divided into three panels stacked vertically.
+    Message history fills remaining space; status bar and prompt are fixed-height.
+  </div>
+
+  <div class="group-entry">
+    <div class="group-label">Panel stack</div>
+    <div class="anatomy">
+      <div class="anatomy-row">
+        <div class="anatomy-label">fill</div>
+        <div class="anatomy-visual anatomy-fill">
+          <div style="padding:6px 10px;color:var(--meta);font-size:11px">
+            <span style="color:var(--page-ink-3)">message-history-panel</span><br>
+            <span class="r-user-label">&gt;</span> <span style="color:var(--fg)">user message</span><br>
+            <span class="r-asst-label">&gt;</span> <span style="color:var(--fg)">assistant response...</span><br>
+            <span style="color:var(--page-ink-3)">&#8942; scrollable</span>
+          </div>
+        </div>
+      </div>
+      <div class="anatomy-row">
+        <div class="anatomy-label">fixed 1 row</div>
+        <div class="anatomy-visual anatomy-status"> <span class="ctx-green">24%</span> context   supervised   <span class="r-meta">idle</span></div>
+      </div>
+      <div class="anatomy-row">
+        <div class="anatomy-label">fixed 3 rows</div>
+        <div class="anatomy-visual anatomy-prompt">
+          <span class="r-prompt-border">&#9484;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9488;</span>
+<span class="r-prompt-border">&#9474;</span> <span style="color:var(--fg)">&#9608;</span>                               <span class="r-prompt-border">&#9474;</span>
+<span class="r-prompt-border">&#9492;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9496;</span></div>
+      </div>
+    </div>
+    <div class="group-note">
+      VStack layout: [fill, fixed-1, fixed-3]. The fill panel gets
+      viewport-height minus 4 rows. Overlay dialogs render on top of
+      the message history.
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ -->
+<div class="section-divider">06 — Color Palette</div>
+<!-- ═══════════════════════════════════════ -->
+
+<section class="section">
+  <div class="section-label">Palette</div>
+  <div class="section-title">14 Named Colors</div>
+  <div class="section-desc">
+    Tokyo Night-inspired palette. Surfaces are cool blue-gray; accents are warm.
+    Every color is defined once in the <code style="color:var(--fg);background:var(--code-bg);padding:1px 4px;border-radius:3px">define-theme</code> form
+    and resolved at runtime through the theme struct.
+  </div>
+
+  <div class="group-entry">
+    <div class="group-label">Continuous palette strip</div>
+    <div class="palette-row">
+      <div class="palette-chip palette-chip--light" style="background:#101218"><span class="palette-chip-label">bg</span></div>
+      <div class="palette-chip palette-chip--light" style="background:#1E242E"><span class="palette-chip-label">surface</span></div>
+      <div class="palette-chip palette-chip--light" style="background:#242A36"><span class="palette-chip-label">code-bg</span></div>
+      <div class="palette-chip palette-chip--light" style="background:#3A4656"><span class="palette-chip-label">border</span></div>
+      <div class="palette-chip palette-chip--light" style="background:#747C8A"><span class="palette-chip-label">meta</span></div>
+      <div class="palette-chip" style="background:#A0AABA"><span class="palette-chip-label">system</span></div>
+      <div class="palette-chip" style="background:#DCE2EC"><span class="palette-chip-label">fg</span></div>
+    </div>
+    <div class="palette-row">
+      <div class="palette-chip" style="background:#E0AF68"><span class="palette-chip-label">user</span></div>
+      <div class="palette-chip" style="background:#7AA2F7"><span class="palette-chip-label">asst</span></div>
+      <div class="palette-chip" style="background:#7DCFFF"><span class="palette-chip-label">tool</span></div>
+      <div class="palette-chip" style="background:#9ECE6A"><span class="palette-chip-label">green</span></div>
+      <div class="palette-chip" style="background:#F0C674"><span class="palette-chip-label">warning</span></div>
+      <div class="palette-chip" style="background:#F28FAD"><span class="palette-chip-label">error</span></div>
+      <div class="palette-chip" style="background:#6D8CBD"><span class="palette-chip-label">prompt</span></div>
+    </div>
+  </div>
+
+  <div class="group-entry">
+    <div class="group-label">Full reference</div>
+    <div class="color-grid">
+      <div class="color-swatch"><div class="swatch-box" style="background:#101218"></div><div class="swatch-info"><div class="swatch-name">Background</div><div class="swatch-hex">#101218</div></div></div>
+      <div class="color-swatch"><div class="swatch-box" style="background:#DCE2EC"></div><div class="swatch-info"><div class="swatch-name">Foreground</div><div class="swatch-hex">#DCE2EC</div></div></div>
+      <div class="color-swatch"><div class="swatch-box" style="background:#1E242E"></div><div class="swatch-info"><div class="swatch-name">Surface</div><div class="swatch-hex">#1E242E</div></div></div>
+      <div class="color-swatch"><div class="swatch-box" style="background:#242A36"></div><div class="swatch-info"><div class="swatch-name">Code bg</div><div class="swatch-hex">#242A36</div></div></div>
+      <div class="color-swatch"><div class="swatch-box" style="background:#3A4656"></div><div class="swatch-info"><div class="swatch-name">Fence / border</div><div class="swatch-hex">#3A4656</div></div></div>
+      <div class="color-swatch"><div class="swatch-box" style="background:#747C8A"></div><div class="swatch-info"><div class="swatch-name">Meta</div><div class="swatch-hex">#747C8A</div></div></div>
+      <div class="color-swatch"><div class="swatch-box" style="background:#A0AABA"></div><div class="swatch-info"><div class="swatch-name">System</div><div class="swatch-hex">#A0AABA</div></div></div>
+      <div class="color-swatch"><div class="swatch-box" style="background:#6D8CBD"></div><div class="swatch-info"><div class="swatch-name">Prompt border</div><div class="swatch-hex">#6D8CBD</div></div></div>
+      <div class="color-swatch"><div class="swatch-box" style="background:#E0AF68"></div><div class="swatch-info"><div class="swatch-name">User label</div><div class="swatch-hex">#E0AF68</div></div></div>
+      <div class="color-swatch"><div class="swatch-box" style="background:#7AA2F7"></div><div class="swatch-info"><div class="swatch-name">Assistant label</div><div class="swatch-hex">#7AA2F7</div></div></div>
+      <div class="color-swatch"><div class="swatch-box" style="background:#7DCFFF"></div><div class="swatch-info"><div class="swatch-name">Tool label</div><div class="swatch-hex">#7DCFFF</div></div></div>
+      <div class="color-swatch"><div class="swatch-box" style="background:#9ECE6A"></div><div class="swatch-info"><div class="swatch-name">Context green</div><div class="swatch-hex">#9ECE6A</div></div></div>
+      <div class="color-swatch"><div class="swatch-box" style="background:#F0C674"></div><div class="swatch-info"><div class="swatch-name">Warning / keyword</div><div class="swatch-hex">#F0C674</div></div></div>
+      <div class="color-swatch"><div class="swatch-box" style="background:#F28FAD"></div><div class="swatch-info"><div class="swatch-name">Error / context red</div><div class="swatch-hex">#F28FAD</div></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ -->
+<div class="section-divider">07 — Before &amp; After</div>
+<!-- ═══════════════════════════════════════ -->
+
+<section class="section">
+  <div class="section-label">Comparison</div>
+  <div class="section-title">Hardcoded Neon vs. Theme DSL</div>
+  <div class="section-desc">
+    The old rendering used direct ANSI escapes with harsh saturated colors,
+    reverse-video for inline code, and a maroon status bar. The new version
+    resolves everything through the theme.
+  </div>
+
+  <div class="group-entry">
+    <div class="comparison">
+      <div>
+        <div class="comparison-label">Before (hardcoded neon)</div>
+        <div class="term term--wide">
+          <div class="term-body" style="font-size:12px"><span class="line" style="color:#82D2FF;font-weight:bold"> </span><span style="color:#82D2FF">Show me the diff.</span></span>
+<span class="line blank"></span>
+<span class="line" style="color:#96EB9A"> I found 3 changed files:</span>
+<span class="line" style="color:#96EB9A"> - </span><span style="color:#AFD7FF;background:#000;padding:0 2px">theme.lisp</span><span style="color:#96EB9A"> (new)</span></span>
+<span class="line blank"></span>
+<span class="line"><span style="color:#FFD078;font-weight:bold">SYSTEM&gt;</span> <span style="color:#FFD078">Session ready.</span></span>
+<span class="line blank"></span>
+<span class="line"><span style="background:#800000;color:#DDD;font-weight:bold;display:block;padding:0 8px"> 45% context   supervised   streaming                                         </span></span></div>
+        </div>
+      </div>
+      <div>
+        <div class="comparison-label">After (amoebum-dark)</div>
+        <div class="term term--wide">
+          <div class="term-body" style="font-size:12px"><span class="line"> <span class="r-user-label">&gt;</span> <span class="r-user">Show me the diff.</span></span>
+<span class="line blank"></span>
+<span class="line"> <span class="r-asst-label">&gt;</span> <span class="r-asst">I found 3 changed files:</span></span>
+<span class="line">   <span class="r-asst">- </span><span class="r-asst inline-code">theme.lisp</span><span class="r-asst"> (new)</span></span>
+<span class="line blank"></span>
+<span class="line"> <span class="r-system">&gt;</span> <span class="r-system">Session ready.</span></span>
+<span class="line blank"></span>
+<span class="line"><span class="status-bar"> <span class="ctx-yellow">45%</span> context   supervised   <span class="r-meta">streaming</span>                                         </span></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ -->
+<div class="section-divider">08 — Theme DSL</div>
+<!-- ═══════════════════════════════════════ -->
+
+<section class="section">
+  <div class="section-label">Infrastructure</div>
+  <div class="section-title">The <code style="font-family:var(--font-mono);font-size:24px;color:var(--asst-label)">define-theme</code> Macro</div>
+  <div class="section-desc">
+    Themes are first-class ptui objects. The macro expands to a struct definition,
+    a defvar binding, and registration in the global theme registry. Parent themes
+    provide fallback resolution for any role not explicitly defined.
+  </div>
+
+  <div class="group-entry">
+    <div class="group-label">Amoebum dark theme definition (abridged)</div>
+    <div class="dsl-block"><span class="dsl-cmt">;; ptui/src/core/theme.lisp provides define-theme</span>
+(<span class="dsl-kw">define-theme</span> <span class="dsl-sym">amoebum-dark</span>
+  (<span class="dsl-role">:base</span> <span class="dsl-role">:dark</span>)                              <span class="dsl-cmt">; inherit built-in dark base</span>
+  (<span class="dsl-role">:background</span> (rgb <span class="dsl-num">16</span> <span class="dsl-num">18</span> <span class="dsl-num">24</span>))
+  (<span class="dsl-role">:foreground</span> (rgb <span class="dsl-num">220</span> <span class="dsl-num">226</span> <span class="dsl-num">236</span>))
+
+  (<span class="dsl-role">:roles</span>
+    (<span class="dsl-role">:user-label</span>      <span class="dsl-role">:fg</span> (rgb <span class="dsl-num">224</span> <span class="dsl-num">175</span> <span class="dsl-num">104</span>) <span class="dsl-role">:boldp</span> t)
+    (<span class="dsl-role">:assistant-label</span> <span class="dsl-role">:fg</span> (rgb <span class="dsl-num">122</span> <span class="dsl-num">162</span> <span class="dsl-num">247</span>) <span class="dsl-role">:boldp</span> t)
+    (<span class="dsl-role">:assistant</span>       <span class="dsl-role">:fg</span> (rgb <span class="dsl-num">220</span> <span class="dsl-num">226</span> <span class="dsl-num">236</span>))
+    (<span class="dsl-role">:tool-label</span>      <span class="dsl-role">:fg</span> (rgb <span class="dsl-num">125</span> <span class="dsl-num">207</span> <span class="dsl-num">255</span>) <span class="dsl-role">:boldp</span> t)
+    (<span class="dsl-role">:warning</span>         <span class="dsl-role">:fg</span> (rgb <span class="dsl-num">240</span> <span class="dsl-num">198</span> <span class="dsl-num">116</span>) <span class="dsl-role">:boldp</span> t)
+    (<span class="dsl-role">:error</span>           <span class="dsl-role">:fg</span> (rgb <span class="dsl-num">242</span> <span class="dsl-num">143</span> <span class="dsl-num">173</span>) <span class="dsl-role">:boldp</span> t)
+    (<span class="dsl-role">:status-bar</span>      <span class="dsl-role">:fg</span> (rgb <span class="dsl-num">160</span> <span class="dsl-num">170</span> <span class="dsl-num">186</span>) <span class="dsl-role">:bg</span> (rgb <span class="dsl-num">30</span> <span class="dsl-num">36</span> <span class="dsl-num">46</span>)))
+
+  (<span class="dsl-role">:markdown</span>
+    (<span class="dsl-role">:code-background</span>        (rgb <span class="dsl-num">36</span> <span class="dsl-num">42</span> <span class="dsl-num">54</span>))
+    (<span class="dsl-role">:inline-code-background</span> (rgb <span class="dsl-num">36</span> <span class="dsl-num">42</span> <span class="dsl-num">54</span>))
+    (<span class="dsl-role">:fence-color</span>            (rgb <span class="dsl-num">58</span> <span class="dsl-num">70</span> <span class="dsl-num">86</span>))
+    (<span class="dsl-role">:keyword-color</span>          (rgb <span class="dsl-num">240</span> <span class="dsl-num">198</span> <span class="dsl-num">116</span>))
+    (<span class="dsl-role">:heading-color</span>          (rgb <span class="dsl-num">122</span> <span class="dsl-num">162</span> <span class="dsl-num">247</span>))))</div>
+    <div class="group-note">
+      The macro validates all <code style="color:var(--fg);background:var(--code-bg);padding:1px 4px;border-radius:3px">(rgb r g b)</code> forms at compile time.
+      Runtime resolution walks the parent chain:
+      <code style="color:var(--fg);background:var(--code-bg);padding:1px 4px;border-radius:3px">theme-resolve-role</code> checks the current theme's roles hash,
+      then the parent's, then the parent's parent.
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ -->
+<div class="section-divider">09 — Role Reference</div>
+<!-- ═══════════════════════════════════════ -->
+
+<section class="section">
+  <div class="section-label">Reference</div>
+  <div class="section-title">All 20 Defined Roles</div>
+  <div class="section-desc">
+    Every role used across chat, streaming, status bar, and dialogs.
+    Roles resolve through the theme — changing the theme changes all of these at once.
+  </div>
+
+  <div class="group-entry">
+    <table class="role-table">
+      <thead>
+        <tr>
+          <th>Role</th>
+          <th>Fg</th>
+          <th>Bg</th>
+          <th>Attrs</th>
+          <th>Used for</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><span class="r-user-label">:user-label</span></td><td>#E0AF68</td><td>—</td><td>bold</td><td class="td-used">User &gt; prefix</td></tr>
+        <tr><td><span class="r-asst-label">:assistant-label</span></td><td>#7AA2F7</td><td>—</td><td>bold</td><td class="td-used">Assistant &gt; prefix</td></tr>
+        <tr><td><span class="r-tool-label">:tool-label</span></td><td>#7DCFFF</td><td>—</td><td>bold</td><td class="td-used">Tool &gt; prefix</td></tr>
+        <tr><td><span class="r-asst">:assistant</span></td><td>#DCE2EC</td><td>—</td><td>—</td><td class="td-used">Assistant body text</td></tr>
+        <tr><td><span class="r-user">:user</span></td><td>#DCE2EC</td><td>—</td><td>—</td><td class="td-used">User body text</td></tr>
+        <tr><td><span class="r-tool">:tool</span></td><td>#7DCFFF</td><td>—</td><td>—</td><td class="td-used">Tool output</td></tr>
+        <tr><td><span class="r-system">:system</span></td><td>#A0AABA</td><td>—</td><td>—</td><td class="td-used">System messages</td></tr>
+        <tr><td><span class="r-heading">:assistant-heading</span></td><td>#7AA2F7</td><td>—</td><td>bold</td><td class="td-used">Markdown headings</td></tr>
+        <tr><td><span class="r-code">:assistant-code</span></td><td>#DCE2EC</td><td>—</td><td>—</td><td class="td-used">Fenced code body</td></tr>
+        <tr><td><span class="r-kw">:assistant-code-keyword</span></td><td>#F0C674</td><td>—</td><td>bold</td><td class="td-used">Code markers</td></tr>
+        <tr><td><span class="r-fence">:assistant-code-fence</span></td><td>#3A4656</td><td>—</td><td>dim</td><td class="td-used">``` and &#9474; rule</td></tr>
+        <tr><td><span class="inline-code">:assistant-inline-code</span></td><td>#DCE2EC</td><td>#242A36</td><td>—</td><td class="td-used">Inline `code`</td></tr>
+        <tr><td><span class="r-warning">:warning</span></td><td>#F0C674</td><td>—</td><td>bold</td><td class="td-used">Warnings, dialog titles</td></tr>
+        <tr><td><span class="r-error">:error</span></td><td>#F28FAD</td><td>—</td><td>bold</td><td class="td-used">Errors</td></tr>
+        <tr><td><span class="r-meta">:meta</span></td><td>#747C8A</td><td>—</td><td>—</td><td class="td-used">Dim secondary text</td></tr>
+        <tr><td><span style="background:var(--surface-2);padding:2px 6px;border-radius:3px">:status-bar</span></td><td>#A0AABA</td><td>#1E242E</td><td>—</td><td class="td-used">Status bar</td></tr>
+        <tr><td><span class="ctx-green">:context-green</span></td><td>#9ECE6A</td><td>#1E242E</td><td>bold</td><td class="td-used">Context &lt; 50%</td></tr>
+        <tr><td><span class="ctx-yellow">:context-yellow</span></td><td>#F0C674</td><td>#1E242E</td><td>bold</td><td class="td-used">Context 50-80%</td></tr>
+        <tr><td><span class="ctx-red">:context-red</span></td><td>#F28FAD</td><td>#1E242E</td><td>bold</td><td class="td-used">Context &gt; 80%</td></tr>
+        <tr><td><span class="r-prompt-border">:prompt-border</span></td><td>#6D8CBD</td><td>—</td><td>—</td><td class="td-used">Prompt box border</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════ -->
+<div class="section-divider" style="border-bottom:none; text-align:center; color:var(--page-ink-3); padding:32px 48px;">
+  ptui &middot; amoebum &middot; define-theme
+</div>
+
+</body>
+</html>

@@ -58,6 +58,7 @@ Short API docs for the reusable text and layout systems:
 
 - `ptui/docs/text-layout-api.md`
 - `ptui/docs/metrics-dashboard-parity.md`
+- `ptui/docs/positioning.md`
 
 ## Quicklisp + Dependency Setup
 

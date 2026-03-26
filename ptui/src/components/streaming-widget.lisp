@@ -125,14 +125,13 @@
   (max 1 (length (streaming-widget-state-wrapped-lines state))))
 
 (defun %max-scroll-offset (state viewport-height)
-  (max 0 (- (%line-count state) (max 1 viewport-height))))
+  (ptui.util.scroll:max-scroll-offset (%line-count state) viewport-height))
 
 (defun %clamp-scroll-offset! (state &optional viewport-height)
   (let* ((height (or viewport-height (%safe-height state)))
-         (max-offset (%max-scroll-offset state height))
          (offset (streaming-widget-state-scroll-offset state)))
     (setf (streaming-widget-state-scroll-offset state)
-          (max 0 (min max-offset offset))))
+          (ptui.util.scroll:clamp-scroll-offset offset (%line-count state) height)))
   state)
 
 (defun make-streaming-widget-state (&key
@@ -309,9 +308,12 @@
   (check-type delta integer)
   (check-type viewport-height (integer 1 *))
   (setf (streaming-widget-state-viewport-height state) viewport-height)
-  (let* ((max-offset (%max-scroll-offset state viewport-height))
-         (next-offset (+ (streaming-widget-state-scroll-offset state) delta))
-         (clamped-offset (max 0 (min max-offset next-offset))))
+  (let* ((clamped-offset
+           (ptui.util.scroll:apply-scroll-delta
+            (streaming-widget-state-scroll-offset state)
+            delta
+            (%line-count state)
+            viewport-height)))
     (setf (streaming-widget-state-scroll-offset state) clamped-offset)
     (cond
       ((> clamped-offset 0)
@@ -341,29 +343,21 @@
   (unless (typep event 'ptui.core.events:key-event)
     (return-from streaming-widget-handle-event
       (list :action :ignored :state state)))
-  (let* ((key (ptui.core.events:key-event-key event))
-         (page-step (max 1 (1- viewport-height))))
-    (cond
-      ((eq key :up)
-       (streaming-widget-scroll state 1 :viewport-height viewport-height)
-       (list :action :scrolled :delta 1 :state state))
-      ((eq key :down)
-       (streaming-widget-scroll state -1 :viewport-height viewport-height)
-       (list :action :scrolled :delta -1 :state state))
-      ((eq key :page-up)
-       (streaming-widget-scroll state page-step :viewport-height viewport-height)
-       (list :action :scrolled :delta page-step :state state))
-      ((eq key :page-down)
-       (streaming-widget-scroll state (- page-step) :viewport-height viewport-height)
-       (list :action :scrolled :delta (- page-step) :state state))
-      ((eq key :home)
-       (streaming-widget-scroll-home state :viewport-height viewport-height)
-       (list :action :scrolled-home :state state))
-      ((eq key :end)
-       (streaming-widget-scroll-end state)
-       (list :action :scrolled-end :state state))
-      (t
-       (list :action :ignored :state state)))))
+  (let ((key (ptui.core.events:key-event-key event)))
+    (multiple-value-bind (action delta)
+        (ptui.util.scroll:key-scroll-action key :viewport-height viewport-height)
+      (case action
+        (:delta
+         (streaming-widget-scroll state delta :viewport-height viewport-height)
+         (list :action :scrolled :delta delta :state state))
+        (:home
+         (streaming-widget-scroll-home state :viewport-height viewport-height)
+         (list :action :scrolled-home :state state))
+        (:end
+         (streaming-widget-scroll-end state)
+         (list :action :scrolled-end :state state))
+        (otherwise
+         (list :action :ignored :state state))))))
 
 (defun %status-line (state)
   (format nil "stream ~A | follow ~:[off~;on~] | +~D"
