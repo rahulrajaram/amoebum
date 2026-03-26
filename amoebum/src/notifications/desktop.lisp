@@ -1,10 +1,10 @@
 (in-package :amoebum)
 
 (defparameter *desktop-notification-run-command-function* #'pseudopod:run-command)
-(defparameter *desktop-notifications-suppressed* nil
+(defparameter *desktop-notifications-suppressed* t
   "When non-NIL, send-desktop-notification returns immediately without
-firing notify-send.  Set to T in headless/batch/CI modes to avoid
-polluting the user's desktop during non-interactive runs.")
+firing notify-send.  Defaults to T (suppressed) so desktop notifications
+are opt-in.  Bind to NIL in contexts that explicitly want popups.")
 
 (defun %desktop-shell-quote (text)
   (format nil "'~A'"

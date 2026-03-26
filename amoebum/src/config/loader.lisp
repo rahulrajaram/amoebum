@@ -77,7 +77,9 @@
       (:model (setf (config-model cfg) final-value))
       (:permission-mode (setf (config-permission-mode cfg) final-value))
       (:memory-backend (setf (config-memory-backend cfg) final-value))
-      (:project-root (setf (config-project-root cfg) final-value)))
+      (:project-root (setf (config-project-root cfg) final-value))
+      (:theme-yaml (when (fboundp 'yaml-theme-config-handler)
+                     (yaml-theme-config-handler final-value project-root))))
     cfg))
 
 (defun %apply-layer-values (cfg layer-values layer-source project-root)

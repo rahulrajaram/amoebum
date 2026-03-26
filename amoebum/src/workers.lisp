@@ -31,7 +31,7 @@
   (error-message nil :type (or null string))
   (retry-count 0 :type integer)
   (max-retries 0 :type integer)
-  (backend :in-process :type keyword)     ; :in-process, :overwatch
+  (backend :in-process :type keyword)     ; :in-process, :overwatch, :swarm
   (inner-id nil :type (or null string)))  ; underlying shell-task-id or agent-id
 
 ;;; --- Worker event types ---
@@ -188,7 +188,8 @@
       (:agent
        (%spawn-agent-worker worker command
                             :persona persona
-                            :system-prompt-override system-prompt-override))
+                            :system-prompt-override system-prompt-override
+                            :timeout-seconds timeout-seconds))
       (:process
        (%spawn-shell-worker worker command
                             :cwd cwd
@@ -246,54 +247,71 @@
                           :info :error)))))
      :name (format nil "amoebum-worker-~A" worker-id))))
 
-(defun %spawn-agent-worker (worker command &key persona system-prompt-override)
-  (let* ((agent (spawn-agent (if (stringp command)
-                                 command
-                                 (princ-to-string command))
-                             :agent-type :task
-                             :persona persona
-                             :system-prompt (or system-prompt-override nil)))
-         (agent-id (agent-record-id agent)))
-    (%with-worker-lock
-      (setf (worker-record-inner-id worker) agent-id
-            (worker-record-status worker) :running
-            (worker-record-started-at worker) (%worker-now)))
-    (%publish-worker-event +event-type-worker-started+ worker)
-    ;; Monitor agent completion in a thread
-    #+sb-thread
-    (sb-thread:make-thread
-     (lambda ()
-       (loop
-         (let ((agent-rec (find-agent agent-id)))
-           (unless agent-rec (return))
-           (when (member (agent-record-status agent-rec)
-                         '(:completed :failed :cancelled) :test #'eq)
-             (%with-worker-lock
-               (setf (worker-record-finished-at worker) (%worker-now)
-                     (worker-record-status worker)
-                     (case (agent-record-status agent-rec)
-                       (:completed :completed)
-                       (:cancelled :cancelled)
-                       (otherwise :failed))
-                     (worker-record-result worker)
-                     (list :agent-id agent-id
-                           :status (agent-record-status agent-rec)
-                           :result (agent-record-result agent-rec))
-                     (worker-record-output-buffer worker)
-                     (%agent-output-string agent-rec)
-                     (worker-record-error-message worker)
-                     (agent-record-error-message agent-rec)))
-             (%publish-worker-event
-              (case (worker-record-status worker)
-                (:completed +event-type-worker-completed+)
-                (:cancelled +event-type-worker-cancelled+)
-                (otherwise +event-type-worker-failed+))
-              worker
-              :severity (if (eq (worker-record-status worker) :completed)
-                            :info :error))
-             (return)))
-         (sleep 0.5)))
-     :name (format nil "amoebum-worker-monitor-~A" (worker-record-id worker)))))
+(defun %worker-agent-backend-keyword (backend)
+  (ecase backend
+    (:local :in-process)
+    (:swarm :swarm)))
+
+(defun %worker-status-from-delegated-agent (status)
+  (case status
+    (:completed :completed)
+    (:cancelled :cancelled)
+    (:timeout :timeout)
+    (otherwise :failed)))
+
+(defun %spawn-agent-worker (worker command &key persona system-prompt-override timeout-seconds)
+  (multiple-value-bind (record backend)
+      (%spawn-task-via-configured-backend
+       (if (stringp command)
+           command
+           (princ-to-string command))
+       :config (ignore-errors (current-config))
+       :agent-type :task
+       :persona persona
+       :system-prompt (or system-prompt-override nil)
+       :timeout-seconds timeout-seconds)
+    (let ((agent-id (%spawned-delegation-record-id record backend)))
+      (%with-worker-lock
+        (setf (worker-record-inner-id worker) agent-id
+              (worker-record-backend worker) (%worker-agent-backend-keyword backend)
+              (worker-record-status worker) :running
+              (worker-record-started-at worker) (%worker-now)))
+      (%publish-worker-event +event-type-worker-started+ worker)
+      ;; Monitor agent completion in a thread
+      #+sb-thread
+      (sb-thread:make-thread
+       (lambda ()
+         (loop
+           (let ((agent-rec (find-runtime-agent agent-id :backend backend)))
+             (unless agent-rec (return))
+             (let ((agent-status (runtime-agent-status agent-rec :backend backend)))
+               (when (runtime-agent-terminal-p agent-rec :backend backend)
+               (%with-worker-lock
+                 (setf (worker-record-finished-at worker) (%worker-now)
+                       (worker-record-status worker)
+                       (%worker-status-from-delegated-agent
+                        agent-status)
+                       (worker-record-result worker)
+                       (list :agent-id agent-id
+                             :backend backend
+                             :status agent-status
+                             :result (runtime-agent-result agent-rec :backend backend))
+                       (worker-record-output-buffer worker)
+                       (runtime-agent-output agent-rec :backend backend)
+                       (worker-record-error-message worker)
+                       (runtime-agent-error-message agent-rec :backend backend)))
+               (%publish-worker-event
+                (case (worker-record-status worker)
+                  (:completed +event-type-worker-completed+)
+                  (:cancelled +event-type-worker-cancelled+)
+                  (:timeout +event-type-worker-failed+)
+                  (otherwise +event-type-worker-failed+))
+                worker
+                :severity (if (eq (worker-record-status worker) :completed)
+                              :info :error))
+                 (return))))
+           (sleep 0.5)))
+       :name (format nil "amoebum-worker-monitor-~A" (worker-record-id worker))))))
 
 (defmethod supervisor-status ((supervisor in-process-supervisor) worker-id)
   (let ((worker (%find-worker worker-id)))
@@ -314,7 +332,9 @@
     ;; Delegate cancellation to underlying system
     (let ((inner-id (worker-record-inner-id worker)))
       (when (and inner-id (eq (worker-record-type worker) :agent))
-        (cancel-agent inner-id)))
+        (if (eq (worker-record-backend worker) :swarm)
+            (kill-swarm-agent inner-id)
+            (cancel-agent inner-id))))
     (%with-worker-lock
       (setf (worker-record-status worker) :cancelled
             (worker-record-finished-at worker) (%worker-now)))

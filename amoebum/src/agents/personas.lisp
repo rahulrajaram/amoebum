@@ -8,7 +8,7 @@
 ;;;   name: code-reviewer
 ;;;   description: Expert at analyzing code for bugs
 ;;;   capabilities: [code-review, static-analysis]
-;;;   model: claude-opus-4-6
+;;;   model: moonshot-v1-128k
 ;;;   ---
 ;;;   You are an expert code reviewer...
 ;;; ============================================================

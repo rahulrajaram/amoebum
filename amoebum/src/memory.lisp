@@ -281,15 +281,25 @@
                               :source source))))
       (t nil))))
 
-(defun %read-memory-file (path scope source)
-  (if (and path (probe-file path))
-      (with-open-file (stream path :direction :input)
-        (loop for line = (read-line stream nil nil)
-              while line
-              for parsed = (%parse-memory-line line scope source)
-              when parsed
-                collect parsed))
-      '()))
+(defun %parse-memory-import-line (line)
+  (let ((trimmed (%trim-text line)))
+    (when (and (plusp (length trimmed))
+               (char= (char trimmed 0) #\@))
+      (let ((target (%trim-text (subseq trimmed 1))))
+        (when (plusp (length target))
+          (if (and (> (length target) 1)
+                   (member (char target 0) '(#\" #\'))
+                   (char= (char target 0) (char target (1- (length target)))))
+              (subseq target 1 (1- (length target)))
+              target))))))
+
+(defun %resolve-memory-import-path (base-path import-spec)
+  (let* ((base-directory (make-pathname :name nil
+                                        :type nil
+                                        :defaults base-path))
+         (candidate (ignore-errors (merge-pathnames import-spec base-directory))))
+    (and candidate
+         (ignore-errors (probe-file candidate)))))
 
 (defun %sort-memory-entries (entries)
   (sort (copy-list entries)
@@ -338,12 +348,173 @@
       (setf (gethash (memory-entry-key entry) table) entry))
     table))
 
+(defun %project-topic-memory-index-path (project-root)
+  (merge-pathnames #P".amoebum/memory/MEMORY.md"
+                   (uiop:ensure-directory-pathname project-root)))
+
+(defun %resolved-path-equal-p (left right)
+  (let ((left* (and left (ignore-errors (probe-file left))))
+        (right* (and right (ignore-errors (probe-file right)))))
+    (and left*
+         right*
+         (string= (coerce-path-string left*)
+                  (coerce-path-string right*)))))
+
+(defun %memory-source-scope-for-path (backend path &optional default-scope)
+  (let* ((resolved (and path (ignore-errors (probe-file path))))
+         (project-root (%memory-project-root backend))
+         (topic-directory (%topic-memory-directory project-root))
+         (source-path (and resolved (coerce-path-string resolved))))
+    (cond
+      ((and resolved
+            (%resolved-path-equal-p resolved
+                                    (file-memory-backend-global-path backend)))
+       :global)
+      ((and resolved
+            (%resolved-path-equal-p resolved
+                                    (file-memory-backend-project-path backend)))
+       :project)
+      ((and source-path
+            (%path-under-directory-p source-path
+                                     (coerce-path-string topic-directory)))
+       (list :topic (%normalize-topic-name-from-path resolved)))
+      (t
+       default-scope))))
+
+(defun %read-memory-file-data (path backend &key default-scope seen-paths)
+  (let* ((resolved (and path (ignore-errors (probe-file path))))
+         (seen (or seen-paths (make-hash-table :test #'equal))))
+    (cond
+      ((not resolved)
+       (values '() '()))
+      (t
+       (let ((source-path (coerce-path-string resolved)))
+         (if (gethash source-path seen)
+             (values '() '())
+             (let ((scope (%memory-source-scope-for-path backend resolved default-scope))
+                   (entries '())
+                   (local-entries '())
+                   (source-specs '()))
+               (setf (gethash source-path seen) t)
+               (with-open-file (stream resolved :direction :input)
+                 (loop for line = (read-line stream nil nil)
+                       while line do
+                         (let ((import-spec (%parse-memory-import-line line)))
+                           (cond
+                             (import-spec
+                              (multiple-value-bind (imported-entries imported-source-specs)
+                                  (%read-memory-file-data
+                                   (%resolve-memory-import-path resolved import-spec)
+                                   backend
+                                   :default-scope scope
+                                   :seen-paths seen)
+                                (setf entries (append entries imported-entries)
+                                      source-specs (append source-specs imported-source-specs))))
+                             (t
+                              (let ((parsed (%parse-memory-line line scope source-path)))
+                                (when parsed
+                                  (setf entries (append entries (list parsed))
+                                        local-entries (append local-entries (list parsed)))))))))
+               (values entries
+                       (append
+                        (list (list :path resolved
+                                    :source-path source-path
+                                    :scope scope
+                                    :entries (%sort-memory-entries local-entries)))
+                        source-specs))))))))))
+
+(defun %read-memory-file (path scope source)
+  (if (and path (probe-file path))
+      (with-open-file (stream path :direction :input)
+        (loop for line = (read-line stream nil nil)
+              while line
+              for parsed = (%parse-memory-line line scope source)
+              when parsed
+                collect parsed))
+      '()))
+
+(defun %memory-source-top-level-paths (backend scope)
+  (let* ((project-root (%memory-project-root backend))
+         (topic-index (%project-topic-memory-index-path project-root))
+         (topic-files (%topic-memory-files project-root)))
+    (remove nil
+            (case scope
+              (:global
+               (list (file-memory-backend-global-path backend)))
+              (:project
+               (list (file-memory-backend-project-path backend)))
+              (:topics
+               (append (list topic-index) topic-files))
+              (:effective
+               (append (list (file-memory-backend-global-path backend)
+                             topic-index)
+                       topic-files
+                       (list (file-memory-backend-project-path backend))))
+              (otherwise
+               '())))))
+
+(defun %load-memory-source-data (backend scope)
+  (let ((seen (make-hash-table :test #'equal))
+        (entries '())
+        (sources '()))
+    (dolist (path (%memory-source-top-level-paths backend scope))
+      (multiple-value-bind (path-entries path-sources)
+          (%read-memory-file-data path backend :seen-paths seen)
+        (setf entries (append entries path-entries)
+              sources (append sources path-sources))))
+    (values entries sources)))
+
+(defun %file-memory-source-specs (backend &key (scope :effective))
+  (nth-value 1 (%load-memory-source-data backend scope)))
+
+(defun %memory-source-scope-label (scope)
+  (case scope
+    (:global "global")
+    (:project "project")
+    (:session "session")
+    (otherwise
+     (%entry-scope-signature scope))))
+
+(defun %memory-entry-source-label (entry)
+  (let ((source (memory-entry-source entry)))
+    (cond
+      ((pathnamep source)
+       (namestring source))
+      ((and (stringp source)
+            (plusp (length (%trim-text source))))
+       source)
+      (t
+       (%memory-source-scope-label (memory-entry-scope entry))))))
+
+(defun %memory-entry-display-line (entry)
+  (format nil "- [~A] ~A [source: ~A]"
+          (memory-entry-key entry)
+          (memory-entry-value entry)
+          (%memory-entry-source-label entry)))
+
+(defun %memory-source-summary-lines (backend)
+  (if (not (file-memory-backend-p backend))
+      '()
+      (let ((sources (%file-memory-source-specs backend :scope :effective)))
+        (if sources
+            (loop for source in sources
+                  collect (format nil "- ~A: ~A (~D entr~:@P)"
+                                  (%memory-source-scope-label (getf source :scope))
+                                  (or (getf source :source-path) "n/a")
+                                  (length (getf source :entries))))
+            '("(none)")))))
+
+(defun %memory-entries-for-scope (backend scope)
+  (%sort-memory-entries
+   (nth-value 0 (%load-memory-source-data backend scope))))
+
+(defun %topic-memory-entries (backend)
+  (%memory-entries-for-scope backend :topics))
+
 (defun %effective-memory-entries (backend)
   (check-type backend file-memory-backend)
-  (let* ((global (%read-memory-file (file-memory-backend-global-path backend) :global :file))
-         (project (%read-memory-file (file-memory-backend-project-path backend) :project :file))
-         (table (%entries-by-key-table global)))
-    (dolist (entry project)
+  (let ((table (make-hash-table :test #'equal)))
+    (dolist (entry (nth-value 0 (%load-memory-source-data backend :effective)))
       (setf (gethash (memory-entry-key entry) table) entry))
     (%sort-memory-entries
      (loop for entry being the hash-values of table collect entry))))
@@ -379,11 +550,11 @@
 (defmethod memory-list ((backend file-memory-backend) &key (scope :effective))
   (case scope
     (:global
-     (%sort-memory-entries
-      (%read-memory-file (file-memory-backend-global-path backend) :global :file)))
+     (%memory-entries-for-scope backend :global))
     (:project
-     (%sort-memory-entries
-      (%read-memory-file (file-memory-backend-project-path backend) :project :file)))
+     (%memory-entries-for-scope backend :project))
+    (:topics
+     (%topic-memory-entries backend))
     (:session
      (%sort-memory-entries *session-memory-entries*))
     (:effective
@@ -467,12 +638,14 @@
         (session (memory-list backend :scope :session)))
     (with-output-to-string (out)
       (format out "Memory backend: ~A~%" (%event-backend-name backend))
+      (when (file-memory-backend-p backend)
+        (format out "Loaded sources:~%")
+        (dolist (line (%memory-source-summary-lines backend))
+          (write-line line out)))
       (format out "Effective entries: ~D~%" (length effective))
       (if effective
           (dolist (entry effective)
-            (format out "- [~A] ~A~%"
-                    (memory-entry-key entry)
-                    (memory-entry-value entry)))
+            (write-line (%memory-entry-display-line entry) out))
           (format out "(none)~%"))
       (format out "Session entries: ~D~%" (length session)))))
 
@@ -620,33 +793,12 @@
     table))
 
 (defun %collect-memory-import-sources (backend)
-  (let* ((source-backend (%make-source-backend backend))
-         (project-root (%memory-project-root source-backend))
-         (global-path (file-memory-backend-global-path source-backend))
-         (project-path (file-memory-backend-project-path source-backend))
-         (sources '()))
-    (when (and global-path (probe-file global-path))
-      (push (list :path global-path
-                  :scope :global
-                  :source-path (namestring global-path))
-            sources))
-    (when (and project-path (probe-file project-path))
-      (push (list :path project-path
-                  :scope :project
-                  :source-path (namestring project-path))
-            sources))
-    (dolist (topic-file (%topic-memory-files project-root))
-      (push (list :path topic-file
-                  :scope (list :topic (%normalize-topic-name-from-path topic-file))
-                  :source-path (namestring topic-file))
-            sources))
-    (nreverse sources)))
+  (let ((source-backend (%make-source-backend backend)))
+    (%file-memory-source-specs source-backend :scope :effective)))
 
 (defun %collect-memory-import-candidates (backend)
   (loop for source in (%collect-memory-import-sources backend)
-        append (loop for entry in (%read-memory-file (getf source :path)
-                                                     (getf source :scope)
-                                                     :file)
+        append (loop for entry in (copy-list (getf source :entries))
                      collect (list :entry entry
                                    :scope (getf source :scope)
                                    :source-path (getf source :source-path)))))

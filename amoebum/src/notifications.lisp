@@ -101,6 +101,9 @@
 (defparameter *notification-async-dispatch-p* t)
 (defparameter *notification-manager-registry* (make-hash-table :test #'eq))
 
+(declaim (special *desktop-notification-run-command-function*
+                  *desktop-notifications-suppressed*))
+
 ;; Implemented in src/notifications/desktop.lisp (I222).
 (declaim (ftype function send-desktop-notification))
 (declaim (ftype function desktop-notification-available-p))
@@ -501,12 +504,24 @@
   notification)
 
 (defun %dispatch-notification (manager notification)
-  (if *notification-async-dispatch-p*
-      (bordeaux-threads:make-thread
-       (lambda ()
-         (dispatch-notification manager notification))
-       :name "amoebum-notification-dispatch")
-      (dispatch-notification manager notification)))
+  (let ((desktop-notifications-suppressed-p *desktop-notifications-suppressed*)
+        (notification-command-runner *notification-command-runner*)
+        (notification-command-prober *notification-command-prober*)
+        (desktop-notification-run-command-function
+          *desktop-notification-run-command-function*))
+    (if *notification-async-dispatch-p*
+        (bordeaux-threads:make-thread
+         (lambda ()
+           ;; Preserve notification suppression and command mocks across
+           ;; background delivery so test verification never escapes to the OS.
+           (let ((*desktop-notifications-suppressed* desktop-notifications-suppressed-p)
+                 (*notification-command-runner* notification-command-runner)
+                 (*notification-command-prober* notification-command-prober)
+                 (*desktop-notification-run-command-function*
+                   desktop-notification-run-command-function))
+             (dispatch-notification manager notification)))
+         :name "amoebum-notification-dispatch")
+        (dispatch-notification manager notification))))
 
 (defun %notification-event-handler (manager event)
   (let ((trigger (%event-trigger event)))

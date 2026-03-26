@@ -64,6 +64,25 @@
   last-write-date
   message)
 
+(defstruct (extension-load-attempt
+            (:constructor make-extension-load-attempt
+                (&key scope
+                 file
+                 source-path
+                 metadata
+                 record-path
+                 entry-point
+                 extension-package
+                 package-name)))
+  scope
+  file
+  source-path
+  metadata
+  record-path
+  entry-point
+  extension-package
+  package-name)
+
 (defun %symbol-token (symbol)
   (and (symbolp symbol)
        (string-downcase (symbol-name symbol))))
@@ -858,6 +877,174 @@
            (%canonical-extension-path (getf metadata :manifest-path)))
       (%canonical-extension-path (getf metadata :path))))
 
+(defun %manifest-extension-file-p (file)
+  (and (string-equal (pathname-name file) "extension")
+       (string-equal (pathname-type file) "lisp")))
+
+(defun %source-file->metadata (file)
+  (if (%manifest-extension-file-p file)
+      (%manifest->metadata file)
+      (%legacy-file->metadata file)))
+
+(defun %fallback-error-metadata (file)
+  (if (%manifest-extension-file-p file)
+      (or (ignore-errors (%manifest->metadata file))
+          (list :kind :manifest
+                :name (let* ((parts (pathname-directory (%manifest-parent-directory file)))
+                             (last-part (and (listp parts) (car (last parts)))))
+                        (%ensure-string (or last-part "unknown-extension")))
+                :version "0.0.0"
+                :dependencies '()
+                :permissions '()
+                :entry-point (namestring file)
+                :manifest-path file
+                :extension-root (%manifest-parent-directory file)
+                :path file
+                :last-write-date (%safe-file-write-date file)))
+      (%legacy-file->metadata file)))
+
+(defun %metadata-extension-package (metadata)
+  (and (eq (getf metadata :kind) :manifest)
+       (%ensure-extension-package metadata)))
+
+(defun %make-extension-load-attempt-for-metadata (scope file metadata)
+  (let* ((entry-point (%resolve-entry-point metadata))
+         (extension-package (%metadata-extension-package metadata)))
+    (make-extension-load-attempt
+     :scope scope
+     :file file
+     :source-path (%canonical-extension-path file)
+     :metadata metadata
+     :record-path (%metadata-record-path metadata)
+     :entry-point entry-point
+     :extension-package extension-package
+     :package-name (and extension-package
+                        (package-name extension-package)))))
+
+(defun %prepare-extension-load-attempt (scope file)
+  (%make-extension-load-attempt-for-metadata scope
+                                             file
+                                             (%source-file->metadata file)))
+
+(defun %recover-extension-load-attempt (scope file)
+  (let* ((metadata (%fallback-error-metadata file))
+         (extension-package (and (eq (getf metadata :kind) :manifest)
+                                 (ignore-errors (%ensure-extension-package metadata))))
+         (entry-point (%resolve-entry-point metadata)))
+    (make-extension-load-attempt
+     :scope scope
+     :file file
+     :source-path (%canonical-extension-path file)
+     :metadata metadata
+     :record-path (%metadata-record-path metadata)
+     :entry-point entry-point
+     :extension-package extension-package
+     :package-name (and extension-package
+                        (package-name extension-package)))))
+
+(defun %attempt-entry-point-text (attempt)
+  (let ((entry-point (extension-load-attempt-entry-point attempt)))
+    (if (pathnamep entry-point)
+        (%canonical-extension-path entry-point)
+        (%ensure-string entry-point))))
+
+(defun %attempt-manifest-path-text (attempt)
+  (let ((manifest-path (getf (extension-load-attempt-metadata attempt) :manifest-path)))
+    (and manifest-path
+         (%canonical-extension-path manifest-path))))
+
+(defun %make-extension-load-record-from-attempt (attempt status &key message)
+  (let ((metadata (extension-load-attempt-metadata attempt)))
+    (make-extension-load-record
+     :path (extension-load-attempt-record-path attempt)
+     :scope (extension-load-attempt-scope attempt)
+     :name (getf metadata :name)
+     :version (getf metadata :version)
+     :dependencies (copy-list (or (getf metadata :dependencies) '()))
+     :permissions (copy-list (or (getf metadata :permissions) '()))
+     :package-name (extension-load-attempt-package-name attempt)
+     :entry-point (%attempt-entry-point-text attempt)
+     :manifest-path (%attempt-manifest-path-text attempt)
+     :status status
+     :message message)))
+
+(defun %register-extension-attempt (attempt status message)
+  (%register-extension (extension-load-attempt-metadata attempt)
+                       (extension-load-attempt-scope attempt)
+                       status
+                       message
+                       :extension-package (extension-load-attempt-extension-package attempt)))
+
+(defun %extension-attempt-disabled-p (attempt)
+  (extension-disabled-p (extension-load-attempt-record-path attempt)))
+
+(defun %handle-disabled-extension-attempt (attempt)
+  (%register-extension-attempt attempt :disabled "disabled by /extensions disable")
+  (values (%make-extension-load-record-from-attempt attempt
+                                                    :disabled
+                                                    :message "disabled by /extensions disable")
+          nil))
+
+(defun %load-enabled-extension-attempt (attempt)
+  (let ((metadata (extension-load-attempt-metadata attempt)))
+    (when (eq (getf metadata :kind) :manifest)
+      (%ensure-extension-permissions-approved metadata
+                                             (extension-load-attempt-scope attempt)))
+    (%load-entry-point (extension-load-attempt-entry-point attempt)
+                       metadata
+                       (extension-load-attempt-extension-package attempt))
+    (%register-extension-attempt attempt :loaded nil)
+    (%publish-extension-loaded (extension-load-attempt-record-path attempt)
+                               (extension-load-attempt-scope attempt))
+    (let ((record (%make-extension-load-record-from-attempt attempt :loaded)))
+      (values record record))))
+
+(defun %process-extension-candidate (candidate)
+  (let* ((scope (car candidate))
+         (file (cdr candidate))
+         (attempt (%prepare-extension-load-attempt scope file)))
+    (if (%extension-attempt-disabled-p attempt)
+        (%handle-disabled-extension-attempt attempt)
+        (%load-enabled-extension-attempt attempt))))
+
+(defun %handle-extension-load-error (candidate condition)
+  (let* ((scope (car candidate))
+         (file (cdr candidate))
+         (attempt (%recover-extension-load-attempt scope file))
+         (message (princ-to-string condition)))
+    (format *error-output*
+            "Extension load failed (~A): ~A~%"
+            (extension-load-attempt-source-path attempt)
+            message)
+    (%publish-extension-error (extension-load-attempt-source-path attempt)
+                              scope
+                              message)
+    (%register-extension-attempt attempt :error message)
+    (values (%make-extension-load-record-from-attempt attempt
+                                                      :error
+                                                      :message message)
+            nil)))
+
+(defun %reset-extension-loader-state (candidates)
+  (clrhash *extension-registry*)
+  (setf *extension-last-discovered*
+        (mapcar (lambda (entry)
+                  (%canonical-extension-path (cdr entry)))
+                candidates)))
+
+(defun %finalize-extension-loader-state (report loaded
+                                         &key project-root global-directory project-directory
+                                           start-hot-reload)
+  (setf *extension-load-report* (nreverse report)
+        *loaded-extensions* (nreverse loaded))
+  (%rebuild-extension-watch-snapshot)
+  (if start-hot-reload
+      (start-extension-hot-reload :project-root project-root
+                                  :global-directory global-directory
+                                  :project-directory project-directory)
+      (stop-extension-hot-reload))
+  *extension-load-report*)
+
 (defun %collect-extension-candidates (&key project-root global-directory project-directory)
   (multiple-value-bind (global-files project-files)
       (discover-user-extension-files :project-root project-root
@@ -892,136 +1079,22 @@
                                                     :project-directory project-directory))
          (report '())
          (loaded '()))
-    (clrhash *extension-registry*)
-    (setf *extension-last-discovered*
-          (mapcar (lambda (entry)
-                    (%canonical-extension-path (cdr entry)))
-                  candidates))
+    (%reset-extension-loader-state candidates)
     (dolist (entry candidates)
-      (let* ((scope (car entry))
-             (file (cdr entry))
-             (path-text (%canonical-extension-path file)))
-        (handler-case
-            (let* ((metadata
-                     (if (and (string-equal (pathname-name file) "extension")
-                              (string-equal (pathname-type file) "lisp"))
-                         (%manifest->metadata file)
-                         (%legacy-file->metadata file)))
-                   (record-path (%metadata-record-path metadata))
-                   (entry-point (%resolve-entry-point metadata))
-                   (extension-package
-                     (and (eq (getf metadata :kind) :manifest)
-                          (%ensure-extension-package metadata)))
-                   (package-name (and extension-package
-                                      (package-name extension-package))))
-              (cond
-                ((extension-disabled-p record-path)
-                 (%register-extension metadata
-                                      scope
-                                      :disabled
-                                      "disabled by /extensions disable"
-                                      :extension-package extension-package)
-                 (push (make-extension-load-record
-                        :path record-path
-                        :scope scope
-                        :name (getf metadata :name)
-                        :version (getf metadata :version)
-                        :dependencies (copy-list (getf metadata :dependencies))
-                        :permissions (copy-list (or (getf metadata :permissions) '()))
-                        :package-name package-name
-                        :entry-point (if (pathnamep entry-point)
-                                         (%canonical-extension-path entry-point)
-                                         (%ensure-string entry-point))
-                        :manifest-path (and (getf metadata :manifest-path)
-                                            (%canonical-extension-path (getf metadata :manifest-path)))
-                        :status :disabled
-                        :message "disabled by /extensions disable")
-                       report))
-                (t
-                 (when (eq (getf metadata :kind) :manifest)
-                   (%ensure-extension-permissions-approved metadata scope))
-                 (%load-entry-point entry-point metadata extension-package)
-                 (%register-extension metadata
-                                      scope
-                                      :loaded
-                                      nil
-                                      :extension-package extension-package)
-                 (%publish-extension-loaded record-path scope)
-                 (let ((record
-                         (make-extension-load-record
-                          :path record-path
-                          :scope scope
-                          :name (getf metadata :name)
-                          :version (getf metadata :version)
-                          :dependencies (copy-list (getf metadata :dependencies))
-                          :permissions (copy-list (or (getf metadata :permissions) '()))
-                          :package-name package-name
-                          :entry-point (if (pathnamep entry-point)
-                                           (%canonical-extension-path entry-point)
-                                           (%ensure-string entry-point))
-                          :manifest-path (and (getf metadata :manifest-path)
-                                              (%canonical-extension-path (getf metadata :manifest-path)))
-                          :status :loaded)))
-                   (push record report)
-                   (push record loaded)))))
-          (error (condition)
-            (let ((message (princ-to-string condition)))
-              (format *error-output*
-                      "Extension load failed (~A): ~A~%"
-                      path-text
-                      message)
-              (%publish-extension-error path-text scope message)
-              (let* ((error-metadata
-                       (if (and (string-equal (pathname-name file) "extension")
-                                (string-equal (pathname-type file) "lisp"))
-                           (or (ignore-errors (%manifest->metadata file))
-                               (list :kind :manifest
-                                     :name (let* ((parts (pathname-directory (%manifest-parent-directory file)))
-                                                  (last-part (and (listp parts) (car (last parts)))))
-                                             (%ensure-string (or last-part "unknown-extension")))
-                                     :version "0.0.0"
-                                     :dependencies '()
-                                     :permissions '()
-                                     :entry-point (namestring file)
-                                     :manifest-path file
-                                     :extension-root (%manifest-parent-directory file)
-                                     :path file
-                                     :last-write-date (%safe-file-write-date file)))
-                           (%legacy-file->metadata file)))
-                     (error-entry-point (%resolve-entry-point error-metadata))
-                     (error-package
-                       (and (eq (getf error-metadata :kind) :manifest)
-                            (ignore-errors (%ensure-extension-package error-metadata)))))
-                (%register-extension error-metadata
-                                     scope
-                                     :error
-                                     message
-                                     :extension-package error-package)
-                (push (make-extension-load-record
-                       :path (%metadata-record-path error-metadata)
-                       :scope scope
-                       :name (getf error-metadata :name)
-                       :version (getf error-metadata :version)
-                       :dependencies (copy-list (or (getf error-metadata :dependencies) '()))
-                       :permissions (copy-list (or (getf error-metadata :permissions) '()))
-                       :package-name (and error-package (package-name error-package))
-                       :entry-point (if (pathnamep error-entry-point)
-                                        (%canonical-extension-path error-entry-point)
-                                        (%ensure-string error-entry-point))
-                       :manifest-path (and (getf error-metadata :manifest-path)
-                                           (%canonical-extension-path (getf error-metadata :manifest-path)))
-                       :status :error
-                       :message message)
-                      report)))))))
-    (setf *extension-load-report* (nreverse report)
-          *loaded-extensions* (nreverse loaded))
-    (%rebuild-extension-watch-snapshot)
-    (if start-hot-reload
-        (start-extension-hot-reload :project-root project-root
-                                    :global-directory global-directory
-                                    :project-directory project-directory)
-        (stop-extension-hot-reload))
-    *extension-load-report*))
+      (multiple-value-bind (record loaded-record)
+          (handler-case
+              (%process-extension-candidate entry)
+            (error (condition)
+              (%handle-extension-load-error entry condition)))
+        (push record report)
+        (when loaded-record
+          (push loaded-record loaded))))
+    (%finalize-extension-loader-state report
+                                      loaded
+                                      :project-root project-root
+                                      :global-directory global-directory
+                                      :project-directory project-directory
+                                      :start-hot-reload start-hot-reload)))
 
 (defun reload-user-extensions (&key project-root global-directory project-directory
                                     (start-hot-reload *extension-hot-reload-enabled-p*))
