@@ -210,7 +210,97 @@
           :choices (getf argument :choices)
           :greedy-p (not (null (getf argument :greedy-p)))
           :description (getf argument :description)
-          :completer (getf argument :completer))))
+          :completer (getf argument :completer)))
+
+  (defun %skill-default-usage (name normalized-args)
+    (let ((parts '()))
+      (dolist (arg normalized-args)
+        (let* ((token
+                 (if (getf arg :greedy-p)
+                     (format nil "<~A...>" (getf arg :name))
+                     (format nil "<~A>" (getf arg :name))))
+               (rendered
+                 (if (getf arg :required-p)
+                     token
+                     (format nil "[~A]" token))))
+          (push rendered parts)))
+      (format nil "/~A~@[ ~{~A~^ ~}~]"
+              (%normalize-skill-name name)
+              (nreverse parts))))
+
+  (defun %normalize-skill-aliases (raw-aliases)
+    (cond
+      ((null raw-aliases) '())
+      ((listp raw-aliases) raw-aliases)
+      (t (list raw-aliases))))
+
+  (defun %skill-binding-form (argument)
+    (let ((variable (getf argument :variable))
+          (arg-name (getf argument :name))
+          (default (getf argument :default))
+          (default-supplied-p (not (null (getf argument :default-supplied-p)))))
+      `(,variable (%skill-argument-value arguments
+                                         ,arg-name
+                                         ',default
+                                         ,default-supplied-p))))
+
+  (defun %skill-argument-constructor-form (argument)
+    `(make-skill-argument
+      :name ,(getf argument :name)
+      :variable ',(getf argument :variable)
+      :type ,(getf argument :type)
+      :required-p ,(not (null (getf argument :required-p)))
+      :default ',(getf argument :default)
+      :default-supplied-p ,(not (null (getf argument :default-supplied-p)))
+      :choices ',(getf argument :choices)
+      :greedy-p ,(not (null (getf argument :greedy-p)))
+      :prompt ,(getf argument :prompt)
+      :description ,(getf argument :description)
+      :completer ,(getf argument :completer)))
+
+  (defun %build-defskill-expansion (name docstring usage aliases category keybinding
+                                    arg-plists argument-forms handler-symbol
+                                    completer-symbol custom-completer binding-forms
+                                    declare-ignorable body-forms)
+    `(progn
+       (defun ,handler-symbol (invocation arguments context)
+         (declare (ignorable invocation context))
+         (let ((missing (%skill-missing-required-arguments ',arg-plists arguments)))
+           (when missing
+             (return-from ,handler-symbol
+               (make-slash-command-result
+                :echo-input-p t
+                :output (%skill-missing-arguments-output
+                         ',name
+                         ,usage
+                         missing)))))
+         (let* (,@binding-forms)
+           (declare (ignorable ,@declare-ignorable))
+           ,@body-forms))
+       (defun ,completer-symbol (command invocation index fragment prefix-tokens)
+         (declare (ignore command invocation))
+         (or (and ,custom-completer
+                  (funcall ,custom-completer
+                           index
+                           fragment
+                           prefix-tokens))
+             (%skill-default-completer ',arg-plists index fragment prefix-tokens)))
+       (register-skill
+        (make-skill-metadata
+         :name ,(%normalize-skill-name name)
+         :description ,docstring
+         :usage ,usage
+         :aliases ',aliases
+         :category ,category
+         :keybinding ,keybinding
+         :arguments (list ,@argument-forms)
+         :handler #',handler-symbol
+         :completer #',completer-symbol
+         :source-file ,(or *compile-file-truename*
+                           *load-truename*
+                           nil)
+         :source-line nil
+         :defined-at (%skill-now-ms))))))
 
 (defun %skill-argument-keyword (argument-name)
   (%command-name-keyword argument-name))
@@ -793,97 +883,21 @@ Diff:~%~A"
              (normalized-args (mapcar #'%normalize-skill-argument-spec raw-args))
              (arg-plists (mapcar #'%skill-arg-plist-constant normalized-args))
              (usage (or (getf declarations :usage)
-                        (let ((parts '()))
-                          (dolist (arg normalized-args)
-                            (let* ((token
-                                     (if (getf arg :greedy-p)
-                                         (format nil "<~A...>" (getf arg :name))
-                                         (format nil "<~A>" (getf arg :name))))
-                                   (rendered
-                                     (if (getf arg :required-p)
-                                         token
-                                         (format nil "[~A]" token))))
-                              (push rendered parts)))
-                          (format nil "/~A~@[ ~{~A~^ ~}~]"
-                                  (%normalize-skill-name name)
-                                  (nreverse parts)))))
-             (aliases (let ((raw (getf declarations :aliases)))
-                        (cond
-                          ((null raw) '())
-                          ((listp raw) raw)
-                          (t (list raw)))))
+                        (%skill-default-usage name normalized-args)))
+             (aliases (%normalize-skill-aliases (getf declarations :aliases)))
              (category (or (getf declarations :category) :general))
              (keybinding (getf declarations :keybinding))
              (custom-completer (getf declarations :completer))
              (handler-symbol (%skill-handler-symbol name))
              (completer-symbol (%skill-completer-symbol name))
-             (binding-forms
-               (mapcar (lambda (arg)
-                         (let ((variable (getf arg :variable))
-                               (arg-name (getf arg :name))
-                               (default (getf arg :default))
-                               (default-supplied-p (not (null (getf arg :default-supplied-p)))))
-                           `(,variable (%skill-argument-value arguments
-                                                              ,arg-name
-                                                              ',default
-                                                              ,default-supplied-p))))
-                       normalized-args))
-             (declare-ignorable
-               (mapcar (lambda (arg) (getf arg :variable)) normalized-args))
-             (argument-forms
-               (mapcar (lambda (arg)
-                         `(make-skill-argument
-                           :name ,(getf arg :name)
-                           :variable ',(getf arg :variable)
-                           :type ,(getf arg :type)
-                           :required-p ,(not (null (getf arg :required-p)))
-                           :default ',(getf arg :default)
-                           :default-supplied-p ,(not (null (getf arg :default-supplied-p)))
-                           :choices ',(getf arg :choices)
-                           :greedy-p ,(not (null (getf arg :greedy-p)))
-                           :prompt ,(getf arg :prompt)
-                           :description ,(getf arg :description)
-                           :completer ,(getf arg :completer)))
-                       normalized-args)))
-        `(progn
-           (defun ,handler-symbol (invocation arguments context)
-             (declare (ignorable invocation context))
-             (let ((missing (%skill-missing-required-arguments ',arg-plists arguments)))
-               (when missing
-                 (return-from ,handler-symbol
-                   (make-slash-command-result
-                    :echo-input-p t
-                    :output (%skill-missing-arguments-output
-                             ',name
-                             ,usage
-                             missing)))))
-             (let* (,@binding-forms)
-               (declare (ignorable ,@declare-ignorable))
-               ,@body-forms))
-           (defun ,completer-symbol (command invocation index fragment prefix-tokens)
-             (declare (ignore command invocation))
-             (or (and ,custom-completer
-                      (funcall ,custom-completer
-                               index
-                               fragment
-                               prefix-tokens))
-                 (%skill-default-completer ',arg-plists index fragment prefix-tokens)))
-           (register-skill
-            (make-skill-metadata
-             :name ,(%normalize-skill-name name)
-             :description ,docstring
-             :usage ,usage
-             :aliases ',aliases
-             :category ,category
-             :keybinding ,keybinding
-             :arguments (list ,@argument-forms)
-             :handler #',handler-symbol
-             :completer #',completer-symbol
-             :source-file ,(or *compile-file-truename*
-                               *load-truename*
-                               nil)
-             :source-line nil
-             :defined-at (%skill-now-ms))))))))
+             (binding-forms (mapcar #'%skill-binding-form normalized-args))
+             (declare-ignorable (mapcar (lambda (arg) (getf arg :variable))
+                                        normalized-args))
+             (argument-forms (mapcar #'%skill-argument-constructor-form normalized-args)))
+        (%build-defskill-expansion name docstring usage aliases category keybinding
+                                   arg-plists argument-forms handler-symbol
+                                   completer-symbol custom-completer binding-forms
+                                   declare-ignorable body-forms)))))
 
 (defskill commit ((files :string
                          :required nil

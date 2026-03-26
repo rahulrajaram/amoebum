@@ -525,36 +525,57 @@
      (or (find-if
           (lambda (candidate)
             (string= value (%json-enum-value candidate)))
-          members)
+         members)
          value))
     (t value)))
 
+(defparameter *tool-argument-coercion-dispatch*
+  (let ((table (make-hash-table :test #'eq)))
+    (setf (gethash 'or table)
+          (lambda (value type-spec parameter-name)
+            (declare (ignore parameter-name))
+            (if (null value)
+                nil
+                (let ((non-null-types (remove 'null (rest type-spec) :test #'equal)))
+                  (if (= 1 (length non-null-types))
+                      (%coerce-tool-argument value (first non-null-types) parameter-name)
+                      value)))))
+    (setf (gethash 'pathname table)
+          (lambda (value type-spec parameter-name)
+            (declare (ignore type-spec parameter-name))
+            (typecase value
+              (pathname value)
+              (string (pathname value))
+              (t value))))
+    (setf (gethash 'integer table)
+          (lambda (value type-spec parameter-name)
+            (declare (ignore type-spec parameter-name))
+            (typecase value
+              (integer value)
+              (string (parse-integer value))
+              (t value))))
+    (setf (gethash 'boolean table)
+          (lambda (value type-spec parameter-name)
+            (declare (ignore type-spec))
+            (%coerce-boolean value parameter-name)))
+    (setf (gethash 'member table)
+          (lambda (value type-spec parameter-name)
+            (declare (ignore parameter-name))
+            (%coerce-member-value value (rest type-spec))))
+    table))
+
+(defun %tool-argument-coercion-key (type-spec)
+  (if (consp type-spec)
+      (first type-spec)
+      type-spec))
+
 (defun %coerce-tool-argument (value type-spec parameter-name)
-  (cond
-    ((eq value +missing-tool-argument+) value)
-    ((and (consp type-spec) (eq (first type-spec) 'or))
-     (if (null value)
-         nil
-         (let ((non-null-types (remove 'null (rest type-spec) :test #'equal)))
-           (if (= 1 (length non-null-types))
-               (%coerce-tool-argument value (first non-null-types) parameter-name)
-               value))))
-    ((eq type-spec 'pathname)
-     (typecase value
-       (pathname value)
-       (string (pathname value))
-       (t value)))
-    ((or (eq type-spec 'integer)
-         (and (consp type-spec) (eq (first type-spec) 'integer)))
-     (typecase value
-       (integer value)
-       (string (parse-integer value))
-       (t value)))
-    ((eq type-spec 'boolean)
-     (%coerce-boolean value parameter-name))
-    ((and (consp type-spec) (eq (first type-spec) 'member))
-     (%coerce-member-value value (rest type-spec)))
-    (t value)))
+  (if (eq value +missing-tool-argument+) value
+      (let ((coercer (gethash (%tool-argument-coercion-key type-spec)
+                              *tool-argument-coercion-dispatch*)))
+        (if coercer
+            (funcall coercer value type-spec parameter-name)
+            value))))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun %parse-tool-declarations (forms)
@@ -590,7 +611,118 @@
             (find-package :amoebum.tools)))
 
   (defun %binding-symbol (prefix parameter)
-    (make-symbol (format nil "~A-~A" prefix (string-upcase (symbol-name parameter))))))
+    (make-symbol (format nil "~A-~A" prefix (string-upcase (symbol-name parameter)))))
+
+  (defun %normalize-tool-mcp-server (name declarations)
+    (let ((raw (getf declarations :mcp-server)))
+      (and raw
+           (let ((text (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                    (princ-to-string raw))))
+             (unless (plusp (length text))
+               (error "DEFTTOOL ~S :MCP-SERVER must not be blank." name))
+             (string-downcase text)))))
+
+  (defun %validate-deftool-expansion-options (tool-name permission dangerous-p docstring
+                                              normalized-parameters)
+    (%record-deftool-name-for-validation tool-name)
+    (unless (member permission +allowed-permission-modes+ :test #'eq)
+      (error 'invalid-permission-mode
+             :tool-name tool-name
+             :permission permission
+             :allowed-values +allowed-permission-modes+))
+    (when (and dangerous-p (eq permission :auto))
+      (warn 'dangerous-auto-permission
+            :tool-name tool-name
+            :reason "Dangerous tools should not default to :permission :auto."))
+    (when (%blank-string-p docstring)
+      (warn 'missing-tool-description
+            :tool-name tool-name
+            :reason "DEFTTOOL should include a non-empty docstring description."))
+    (%validate-tool-parameter-specs tool-name normalized-parameters)
+    (%validate-dangerous-permission-combination tool-name permission dangerous-p))
+
+  (defun %deftool-parameter-forms (parameter tool-name)
+    (let* ((parameter-name (getf parameter :name))
+           (parameter-type (getf parameter :type))
+           (required-p (getf parameter :required))
+           (default-supplied-p (getf parameter :default-supplied-p))
+           (default (getf parameter :default))
+           (argument-key (string-downcase (symbol-name parameter-name)))
+           (raw-symbol (%binding-symbol "%RAW" parameter-name))
+           (needs-check-symbol (%binding-symbol "%CHECK" parameter-name))
+           (bindings
+             (list `(,raw-symbol (%extract-tool-argument arguments ,argument-key))
+                   `(,parameter-name
+                     (if (eq ,raw-symbol +missing-tool-argument+)
+                         ,(if default-supplied-p default nil)
+                         (%coerce-tool-argument ,raw-symbol ',parameter-type ',parameter-name)))
+                   `(,needs-check-symbol
+                     (or (not (eq ,raw-symbol +missing-tool-argument+))
+                         ,(if default-supplied-p t nil)
+                         ,(if required-p t nil)))))
+           (validation-forms
+             (append
+              (when required-p
+                (list
+                 `(when (eq ,raw-symbol +missing-tool-argument+)
+                    (error "Missing required tool argument ~S for tool ~A."
+                           ',parameter-name
+                           ,tool-name))))
+              (list
+               `(when ,needs-check-symbol
+                  (check-type ,parameter-name ,parameter-type))))))
+      (%validate-type-to-schema-mapping tool-name parameter-name parameter-type)
+      (values bindings validation-forms)))
+
+  (defun %deftool-runtime-body (timeout body-forms)
+    (if timeout
+        `#+sbcl
+        (sb-ext:with-timeout ,timeout
+          (progn ,@body-forms))
+        `#+sbcl
+        (progn ,@body-forms)))
+
+  (defun %build-deftool-expansion (name tool-name docstring normalized-parameters permission
+                                   dangerous-p category timeout mcp-server exec-name
+                                   schema-name source-file source-line bindings
+                                   validation-forms body-forms)
+    `(progn
+       (defun ,exec-name (arguments &optional tool-call)
+         (declare (ignorable tool-call))
+         (let* ,bindings
+           ,@validation-forms
+           ,(%deftool-runtime-body timeout body-forms)
+           #-sbcl
+           (progn ,@body-forms)))
+       (defparameter ,schema-name
+         (%tool-schema-from-parameter-specs ',normalized-parameters))
+       (let* ((toolset (%ensure-toolset))
+              (previous-definition (pseudopod:find-tool toolset ,tool-name))
+              (previous-metadata (gethash ,tool-name *tool-metadata*)))
+         (%push-tool-version-to-history ,tool-name previous-definition previous-metadata)
+         (pseudopod:register-tool
+          toolset
+          (pseudopod:make-tool-definition
+           :name ,tool-name
+           :description ,(or docstring "")
+           :parameters ,schema-name
+           :fn #',exec-name))
+         (let ((new-metadata
+                 (make-tool-metadata
+                  :name ,tool-name
+                  :permission ',permission
+                  :dangerous-p ,dangerous-p
+                  :category ',category
+                  :timeout-seconds ,timeout
+                  :source-file ,source-file
+                  :source-line ,source-line
+                  :parameter-specs ',normalized-parameters
+                  :defined-at (get-universal-time)
+                  :mcp-server ,mcp-server)))
+           (setf (gethash ,tool-name *tool-metadata*) new-metadata)
+           (when previous-definition
+             (%emit-tool-redefined ,tool-name previous-metadata new-metadata))))
+       ',name)))
 
 (defmacro deftool (name parameter-specs &body forms)
   (unless (symbolp name)
@@ -608,106 +740,21 @@
              (dangerous-p (getf declarations :dangerous))
              (category (getf declarations :category))
              (timeout (getf declarations :timeout))
-             (mcp-server
-               (let ((raw (getf declarations :mcp-server)))
-                 (and raw
-                      (let ((text (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                               (princ-to-string raw))))
-                        (unless (plusp (length text))
-                          (error "DEFTTOOL ~S :MCP-SERVER must not be blank." name))
-                        (string-downcase text)))))
+             (mcp-server (%normalize-tool-mcp-server name declarations))
              (exec-name (%tool-exec-symbol name))
              (schema-name (%tool-schema-symbol name))
              (source-file (or *compile-file-truename* *load-truename*))
              (source-line nil)
              (bindings '())
              (validation-forms '()))
-        (%record-deftool-name-for-validation tool-name)
-        (unless (member permission +allowed-permission-modes+ :test #'eq)
-          (error 'invalid-permission-mode
-                 :tool-name tool-name
-                 :permission permission
-                 :allowed-values +allowed-permission-modes+))
-        (when (and dangerous-p (eq permission :auto))
-          (warn 'dangerous-auto-permission
-                :tool-name tool-name
-                :reason "Dangerous tools should not default to :permission :auto."))
-        (when (%blank-string-p docstring)
-          (warn 'missing-tool-description
-                :tool-name tool-name
-                :reason "DEFTTOOL should include a non-empty docstring description."))
-        (%validate-tool-parameter-specs tool-name normalized-parameters)
-        (%validate-dangerous-permission-combination tool-name permission dangerous-p)
+        (%validate-deftool-expansion-options tool-name permission dangerous-p docstring
+                                             normalized-parameters)
         (dolist (parameter normalized-parameters)
-          (let* ((parameter-name (getf parameter :name))
-                 (parameter-type (getf parameter :type))
-                 (required-p (getf parameter :required))
-                 (default-supplied-p (getf parameter :default-supplied-p))
-                 (default (getf parameter :default))
-                 (argument-key (string-downcase (symbol-name parameter-name)))
-                 (raw-symbol (%binding-symbol "%RAW" parameter-name))
-                 (needs-check-symbol (%binding-symbol "%CHECK" parameter-name)))
-            (%validate-type-to-schema-mapping tool-name parameter-name parameter-type)
-            (push `(,raw-symbol (%extract-tool-argument arguments ,argument-key))
-                  bindings)
-            (push `(,parameter-name
-                    (if (eq ,raw-symbol +missing-tool-argument+)
-                        ,(if default-supplied-p default nil)
-                        (%coerce-tool-argument ,raw-symbol ',parameter-type ',parameter-name)))
-                  bindings)
-            (push `(,needs-check-symbol
-                    (or (not (eq ,raw-symbol +missing-tool-argument+))
-                        ,(if default-supplied-p t nil)
-                        ,(if required-p t nil)))
-                  bindings)
-            (when required-p
-              (push `(when (eq ,raw-symbol +missing-tool-argument+)
-                       (error "Missing required tool argument ~S for tool ~A."
-                              ',parameter-name
-                              ,tool-name))
-                    validation-forms))
-            (push `(when ,needs-check-symbol
-                     (check-type ,parameter-name ,parameter-type))
-                  validation-forms)))
-        `(progn
-           (defun ,exec-name (arguments &optional tool-call)
-             (declare (ignorable tool-call))
-             (let* ,(nreverse bindings)
-               ,@(nreverse validation-forms)
-               ,(if timeout
-                    `#+sbcl
-                    (sb-ext:with-timeout ,timeout
-                      (progn ,@body-forms))
-                    `#+sbcl
-                    (progn ,@body-forms))
-               #-sbcl
-               (progn ,@body-forms)))
-           (defparameter ,schema-name
-             (%tool-schema-from-parameter-specs ',normalized-parameters))
-           (let* ((toolset (%ensure-toolset))
-                  (previous-definition (pseudopod:find-tool toolset ,tool-name))
-                  (previous-metadata (gethash ,tool-name *tool-metadata*)))
-             (%push-tool-version-to-history ,tool-name previous-definition previous-metadata)
-             (pseudopod:register-tool
-              toolset
-              (pseudopod:make-tool-definition
-               :name ,tool-name
-               :description ,(or docstring "")
-               :parameters ,schema-name
-               :fn #',exec-name))
-             (let ((new-metadata
-                     (make-tool-metadata
-                      :name ,tool-name
-                      :permission ',permission
-                      :dangerous-p ,dangerous-p
-                      :category ',category
-                      :timeout-seconds ,timeout
-                     :source-file ,source-file
-                     :source-line ,source-line
-                     :parameter-specs ',normalized-parameters
-                     :defined-at (get-universal-time)
-                     :mcp-server ,mcp-server)))
-               (setf (gethash ,tool-name *tool-metadata*) new-metadata)
-               (when previous-definition
-                 (%emit-tool-redefined ,tool-name previous-metadata new-metadata))))
-           ',name)))))
+          (multiple-value-bind (parameter-bindings parameter-validations)
+              (%deftool-parameter-forms parameter tool-name)
+            (setf bindings (append bindings parameter-bindings)
+                  validation-forms (append validation-forms parameter-validations))))
+        (%build-deftool-expansion name tool-name docstring normalized-parameters permission
+                                  dangerous-p category timeout mcp-server exec-name
+                                  schema-name source-file source-line bindings
+                                  validation-forms body-forms)))))
