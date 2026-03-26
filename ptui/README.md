@@ -52,6 +52,13 @@ Dependency rules:
 2. Composite widgets belong in `ptui/components`.
 3. Components may depend on widgets/base; base must not depend on components.
 
+## Architecture Diagram
+
+A two-tier ASCII diagram showing the kernel layer (buffer, renderer, terminal backend,
+engine loop) versus the application layer (panels, widgets, themes, layout engine):
+
+- `ptui/docs/kernel-vs-app.md`
+
 ## API Notes (`ptui/text`, `ptui/layout`)
 
 Short API docs for the reusable text and layout systems:
@@ -149,3 +156,106 @@ PTUI_DASHBOARD_MODE=legacy PTUI_EXIT_AFTER_MS=2000 ./ptui/dist/metrics-dashboard
 ```bash
 ./ptui/bin/compliance-gate.sh
 ```
+
+## Standalone Packaging
+
+`ptui/standalone` is an ASDF system that loads the full kernel as a single system
+rather than a collection of `ptui/*` sub-systems.  This is useful when you want to
+vendor PTUI into another project without exposing the internal sub-system split.
+
+### What "standalone" means
+
+- `ptui/standalone` includes the same source files as the umbrella `ptui` system.
+- `ptui/components-standalone` layers the components tier on top of `ptui/standalone`.
+- `ptui/examples-standalone` exercises both.
+- It does **not** mean "no Quicklisp" or "no native deps" — `cffi` and
+  `bordeaux-threads` are still required.
+
+### Build a standalone binary
+
+```bash
+# Build the metrics-dashboard binary (uses ptui/standalone internally)
+./ptui/bin/build.sh
+
+# Verify the binary is self-contained (no Quicklisp needed at runtime)
+ldd ptui/dist/metrics-dashboard          # only libc + libpthread + libdl
+./ptui/dist/metrics-dashboard --help     # prints usage and exits
+```
+
+### Vendoring into another project
+
+```lisp
+;; In your project's .asd file, add ptui as a dependency:
+(defsystem "my-app"
+  :depends-on ("ptui/standalone" "ptui/components-standalone")
+  :components (...))
+```
+
+Point ASDF at the ptui directory:
+
+```bash
+export ASDF_CENTRAL_REGISTRY="$ASDF_CENTRAL_REGISTRY:/path/to/ptui/"
+```
+
+Or push it at startup:
+
+```lisp
+(pushnew (truename "/path/to/ptui/") asdf:*central-registry*)
+```
+
+## Example Workflows
+
+### Smoke-test every system independently
+
+Useful after modifying `*.asd` files or adding a new sub-system:
+
+```bash
+./ptui/bin/check-systems.sh
+```
+
+### Run kernel unit tests
+
+```bash
+./ptui/bin/test.sh
+```
+
+### Run the full compliance gate (build + smoke + PTY tests + ncurses check)
+
+```bash
+./ptui/bin/compliance-gate.sh
+```
+
+### Capture reproducible demo screenshots
+
+```bash
+# Text-only snapshots (always works, no display required)
+./ptui/bin/capture-screenshots.sh --all --text-only
+
+# Full-color screenshots (requires a terminal emulator or Xvfb — see script for options)
+./ptui/bin/capture-screenshots.sh --all
+```
+
+### Run the performance regression test
+
+```bash
+# Quick (3 prompts) — suitable for CI
+./bin/tui-perf-test.sh --prompts 3
+
+# Full (5 prompts, default) — recommended before release
+./bin/tui-perf-test.sh
+
+# Detailed /proc snapshots + pause for manual inspection
+./bin/tui-perf-test.sh --report --watch
+```
+
+See `ptui/docs/benchmark-story.md` for baseline numbers and before/after comparison
+instructions.
+
+### Release verification
+
+```bash
+./ptui/bin/release-checklist.sh
+```
+
+This runs build, tests, performance smoke, and required-docs checks in sequence and
+prints a summary.

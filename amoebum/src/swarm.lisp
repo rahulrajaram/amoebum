@@ -15,7 +15,13 @@
             (:constructor make-swarm-agent
                 (&key id task (status :initializing)
                       (created-at (get-universal-time))
-                      state-machine result thread error-message backing-agent)))
+                      state-machine result thread error-message backing-agent
+                      signal-name
+                      (retry-count 0)
+                      retry-policy
+                      timeout-seconds
+                      heartbeat-at
+                      last-output-at)))
   (id "" :type string)
   (task "" :type string)
   (status :initializing :type keyword)
@@ -25,7 +31,15 @@
   (result nil)
   (thread nil)
   (error-message nil :type (or null string))
-  (backing-agent nil))
+  (backing-agent nil)
+  ;; NXT-017: Signal tracking and retry semantics
+  (signal-name nil :type (or null string))   ; e.g. "SIGTERM", "SIGKILL"
+  (retry-count 0 :type integer)              ; number of times this agent has been retried
+  (retry-policy nil)                         ; plist: (:max-retries N :backoff-strategy :none/:linear/:exponential)
+  (timeout-seconds nil :type (or null number)) ; stored for record-keeping
+  ;; NXT-018: Stalled-run detection
+  (heartbeat-at nil :type (or null integer)) ; universal-time of last heartbeat
+  (last-output-at nil :type (or null integer))) ; universal-time of last output activity
 
 (defvar *swarm-registry* (make-hash-table :test #'equal)
   "Hash-table of id -> swarm-agent.")
@@ -94,7 +108,7 @@
                           :metadata (%swarm-status-metadata :cancelling))
   agent)
 
-(defun %swarm-mark-terminal (agent status result error-message &key timeout-seconds stdout stderr)
+(defun %swarm-mark-terminal (agent status result error-message &key timeout-seconds stdout stderr signal-name)
   (let ((backing-agent (swarm-agent-backing-agent agent))
         (metadata (%swarm-status-metadata status
                                           :timeout-seconds timeout-seconds
@@ -113,18 +127,23 @@
         (swarm-agent-result agent) result
         (swarm-agent-error-message agent) error-message
         (swarm-agent-finished-at agent) (get-universal-time))
-    (case status
-      (:completed
-       (%swarm-transition-safe agent :completed :metadata metadata))
-      (:failed
-       (%swarm-transition-safe agent :failed :metadata metadata))
-      (:cancelled
-       (%swarm-transition-safe agent :shutting-down :metadata metadata)
-       (%swarm-transition-safe agent :failed :metadata metadata))
-      (:timeout
-       (%swarm-transition-safe agent :shutting-down :metadata metadata)
-       (%swarm-transition-safe agent :failed :metadata metadata)))
-    agent))
+  ;; NXT-017: record signal name and effective timeout-seconds on the struct
+  (when signal-name
+    (setf (swarm-agent-signal-name agent) signal-name))
+  (when timeout-seconds
+    (setf (swarm-agent-timeout-seconds agent) timeout-seconds))
+  (case status
+    (:completed
+     (%swarm-transition-safe agent :completed :metadata metadata))
+    (:failed
+     (%swarm-transition-safe agent :failed :metadata metadata))
+    (:cancelled
+     (%swarm-transition-safe agent :shutting-down :metadata metadata)
+     (%swarm-transition-safe agent :failed :metadata metadata))
+    (:timeout
+     (%swarm-transition-safe agent :shutting-down :metadata metadata)
+     (%swarm-transition-safe agent :failed :metadata metadata)))
+  agent))
 
 (defun %swarm-runner-finished-status (runner-agent)
   (if (agent-record-cancel-requested-p runner-agent)
@@ -137,9 +156,15 @@
                                (id nil)
                                (event-bus (current-event-bus))
                                runner
-                               timeout-seconds)
-  "Spawn a new swarm sub-agent for TASK. Returns a swarm-agent."
+                               timeout-seconds
+                               (retry-count 0)
+                               retry-policy)
+  "Spawn a new swarm sub-agent for TASK. Returns a swarm-agent.
+NXT-017: Accepts RETRY-COUNT (number of prior retries) and RETRY-POLICY
+\(plist with :max-retries, :backoff-strategy, :backoff-base-seconds).
+NXT-018: Records heartbeat-at and last-output-at timestamps on the agent struct."
   (let* ((agent-id (or id (%next-swarm-id)))
+         (spawn-time (get-universal-time))
          (runner-agent (%make-agent-record
                         :id agent-id
                         :type :swarm
@@ -149,7 +174,12 @@
          (agent (make-swarm-agent :id agent-id
                                   :task task
                                   :status :initializing
-                                  :backing-agent runner-agent))
+                                  :backing-agent runner-agent
+                                  :retry-count retry-count
+                                  :retry-policy retry-policy
+                                  :timeout-seconds timeout-seconds
+                                  :heartbeat-at spawn-time
+                                  :last-output-at spawn-time))
          (agent-runner (or runner #'%default-agent-runner)))
     (setf (gethash agent-id *swarm-registry*) agent)
     ;; Create a state machine for the agent
@@ -173,7 +203,10 @@
                    (stderr-stream (make-string-output-stream))
                    (result nil)
                    (status :completed)
-                   (error-message nil))
+                   (error-message nil)
+                   (terminal-signal-name nil))
+               ;; NXT-018: update heartbeat when thread starts running
+               (setf (swarm-agent-heartbeat-at agent) (get-universal-time))
                (%swarm-mark-running agent)
                (handler-case
                    (let ((*standard-output* stdout-stream)
@@ -191,23 +224,36 @@
                            status (%swarm-runner-finished-status runner-agent)))
                  (agent-cancelled (condition)
                    (setf status :cancelled
+                         ;; NXT-017: record SIGTERM as the signal that
+                         ;; caused cooperative cancellation
+                         terminal-signal-name "SIGTERM"
                          error-message (princ-to-string condition)))
                  #+sbcl
                  (sb-ext:timeout (_condition)
                    (setf status :timeout
+                         ;; NXT-017: timeout is a SIGALRM-like expiry
+                         terminal-signal-name "SIGALRM"
                          error-message (format nil "Swarm agent ~A timed out after ~A seconds."
                                                agent-id
                                                timeout-seconds)))
                  (error (condition)
                    (if (agent-record-cancel-requested-p runner-agent)
                        (setf status :cancelled
+                             terminal-signal-name "SIGTERM"
                              error-message (princ-to-string condition))
                        (setf status :failed
                              error-message (princ-to-string condition)))))
-               (%swarm-mark-terminal agent status result error-message
-                                     :timeout-seconds timeout-seconds
-                                     :stdout (get-output-stream-string stdout-stream)
-                                     :stderr (get-output-stream-string stderr-stream))
+               ;; NXT-018: update last-output-at if any output was produced
+               (let ((stdout-text (get-output-stream-string stdout-stream))
+                     (stderr-text (get-output-stream-string stderr-stream)))
+                 (when (or (plusp (length stdout-text))
+                           (plusp (length stderr-text)))
+                   (setf (swarm-agent-last-output-at agent) (get-universal-time)))
+                 (%swarm-mark-terminal agent status result error-message
+                                       :timeout-seconds timeout-seconds
+                                       :signal-name terminal-signal-name
+                                       :stdout stdout-text
+                                       :stderr stderr-text))
                (publish event-bus
                         (make-event :type (if (eq status :cancelled)
                                               +event-type-agent-cancelled+
@@ -216,6 +262,8 @@
                                     :payload (list :id agent-id
                                                    :status status
                                                    :task task
+                                                   :signal-name terminal-signal-name
+                                                   :retry-count (swarm-agent-retry-count agent)
                                                    :error-message error-message)))))
            :name (format nil "swarm-~A" agent-id)))
     agent))
@@ -231,8 +279,9 @@
     (values (swarm-agent-result agent)
             (swarm-agent-status agent))))
 
-(defun kill-swarm-agent (agent-id &key (event-bus (current-event-bus)))
-  "Terminate a running swarm agent."
+(defun kill-swarm-agent (agent-id &key (event-bus (current-event-bus)) (signal-name "SIGKILL"))
+  "Terminate a running swarm agent.
+NXT-017: SIGNAL-NAME records which signal caused termination (default SIGKILL)."
   (let ((agent (gethash agent-id *swarm-registry*)))
     (unless agent
       (error "Swarm agent ~A not found." agent-id))
@@ -242,11 +291,14 @@
       (when (and thread (bt:thread-alive-p thread))
         (bt:join-thread thread)))
     (unless (member (swarm-agent-status agent) '(:completed :failed :cancelled :timeout) :test #'eq)
-      (%swarm-mark-terminal agent :cancelled nil "Swarm agent cancelled.")
+      (%swarm-mark-terminal agent :cancelled nil "Swarm agent cancelled."
+                            :signal-name signal-name)
       (publish event-bus
                (make-event :type +event-type-agent-cancelled+
                            :source "swarm"
-                           :payload (list :id agent-id :status :cancelled))))
+                           :payload (list :id agent-id
+                                          :status :cancelled
+                                          :signal-name signal-name))))
     agent))
 
 ;;; --- Registry Queries ---
@@ -283,6 +335,83 @@
                 (if (> (length (swarm-agent-task a)) 50)
                     (subseq (swarm-agent-task a) 0 50)
                     (swarm-agent-task a)))))))
+
+;;; ---------------------------------------------------------------------------
+;;; NXT-018: Stalled-run detection via heartbeat and last-output timestamps
+;;; ---------------------------------------------------------------------------
+
+(defun update-swarm-agent-heartbeat (agent-id)
+  "Refresh the heartbeat timestamp for AGENT-ID to the current time.
+Called by long-running runners periodically to signal liveness.
+Returns T if the agent was found and updated, NIL otherwise."
+  (let ((agent (gethash agent-id *swarm-registry*)))
+    (when agent
+      (setf (swarm-agent-heartbeat-at agent) (get-universal-time))
+      t)))
+
+(defun update-swarm-agent-last-output (agent-id)
+  "Refresh the last-output-at timestamp for AGENT-ID to the current time.
+Call when new stdout/stderr output is produced during execution.
+Returns T if the agent was found and updated, NIL otherwise."
+  (let ((agent (gethash agent-id *swarm-registry*)))
+    (when agent
+      (setf (swarm-agent-last-output-at agent) (get-universal-time))
+      t)))
+
+(defun %swarm-agent-stalled-p (agent heartbeat-threshold-seconds output-threshold-seconds now)
+  "Return T if AGENT appears stalled.
+An agent is stalled when it is in a non-terminal status AND either:
+  - its heartbeat-at is older than HEARTBEAT-THRESHOLD-SECONDS, or
+  - its last-output-at is older than OUTPUT-THRESHOLD-SECONDS (when non-nil threshold)."
+  (let ((status (swarm-agent-status agent)))
+    (when (member status '(:initializing :running) :test #'eq)
+      (let ((heartbeat (swarm-agent-heartbeat-at agent))
+            (last-out (swarm-agent-last-output-at agent)))
+        (or (and heartbeat-threshold-seconds
+                 heartbeat
+                 (> (- now heartbeat) heartbeat-threshold-seconds))
+            (and output-threshold-seconds
+                 last-out
+                 (> (- now last-out) output-threshold-seconds)))))))
+
+(defun detect-stalled-agents (&key
+                                (heartbeat-threshold-seconds 60)
+                                (output-threshold-seconds nil)
+                                (status nil))
+  "Return a list of swarm agents that appear stalled.
+An agent is considered stalled if it is non-terminal and either:
+  - HEARTBEAT-THRESHOLD-SECONDS have elapsed since its last heartbeat, or
+  - OUTPUT-THRESHOLD-SECONDS have elapsed since its last output (if provided).
+
+Optionally filter by STATUS (e.g. :running).
+
+Each returned element is a plist:
+  (:agent <swarm-agent> :id <string> :status <keyword>
+   :seconds-since-heartbeat <number-or-nil>
+   :seconds-since-output <number-or-nil>)"
+  (let ((now (get-universal-time))
+        (stalled '()))
+    (maphash (lambda (_id agent)
+               (declare (ignore _id))
+               (when (or (null status)
+                         (eq status (swarm-agent-status agent)))
+                 (when (%swarm-agent-stalled-p agent
+                                               heartbeat-threshold-seconds
+                                               output-threshold-seconds
+                                               now)
+                   (let* ((heartbeat (swarm-agent-heartbeat-at agent))
+                          (last-out (swarm-agent-last-output-at agent))
+                          (secs-hb (and heartbeat (- now heartbeat)))
+                          (secs-out (and last-out (- now last-out))))
+                     (push (list :agent agent
+                                 :id (swarm-agent-id agent)
+                                 :status (swarm-agent-status agent)
+                                 :seconds-since-heartbeat secs-hb
+                                 :seconds-since-output secs-out)
+                           stalled)))))
+             *swarm-registry*)
+    (sort stalled #'> :key (lambda (entry)
+                              (or (getf entry :seconds-since-heartbeat) 0)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Inter-user coordination and delegation (I253)

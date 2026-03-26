@@ -91,7 +91,7 @@ done_when = "No function in streaming.lisp exceeds severity 7"
 [[tranches]]
 key = "R016"
 summary = "Refactor chat-panel-handle-input-key (sev 11) and wait-for-approval-dialog (sev 10) — convert key dispatch to keymap table"
-status = "incomplete"
+status = "complete"
 group = "amoebum-ui"
 verify = """sbcl --eval '(require :asdf)' --eval '(push #p"/home/rahul/Documents/amoebum/amoebum/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/pseudopod/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/sw4rm-sdk/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/ptui/" asdf:*central-registry*)' --eval '(ql:quickload "amoebum/tests")' --eval '(unless (fiveam:run! :amoebum) (sb-ext:exit :code 1))' --quit"""
 done_when = "No target function exceeds severity 6"
@@ -107,7 +107,7 @@ done_when = "Function is <30 lines; severity < 4"
 [[tranches]]
 key = "R018"
 summary = "Refactor load-user-extensions (depth 19, sev 11) in extensions/loader.lisp — extract discovery, validation, loading, and error recovery into separate phases"
-status = "incomplete"
+status = "complete"
 group = "amoebum-misc"
 verify = """sbcl --eval '(require :asdf)' --eval '(push #p"/home/rahul/Documents/amoebum/amoebum/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/pseudopod/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/sw4rm-sdk/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/ptui/" asdf:*central-registry*)' --eval '(ql:quickload "amoebum/tests")' --eval '(unless (fiveam:run! :amoebum) (sb-ext:exit :code 1))' --quit"""
 done_when = "load-user-extensions severity < 6; max nesting depth in file < 8"
@@ -123,7 +123,7 @@ done_when = "%ensure-config-schema severity < 5; adding a new config key require
 [[tranches]]
 key = "R020"
 summary = "Refactor restore-session (sev 9), save-amoebum-image (sev 9), conversation-load (sev 8), history-search (sev 8) — extract per-subsystem restore functions, bundle params into structs"
-status = "incomplete"
+status = "complete"
 group = "amoebum-misc"
 verify = """sbcl --eval '(require :asdf)' --eval '(push #p"/home/rahul/Documents/amoebum/amoebum/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/pseudopod/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/sw4rm-sdk/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/ptui/" asdf:*central-registry*)' --eval '(ql:quickload "amoebum/tests")' --eval '(unless (fiveam:run! :amoebum) (sb-ext:exit :code 1))' --quit"""
 done_when = "No target function exceeds severity 6"
@@ -131,7 +131,7 @@ done_when = "No target function exceeds severity 6"
 [[tranches]]
 key = "R009"
 summary = "Refactor parse-slash-command-arguments (sev 9) and clean up command infrastructure after R005-R008 extractions"
-status = "incomplete"
+status = "complete"
 group = "cmd-phase5-infra"
 verify = """sbcl --eval '(require :asdf)' --eval '(push #p"/home/rahul/Documents/amoebum/amoebum/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/pseudopod/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/sw4rm-sdk/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/ptui/" asdf:*central-registry*)' --eval '(ql:quickload "amoebum/tests")' --eval '(unless (fiveam:run! :amoebum) (sb-ext:exit :code 1))' --quit"""
 done_when = "commands.lisp < 500 lines; no function in commands.lisp exceeds severity 6"
@@ -139,7 +139,7 @@ done_when = "commands.lisp < 500 lines; no function in commands.lisp exceeds sev
 [[tranches]]
 key = "R012"
 summary = "Refactor execute-approved-plan-steps (sev 12, 11 params) in plan-execution.lisp — create plan-execution-context struct, extract step execution and error handling"
-status = "incomplete"
+status = "complete"
 group = "amoebum-core-safe"
 verify = """sbcl --eval '(require :asdf)' --eval '(push #p"/home/rahul/Documents/amoebum/amoebum/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/pseudopod/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/sw4rm-sdk/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/ptui/" asdf:*central-registry*)' --eval '(ql:quickload "amoebum/tests")' --eval '(unless (fiveam:run! :amoebum) (sb-ext:exit :code 1))' --quit"""
 done_when = "execute-approved-plan-steps severity < 7; no function in plan-execution.lisp has >8 params"
@@ -147,7 +147,7 @@ done_when = "execute-approved-plan-steps severity < 7; no function in plan-execu
 [[tranches]]
 key = "R021"
 summary = "Refactor delegate-to-swarm (sev 12, 13 params) in sw4rm-sdk/src/clients/handoff.lisp — create handoff-request struct, extract negotiation phases"
-status = "incomplete"
+status = "complete"
 group = "sdk-ptui"
 verify = """sbcl --eval '(require :asdf)' --eval '(push #p"/home/rahul/Documents/amoebum/sw4rm-sdk/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/pseudopod/" asdf:*central-registry*)' --eval '(ql:quickload "sw4rm-sdk/tests")' --eval '(unless (fiveam:run! :sw4rm-sdk) (sb-ext:exit :code 1))' --quit"""
 done_when = "delegate-to-swarm severity < 6; no function in handoff.lisp has >8 params"
@@ -155,7 +155,7 @@ done_when = "delegate-to-swarm severity < 6; no function in handoff.lisp has >8 
 [[tranches]]
 key = "R022"
 summary = "Refactor ptui run loop (sev 12, depth 17) and %paint-element (38 branches, sev 10) — extract event processing, paint dispatch table"
-status = "incomplete"
+status = "complete"
 group = "sdk-ptui"
 verify = """sbcl --eval '(require :asdf)' --eval '(push #p"/home/rahul/Documents/amoebum/ptui/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/pseudopod/" asdf:*central-registry*)' --eval '(ql:quickload "ptui/tests")' --eval '(unless (fiveam:run! :ptui) (sb-ext:exit :code 1))' --quit"""
 done_when = "No function in loop.lisp or app.lisp exceeds severity 7"
@@ -163,7 +163,7 @@ done_when = "No function in loop.lisp or app.lisp exceeds severity 7"
 [[tranches]]
 key = "R023"
 summary = "Refactor scan-content-matches (sev 12, 15 params) and validate-packet-form (32 branches, sev 12) in ptui — create search-options struct, declarative validation schema"
-status = "incomplete"
+status = "complete"
 group = "sdk-ptui"
 verify = """sbcl --eval '(require :asdf)' --eval '(push #p"/home/rahul/Documents/amoebum/ptui/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/pseudopod/" asdf:*central-registry*)' --eval '(ql:quickload "ptui/tests")' --eval '(unless (fiveam:run! :ptui) (sb-ext:exit :code 1))' --quit"""
 done_when = "No target function exceeds severity 7; validate-packet-form uses declarative validation"
@@ -171,7 +171,7 @@ done_when = "No target function exceeds severity 7; validate-packet-form uses de
 [[tranches]]
 key = "R024"
 summary = "Refactor ptui terminal input (depth 18-19), ANSI parser (depth 15-16), text wrapping, and diff emission — implement explicit state machines, flatten with guard clauses"
-status = "incomplete"
+status = "complete"
 group = "sdk-ptui"
 verify = """sbcl --eval '(require :asdf)' --eval '(push #p"/home/rahul/Documents/amoebum/ptui/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/pseudopod/" asdf:*central-registry*)' --eval '(ql:quickload "ptui/tests")' --eval '(unless (fiveam:run! :ptui) (sb-ext:exit :code 1))' --quit"""
 done_when = "No target function exceeds severity 6; max nesting depth in any target file < 10"
@@ -179,7 +179,7 @@ done_when = "No target function exceeds severity 6; max nesting depth in any tar
 [[tranches]]
 key = "R010"
 summary = "Refactor check-permission (sev 12, 10 params), normalize-permission-path (sev 10), %tokenize-shell-command (sev 8) in permissions.lisp — SECURITY CRITICAL: must preserve exact accept/deny behavior"
-status = "incomplete"
+status = "complete"
 group = "security-last-1"
 verify = """sbcl --eval '(require :asdf)' --eval '(push #p"/home/rahul/Documents/amoebum/amoebum/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/pseudopod/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/sw4rm-sdk/" asdf:*central-registry*)' --eval '(push #p"/home/rahul/Documents/amoebum/ptui/" asdf:*central-registry*)' --eval '(ql:quickload "amoebum/tests")' --eval '(unless (fiveam:run! :amoebum) (sb-ext:exit :code 1))' --quit"""
 done_when = "check-permission severity < 7; normalize-permission-path severity < 6; file line count < 2000"
@@ -207,25 +207,25 @@ group = "next-todos"
 [[tranches]]
 key = "NXT-003"
 summary = "Add `/swarm-peers` to list registered SW4RM session peers and capabilities."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-004"
 summary = "Add `/handoffs` to list open, accepted, rejected, and completed handoffs."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-005"
 summary = "Add `/handoff-accept`, `/handoff-reject`, and `/handoff-complete` commands."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-006"
 summary = "Add `/review-room` commands for create, submit, critique, status, and wait."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
@@ -237,7 +237,7 @@ group = "next-todos"
 [[tranches]]
 key = "NXT-008"
 summary = "Decide when generic `spawn-agent` should stay local versus delegate through SW4RM."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
@@ -249,103 +249,103 @@ group = "next-todos"
 [[tranches]]
 key = "NXT-010"
 summary = "Replace stubbed `spawn-swarm-agent` work with real runner-backed execution."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-011"
 summary = "Define `agent-record` to SW4RM lifecycle mapping, including timeouts, cancellation, failure, and completion."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-012"
 summary = "Unify SW4RM and generic agents under one registry, status API, and observation surface."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-013"
 summary = "Capture SW4RM handoff and negotiation events in `agent-activity` and event journal."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-014"
 summary = "Show parent-child execution trees linking prompts, agents, SW4RM handoffs, and workers."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-015"
 summary = "Surface SW4RM state in chat overlays, worker dashboard, or a dedicated swarm panel."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-016"
 summary = "Resolve provider credentials through session-scoped SW4RM registries for delegated executions."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-017"
 summary = "Add timeout, exit-code, signal, and retry semantics to SW4RM-backed execution records."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-018"
 summary = "Add stalled-run detection using heartbeat timestamps and last-output tracking."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-019"
 summary = "Test end-to-end SW4RM delegation from prompt input to observed completion."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-020"
 summary = "Test missing-peer, rejected-handoff, timeout, crash, and cancellation failure paths."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-021"
 summary = "Test secret isolation across delegated runs and provider resolution boundaries."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-022"
 summary = "Decide whether `:networked` means real remote transport or deferred capability."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-023"
 summary = "If remote, design transport, auth, identity, discovery, and reconnection contracts."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-024"
 summary = "If local-only, simplify SW4RM naming, configuration, and user-facing delegation UX."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-025"
 summary = "Add smoke tests covering chosen SW4RM mode during `amoebum` startup and commands."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-026"
 summary = "Dogfood execution development inside `amoebum` and store friction notes in Haake memory."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
@@ -519,25 +519,25 @@ group = "next-todos"
 [[tranches]]
 key = "NXT-079"
 summary = "Add operator output-style and status-bar presets; cover TUI snapshots plus headless formatting regressions."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-080"
 summary = "Improve shared IDE context ingestion for selections, diagnostics, and open files; add integration tests and observability."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-081"
 summary = "Package PTUI separately: landing copy, benchmark story, screenshots, and kernel-vs-app comparison docs."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-082"
 summary = "Expand PTUI standalone demos and release scripts so marketing claims stay reproducible under build, smoke, and perf gates."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
@@ -579,43 +579,43 @@ group = "next-todos"
 [[tranches]]
 key = "NXT-089"
 summary = "Implement output-style preset storage and switching in `amoebum/src/ui/status-bar.lisp`."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-090"
 summary = "Add `/output-style` command, persistence, status-bar indicator, and headless formatter integration."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-091"
 summary = "Cover compact, operator, and verbose styles with TUI snapshots and formatter regressions."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-092"
 summary = "Extend IDE context ingestion for selections, diagnostics, and open-file lists."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-093"
 summary = "Wire IDE context into prompt assembly, context budgeting, and status reporting."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-094"
 summary = "Add integration tests for IDE context truncation, precedence, and disabled-mode behavior."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-095"
 summary = "Emit observability events when IDE context attaches, truncates, or is dropped."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
@@ -657,7 +657,7 @@ group = "next-todos"
 [[tranches]]
 key = "NXT-102"
 summary = "Prepare handoff notes once status-bar modes, Cultivar/Yore integration, IDE context, and PTUI release docs land."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
@@ -675,43 +675,43 @@ group = "next-todos"
 [[tranches]]
 key = "NXT-105"
 summary = "Add status-bar segments for active backends, context pressure, and current mode in `amoebum/src/ui/status-bar.lisp`."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-106"
 summary = "Add a Cultivar adapter for `query.resolve`, `context.preview`, and `context.expand` using the narrowed MCP contract."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-107"
 summary = "Add a Yore wrapper for `search-context` and `fetch-context` using the documented v1 JSON contract."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-108"
 summary = "Build IDE-context packets from selection, changed files, diagnostics, and open files with mode-aware budgeting."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-109"
 summary = "Wire Cultivar and Yore pressure metadata into prompt assembly, status reporting, and truncation observability."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-110"
 summary = "Add integration tests for Cultivar resolve-preview-expand and Yore search-fetch happy paths."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-111"
 summary = "Add regression tests for status-bar modes, context pressure, disabled ingestion, and transcript-budget truncation behavior."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
@@ -723,7 +723,7 @@ group = "next-todos"
 [[tranches]]
 key = "NXT-113"
 summary = "Document integration defaults, mode semantics, and smoke commands in `README.md` and `PROMPT.md`."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]

@@ -260,6 +260,64 @@
           when (%starts-with-ci-p prefix text)
             collect text)))
 
+;;; NXT-090: /output-style command
+
+(defun %output-style-description (style)
+  "Return the description string for STYLE from +output-style-presets+, or NIL."
+  (cdr (assoc style +output-style-presets+ :test #'eq)))
+
+(defun %output-style-handler (_invocation arguments _context)
+  "Handle /output-style [compact|operator|verbose|list].
+With no argument: show current style.
+With 'list': enumerate all available styles with descriptions.
+With a style name: switch to that style and propagate via config-changed event."
+  (declare (ignore _invocation _context))
+  (let* ((raw (gethash :STYLE arguments))
+         (trimmed (and raw (%slash-trim raw)))
+         (current (cfg :output-style)))
+    (cond
+      ;; No argument — show current style
+      ((or (null trimmed) (zerop (length trimmed)))
+       (make-slash-command-result
+        :output (format nil "Output style: ~A.~@[  ~A~]"
+                        (string-downcase (symbol-name (or current :operator)))
+                        (%output-style-description (or current :operator)))))
+      ;; "list" — enumerate available presets
+      ((string-equal trimmed "list")
+       (make-slash-command-result
+        :output (with-output-to-string (out)
+                  (format out "Available output styles:~%")
+                  (dolist (entry +output-style-presets+)
+                    (let ((marker (if (eq (car entry) (or current :operator)) "*" " ")))
+                      (format out "~A ~A  ~A~%"
+                              marker
+                              (string-downcase (symbol-name (car entry)))
+                              (cdr entry)))))))
+      ;; Style name — validate and switch
+      (t
+       (let ((candidate (intern (string-upcase trimmed) :keyword)))
+         (if (member candidate +known-status-bar-output-styles+ :test #'eq)
+             (progn
+               (setconfig :output-style candidate)
+               (make-slash-command-result
+                :output (format nil "Output style set to ~A.~@[  ~A~]"
+                                (string-downcase (symbol-name candidate))
+                                (%output-style-description candidate))))
+             (make-slash-command-result
+              :output (format nil
+                              "Unknown output style ~S. Valid styles: ~{~A~^, ~}."
+                              trimmed
+                              (mapcar (lambda (s) (string-downcase (symbol-name s)))
+                                      +known-status-bar-output-styles+)))))))))
+
+(defun %output-style-arg-completer (_command _invocation _index fragment _prefix)
+  (declare (ignore _command _invocation _index _prefix))
+  (let ((prefix (%slash-trim fragment)))
+    (loop for candidate in (cons "list" (mapcar (lambda (s) (string-downcase (symbol-name s)))
+                                                +known-status-bar-output-styles+))
+          when (%starts-with-ci-p prefix candidate)
+            collect candidate)))
+
 (defun %help-arg-completer (_command _invocation _index fragment _prefix)
   (declare (ignore _command _invocation _index _prefix))
   (let ((prefix (%normalize-command-name fragment)))
@@ -390,4 +448,18 @@
            :greedy-p t
            :description "Maximum iterations (positive integer), 'reset' to revert, or omit to see current value."))
     :handler #'%maxturns-handler))
+  ;; NXT-090: /output-style
+  (register-slash-command
+   (make-slash-command
+    :name "output-style"
+    :description "Show or set the output verbosity style (compact, operator, verbose)."
+    :usage "/output-style [compact|operator|verbose|list]"
+    :parameters
+    (list (make-slash-command-parameter
+           :name "style"
+           :type :string
+           :required-p nil
+           :description "Target style name, 'list' to enumerate, or omit to show current."))
+    :handler #'%output-style-handler
+    :completer #'%output-style-arg-completer))
   t)

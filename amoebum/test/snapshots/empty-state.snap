@@ -18,7 +18,7 @@
 |╭────────────────────────────────────────────────────────────────────────────────╮  |
 |│                                                                                │  |
 |╰────────────────────────────────────────────────────────────────────────────────╯  |
-|branch feat/chat-snapshot | mode full-auto | Tokens: 0/128000 (0%) | stream idle | m|
+|branch feat/chat-snapshot | mode full-auto | Tokens: 0/128000 (0%) | ctx [░░░░░░░░] |
 --- attrs
 0,0:bold
 0,1:bold
@@ -572,3 +572,18 @@
 19,63:bold
 19,64:bold
 19,65:bold
+19,69:bold
+19,70:bold
+19,71:bold
+19,72:bold
+19,73:bold
+19,74:bold
+19,75:bold
+19,76:bold
+19,77:bold
+19,78:bold
+19,79:bold
+19,80:bold
+19,81:bold
+19,82:bold
+19,83:bold

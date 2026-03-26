@@ -279,6 +279,114 @@
                              (%runtime-agent-backend-label agent)
                              (%agent-task-summary agent))))))))
 
+;;; ---------------------------------------------------------------------------
+;;; NXT-014: /agent-tree — parent-child execution tree
+;;;
+;;; Local agents carry a parent-message-id that identifies the conversation
+;;; message which triggered their spawn.  We group agents by that key and
+;;; display the tree as:
+;;;
+;;;   [root agents — no parent-message-id]
+;;;     agent-task-0001 | running | local | <task>
+;;;   [message msg-42]
+;;;     agent-task-0002 | completed | local | <task>
+;;;     agent-task-0003 | running   | local | <task>
+;;;   [sw4rm agents]
+;;;     swarm-1 | running | sw4rm | <task>
+;;;
+;;; ---------------------------------------------------------------------------
+
+(defun %agent-tree-format-node (out agent indent-prefix)
+  "Write one agent row to OUT with INDENT-PREFIX."
+  (format out "~A~A | ~A | ~A | ~A~%"
+          indent-prefix
+          (runtime-agent-id agent)
+          (%agent-status-text (runtime-agent-status agent))
+          (%runtime-agent-backend-label agent)
+          (%agent-task-summary agent)))
+
+(defun %agent-tree-handler (_invocation _arguments _context)
+  "NXT-014: Show the parent-child execution tree for all known agents.
+Local agents are grouped by their parent-message-id; SW4RM agents are shown
+separately.  The tree reflects prompt->agent and agent->sub-agent handoffs."
+  (declare (ignore _invocation _arguments _context))
+  (let* ((all-local (list-agents :include-completed-p t))
+         (all-swarm (list-swarm-agents))
+         ;; Partition local agents: those with no parent first, then group
+         ;; the rest by parent-message-id.
+         (roots '())
+         (by-parent (make-hash-table :test #'equal)))
+    ;; Build groupings
+    (dolist (agent all-local)
+      (let ((pmid (agent-record-parent-message-id agent)))
+        (if (or (null pmid) (%agent-blank-string-p (princ-to-string pmid)))
+            (push agent roots)
+            (push agent (gethash pmid by-parent '())))))
+    (setf roots (nreverse roots))
+    (if (and (null roots)
+             (zerop (hash-table-count by-parent))
+             (null all-swarm))
+        (make-slash-command-result :output "No agents recorded.")
+        (make-slash-command-result
+         :output (with-output-to-string (out)
+                   ;; Root-level agents (no parent message)
+                   (when roots
+                     (format out "[root agents]~%")
+                     (dolist (agent roots)
+                       (%agent-tree-format-node out agent "  ")))
+                   ;; Agents grouped by parent-message-id
+                   (let ((parent-ids '()))
+                     (maphash (lambda (k _v)
+                                (declare (ignore _v))
+                                (push k parent-ids))
+                              by-parent)
+                     (setf parent-ids (sort parent-ids #'string<))
+                     (dolist (pmid parent-ids)
+                       (let ((children (nreverse (gethash pmid by-parent '()))))
+                         (format out "[message ~A]~%" pmid)
+                         (dolist (child children)
+                           (%agent-tree-format-node out child "  ")))))
+                   ;; SW4RM agents
+                   (when all-swarm
+                     (format out "[sw4rm agents]~%")
+                     (dolist (agent all-swarm)
+                       (%agent-tree-format-node out agent "  "))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; NXT-015: /swarm-status — surface SW4RM state in the chat overlay
+;;;
+;;; Shows the active swarm delegation mode, number of active/total SW4RM
+;;; agents, the handoff sequence counter (proxy for total handoffs issued),
+;;; and the number of open user negotiation rooms.
+;;; ---------------------------------------------------------------------------
+
+(defun %swarm-status-handler (_invocation _arguments _context)
+  "NXT-015: Show SW4RM state: delegation mode, agent counts, handoff count, room count."
+  (declare (ignore _invocation _arguments _context))
+  (let* ((mode (%configured-swarm-delegation-mode))
+         (all-swarm (list-swarm-agents))
+         (active-swarm (remove-if #'runtime-agent-terminal-p all-swarm))
+         ;; *user-handoff-sequence* is the monotonic counter for issued handoffs
+         (handoff-count (if (boundp '*user-handoff-sequence*)
+                            *user-handoff-sequence*
+                            0))
+         ;; *user-negotiation-room-participants* maps room-id -> participants
+         (room-count (if (and (boundp '*user-negotiation-room-participants*)
+                              (hash-table-p *user-negotiation-room-participants*))
+                         (hash-table-count *user-negotiation-room-participants*)
+                         0))
+         (local-active (active-agent-count)))
+    (make-slash-command-result
+     :output (with-output-to-string (out)
+               (format out "SW4RM status:~%")
+               (format out "  delegation-mode : ~A~%"
+                       (string-downcase (symbol-name mode)))
+               (format out "  local agents    : ~D active~%" local-active)
+               (format out "  swarm agents    : ~D active / ~D total~%"
+                       (length active-swarm) (length all-swarm))
+               (format out "  handoffs issued : ~D~%" handoff-count)
+               (format out "  review rooms    : ~D open~%" room-count)))))
+
 (defun %agent-output-body (agent output)
   (let* ((trimmed-output (%slash-trim output))
          (result (runtime-agent-result agent))
@@ -538,6 +646,261 @@
              :echo-input-p t
              :output (format nil "Failed to spawn agent: ~A" condition)))))))
 
+;;; ---- NXT-003: /swarm-peers ----
+
+(defun %format-peer-entry (peer)
+  (let ((session-id (or (getf peer :session-id) "?"))
+        (user-id (or (getf peer :user-id) "?"))
+        (agent-id (or (getf peer :agent-id) "?"))
+        (capabilities (getf peer :capabilities)))
+    (format nil "  ~A (user: ~A, agent: ~A)~@[ caps: ~{~A~^, ~}~]"
+            session-id user-id agent-id capabilities)))
+
+(defun %swarm-peers-handler (_invocation _arguments _context)
+  (declare (ignore _invocation _arguments _context))
+  (let ((peers (list-user-session-peers)))
+    (make-slash-command-result
+     :echo-input-p t
+     :output (if (null peers)
+                 "No registered swarm peers."
+                 (with-output-to-string (out)
+                   (format out "Swarm peers (~D):~%" (length peers))
+                   (dolist (peer peers)
+                     (format out "~A~%" (%format-peer-entry peer))))))))
+
+;;; ---- NXT-004: /handoffs ----
+
+(defun %format-handoff-entry (handoff)
+  (let ((handoff-id (or (getf handoff :handoff-id)
+                        (getf handoff :request-id) "?"))
+        (status (or (getf handoff :status) :pending))
+        (from (or (getf handoff :from-session-id)
+                  (getf handoff :from-agent) "?"))
+        (to (or (getf handoff :to-session-id)
+                (getf handoff :to-agent) "?"))
+        (reason (or (getf handoff :reason) "")))
+    (format nil "  ~A | ~A | from: ~A → to: ~A~@[ | ~A~]"
+            handoff-id status from to
+            (when (plusp (length reason)) reason))))
+
+(defun %handoffs-handler (_invocation _arguments context)
+  (declare (ignore _invocation _arguments))
+  (let* ((chat-state (slash-command-context-chat-state context))
+         (conversation (and (typep chat-state 'chat-ui-state)
+                            (chat-ui-state-conversation chat-state)))
+         (session-id (and (typep conversation 'conversation-state)
+                          (conversation-state-session-id conversation))))
+    (unless session-id
+      (return-from %handoffs-handler
+        (make-slash-command-result
+         :echo-input-p t
+         :output "No active session — cannot query handoffs.")))
+    (handler-case
+        (let ((pending (get-user-pending-handoffs session-id)))
+          (make-slash-command-result
+           :echo-input-p t
+           :output (if (null pending)
+                       "No pending handoffs for this session."
+                       (with-output-to-string (out)
+                         (format out "Pending handoffs (~D):~%" (length pending))
+                         (dolist (entry pending)
+                           (format out "~A~%" (%format-handoff-entry entry)))))))
+      (error (condition)
+        (make-slash-command-result
+         :echo-input-p t
+         :output (format nil "Failed to query handoffs: ~A" condition))))))
+
+;;; ---- NXT-005: /handoff-accept, /handoff-reject, /handoff-complete ----
+
+(defun %handoff-accept-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let ((handoff-id (gethash :ID arguments)))
+    (when (%slash-blank-p handoff-id)
+      (return-from %handoff-accept-handler
+        (make-slash-command-result :echo-input-p t :output "Usage: /handoff-accept <handoff-id>")))
+    (handler-case
+        (let ((result (accept-user-handoff handoff-id)))
+          (make-slash-command-result
+           :echo-input-p t
+           :output (format nil "Accepted handoff ~A. Status: ~A"
+                           handoff-id (or (getf result :status) :accepted))))
+      (error (condition)
+        (make-slash-command-result
+         :echo-input-p t
+         :output (format nil "Failed to accept handoff ~A: ~A" handoff-id condition))))))
+
+(defun %handoff-reject-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let ((args (or (gethash :ARGS arguments) "")))
+    (let* ((tokens (%tokenize-command-arguments args))
+           (handoff-id (first tokens))
+           (reason (or (format nil "~{~A~^ ~}" (rest tokens)) "rejected")))
+      (when (%slash-blank-p handoff-id)
+        (return-from %handoff-reject-handler
+          (make-slash-command-result :echo-input-p t :output "Usage: /handoff-reject <handoff-id> [reason...]")))
+      (handler-case
+          (let ((result (reject-user-handoff handoff-id reason)))
+            (make-slash-command-result
+             :echo-input-p t
+             :output (format nil "Rejected handoff ~A. Status: ~A"
+                             handoff-id (or (getf result :status) :rejected))))
+        (error (condition)
+          (make-slash-command-result
+           :echo-input-p t
+           :output (format nil "Failed to reject handoff ~A: ~A" handoff-id condition)))))))
+
+(defun %handoff-complete-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let ((handoff-id (gethash :ID arguments)))
+    (when (%slash-blank-p handoff-id)
+      (return-from %handoff-complete-handler
+        (make-slash-command-result :echo-input-p t :output "Usage: /handoff-complete <handoff-id>")))
+    (handler-case
+        (let ((result (complete-user-handoff handoff-id)))
+          (make-slash-command-result
+           :echo-input-p t
+           :output (format nil "Completed handoff ~A. Status: ~A"
+                           handoff-id (or (getf result :status) :completed))))
+      (error (condition)
+        (make-slash-command-result
+         :echo-input-p t
+         :output (format nil "Failed to complete handoff ~A: ~A" handoff-id condition))))))
+
+;;; ---- NXT-006: /review-room ----
+
+(defun %review-room-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let* ((args (or (gethash :ARGS arguments) ""))
+         (tokens (%tokenize-command-arguments args))
+         (subcommand (first tokens)))
+    (cond
+      ((or (null subcommand) (string-equal subcommand "help"))
+       (make-slash-command-result
+        :echo-input-p t
+        :output "Usage: /review-room <create|submit|critique|status|wait> [args...]
+  create <room-id> <session-id> [session-id...]
+  submit <room-id> <artifact-id> <artifact-text>
+  critique <room-id> <artifact-id> <pass|fail> [details...]
+  status <room-id>
+  wait <artifact-id> [--timeout N]"))
+      ((string-equal subcommand "create")
+       (%review-room-create-handler (rest tokens)))
+      ((string-equal subcommand "submit")
+       (%review-room-submit-handler (rest tokens)))
+      ((string-equal subcommand "critique")
+       (%review-room-critique-handler (rest tokens)))
+      ((string-equal subcommand "status")
+       (%review-room-status-handler (rest tokens)))
+      ((string-equal subcommand "wait")
+       (%review-room-wait-handler (rest tokens)))
+      (t
+       (make-slash-command-result
+        :echo-input-p t
+        :output (format nil "Unknown review-room subcommand ~S. Try /review-room help." subcommand))))))
+
+(defun %review-room-create-handler (tokens)
+  (let ((room-id (first tokens))
+        (participants (rest tokens)))
+    (unless (and room-id participants)
+      (return-from %review-room-create-handler
+        (make-slash-command-result :echo-input-p t :output "Usage: /review-room create <room-id> <session-id> [session-id...]")))
+    (handler-case
+        (let ((result (create-user-negotiation-room room-id participants)))
+          (make-slash-command-result
+           :echo-input-p t
+           :output (format nil "Created review room ~A with ~D participant~:P."
+                           room-id (length participants))))
+      (error (condition)
+        (make-slash-command-result
+         :echo-input-p t
+         :output (format nil "Failed to create review room: ~A" condition))))))
+
+(defun %review-room-submit-handler (tokens)
+  (let ((room-id (first tokens))
+        (artifact-id (second tokens))
+        (artifact-text (format nil "~{~A~^ ~}" (cddr tokens))))
+    (unless (and room-id artifact-id (plusp (length artifact-text)))
+      (return-from %review-room-submit-handler
+        (make-slash-command-result :echo-input-p t :output "Usage: /review-room submit <room-id> <artifact-id> <artifact-text>")))
+    (handler-case
+        (let ((result (submit-user-negotiation-artifact
+                       room-id nil artifact-id artifact-text)))
+          (make-slash-command-result
+           :echo-input-p t
+           :output (format nil "Submitted artifact ~A to room ~A." artifact-id room-id)))
+      (error (condition)
+        (make-slash-command-result
+         :echo-input-p t
+         :output (format nil "Failed to submit artifact: ~A" condition))))))
+
+(defun %review-room-critique-handler (tokens)
+  (let* ((room-id (first tokens))
+         (artifact-id (second tokens))
+         (verdict-text (third tokens))
+         (passed (and verdict-text (string-equal verdict-text "pass")))
+         (details (format nil "~{~A~^ ~}" (cdddr tokens))))
+    (unless (and room-id artifact-id verdict-text)
+      (return-from %review-room-critique-handler
+        (make-slash-command-result :echo-input-p t :output "Usage: /review-room critique <room-id> <artifact-id> <pass|fail> [details...]")))
+    (handler-case
+        (let ((result (add-user-negotiation-critique
+                       room-id artifact-id nil passed
+                       :details (when (plusp (length details)) details))))
+          (make-slash-command-result
+           :echo-input-p t
+           :output (format nil "Critique ~A for artifact ~A in room ~A."
+                           (if passed "PASS" "FAIL") artifact-id room-id)))
+      (error (condition)
+        (make-slash-command-result
+         :echo-input-p t
+         :output (format nil "Failed to add critique: ~A" condition))))))
+
+(defun %review-room-status-handler (tokens)
+  (let ((room-id (first tokens)))
+    (unless room-id
+      (return-from %review-room-status-handler
+        (make-slash-command-result :echo-input-p t :output "Usage: /review-room status <room-id>")))
+    (handler-case
+        (let ((status (get-user-negotiation-room-status room-id)))
+          (make-slash-command-result
+           :echo-input-p t
+           :output (if status
+                       (with-output-to-string (out)
+                         (format out "Room ~A:~%" room-id)
+                         (format out "  Participants: ~{~A~^, ~}~%"
+                                 (or (getf status :participant-session-ids) '("none")))
+                         (format out "  Active critics: ~{~A~^, ~}~%"
+                                 (or (getf status :active-critic-session-ids) '("none")))
+                         (format out "  Status: ~A" (or (getf status :status) "unknown")))
+                       (format nil "Room ~A not found." room-id))))
+      (error (condition)
+        (make-slash-command-result
+         :echo-input-p t
+         :output (format nil "Failed to get room status: ~A" condition))))))
+
+(defun %review-room-wait-handler (tokens)
+  (let* ((artifact-id (first tokens))
+         (timeout-s 30.0))
+    (loop for rest on (rest tokens) by #'cddr
+          when (string-equal (first rest) "--timeout")
+            do (handler-case
+                   (setf timeout-s (coerce (parse-integer (second rest)) 'double-float))
+                 (error () nil)))
+    (unless artifact-id
+      (return-from %review-room-wait-handler
+        (make-slash-command-result :echo-input-p t :output "Usage: /review-room wait <artifact-id> [--timeout N]")))
+    (handler-case
+        (let ((decision (wait-for-user-negotiation-decision artifact-id :timeout-s timeout-s)))
+          (make-slash-command-result
+           :echo-input-p t
+           :output (if decision
+                       (format nil "Decision for ~A: ~A" artifact-id (getf decision :decision))
+                       (format nil "Timed out waiting for decision on ~A." artifact-id))))
+      (error (condition)
+        (make-slash-command-result
+         :echo-input-p t
+         :output (format nil "Wait failed: ~A" condition))))))
+
 (defun register-agent-slash-commands ()
   (register-slash-command
    (make-slash-command :name "agents" :description "List currently running background agents." :usage "/agents" :handler #'%agents-handler))
@@ -606,4 +969,58 @@
     :parameters
     (list (make-slash-command-parameter :name "task" :type :string :required-p t :greedy-p t :description "Task description for the spawned agent."))
     :handler #'%spawn-handler))
+  ;; NXT-003: /swarm-peers
+  (register-slash-command
+   (make-slash-command :name "swarm-peers" :description "List registered SW4RM session peers and capabilities." :usage "/swarm-peers" :handler #'%swarm-peers-handler))
+  ;; NXT-004: /handoffs
+  (register-slash-command
+   (make-slash-command :name "handoffs" :description "List pending handoffs for the current session." :usage "/handoffs" :handler #'%handoffs-handler))
+  ;; NXT-005: /handoff-accept, /handoff-reject, /handoff-complete
+  (register-slash-command
+   (make-slash-command
+    :name "handoff-accept"
+    :description "Accept a pending handoff request."
+    :usage "/handoff-accept <handoff-id>"
+    :parameters
+    (list (make-slash-command-parameter :name "id" :type :string :required-p t :description "Handoff identifier."))
+    :handler #'%handoff-accept-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "handoff-reject"
+    :description "Reject a pending handoff request."
+    :usage "/handoff-reject <handoff-id> [reason...]"
+    :parameters
+    (list (make-slash-command-parameter :name "args" :type :string :required-p t :greedy-p t :description "Handoff ID and optional rejection reason."))
+    :handler #'%handoff-reject-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "handoff-complete"
+    :description "Mark a handoff as complete."
+    :usage "/handoff-complete <handoff-id>"
+    :parameters
+    (list (make-slash-command-parameter :name "id" :type :string :required-p t :description "Handoff identifier."))
+    :handler #'%handoff-complete-handler))
+  ;; NXT-006: /review-room
+  (register-slash-command
+   (make-slash-command
+    :name "review-room"
+    :description "Multi-user code review rooms: create, submit, critique, status, wait."
+    :usage "/review-room <create|submit|critique|status|wait> [args...]"
+    :parameters
+    (list (make-slash-command-parameter :name "args" :type :string :required-p nil :greedy-p t :description "Subcommand and arguments."))
+    :handler #'%review-room-handler))
+  ;; NXT-014: /agent-tree
+  (register-slash-command
+   (make-slash-command
+    :name "agent-tree"
+    :description "Show parent-child execution tree linking prompts, agents, SW4RM handoffs, and workers."
+    :usage "/agent-tree"
+    :handler #'%agent-tree-handler))
+  ;; NXT-015: /swarm-status
+  (register-slash-command
+   (make-slash-command
+    :name "swarm-status"
+    :description "Surface SW4RM state: delegation mode, agent counts, handoff count, and open review rooms."
+    :usage "/swarm-status"
+    :handler #'%swarm-status-handler))
   t)

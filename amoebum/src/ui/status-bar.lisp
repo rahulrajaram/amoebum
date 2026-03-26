@@ -13,10 +13,24 @@
 (defparameter +known-status-bar-focus-modes+ '(:lean :code :docs :arch))
 (defparameter +default-status-bar-focus-mode+ :arch)
 (defparameter +status-bar-focus-mode-segments+
-  '((:lean . (:branch :stream :model))
-    (:code . (:branch :permission :context :stream :model :worker))
-    (:docs . (:branch :context :stream :model :provider))
-    (:arch . (:branch :permission :context :stream :model :provider :worker))))
+  '((:lean . (:branch :stream :model :backends))
+    (:code . (:branch :permission :context :context-pressure :stream :model :worker :backends))
+    (:docs . (:branch :context :context-pressure :stream :model :provider :output-mode))
+    (:arch . (:branch :permission :context :context-pressure :stream :model :provider :worker :backends :output-mode))))
+
+;;; Context-pressure bar configuration
+(defparameter +context-pressure-bar-width+ 8
+  "Number of characters used in the context-pressure block progress bar.")
+
+(defconstant +output-style-presets+
+  (if (boundp '+output-style-presets+)
+      (symbol-value '+output-style-presets+)
+      '((:compact  . "Minimal output: short labels, single-line tool results")
+        (:operator . "Balanced output: useful for monitoring agents")
+        (:verbose  . "Detailed output: full tool results and debug info"))))
+
+(defparameter +known-status-bar-output-styles+ '(:compact :operator :verbose))
+(defparameter +default-status-bar-output-style+ :operator)
 
 (defstruct (status-bar-stream-payload
             (:constructor make-status-bar-stream-payload
@@ -35,6 +49,8 @@
                 (&key
                    permission-mode
                    (focus-mode +default-status-bar-focus-mode+)
+                   (output-style +default-status-bar-output-style+)
+                   (delegation-mode :local)
                    (plan-mode-active-p nil)
                    (plan-mode-mutating-tools-blocked-p nil)
                    branch-name
@@ -48,6 +64,8 @@
                    (subscription-ids '()))))
   permission-mode
   (focus-mode +default-status-bar-focus-mode+)
+  (output-style +default-status-bar-output-style+)
+  (delegation-mode :local)
   (plan-mode-active-p nil :type boolean)
   (plan-mode-mutating-tools-blocked-p nil :type boolean)
   (branch-name "-" :type string)
@@ -80,6 +98,29 @@
     (if (member candidate +known-status-bar-focus-modes+ :test #'eq)
         candidate
         +default-status-bar-focus-mode+)))
+
+(defun %normalize-status-bar-output-style (value)
+  (let* ((text (string-trim '(#\Space #\Tab #\Newline #\Return)
+                            (%safe-string value
+                                          (symbol-name +default-status-bar-output-style+))))
+         (candidate (intern (string-upcase text) :keyword)))
+    (if (member candidate +known-status-bar-output-styles+ :test #'eq)
+        candidate
+        +default-status-bar-output-style+)))
+
+(defun %normalize-delegation-mode (value)
+  "Normalize VALUE to a known delegation mode keyword, defaulting to :local."
+  (let ((candidate
+          (typecase value
+            (keyword value)
+            (symbol (intern (string-upcase (symbol-name value)) :keyword))
+            (string (intern (string-upcase
+                             (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                            :keyword))
+            (t :local))))
+    (if (member candidate '(:local :networked) :test #'eq)
+        candidate
+        :local)))
 
 (defun %coerce-nonnegative-integer (value &optional (fallback 0))
   (cond
@@ -139,6 +180,14 @@
       (:status-bar-mode
        (setf (status-bar-state-focus-mode state)
              (%normalize-status-bar-focus-mode
+              (config-changed-payload-new-value payload))))
+      (:output-style
+       (setf (status-bar-state-output-style state)
+             (%normalize-status-bar-output-style
+              (config-changed-payload-new-value payload))))
+      (:swarm-delegation-mode
+       (setf (status-bar-state-delegation-mode state)
+             (%normalize-delegation-mode
               (config-changed-payload-new-value payload))))
       (:plan-mode
        (let ((active-p (not (null (config-changed-payload-new-value payload)))))
@@ -235,6 +284,7 @@
                                 event-bus
                                 permission-mode
                                 focus-mode
+                                output-style
                                 model-name
                                 branch-name
                                 context-window-limit
@@ -249,6 +299,8 @@
                :supervised))
          (resolved-focus-mode
            (%normalize-status-bar-focus-mode focus-mode))
+         (resolved-output-style
+           (%normalize-status-bar-output-style output-style))
          (resolved-plan-mode-active-p
            (and (config-p config)
                 (not (null (config-value :plan-mode config)))))
@@ -267,10 +319,17 @@
              (if (and (integerp candidate) (> candidate 0))
                  candidate
                  nil)))
+         (resolved-delegation-mode
+           (%normalize-delegation-mode
+            (or (and (config-p config)
+                     (ignore-errors (config-value :swarm-delegation-mode config)))
+                :local)))
          (state
            (%make-status-bar-state
             :permission-mode resolved-mode
             :focus-mode resolved-focus-mode
+            :output-style resolved-output-style
+            :delegation-mode resolved-delegation-mode
             :plan-mode-active-p resolved-plan-mode-active-p
             :plan-mode-mutating-tools-blocked-p resolved-plan-mode-mutating-tools-blocked-p
             :branch-name (%safe-string (or branch-name
@@ -342,6 +401,50 @@
     (:yellow :context-yellow)
     (otherwise :context-red)))
 
+;; -----------------------------------------------------------------------
+;;; Segment: :context-pressure -- compact visual bar of context utilisation
+;;; -----------------------------------------------------------------------
+
+(defun %context-pressure-bar (percent bar-width)
+  "Return a block-character progress bar of BAR-WIDTH chars for PERCENT (0-100)."
+  (let* ((filled (round (* bar-width (min 100 (max 0 percent))) 100))
+         (empty  (- bar-width filled)))
+    (concatenate 'string
+                 (make-string filled :initial-element #\FULL_BLOCK)
+                 (make-string empty  :initial-element #\LIGHT_SHADE))))
+
+(defun %context-pressure-segment-text (state)
+  (let* ((used    (%coerce-nonnegative-integer (status-bar-state-context-used-tokens state) 0))
+         (limit   (%coerce-nonnegative-integer (status-bar-state-context-max-tokens state)
+                                               +default-context-window-tokens+))
+         (percent (context-usage-percent used limit))
+         (bar     (%context-pressure-bar percent +context-pressure-bar-width+)))
+    (format nil "ctx [~A] ~D%" bar percent)))
+
+;;; -----------------------------------------------------------------------
+;;; Segment: :backends -- show active delegation backend(s)
+;;; -----------------------------------------------------------------------
+
+(defun %backends-segment-text (state)
+  "Return a short label for the active backend based on delegation-mode."
+  (case (status-bar-state-delegation-mode state)
+    (:networked "backend networked")
+    (otherwise  "backend local")))
+
+;;; -----------------------------------------------------------------------
+;;; Segment: :output-mode -- show focus-mode + output-style
+;;; -----------------------------------------------------------------------
+
+(defun %output-mode-segment-text (state)
+  "Return a combined focus-mode/output-style label, e.g. mode arch/operator."
+  (let ((focus  (string-downcase
+                 (%safe-string (status-bar-state-focus-mode state) "arch")))
+        (style  (string-downcase
+                 (%safe-string (status-bar-state-output-style state) "operator"))))
+    (format nil "mode ~A/~A" focus style)))
+
+;;; -----------------------------------------------------------------------
+
 (defun %status-bar-focus-mode-segment-keys (state)
   (or (cdr (assoc (status-bar-state-focus-mode state)
                   +status-bar-focus-mode-segments+
@@ -378,7 +481,19 @@
        (when (and (stringp worker-segment)
                   (plusp (length worker-segment)))
          (list :text worker-segment
-               :role :meta))))))
+               :role :meta))))
+    (:backends
+     (list :text (%backends-segment-text state)
+           :role :meta))
+    (:context-pressure
+     (list :text (%context-pressure-segment-text state)
+           :role (%context-budget-role state)))
+    (:output-mode
+     (list :text (%output-mode-segment-text state)
+           :role :meta))
+    (:ide
+     (list :text (%ide-segment-text)
+           :role :meta))))
 
 (defun %status-segment-specs (state)
   (remove nil
@@ -451,6 +566,8 @@
   (check-type state status-bar-state)
   (list (status-bar-state-permission-mode state)
         (status-bar-state-focus-mode state)
+        (status-bar-state-output-style state)
+        (status-bar-state-delegation-mode state)
         (status-bar-state-plan-mode-active-p state)
         (status-bar-state-plan-mode-mutating-tools-blocked-p state)
         (status-bar-state-branch-name state)
@@ -463,6 +580,21 @@
         (truncate (* 100 (status-bar-state-stream-tokens-per-second state)))
         (provider-health-signature)
         (worker-status-bar-segment)))
+
+(defun status-bar-current-output-style (state)
+  "Return the current output-style keyword for STATE.
+Returns one of :compact, :operator, or :verbose."
+  (check-type state status-bar-state)
+  (status-bar-state-output-style state))
+
+(defun status-bar-set-output-style! (state style)
+  "Set the output-style for STATE to STYLE.
+STYLE must be one of :compact, :operator, or :verbose.
+Unknown values are coerced to the default (:operator)."
+  (check-type state status-bar-state)
+  (setf (status-bar-state-output-style state)
+        (%normalize-status-bar-output-style style))
+  state)
 
 (defun make-status-bar-widget (state &key id key width)
   (ptui.ui.elements:make-element

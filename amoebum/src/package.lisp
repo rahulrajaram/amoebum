@@ -1612,6 +1612,8 @@
            #:make-status-bar-state
            #:status-bar-state-permission-mode
            #:status-bar-state-focus-mode
+           #:status-bar-state-output-style
+           #:status-bar-state-delegation-mode
            #:status-bar-state-plan-mode-active-p
            #:status-bar-state-plan-mode-mutating-tools-blocked-p
            #:status-bar-state-branch-name
@@ -1631,6 +1633,9 @@
            #:status-bar-line
            #:status-bar-render-key
            #:make-status-bar-widget
+           #:status-bar-current-output-style
+           #:status-bar-set-output-style!
+           #:+output-style-presets+
            #:*model-router*
            #:provider-health-entry
            #:provider-health-entry-p
@@ -1912,7 +1917,7 @@
            #:load-prebuilt-bpf-program
            #:bpf-program-filter-events
            #:usdt-disabled-overhead-percent
-           ;; Swarm integration (I83-I93)
+           ;; Swarm integration (I83-I93) + NXT-017/NXT-018
            #:swarm-agent
            #:swarm-agent-p
            #:make-swarm-agent
@@ -1925,6 +1930,14 @@
            #:swarm-agent-result
            #:swarm-agent-thread
            #:swarm-agent-error-message
+           ;; NXT-017: signal tracking and retry semantics
+           #:swarm-agent-signal-name
+           #:swarm-agent-retry-count
+           #:swarm-agent-retry-policy
+           #:swarm-agent-timeout-seconds
+           ;; NXT-018: stalled-run detection
+           #:swarm-agent-heartbeat-at
+           #:swarm-agent-last-output-at
            #:*swarm-registry*
            #:*swarm-counter*
            #:spawn-swarm-agent
@@ -1934,6 +1947,10 @@
            #:find-swarm-agent
            #:clear-swarm-registry
            #:swarm-status-summary
+           ;; NXT-018: heartbeat/stall functions
+           #:update-swarm-agent-heartbeat
+           #:update-swarm-agent-last-output
+           #:detect-stalled-agents
            ;; Inter-user coordination (I253)
            #:register-user-session-peer
            #:unregister-user-session-peer
@@ -2209,7 +2226,75 @@
            #:worker-dashboard-select
            #:worker-dashboard-selected-output
            #:worker-status-bar-segment
-           #:agent-activity-stream))
+           #:agent-activity-stream
+           ;; NXT-092: IDE context ingestion
+           #:ide-context
+           #:ide-context-p
+           #:make-ide-context
+           #:ide-context-selections
+           #:ide-context-diagnostics
+           #:ide-context-open-files
+           #:ide-context-active-file
+           #:ide-context-timestamp
+           #:*ide-context*
+           #:update-ide-context!
+           #:ide-context-summary
+           #:ide-context-token-estimate
+           ;; NXT-093: IDE context -> prompt / status-bar
+           #:ide-context-prompt-fragment
+           ;; NXT-094/NXT-095: IDE context integration and observability
+           #:clear-ide-context!
+           #:ide-context-prompt-fragment/budget
+           #:+event-type-ide-context-attached+
+           #:+event-type-ide-context-truncated+
+           #:+event-type-ide-context-dropped+
+           #:ide-context-attached-payload
+           #:ide-context-attached-payload-p
+           #:make-ide-context-attached-payload
+           #:ide-context-attached-payload-active-file
+           #:ide-context-attached-payload-open-file-count
+           #:ide-context-attached-payload-selection-count
+           #:ide-context-attached-payload-diagnostic-count
+           #:ide-context-truncated-payload
+           #:ide-context-truncated-payload-p
+           #:make-ide-context-truncated-payload
+           #:ide-context-truncated-payload-token-estimate
+           #:ide-context-truncated-payload-token-budget
+           #:ide-context-truncated-payload-selections-dropped
+           #:ide-context-truncated-payload-diagnostics-dropped
+           #:ide-context-dropped-payload
+           #:ide-context-dropped-payload-p
+           #:make-ide-context-dropped-payload
+           #:ide-context-dropped-payload-active-file
+           #:make-ide-context-attached-event
+           #:make-ide-context-truncated-event
+           #:make-ide-context-dropped-event
+           ;; NXT-106: Cultivar adapter
+           #:cultivar-adapter
+           #:cultivar-adapter-p
+           #:make-cultivar-adapter
+           #:cultivar-adapter-endpoint
+           #:cultivar-adapter-enabled-p
+           #:*cultivar-adapter*
+           #:cultivar-resolve
+           #:cultivar-preview
+           #:cultivar-expand
+           ;; NXT-109: Cultivar context pressure
+           #:cultivar-context-pressure
+           ;; NXT-107: Yore adapter
+           #:yore-adapter
+           #:yore-adapter-p
+           #:make-yore-adapter
+           #:yore-adapter-endpoint
+           #:yore-adapter-enabled-p
+           #:*yore-adapter*
+           #:yore-search-context
+           #:yore-fetch-context
+           ;; NXT-109: Yore context pressure + combined summary
+           #:yore-context-pressure
+           #:%context-pressure-summary
+           ;; NXT-108: IDE context packet builder
+           #:ide-context-build-packet))
 
 (defpackage :amoebum.sandbox
   (:use)

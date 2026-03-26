@@ -334,7 +334,32 @@
 (defun %spawn-task-via-configured-backend (task-text &key config agent-type parent-message-id
                                                      persona system-prompt timeout-seconds)
   "Route TASK-TEXT through the configured local/SW4RM delegation backend.
-Returns two values: the spawned record and the backend keyword."
+Returns two values: the spawned record and the backend keyword (:local or :swarm).
+
+Routing decision (NXT-008)
+--------------------------
+The routing mode is read from the :swarm-delegation-mode key in the active
+config (see `%configured-swarm-delegation-mode`).  Default when absent: :local.
+
+  :local (default)
+    All sub-agents run in-process as bordeaux-threads threads inside the
+    current SBCL image.  Preferred for single-user, single-machine use and
+    during development/testing.  Zero network overhead; full access to shared
+    in-process state (*agent-registry*, event bus, checkpoint store, etc.).
+
+  :networked
+    Delegates through the SW4RM SDK's local-mode router
+    (`spawn-swarm-agent`).  Each task is handed off to a swarm state machine
+    and may be executed by an independent worker process registered in the
+    SW4RM local registry.  Use this when tasks need process isolation,
+    parallel multi-session scheduling, or future networked-peer delegation.
+
+The threshold for choosing :networked over :local is primarily operational:
+switch when the orchestration overhead (state-machine bookkeeping, handoff
+latency) is justified by the isolation or parallelism benefits.  For
+single-session interactive use the :local path is always preferred because
+it avoids unnecessary inter-process serialisation and keeps the agent
+lifecycle fully inspectable within the same runtime."
   (let ((mode (%configured-swarm-delegation-mode config)))
     (case mode
       (:networked

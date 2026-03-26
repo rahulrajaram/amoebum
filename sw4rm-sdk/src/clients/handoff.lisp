@@ -598,6 +598,18 @@ Returns two values:
     (t
      (%handle-rejection-response runtime response))))
 
+(defun %delegation-loop-step (runtime send-handoff-fn start-ms)
+  "Execute one attempt/negotiate iteration.
+Returns (values :done result) when negotiation yields a terminal response,
+or (values :continue nil) to signal another retry."
+  (multiple-value-bind (response end-ms)
+      (%perform-handoff-attempt runtime send-handoff-fn start-ms)
+    (multiple-value-bind (action payload)
+        (%negotiate-handoff-response runtime response end-ms)
+      (if (eq action :return)
+          (values :done payload)
+          (values :continue nil)))))
+
 (defun delegate-to-swarm
     (send-handoff-fn handoff-request
      &key now-ms-fn sleep-seconds-fn rand-uniform-fn)
@@ -617,12 +629,10 @@ struct."
          (when (%delegation-budget-exhausted-p runtime start-ms)
            (return (%deadline-exhausted-response
                     (delegation-runtime-request-id runtime))))
-         (multiple-value-bind (response end-ms)
-             (%perform-handoff-attempt runtime send-handoff-fn start-ms)
-           (multiple-value-bind (action payload)
-               (%negotiate-handoff-response runtime response end-ms)
-             (when (eq action :return)
-               (return payload)))))))
+         (multiple-value-bind (status result)
+             (%delegation-loop-step runtime send-handoff-fn start-ms)
+           (when (eq status :done)
+             (return result))))))
 
 (defun %normalize-handoff-request (request)
   "Validate and normalize a handoff REQUEST plist.

@@ -18,7 +18,7 @@
 |╭────────────────────────────────────────────────────────────────────────────────╮  |
 |│                                                                                │  |
 |╰────────────────────────────────────────────────────────────────────────────────╯  |
-|branch main | mode full-auto | Tokens: 0/128000 (0%) | stream idle | model moonshot-|
+|branch main | mode full-auto | Tokens: 0/128000 (0%) | ctx [░░░░░░░░] 0% | stream id|
 --- attrs
 0,0:bold
 0,1:bold
@@ -572,3 +572,20 @@
 19,49:bold
 19,50:bold
 19,51:bold
+19,55:bold
+19,56:bold
+19,57:bold
+19,58:bold
+19,59:bold
+19,60:bold
+19,61:bold
+19,62:bold
+19,63:bold
+19,64:bold
+19,65:bold
+19,66:bold
+19,67:bold
+19,68:bold
+19,69:bold
+19,70:bold
+19,71:bold

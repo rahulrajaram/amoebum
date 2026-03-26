@@ -30,6 +30,9 @@
 (defparameter +event-type-session-checkpointed+ (%event-type-keyword "session:checkpointed"))
 (defparameter +event-type-session-restored+ (%event-type-keyword "session:restored"))
 (defparameter +event-type-plan-step-status+ (%event-type-keyword "plan:step-status"))
+(defparameter +event-type-ide-context-attached+ (%event-type-keyword "ide-context:attached"))
+(defparameter +event-type-ide-context-truncated+ (%event-type-keyword "ide-context:truncated"))
+(defparameter +event-type-ide-context-dropped+ (%event-type-keyword "ide-context:dropped"))
 
 (defparameter +core-event-types+
   (list +event-type-tool-invoked+
@@ -55,7 +58,10 @@
         +event-type-tool-call-argument-complete+
         +event-type-session-checkpointed+
         +event-type-session-restored+
-        +event-type-plan-step-status+))
+        +event-type-plan-step-status+
+        +event-type-ide-context-attached+
+        +event-type-ide-context-truncated+
+        +event-type-ide-context-dropped+))
 
 (defparameter *event-bus* nil)
 
@@ -761,3 +767,69 @@
                           :step-index (and (integerp step-index) step-index)
                           :status normalized-status
                           :description description))))
+
+;;; ---------------------------------------------------------------------------
+;;; NXT-095: IDE context observability event payloads and constructors
+;;; ---------------------------------------------------------------------------
+
+(defstruct (ide-context-attached-payload
+            (:constructor make-ide-context-attached-payload
+                (&key active-file open-file-count selection-count diagnostic-count)))
+  "Payload for :ide-context-attached events."
+  active-file
+  (open-file-count 0 :type integer)
+  (selection-count 0 :type integer)
+  (diagnostic-count 0 :type integer))
+
+(defstruct (ide-context-truncated-payload
+            (:constructor make-ide-context-truncated-payload
+                (&key
+                   (token-estimate 0)
+                   (token-budget 0)
+                   (selections-dropped 0)
+                   (diagnostics-dropped 0))))
+  "Payload for :ide-context-truncated events."
+  (token-estimate 0 :type integer)
+  (token-budget 0 :type integer)
+  (selections-dropped 0 :type integer)
+  (diagnostics-dropped 0 :type integer))
+
+(defstruct (ide-context-dropped-payload
+            (:constructor make-ide-context-dropped-payload
+                (&key active-file)))
+  "Payload for :ide-context-dropped events."
+  active-file)
+
+(defun make-ide-context-attached-event (&key active-file
+                                             (open-file-count 0)
+                                             (selection-count 0)
+                                             (diagnostic-count 0))
+  (make-event :type +event-type-ide-context-attached+
+              :source :amoebum
+              :severity :info
+              :payload (make-ide-context-attached-payload
+                        :active-file active-file
+                        :open-file-count open-file-count
+                        :selection-count selection-count
+                        :diagnostic-count diagnostic-count)))
+
+(defun make-ide-context-truncated-event (&key
+                                           (token-estimate 0)
+                                           (token-budget 0)
+                                           (selections-dropped 0)
+                                           (diagnostics-dropped 0))
+  (make-event :type +event-type-ide-context-truncated+
+              :source :amoebum
+              :severity :info
+              :payload (make-ide-context-truncated-payload
+                        :token-estimate token-estimate
+                        :token-budget token-budget
+                        :selections-dropped selections-dropped
+                        :diagnostics-dropped diagnostics-dropped)))
+
+(defun make-ide-context-dropped-event (&key active-file)
+  (make-event :type +event-type-ide-context-dropped+
+              :source :amoebum
+              :severity :info
+              :payload (make-ide-context-dropped-payload
+                        :active-file active-file)))
