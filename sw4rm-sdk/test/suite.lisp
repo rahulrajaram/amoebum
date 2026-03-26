@@ -1054,6 +1054,30 @@
       (setf (getf request :delegation-policy) delegation-policy))
     request))
 
+(defun %delegation-request (&key
+                              (request-id "handoff-1")
+                              (from-agent "agent-a")
+                              (to-agent "agent-b")
+                              (reason "Need specialized processing")
+                              budget
+                              delegation-policy
+                              (context-snapshot "")
+                              (capabilities-required '())
+                              (priority 0)
+                              timeout-ms)
+  "Build a caller-side delegation request struct."
+  (sw4rm-sdk::make-handoff-request
+   :request-id request-id
+   :from-agent from-agent
+   :to-agent to-agent
+   :reason reason
+   :budget budget
+   :delegation-policy delegation-policy
+   :context-snapshot context-snapshot
+   :capabilities-required capabilities-required
+   :priority priority
+   :timeout-ms timeout-ms))
+
 (defun %make-now-ms-fn (timestamps)
   "Return a deterministic NOW function that consumes TIMESTAMPS in order."
   (let ((remaining (copy-list timestamps))
@@ -1412,15 +1436,16 @@
                         :status :rejected
                         :rejection-code sw4rm-sdk::+redirect+
                         :redirect-to-agent-id target-agent)))
-              :request-id (%json-object-get vector "request_id")
-              :from-agent (%json-object-get vector "from_agent")
-              :to-agent (%json-object-get vector "to_agent")
-              :reason (%json-object-get vector "reason")
-              :budget (list :deadline-epoch-ms (%json-object-get budget "deadline_epoch_ms")
-                            :wall-time-remaining-ms (%json-object-get budget "wall_time_remaining_ms"))
-              :delegation-policy (list :allow-spillover-routing
-                                       (not (null (%json-object-get policy "allow_spillover_routing")))
-                                       :max-redirects (%json-object-get policy "max_redirects"))
+              (%delegation-request
+               :request-id (%json-object-get vector "request_id")
+               :from-agent (%json-object-get vector "from_agent")
+               :to-agent (%json-object-get vector "to_agent")
+               :reason (%json-object-get vector "reason")
+               :budget (list :deadline-epoch-ms (%json-object-get budget "deadline_epoch_ms")
+                             :wall-time-remaining-ms (%json-object-get budget "wall_time_remaining_ms"))
+               :delegation-policy (list :allow-spillover-routing
+                                        (not (null (%json-object-get policy "allow_spillover_routing")))
+                                        :max-redirects (%json-object-get policy "max_redirects")))
               :now-ms-fn (let ((now-ms (- (%json-object-get budget "deadline_epoch_ms") 1000)))
                            (lambda () now-ms))
               :sleep-seconds-fn (lambda (_seconds) (declare (ignore _seconds)) nil)
@@ -1461,18 +1486,19 @@
                         :rejection-code sw4rm-sdk::+redirect+
                         :redirect-to-agent-id "agent-d"))
                  (t
-                  (list :accepted nil
+                 (list :accepted nil
                         :status :rejected
                         :rejection-code sw4rm-sdk::+redirect+
                         :redirect-to-agent-id "   "))))
-             :request-id "delegate-redirect-validation-ordering"
-             :from-agent "agent-a"
-             :to-agent "agent-b"
-             :reason "delegation-needed"
-             :budget '(:deadline-epoch-ms 100000
-                       :wall-time-remaining-ms 5000)
-             :delegation-policy '(:allow-spillover-routing t
-                                  :max-redirects 2)
+             (%delegation-request
+              :request-id "delegate-redirect-validation-ordering"
+              :from-agent "agent-a"
+              :to-agent "agent-b"
+              :reason "delegation-needed"
+              :budget '(:deadline-epoch-ms 100000
+                        :wall-time-remaining-ms 5000)
+              :delegation-policy '(:allow-spillover-routing t
+                                   :max-redirects 2))
              :now-ms-fn (%make-now-ms-fn '(1000 1001 1002 1003 1004 1005))
              :sleep-seconds-fn (lambda (_seconds) (declare (ignore _seconds)) nil)
              :rand-uniform-fn (lambda (low _high) (declare (ignore _high)) low))))
@@ -1498,14 +1524,15 @@
                          :status :rejected
                          :rejection-code sw4rm-sdk::+redirect+
                          :redirect-to-agent-id "agent-b")))
-             :request-id "delegate-redirect-loop"
-             :from-agent "agent-a"
-             :to-agent "agent-b"
-             :reason "delegation-needed"
-             :budget '(:deadline-epoch-ms 100000
-                       :wall-time-remaining-ms 5000)
-             :delegation-policy '(:allow-spillover-routing t
-                                  :max-redirects 4)
+             (%delegation-request
+              :request-id "delegate-redirect-loop"
+              :from-agent "agent-a"
+              :to-agent "agent-b"
+              :reason "delegation-needed"
+              :budget '(:deadline-epoch-ms 100000
+                        :wall-time-remaining-ms 5000)
+              :delegation-policy '(:allow-spillover-routing t
+                                   :max-redirects 4))
              :now-ms-fn (%make-now-ms-fn '(1000 1001 1002 1003))
              :sleep-seconds-fn (lambda (_seconds) (declare (ignore _seconds)) nil)
              :rand-uniform-fn (lambda (low _high) (declare (ignore _high)) low))))
@@ -1532,13 +1559,14 @@
                          :retry-after-ms 50)
                    (list :accepted t
                          :status :accepted)))
-             :request-id "delegate-overloaded-retry"
-             :from-agent "agent-a"
-             :to-agent "agent-b"
-             :reason "delegation-needed"
-             :budget '(:deadline-epoch-ms 100000
-                       :wall-time-remaining-ms 200)
-             :delegation-policy '(:max-retries-on-overloaded 3)
+             (%delegation-request
+              :request-id "delegate-overloaded-retry"
+              :from-agent "agent-a"
+              :to-agent "agent-b"
+              :reason "delegation-needed"
+              :budget '(:deadline-epoch-ms 100000
+                        :wall-time-remaining-ms 200)
+              :delegation-policy '(:max-retries-on-overloaded 3))
              :now-ms-fn (%make-now-ms-fn '(1000 1010 1010 1060 1060 1070))
              :sleep-seconds-fn
              (lambda (seconds)
@@ -1567,13 +1595,14 @@
                      :status :rejected
                      :rejection-code sw4rm-sdk::+overloaded+
                      :retry-after-ms 10))
-             :request-id "delegate-budget-exhausted-after-attempt"
-             :from-agent "agent-a"
-             :to-agent "agent-b"
-             :reason "delegation-needed"
-             :budget '(:deadline-epoch-ms 100000
-                       :wall-time-remaining-ms 20)
-             :delegation-policy '(:max-retries-on-overloaded 3)
+             (%delegation-request
+              :request-id "delegate-budget-exhausted-after-attempt"
+              :from-agent "agent-a"
+              :to-agent "agent-b"
+              :reason "delegation-needed"
+              :budget '(:deadline-epoch-ms 100000
+                        :wall-time-remaining-ms 20)
+              :delegation-policy '(:max-retries-on-overloaded 3))
              :now-ms-fn (%make-now-ms-fn '(2000 2025))
              :sleep-seconds-fn (lambda (_seconds) (declare (ignore _seconds)) nil)
              :rand-uniform-fn (lambda (low _high) (declare (ignore _high)) low))))
