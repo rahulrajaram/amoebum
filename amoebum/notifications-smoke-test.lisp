@@ -71,7 +71,9 @@
          (original-dispatcher (symbol-value dispatcher-sym))
          (original-manager-registry (symbol-value manager-registry-sym))
          (desktop-run-fn-sym (funcall symbol-in "*DESKTOP-NOTIFICATION-RUN-COMMAND-FUNCTION*" amoebum-pkg))
-         (original-desktop-run-fn (symbol-value desktop-run-fn-sym)))
+         (original-desktop-run-fn (symbol-value desktop-run-fn-sym))
+         (desktop-suppressed-sym (funcall symbol-in "*DESKTOP-NOTIFICATIONS-SUPPRESSED*" amoebum-pkg))
+         (original-desktop-suppressed (symbol-value desktop-suppressed-sym)))
     (labels ((assert-true (condition format-string &rest format-args)
                (unless condition
                  (error (apply #'format nil format-string format-args))))
@@ -95,6 +97,9 @@
                        collect line))))
       (unwind-protect
           (progn
+            ;; Unsuppress desktop notifications for this test — we
+            ;; capture commands via *desktop-notification-run-command-function*.
+            (setf (symbol-value desktop-suppressed-sym) nil)
             (ensure-directories-exist sound-path)
             (with-open-file (stream sound-path
                                     :direction :output
@@ -243,6 +248,7 @@
               (symbol-value async-dispatch-sym) original-async-dispatch
               (symbol-value dispatcher-sym) original-dispatcher
               (symbol-value manager-registry-sym) original-manager-registry
-              (symbol-value desktop-run-fn-sym) original-desktop-run-fn))))
+              (symbol-value desktop-run-fn-sym) original-desktop-run-fn
+              (symbol-value desktop-suppressed-sym) original-desktop-suppressed))))
 
   (format t "AMOEBUM_NOTIFICATIONS_SMOKE_OK~%"))

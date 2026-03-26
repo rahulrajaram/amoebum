@@ -40,6 +40,10 @@
          (dispatch-command-fn (funcall fn "DISPATCH-SLASH-COMMAND"))
          (result-output-fn (funcall fn "SLASH-COMMAND-RESULT-OUTPUT"))
          (hook-entry-priority-fn (funcall fn "HOOK-ENTRY-PRIORITY"))
+         (make-chat-ui-state-fn (funcall fn "MAKE-CHAT-UI-STATE"))
+         (chat-ui-state-hook-warnings-fn
+           (funcall fn "CHAT-UI-STATE-HOOK-WARNINGS"))
+         (chat-ui-state-var (funcall symbol-in "*CHAT-UI-STATE*" amoebum-pkg))
          (hook-registry-sym (funcall symbol-in "*HOOK-REGISTRY*" amoebum-pkg))
          (defhook-sym (funcall symbol-in "DEFHOOK" amoebum-pkg)))
     (labels ((assert-true (condition format-string &rest format-args)
@@ -244,6 +248,35 @@
           (assert-true (= (getf entry :failure-count) 2)
                        "Expected two recorded failures before disable, got ~S."
                        (and entry (getf entry :failure-count)))))
+
+      (funcall clear-hooks-fn)
+      (let ((previous-chat-state (and (boundp chat-ui-state-var)
+                                      (symbol-value chat-ui-state-var)))
+            (chat-state (funcall make-chat-ui-state-fn)))
+        (unwind-protect
+             (progn
+               (setf (symbol-value chat-ui-state-var) chat-state)
+               (funcall register-hook-fn
+                        :post-tool-use
+                        'i67-warning-capture-hook
+                        (lambda (tool-name result elapsed-ms)
+                          (declare (ignore tool-name result elapsed-ms))
+                          (error "i67 captured warning"))
+                        :on-error :log-and-continue)
+               (multiple-value-bind (decision results)
+                   (funcall run-hooks-fn :post-tool-use "bash" :ignored 1)
+                 (assert-true (eq decision :completed)
+                              "Expected warning-capture hook failure to remain non-blocking.")
+                 (assert-true (eq (cdar results) :hook-error)
+                              "Expected warning-capture hook to report :hook-error."))
+               (let ((warnings (funcall chat-ui-state-hook-warnings-fn chat-state)))
+                 (assert-true (= (length warnings) 1)
+                              "Expected one captured hook warning, got ~S."
+                              warnings)
+                 (assert-true (contains-text-p (first warnings) "i67 captured warning")
+                              "Expected captured hook warning text, got ~S."
+                              warnings)))
+          (setf (symbol-value chat-ui-state-var) previous-chat-state)))
 
       (multiple-value-bind (handledp list-result)
           (funcall dispatch-command-fn "/hooks")

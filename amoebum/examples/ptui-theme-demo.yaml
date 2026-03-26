@@ -1,0 +1,208 @@
+# PTUI Theme Demo for Amoebum
+#
+# This example showcases the PTUI-inspired theme, layout, and behavior
+# configuration system integrated into amoebum.
+#
+# Usage:
+#   amoebum --theme-yaml examples/ptui-theme-demo.yaml
+#
+# Or place at ~/.config/amoebum/theme.yaml for automatic loading.
+
+# =============================================================================
+# PALETTE - Color definitions (RGB strings or hex)
+# =============================================================================
+# Borrowed from: ptui/examples/preview-test.tui-spec.yaml
+
+palette:
+  # Background colors
+  bg:        "16 18 24"      # Main background (Tokyo Night dark)
+  surface:   "30 36 46"      # Elevated surfaces (status bar, panels)
+  code-bg:   "36 42 54"      # Code block backgrounds
+  
+  # Border colors
+  border:    "58 70 86"      # Borders and separators
+  
+  # Text colors
+  text:      "220 226 236"   # Primary text
+  muted:     "160 170 186"   # Secondary/muted text
+  meta:      "116 124 138"   # Metadata text
+  
+  # Accent colors (Tokyo Night inspired)
+  amber:     "224 175 104"   # Warm accent (user labels)
+  blue:      "122 162 247"   # Cool accent (assistant labels)
+  cyan:      "125 207 255"   # Cyan accent (tool labels)
+  green:     "158 206 106"   # Success/positive
+  yellow:    "240 198 116"   # Warning/caution
+  rose:      "242 143 173"   # Error/danger
+  red:       "220 50 47"     # Critical errors
+  steel:     "109 140 189"   # Steel blue (borders)
+
+# =============================================================================
+# ROLES - Text styling for UI elements
+# =============================================================================
+# Borrowed from: ptui/examples/preview-test.tui-spec.yaml
+
+roles:
+  # Message sender labels
+  user-label:
+    fg: amber
+    bold: true
+  
+  assistant-label:
+    fg: blue
+    bold: true
+  
+  tool-label:
+    fg: cyan
+    bold: true
+  
+  # Message content
+  user:
+    fg: text
+  
+  assistant:
+    fg: text
+  
+  tool:
+    fg: cyan
+  
+  system:
+    fg: muted
+  
+  # Code and syntax highlighting
+  heading:
+    fg: blue
+    bold: true
+  
+  inline-code:
+    fg: text
+    bg: code-bg
+  
+  code-body:
+    fg: text
+  
+  code-fence:
+    fg: border
+    dim: true
+  
+  code-keyword:
+    fg: rose
+    bold: true
+  
+  code-string:
+    fg: green
+  
+  code-function:
+    fg: blue
+  
+  # UI chrome
+  status-bar:
+    fg: muted
+    bg: surface
+  
+  prompt-border:
+    fg: steel
+  
+  # Context/token usage indicators
+  context-ok:
+    fg: green
+    bg: surface
+    bold: true
+  
+  context-warn:
+    fg: yellow
+    bg: surface
+    bold: true
+  
+  context-danger:
+    fg: rose
+    bg: surface
+    bold: true
+  
+  # Status/warning messages
+  warning:
+    fg: yellow
+    bold: true
+  
+  error:
+    fg: red
+    bold: true
+  
+  meta:
+    fg: meta
+
+# =============================================================================
+# LAYOUT - Declarative UI layout (NEW PTUI feature!)
+# =============================================================================
+# Borrowed from: ptui/examples/preview-test.tui-spec.yaml
+# 
+# This defines the three-panel layout:
+#   - history: Message scrollback (fills available space)
+#   - prompt:  Input area (fixed 3 lines)
+#   - status:  Status bar (fixed 1 line)
+
+layout:
+  children:
+    - name: history
+      height: fill              # Fill remaining space
+      overflow-y: scroll        # Enable vertical scrolling
+      scroll-follow: true       # Auto-scroll to new messages
+      scroll-bar: auto          # Show scrollbar when needed
+      gutter: 1                 # Left gutter spacing
+      padding: [0, 1]           # [vertical, horizontal] padding
+      
+    - name: prompt
+      height: 3                 # Fixed 3-line height
+      border: single            # Single-line border
+      focusable: true           # Can receive focus
+      focus-order: 1            # First in tab order
+      
+    - name: status
+      height: 1                 # Fixed 1-line height
+
+# =============================================================================
+# BEHAVIOR - UI behavior configuration (NEW PTUI feature!)
+# =============================================================================
+# Borrowed from: ptui/src/preview/preview-app.lisp
+
+behavior:
+  # Scroll behavior
+  scroll:
+    page-step: 10             # Lines to scroll on page up/down
+    follow-output: true       # Auto-scroll to bottom on new messages
+  
+  # Input behavior
+  input:
+    fuzzy-picker: true        # Enable fuzzy file picker
+    history-search: true      # Enable history search with /
+  
+  # Notification behavior
+  notifications:
+    desktop: true             # Enable desktop notifications
+    sound: false              # Disable sound notifications
+  
+  # Key bindings (customize to your preference)
+  keys:
+    reload: "r"               # Reload theme file
+    quit: "q"                 # Quit application
+    palette: "p"              # Show palette preview
+    roles: "s"                # Show roles preview
+
+# =============================================================================
+# ADVANCED: Try these interactive features!
+# =============================================================================
+#
+# 1. Hot Reload: Edit this file while amoebum is running, press 'r' to reload
+#
+# 2. Scroll Debugging: Set AMOEBUM_SCROLL_DEBUG=1 to see scroll debug logs
+#    tail -f /tmp/amoebum-scroll-debug.log
+#
+# 3. Palette Preview: Press 'p' in the chat UI to see color palette
+#
+# 4. Role Preview: Press 's' to see all defined text roles
+#
+# 5. Scroll Controls:
+#    - Arrow keys / j,k: Scroll line by line
+#    - Page Up/Down: Scroll by page-step (10 lines)
+#    - Home: Jump to oldest message
+#    - End: Jump to live tail

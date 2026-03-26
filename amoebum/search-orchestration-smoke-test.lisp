@@ -27,6 +27,8 @@
                           (error "Missing package AMOEBUM after load.")))
          (pseudopod-pkg (or (find-package "PSEUDOPOD")
                             (error "Missing package PSEUDOPOD after load.")))
+         (search-widget-pkg (or (find-package "PTUI.COMPONENTS.SEARCH-WIDGET")
+                                (error "Missing package PTUI.COMPONENTS.SEARCH-WIDGET after load.")))
          (uiop-pkg (or (find-package "UIOP")
                        (find-package "ASDF/UTILITY")
                        (error "Missing UIOP package after requiring ASDF.")))
@@ -42,6 +44,11 @@
          (find-tool-fn (funcall fn-in "FIND-TOOL" pseudopod-pkg))
          (tool-definition-fn-fn (funcall fn-in "TOOL-DEFINITION-FN" pseudopod-pkg))
          (toolset-sym (funcall symbol-in "*TOOLSET*" amoebum-pkg))
+         (make-file-stream-sym (funcall symbol-in "%MAKE-FILE-SEARCH-DOCUMENT-STREAM" amoebum-pkg))
+         (read-file-safe-sym (funcall symbol-in "%READ-FILE-CONTENT-SAFE" amoebum-pkg))
+         (rg-executable-sym (funcall symbol-in "%RG-EXECUTABLE" amoebum-pkg))
+         (grep-via-rg-sym (funcall symbol-in "%GREP-VIA-RG" amoebum-pkg))
+         (stream-next-fn-sym (funcall symbol-in "SEARCH-WIDGET-STREAM-NEXT-FN" search-widget-pkg))
          (setconfig-fn (funcall fn-in "SETCONFIG" amoebum-pkg))
          (clear-permission-rules-fn (funcall fn-in "CLEAR-PERMISSION-RULES" amoebum-pkg)))
     (labels ((assert-true (condition format-string &rest format-args)
@@ -96,6 +103,37 @@
         (sleep 1)
         (write-text-file new-content (format nil "one~%needle new~%two~%"))
         (write-text-file noise (format nil "no match here~%"))
+
+        (let* ((original-read-file-safe (symbol-function read-file-safe-sym))
+               (read-count 0))
+          (unwind-protect
+              (progn
+                (setf (symbol-function read-file-safe-sym)
+                      (lambda (path)
+                        (incf read-count)
+                        (funcall original-read-file-safe path)))
+                (let* ((stream (funcall (symbol-function make-file-stream-sym)
+                                        (list old-content new-content)))
+                       (next-fn (funcall (symbol-function stream-next-fn-sym) stream)))
+                  (assert-true (= read-count 0)
+                               "Expected lazy file stream creation to avoid immediate file reads.")
+                  (multiple-value-bind (first-document first-done-p)
+                      (funcall next-fn)
+                    (declare (ignore first-document))
+                    (assert-true (not first-done-p)
+                                 "Expected first lazy stream read to keep stream open.")
+                    (assert-true (= read-count 1)
+                                 "Expected first lazy stream step to read one file, got ~D."
+                                 read-count))
+                  (multiple-value-bind (second-document second-done-p)
+                      (funcall next-fn)
+                    (declare (ignore second-document))
+                    (assert-true second-done-p
+                                 "Expected second lazy stream read to finish stream.")
+                    (assert-true (= read-count 2)
+                                 "Expected second lazy stream step to read one additional file, got ~D."
+                                 read-count))))
+            (setf (symbol-function read-file-safe-sym) original-read-file-safe)))
 
         (let* ((result-a (invoke-tool "search-project"
                                       "query" "needle"
@@ -182,6 +220,27 @@
                                             "case-insensitive" t
                                             "limit" 20)))
           (assert-true (= (getf content-only-ci :count) 2)
-                       "Expected case-insensitive content backend search to match both files.")))))
+                       "Expected case-insensitive content backend search to match both files."))
 
-  (format t "AMOEBUM_SEARCH_ORCHESTRATION_SMOKE_OK~%"))
+        (let ((rg-path (funcall (symbol-function rg-executable-sym))))
+          (when rg-path
+            (let* ((original-grep-via-rg (symbol-function grep-via-rg-sym))
+                   (rg-called nil))
+              (unwind-protect
+                  (progn
+                    (setf (symbol-function grep-via-rg-sym)
+                          (lambda (&rest args)
+                            (setf rg-called t)
+                            (apply original-grep-via-rg args)))
+                    (invoke-tool "search-project"
+                                 "query" "needle"
+                                 "root" (namestring tmp-root)
+                                 "path-glob" "**/*"
+                                 "before" 0
+                                 "after" 0
+                                 "limit" 5)
+                    (assert-true rg-called
+                                 "Expected search-project content search to reuse the ripgrep fast path when rg is available."))
+                (setf (symbol-function grep-via-rg-sym) original-grep-via-rg)))))))
+
+  (format t "AMOEBUM_SEARCH_ORCHESTRATION_SMOKE_OK~%")))

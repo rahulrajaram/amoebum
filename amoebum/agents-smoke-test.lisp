@@ -40,12 +40,22 @@
          (agent-id-fn (funcall fn-in "AGENT-RECORD-ID" amoebum-pkg))
          (agent-status-fn (funcall fn-in "AGENT-RECORD-STATUS" amoebum-pkg))
          (agent-output-fn (funcall fn-in "AGENT-OUTPUT" amoebum-pkg))
+         (spawn-worker-fn (funcall fn-in "SPAWN-WORKER" amoebum-pkg))
+         (await-worker-fn (funcall fn-in "AWAIT-WORKER" amoebum-pkg))
+         (clear-workers-fn (funcall fn-in "CLEAR-WORKERS" amoebum-pkg))
+         (clear-swarm-registry-fn (funcall fn-in "CLEAR-SWARM-REGISTRY" amoebum-pkg))
+         (worker-id-fn (funcall fn-in "WORKER-RECORD-ID" amoebum-pkg))
+         (worker-backend-fn (funcall fn-in "WORKER-RECORD-BACKEND" amoebum-pkg))
+         (worker-inner-id-fn (funcall fn-in "WORKER-RECORD-INNER-ID" amoebum-pkg))
          (dispatch-command-fn (funcall fn-in "DISPATCH-SLASH-COMMAND" amoebum-pkg))
          (result-output-fn (funcall fn-in "SLASH-COMMAND-RESULT-OUTPUT" amoebum-pkg))
          (chat-state-fn (funcall fn-in "MAKE-CHAT-UI-STATE" amoebum-pkg))
          (chat-messages-fn (funcall fn-in "CHAT-UI-STATE-MESSAGES" amoebum-pkg))
          (render-chat-fn (funcall fn-in "RENDER-CHAT-UI-BUFFER" amoebum-pkg))
          (make-size-fn (funcall fn-in "MAKE-SIZE" types-pkg))
+         (current-config-fn (funcall fn-in "CURRENT-CONFIG" amoebum-pkg))
+         (config-value-fn (funcall fn-in "CONFIG-VALUE" amoebum-pkg))
+         (setconfig-fn (funcall fn-in "SETCONFIG" amoebum-pkg))
          (message-role-fn (funcall fn-in "MESSAGE-ROLE" pseudopod-pkg))
          (message-content-fn (funcall fn-in "MESSAGE-CONTENT" pseudopod-pkg))
          (content-part-text-fn (funcall fn-in "CONTENT-PART-TEXT" pseudopod-pkg)))
@@ -55,6 +65,10 @@
              (contains-text-p (haystack needle)
                (and (stringp haystack)
                     (search needle haystack :test #'char-equal)))
+             (starts-with-p (prefix value)
+               (and (stringp value)
+                    (<= (length prefix) (length value))
+                    (string= prefix value :end2 (length prefix))))
              (message-text (message)
                (with-output-to-string (out)
                  (loop for part in (funcall message-content-fn message)
@@ -164,6 +178,63 @@
                          text)
             (assert-true (contains-text-p text "inject-result")
                          "Expected injected completion to include result payload, got ~S."
-                         text))))))
+                         text))))
+
+      (let ((old-mode (funcall config-value-fn :swarm-delegation-mode
+                               (funcall current-config-fn))))
+        (unwind-protect
+            (progn
+              (funcall clear-workers-fn)
+              (funcall clear-swarm-registry-fn)
+
+              (funcall setconfig-fn :swarm-delegation-mode :local)
+              (let* ((local-worker
+                       (funcall spawn-worker-fn :agent
+                                "agent worker local smoke"
+                                :label "local worker smoke"
+                                :timeout-seconds 10))
+                     (local-id (funcall worker-id-fn local-worker)))
+                (multiple-value-bind (status result)
+                    (funcall await-worker-fn local-id :timeout-seconds 15)
+                  (declare (ignore result))
+                  (assert-true (eq status :completed)
+                               "Expected local delegated worker completion, got ~S."
+                               status))
+                (assert-true (eq (funcall worker-backend-fn local-worker) :in-process)
+                             "Expected local worker backend :in-process, got ~S."
+                             (funcall worker-backend-fn local-worker))
+                (assert-true (starts-with-p "task-" (funcall worker-inner-id-fn local-worker))
+                             "Expected local worker inner id to start with task-, got ~S."
+                             (funcall worker-inner-id-fn local-worker)))
+
+              (funcall clear-workers-fn)
+              (funcall clear-swarm-registry-fn)
+
+              (funcall setconfig-fn :swarm-delegation-mode :networked)
+              (let* ((networked-worker
+                       (funcall spawn-worker-fn :agent
+                                "agent worker networked smoke"
+                                :label "networked worker smoke"
+                                :timeout-seconds 10))
+                     (networked-id (funcall worker-id-fn networked-worker)))
+                (multiple-value-bind (status result)
+                    (funcall await-worker-fn networked-id :timeout-seconds 15)
+                  (assert-true (eq status :completed)
+                               "Expected networked delegated worker completion, got ~S."
+                               status)
+                  (assert-true (and (listp result)
+                                    (eq (getf result :backend) :swarm)
+                                    (eq (getf result :status) :completed))
+                               "Expected networked worker result to report completed SW4RM backend, got ~S."
+                               result))
+                (assert-true (eq (funcall worker-backend-fn networked-worker) :swarm)
+                             "Expected networked worker backend :swarm, got ~S."
+                             (funcall worker-backend-fn networked-worker))
+                (assert-true (starts-with-p "swarm-" (funcall worker-inner-id-fn networked-worker))
+                             "Expected networked worker inner id to start with swarm-, got ~S."
+                             (funcall worker-inner-id-fn networked-worker))))
+          (funcall setconfig-fn :swarm-delegation-mode old-mode)
+          (funcall clear-workers-fn)
+          (funcall clear-swarm-registry-fn)))))
 
   (format t "AMOEBUM_AGENTS_SMOKE_OK~%"))

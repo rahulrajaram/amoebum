@@ -50,13 +50,22 @@
          (memory-candidate-kind-fn (funcall fn-in "MEMORY-CANDIDATE-KIND" amoebum-pkg))
          (memory-editor-runner-sym (funcall symbol-in "*MEMORY-EDITOR-RUNNER*" amoebum-pkg))
          (session-memory-sym (funcall symbol-in "*SESSION-MEMORY-ENTRIES*" amoebum-pkg)))
-    (labels ((assert-true (condition format-string &rest format-args)
-               (unless condition
-                 (error (apply #'format nil format-string format-args))))
-             (contains-ci (text needle)
-               (and (stringp text)
-                    (stringp needle)
-                    (search needle text :test #'char-equal))))
+    (flet ((assert-true (condition format-string &rest format-args)
+             (unless condition
+               (error (apply #'format nil format-string format-args))))
+           (contains-ci (text needle)
+             (and (stringp text)
+                  (stringp needle)
+                  (search needle text :test #'char-equal)))
+           (write-lines (path lines)
+             (ensure-directories-exist path)
+             (with-open-file (stream path
+                                     :direction :output
+                                     :if-exists :supersede
+                                     :if-does-not-exist :create
+                                     :external-format :utf-8)
+               (dolist (line lines)
+                 (write-line line stream)))))
       (let* ((tmp-root
                (funcall ensure-directory-pathname
                         (merge-pathnames
@@ -65,6 +74,8 @@
              (project-root (funcall ensure-directory-pathname (merge-pathnames #P"project/" tmp-root)))
              (global-memory (merge-pathnames #P"home/.amoebum/memory/MEMORY.md" tmp-root))
              (project-memory (merge-pathnames #P".amoebum/MEMORY.md" project-root))
+             (topic-index (merge-pathnames #P".amoebum/memory/MEMORY.md" project-root))
+             (topic-tools (merge-pathnames #P".amoebum/memory/tools.md" project-root))
              (backend (funcall make-file-memory-backend-fn
                                :project-root project-root
                                :global-path global-memory
@@ -82,27 +93,65 @@
         (assert-true (probe-file project-memory)
                      "Expected project MEMORY.md to exist at ~S."
                      project-memory)
+        (write-lines topic-index
+                     '("# Project memory topics"
+                       ""
+                       "@tools.md"
+                       "- [approval-style] Prompt before mutating commands"))
+        (write-lines topic-tools
+                     '("# Tool preferences"
+                       ""
+                       "- [package-manager] Use pnpm in scripts"
+                       "- [tool-timeout] Allow 120 second shell tool budgets"))
 
         (let* ((reloaded (funcall make-file-memory-backend-fn
                                   :project-root project-root
                                   :global-path global-memory
                                   :project-path project-memory))
                (effective (funcall memory-list-fn reloaded :scope :effective))
+               (topics (funcall memory-list-fn reloaded :scope :topics))
                (entry (find "package-manager"
                             effective
                             :key memory-entry-key-fn
-                            :test #'string=)))
+                            :test #'string=))
+               (topic-entry (find "tool-timeout"
+                                  effective
+                                  :key memory-entry-key-fn
+                                  :test #'string=)))
           (assert-true entry
                        "Expected effective memory to include package-manager key.")
           (assert-true (string= (funcall memory-entry-value-fn entry)
                                 "Use bun for this repo")
-                       "Expected project memory to override global memory for same key."))
+                       "Expected project memory to override global memory for same key.")
+          (assert-true topic-entry
+                       "Expected effective memory to include imported topic entry.")
+          (assert-true (string= (funcall memory-entry-value-fn topic-entry)
+                                "Allow 120 second shell tool budgets")
+                       "Expected imported topic entry to survive effective merge.")
+          (assert-true (= (length topics) 3)
+                       "Expected topic scope to include index and imported topic entries, got ~D."
+                       (length topics)))
 
         (multiple-value-bind (handledp show-output)
             (funcall run-memory-command-fn "/memory show" :backend backend)
           (assert-true handledp "Expected /memory show command to be handled.")
+          (assert-true (contains-ci show-output "Loaded sources:")
+                       "Expected /memory show output to list loaded sources, got ~S."
+                       show-output)
+          (assert-true (contains-ci show-output (namestring topic-index))
+                       "Expected /memory show to mention topic index file, got ~S."
+                       show-output)
+          (assert-true (contains-ci show-output (namestring topic-tools))
+                       "Expected /memory show to mention imported topic file, got ~S."
+                       show-output)
           (assert-true (contains-ci show-output "Use bun for this repo")
                        "Expected /memory show output to include effective memory entry, got ~S."
+                       show-output)
+          (assert-true (contains-ci show-output "Allow 120 second shell tool budgets")
+                       "Expected /memory show output to include imported topic entry, got ~S."
+                       show-output)
+          (assert-true (contains-ci show-output (namestring topic-tools))
+                       "Expected /memory show entry output to retain imported source path, got ~S."
                        show-output))
 
         (multiple-value-bind (handledp remember-output)
