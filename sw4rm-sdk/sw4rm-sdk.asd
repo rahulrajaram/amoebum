@@ -49,7 +49,8 @@
                              (:file "gateway")
                              (:file "workflow")
                              (:file "negotiation-room-store")
-                             (:file "negotiation-room"))))
+                             (:file "negotiation-room")))
+               (:file "src/api-facades"))
   :in-order-to ((asdf:test-op (asdf:test-op #:sw4rm-sdk/tests))))
 
 (asdf:defsystem #:sw4rm-sdk/tests
@@ -61,7 +62,8 @@
                 :components ((:file "suite")
                              (:file "integration-test")
                              (:file "local-registry-test")
-                             (:file "tranche-83-93-test"))))
+                             (:file "tranche-83-93-test")
+                             (:file "policy-surface-test"))))
   :perform (asdf:test-op (o c)
              (let* ((suite-package (or (find-package :sw4rm-test)
                                        (error "SW4RM test package missing")))

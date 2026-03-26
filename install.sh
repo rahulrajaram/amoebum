@@ -183,11 +183,11 @@ export AMOEBUM_RUNTIME_LOG_FILE
 mkdir -p "$(dirname "$AMOEBUM_RUNTIME_LOG_FILE")"
 printf '%s wrapper invoke: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$AMOEBUM_RUNTIME_LOG_FILE"
 if [ "${AMOEBUM_RUNTIME_LOG_TEE:-0}" = "1" ]; then
-  exec "$AMOEBUM_BIN" --end-runtime-options "$@" \
+  exec "$AMOEBUM_BIN" --dynamic-space-size 512 --end-runtime-options "$@" \
     > >(tee -a "$AMOEBUM_RUNTIME_LOG_FILE") \
     2> >(tee -a "$AMOEBUM_RUNTIME_LOG_FILE" >&2)
 fi
-exec "$AMOEBUM_BIN" --end-runtime-options "$@"
+exec "$AMOEBUM_BIN" --dynamic-space-size 512 --end-runtime-options "$@"
 WRAPPER
 chmod +x "$TMP_WRAPPER"
 mv -f "$TMP_WRAPPER" "$INSTALL_WRAPPER"

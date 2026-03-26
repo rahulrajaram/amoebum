@@ -119,6 +119,9 @@
    #:step-result-last-message
    #:step-result-max-steps-reached
    #:step-result-tool-results
+   #:agent-step-context
+   #:agent-step-context-p
+   #:make-agent-step-context
    #:generate
    #:step
    #:conversation
@@ -144,9 +147,39 @@
    #:list-files
    #:delete-file
    #:file-content
-   #:stream-chat-completion
-   #:stream-chat-completion*
-   #:cancel-stream
+	   #:stream-chat-completion
+	   #:stream-chat-completion*
+	   #:stream-turn-snapshot
+	   #:stream-turn-snapshot-p
+	   #:make-stream-turn-snapshot
+	   #:normalize-stream-turn-event
+	   #:reset-stream-turn-snapshot!
+	   #:stream-turn-apply-event!
+	   #:finalize-stream-turn-snapshot!
+	   #:stream-turn-snapshot-values
+	   #:stream-turn-snapshot-to-alist
+	   #:stream-turn-snapshot-from-alist
+	   #:stream-turn-snapshot-delta
+	   #:stream-turn-snapshot-delta-p
+	   #:make-stream-turn-snapshot-delta
+	   #:stream-turn-snapshot-delta-content-appended
+	   #:stream-turn-snapshot-delta-reasoning-appended
+	   #:stream-turn-snapshot-delta-tool-call-updated
+	   #:stream-turn-snapshot-delta-status-changed
+	   #:stream-turn-snapshot-delta-usage-changed
+	   #:compute-stream-turn-snapshot-delta
+	   #:maybe-finalize-stream-turn-answer!
+	   #:stream-turn-snapshot-role
+	   #:stream-turn-snapshot-content
+	   #:stream-turn-snapshot-reasoning-content
+	   #:stream-turn-snapshot-tool-calls
+	   #:stream-turn-snapshot-terminal-outcome
+	   #:stream-turn-snapshot-parse-error-count
+	   #:stream-turn-snapshot-stream-id
+	   #:stream-turn-snapshot-status
+	   #:stream-turn-snapshot-error-message
+	   #:stream-turn-snapshot-usage
+	   #:cancel-stream
    #:print-streamed-completion
    #:main
    ;; Provider protocol (I94)
@@ -212,6 +245,9 @@
    #:router-streaming-completion
    #:router-check-health
    #:router-status
+   ;; ANSI escape sanitization (I369)
+   #:sanitize-ansi-escapes
+   #:sanitize-string-for-llm
    ;; File read primitive (I103)
    #:pseudopod-file-error
    #:pseudopod-file-error-path
@@ -340,8 +376,29 @@
    #:fetch-result-host-changed-p
    #:fetch-result-cached-p
    #:fetch-result-fetched-at
+   #:fetch-options
+   #:fetch-options-p
+   #:make-fetch-options
+   #:fetch-options-timeout-seconds
+   #:fetch-options-cache-ttl-seconds
+   #:fetch-options-max-body-bytes
+   #:fetch-options-user-agent
+   #:fetch-options-follow-redirects
+   #:fetch-options-http-get-fn
    #:fetch-url
    #:*default-fetch-timeout-seconds*
    #:*default-fetch-cache-ttl-seconds*
    #:*default-fetch-max-body-bytes*
-   #:*default-fetch-user-agent*))
+   #:*default-fetch-user-agent*
+   #:search-options
+   #:search-options-p
+   #:make-search-options
+   #:search-options-limit
+   #:search-options-searxng-url
+   #:search-options-duckduckgo-url
+   #:search-options-timeout-seconds
+   #:search-options-user-agent
+   #:search-options-min-interval-seconds
+   #:search-options-http-get-fn
+   ;; SSE parser (NXT-133)
+   #:parse-sse-data-lines))

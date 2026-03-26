@@ -7,6 +7,7 @@
   :serial t
   :components
   ((:file "src/package")
+   (:file "src/util")
    (:file "src/errors")
    (:file "src/model/message")
    (:file "src/model/model-info")
@@ -19,10 +20,12 @@
    (:file "src/tooling/string-replace")
    (:file "src/tooling/notebook")
    (:file "src/tooling/run-command")
-   (:file "src/tooling/fetch-backend")
-   (:file "src/tooling/search-backend")
-   (:file "src/tooling/fetch-engine")
-   (:file "src/client")
+	   (:file "src/tooling/fetch-backend")
+	   (:file "src/tooling/search-backend")
+	   (:file "src/tooling/fetch-engine")
+	   (:file "src/sse-parser")
+	   (:file "src/stream-turn")
+	   (:file "src/client")
    (:file "src/providers/protocol")
    (:file "src/providers/kimi")
    (:file "src/providers/anthropic")
@@ -42,8 +45,9 @@
     (:file "test/provider-test")
     (:file "test/openai-compat-test")
     (:file "test/anthropic-streaming-test")
-    (:file "test/openai-streaming-test")
-    (:file "test/streaming-step-test")
+	    (:file "test/openai-streaming-test")
+	    (:file "test/stream-turn-test")
+	    (:file "test/streaming-step-test")
     (:file "test/router-test")
     (:file "test/cost-routing-test")
    (:file "test/file-read-test")
@@ -59,3 +63,7 @@
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (uiop:symbol-call :pseudopod/test :run-all)))
+
+(asdf:defsystem "pseudopod/tests"
+  :description "Compatibility alias for pseudopod test suite"
+  :depends-on ("pseudopod/test"))
