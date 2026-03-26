@@ -20,6 +20,12 @@ ralph.yml
 tranches.toml
 vim/
 
+# Tool state directories
+.cultivar-codex/
+
+# Temporary patch files
+*.asd.patch
+
 # Local build artifacts / caches
 ptui/.tools/
 ptui/dist/
