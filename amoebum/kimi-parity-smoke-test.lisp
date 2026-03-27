@@ -152,7 +152,7 @@
 
               (let* ((chat-state (funcall chat-state-fn :stream-runner nil)))
                 (multiple-value-bind (handledp spawn-result)
-                    (funcall dispatch-command-fn "/spawn claude parity smoke" :chat-state chat-state)
+                    (funcall dispatch-command-fn "/spawn kimi parity smoke" :chat-state chat-state)
                   (assert-true handledp "Expected /spawn to be handled.")
                   (assert-true (contains-text-p (funcall result-output-fn spawn-result) "Spawned agent")
                                "Expected /spawn output to include spawned agent id, got ~S."
@@ -201,4 +201,4 @@
           (funcall setconfig-fn :mcp-server-permissions old-mcp-permissions)
           (funcall clear-agents-fn)))))
 
-  (format t "AMOEBUM_CLAUDE_PARITY_SMOKE_OK~%"))
+  (format t "AMOEBUM_KIMI_PARITY_SMOKE_OK~%"))

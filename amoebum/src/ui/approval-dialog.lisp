@@ -259,31 +259,46 @@ with :deny — this prevents blocking in headless/test mode."
 
 ;;; ---- Key handler (called from chat.lisp event routing) ----
 
+(defparameter +approval-dialog-key-handlers+
+  (list (cons :up (lambda (dialog-state)
+                    (approval-dialog-move-selection! dialog-state -1)
+                    t))
+        (cons :left (lambda (dialog-state)
+                      (approval-dialog-move-selection! dialog-state -1)
+                      t))
+        (cons :down (lambda (dialog-state)
+                      (approval-dialog-move-selection! dialog-state 1)
+                      t))
+        (cons :right (lambda (dialog-state)
+                       (approval-dialog-move-selection! dialog-state 1)
+                       t))
+        (cons :enter (lambda (dialog-state)
+                       (approval-dialog-confirm! dialog-state)
+                       t))
+        (cons :return (lambda (dialog-state)
+                        (approval-dialog-confirm! dialog-state)
+                        t))
+        (cons :escape (lambda (dialog-state)
+                        (submit-pending-approval :deny)
+                        (approval-dialog-deactivate! dialog-state)
+                        t))
+        (cons :text (lambda (_dialog-state)
+                      (declare (ignore _dialog-state))
+                      nil)))
+  "Key dispatch table for approval-dialog keyboard navigation.")
+
+(defun %approval-dialog-key-handler (key)
+  (cdr (assoc key +approval-dialog-key-handlers+ :test #'eq)))
+
 (defun approval-dialog-handle-key! (dialog-state key)
   "Handle a key press when the approval dialog is active.
 Returns T if the key was consumed, NIL otherwise."
   (handler-case
       (when (approval-dialog-state-active-p dialog-state)
-        (case key
-          ((:up)
-           (approval-dialog-move-selection! dialog-state -1)
-           t)
-          ((:down)
-           (approval-dialog-move-selection! dialog-state 1)
-           t)
-          ((:enter :return)
-           (approval-dialog-confirm! dialog-state)
-           t)
-          ((:escape)
-           ;; Escape = deny (safe default)
-           (submit-pending-approval :deny)
-           (approval-dialog-deactivate! dialog-state)
-           t)
-          ;; Single-key shortcuts
-          ((:text)
-           nil)  ; let the text handler below catch it
-          (otherwise
-           t)))  ; consume unknown keys while dialog is active
+        (let ((handler (%approval-dialog-key-handler key)))
+          (if handler
+              (funcall handler dialog-state)
+              t)))
     (error (condition)
       (log-runtime-condition condition
                              :kind "approval-key-handler-failed"
@@ -345,20 +360,28 @@ Returns T if the key was consumed, NIL otherwise."
          (command (getf state :command))
          (path (getf state :path))
          (reason (getf state :reason ""))
-         (selected (getf state :selected-option :approve))
-         (detail (cond
-                   (command (format nil "command: ~A" command))
-                   (path    (format nil "path: ~A" path))
-                   (t       ""))))
+         (selected (getf state :selected-option :approve)))
     (box
      (vstack
       (text (format nil "Tool approval required: ~A" tool-name)
             :id :approval-title :role :warning)
-      (when-widget (plusp (length detail))
-        (text detail :id :approval-detail :role :meta))
+      (when-widget (and (stringp command) (plusp (length command)))
+        (text ""
+              :id :approval-command-detail
+              :role :meta
+              :styled-segments (list (list :text " " :role :meta)
+                                     (list :text "command: " :role :approval-label)
+                                     (list :text command :role :approval-command))))
+      (when-widget (and (stringp path) (plusp (length path)))
+        (text ""
+              :id :approval-path-detail
+              :role :meta
+              :styled-segments (list (list :text " " :role :meta)
+                                     (list :text "path: " :role :approval-label)
+                                     (list :text path :role :approval-path))))
       (when-widget (plusp (length reason))
         (text reason :id :approval-reason :role :meta))
-      (text "" :id :approval-spacer :role :meta)
+      (text "────────────" :id :approval-separator :role :meta)
       (map-widget
        (lambda (entry)
          (let* ((option (car entry))
@@ -368,7 +391,7 @@ Returns T if the key was consumed, NIL otherwise."
                      (format nil "  > ~A" label)
                      (format nil "    ~A" label))
                  :id (intern (format nil "APPROVAL-OPT-~A" option) :keyword)
-                 :role (if selected-p :user :meta))))
+                 :role (if selected-p :assistant-label :meta))))
        +approval-dialog-options+))
-     :id :approval-dialog
-     :border t)))
+      :id :approval-dialog
+      :border t)))

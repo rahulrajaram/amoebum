@@ -129,6 +129,151 @@
   (timestamp (get-universal-time) :type integer)
   (metadata nil :type list))
 
+(defstruct (worktree-transition-plan
+             (:constructor make-worktree-transition-plan
+                 (&key to-state
+                       (slot-updates '())
+                       metadata)))
+  to-state
+  (slot-updates '() :type list)
+  metadata)
+
+(defun make-worktree-state-machine (&key
+                                      (state :unbound)
+                                      home-binding
+                                      current-binding
+                                      pending-switch
+                                      (switch-ttl 3600)
+                                      (state-history '()))
+  "Construct a worktree state machine with optional initial state."
+  (make-instance 'worktree-state-machine
+                 :state state
+                 :home-binding home-binding
+                 :current-binding current-binding
+                 :pending-switch pending-switch
+                 :switch-ttl switch-ttl
+                 :state-history state-history))
+
+(defun %copy-binding-info (binding)
+  (when binding
+    (make-binding-info
+     :worktree-id (binding-info-worktree-id binding)
+     :repo-id (binding-info-repo-id binding)
+     :branch (binding-info-branch binding)
+     :bound-at (binding-info-bound-at binding)
+     :expires-at (binding-info-expires-at binding))))
+
+(defun %apply-worktree-slot-updates! (wsm slot-updates)
+  (loop for (key value) on (or slot-updates '()) by #'cddr
+        do (case key
+             (:home-binding
+              (setf (home-binding wsm) value))
+             (:current-binding
+              (setf (current-binding wsm) value))
+             (:pending-switch
+              (setf (pending-switch wsm) value))
+             (otherwise nil)))
+  wsm)
+
+(defun %apply-worktree-transition-plan! (wsm plan)
+  (check-type wsm worktree-state-machine)
+  (check-type plan worktree-transition-plan)
+  (%transition-worktree-state wsm
+                              (worktree-transition-plan-to-state plan)
+                              :metadata (worktree-transition-plan-metadata plan))
+  (%apply-worktree-slot-updates! wsm (worktree-transition-plan-slot-updates plan)))
+
+(defun %plan-bind-home-transition (wsm &key worktree-id repo-id branch is-home)
+  (declare (ignore wsm))
+  (unless is-home
+    (error "Non-home binding must go through switch approval process"))
+  (let ((binding (make-binding-info
+                  :worktree-id worktree-id
+                  :repo-id repo-id
+                  :branch branch
+                  :bound-at (get-universal-time)
+                  :expires-at nil)))
+    (make-worktree-transition-plan
+     :to-state :bound-home
+     :slot-updates (list :home-binding binding
+                         :current-binding binding
+                         :pending-switch nil)
+     :metadata (list :worktree-id worktree-id
+                     :repo-id repo-id
+                     :branch branch))))
+
+(defun %plan-unbind-transition (wsm)
+  (let ((old-binding (current-binding wsm)))
+    (make-worktree-transition-plan
+     :to-state :unbound
+     :slot-updates (list :current-binding nil
+                         :pending-switch nil)
+     :metadata (list :old-worktree-id
+                     (when old-binding
+                       (binding-info-worktree-id old-binding))))))
+
+(defun %plan-request-switch-transition (wsm &key worktree-id repo-id branch)
+  (declare (ignore wsm))
+  (let ((binding (make-binding-info
+                  :worktree-id worktree-id
+                  :repo-id repo-id
+                  :branch branch
+                  :bound-at nil
+                  :expires-at nil)))
+    (make-worktree-transition-plan
+     :to-state :switch-pending
+     :slot-updates (list :pending-switch binding)
+     :metadata (list :worktree-id worktree-id
+                     :repo-id repo-id
+                     :branch branch))))
+
+(defun %plan-approve-switch-transition (wsm &key now)
+  (let ((pending (pending-switch wsm)))
+    (unless pending
+      (error 'worktree-state-error
+             :from-state (worktree-state wsm)
+             :to-state :bound-non-home
+             :reason "No pending switch to approve"))
+    (let* ((binding (%copy-binding-info pending))
+           (bound-at (or now (get-universal-time)))
+           (expires-at (+ bound-at (switch-ttl wsm))))
+      (setf (binding-info-bound-at binding) bound-at
+            (binding-info-expires-at binding) expires-at)
+      (make-worktree-transition-plan
+       :to-state :bound-non-home
+       :slot-updates (list :current-binding binding
+                           :pending-switch nil)
+       :metadata (list :worktree-id (binding-info-worktree-id binding)
+                       :expires-at expires-at)))))
+
+(defun %plan-reject-switch-transition (wsm)
+  (make-worktree-transition-plan
+   :to-state :bound-home
+   :slot-updates (list :current-binding (home-binding wsm)
+                       :pending-switch nil)
+   :metadata (list :reason "switch-rejected")))
+
+(defun %plan-revert-home-transition (wsm)
+  (make-worktree-transition-plan
+   :to-state :bound-home
+   :slot-updates (list :current-binding (home-binding wsm))
+   :metadata (list :reason "reverted-to-home")))
+
+(defparameter *worktree-transition-planners*
+  (list (cons :bind-home #'%plan-bind-home-transition)
+        (cons :unbind #'%plan-unbind-transition)
+        (cons :request-switch #'%plan-request-switch-transition)
+        (cons :approve-switch #'%plan-approve-switch-transition)
+        (cons :reject-switch #'%plan-reject-switch-transition)
+        (cons :revert-home #'%plan-revert-home-transition)))
+
+(defun evaluate-worktree-transition (wsm event &rest args &key &allow-other-keys)
+  "Return an explicit transition plan for the requested worktree EVENT."
+  (let ((planner (cdr (assoc event *worktree-transition-planners* :test #'eq))))
+    (unless planner
+      (error "Unknown worktree transition event ~S." event))
+    (apply planner wsm args)))
+
 ;;; Internal Transition Method
 
 (defmethod %transition-worktree-state ((wsm worktree-state-machine) to-state &key metadata)
@@ -184,25 +329,17 @@
    Returns:
      The new state
 
-   Signals:
+  Signals:
      WORKTREE-STATE-ERROR: If transition is invalid"
   (bt:with-lock-held ((state-lock wsm))
-    (let ((binding (make-binding-info
-                    :worktree-id worktree-id
-                    :repo-id repo-id
-                    :branch branch
-                    :bound-at (get-universal-time)
-                    :expires-at nil)))
-
-      (if is-home
-          (progn
-            (setf (home-binding wsm) binding)
-            (setf (current-binding wsm) binding)
-            (%transition-worktree-state wsm :bound-home
-                                       :metadata (list :worktree-id worktree-id
-                                                      :repo-id repo-id
-                                                      :branch branch)))
-          (error "Non-home binding must go through switch approval process")))))
+    (%apply-worktree-transition-plan!
+     wsm
+     (evaluate-worktree-transition wsm
+                                   :bind-home
+                                   :worktree-id worktree-id
+                                   :repo-id repo-id
+                                   :branch branch
+                                   :is-home is-home))))
 
 (defmethod unbind-worktree ((wsm worktree-state-machine))
   "Unbind the agent from the current worktree.
@@ -215,16 +352,11 @@
    Returns:
      The new state
 
-   Signals:
+  Signals:
      WORKTREE-STATE-ERROR: If transition is invalid"
   (bt:with-lock-held ((state-lock wsm))
-    (let ((old-binding (current-binding wsm)))
-      (setf (current-binding wsm) nil)
-      (setf (pending-switch wsm) nil)
-      (%transition-worktree-state wsm :unbound
-                                 :metadata (list :old-worktree-id
-                                               (when old-binding
-                                                 (binding-info-worktree-id old-binding)))))))
+    (%apply-worktree-transition-plan! wsm
+                                      (evaluate-worktree-transition wsm :unbind))))
 
 (defmethod request-switch ((wsm worktree-state-machine)
                           worktree-id repo-id branch)
@@ -241,20 +373,16 @@
    Returns:
      The new state
 
-   Signals:
+  Signals:
      WORKTREE-STATE-ERROR: If transition is invalid"
   (bt:with-lock-held ((state-lock wsm))
-    (let ((binding (make-binding-info
-                    :worktree-id worktree-id
-                    :repo-id repo-id
-                    :branch branch
-                    :bound-at nil
-                    :expires-at nil)))
-      (setf (pending-switch wsm) binding)
-      (%transition-worktree-state wsm :switch-pending
-                                 :metadata (list :worktree-id worktree-id
-                                               :repo-id repo-id
-                                               :branch branch)))))
+    (%apply-worktree-transition-plan!
+     wsm
+     (evaluate-worktree-transition wsm
+                                   :request-switch
+                                   :worktree-id worktree-id
+                                   :repo-id repo-id
+                                   :branch branch))))
 
 (defmethod approve-switch-local ((wsm worktree-state-machine))
   "Approve a pending worktree switch.
@@ -267,27 +395,14 @@
    Returns:
      The new state
 
-   Signals:
+  Signals:
      WORKTREE-STATE-ERROR: If transition is invalid or no pending switch"
   (bt:with-lock-held ((state-lock wsm))
-    (unless (pending-switch wsm)
-      (error 'worktree-state-error
-             :from-state (worktree-state wsm)
-             :to-state :bound-non-home
-             :reason "No pending switch to approve"))
-
-    (let* ((binding (pending-switch wsm))
-           (now (get-universal-time)))
-      (setf (binding-info-bound-at binding) now)
-      (setf (binding-info-expires-at binding)
-            (+ now (switch-ttl wsm)))
-      (setf (current-binding wsm) binding)
-      (setf (pending-switch wsm) nil)
-      (%transition-worktree-state wsm :bound-non-home
-                                 :metadata (list :worktree-id
-                                               (binding-info-worktree-id binding)
-                                               :expires-at
-                                               (binding-info-expires-at binding))))))
+    (%apply-worktree-transition-plan!
+     wsm
+     (evaluate-worktree-transition wsm
+                                   :approve-switch
+                                   :now (get-universal-time)))))
 
 (defmethod reject-switch-local ((wsm worktree-state-machine))
   "Reject a pending worktree switch.
@@ -300,13 +415,11 @@
    Returns:
      The new state
 
-   Signals:
+  Signals:
      WORKTREE-STATE-ERROR: If transition is invalid"
   (bt:with-lock-held ((state-lock wsm))
-    (setf (pending-switch wsm) nil)
-    (setf (current-binding wsm) (home-binding wsm))
-    (%transition-worktree-state wsm :bound-home
-                               :metadata (list :reason "switch-rejected"))))
+    (%apply-worktree-transition-plan! wsm
+                                      (evaluate-worktree-transition wsm :reject-switch))))
 
 (defmethod revert-to-home ((wsm worktree-state-machine))
   "Revert from non-home binding to home binding.
@@ -319,12 +432,11 @@
    Returns:
      The new state
 
-   Signals:
+  Signals:
      WORKTREE-STATE-ERROR: If transition is invalid"
   (bt:with-lock-held ((state-lock wsm))
-    (setf (current-binding wsm) (home-binding wsm))
-    (%transition-worktree-state wsm :bound-home
-                               :metadata (list :reason "reverted-to-home"))))
+    (%apply-worktree-transition-plan! wsm
+                                      (evaluate-worktree-transition wsm :revert-home))))
 
 (defmethod check-ttl-expiry ((wsm worktree-state-machine))
   "Check if the current non-home binding has expired.

@@ -347,6 +347,18 @@ See documentation/protocol/spec.md for the canonical protocol specification.")
   ;; Handoff client (SW4-004/SW4-005 local surface)
   (:export
    #:handoff-client
+   #:handoff-request
+   #:make-handoff-request
+   #:handoff-request-request-id
+   #:handoff-request-from-agent
+   #:handoff-request-to-agent
+   #:handoff-request-reason
+   #:handoff-request-budget
+   #:handoff-request-delegation-policy
+   #:handoff-request-context-snapshot
+   #:handoff-request-capabilities-required
+   #:handoff-request-priority
+   #:handoff-request-timeout-ms
    #:+default-max-retries-on-overloaded+
    #:+default-initial-backoff-ms+
    #:+default-backoff-multiplier+
@@ -498,3 +510,18 @@ See documentation/protocol/spec.md for the canonical protocol specification.")
    #:spawn-worktree
    #:collect-worktree
    #:kill-worktree))
+
+(defpackage #:sw4rm-sdk.handoff
+  (:use #:cl))
+
+(defpackage #:sw4rm-sdk.worktree
+  (:use #:cl))
+
+(defpackage #:sw4rm-sdk.workflow
+  (:use #:cl))
+
+(defpackage #:sw4rm-sdk.interceptors
+  (:use #:cl))
+
+(defpackage #:sw4rm-sdk.internal
+  (:use #:cl))

@@ -53,8 +53,8 @@
                              :branch-name "feature/i37"))
              (segments (funcall status-bar-segments-fn state))
              (line (funcall status-bar-line-fn state)))
-        (assert-true (= (length segments) 5)
-                     "Expected five status bar segments, got ~D."
+        (assert-true (>= (length segments) 5)
+                     "Expected at least five status bar segments, got ~D."
                      (length segments))
         (assert-true (string= (first segments) "branch feature/i37")
                      "Expected branch segment to render first (left segment), got ~S."
@@ -138,6 +138,39 @@
                        completed-line)
           (assert-true (= used-tokens 640)
                        "Expected context-used-tokens accessor to report 640, got ~S."
-                       used-tokens)))))
+                       used-tokens))
 
-  (format t "AMOEBUM_STATUS_BAR_SMOKE_OK~%"))
+        (funcall publish-fn
+                 bus
+                 (funcall make-config-changed-event-fn
+                          :key :plan-mode
+                          :old-value t
+                          :new-value nil))
+        (funcall publish-fn
+                 bus
+                 (funcall make-config-changed-event-fn
+                          :key :status-bar-mode
+                          :old-value :arch
+                          :new-value :lean))
+        (let ((lean-segments (funcall status-bar-segments-fn state))
+              (lean-line (funcall status-bar-line-fn state)))
+          (assert-true (>= (length lean-segments) 3)
+                       "Expected lean focus mode to have at least three segments, got ~D."
+                       (length lean-segments))
+          (assert-true (line-contains-p lean-line "branch feature/i37")
+                       "Expected branch segment to remain in lean mode, got ~S."
+                       lean-line)
+          (assert-true (line-contains-p lean-line "stream done")
+                       "Expected stream segment to remain in lean mode, got ~S."
+                       lean-line)
+          (assert-true (line-contains-p lean-line "model demo-model-32k")
+                       "Expected model segment to remain in lean mode, got ~S."
+                       lean-line)
+          (assert-true (not (line-contains-p lean-line "mode "))
+                       "Expected lean focus mode to omit permission mode segment, got ~S."
+                       lean-line)
+          (assert-true (not (line-contains-p lean-line "Tokens:"))
+                       "Expected lean focus mode to omit context budget segment, got ~S."
+                       lean-line))))
+
+  (format t "AMOEBUM_STATUS_BAR_SMOKE_OK~%")))

@@ -776,6 +776,14 @@
            #:+event-type-agent-spawn+
            #:+event-type-agent-complete+
            #:+event-type-agent-cancelled+
+           #:+event-type-user-handoff-requested+
+           #:+event-type-user-handoff-accepted+
+           #:+event-type-user-handoff-rejected+
+           #:+event-type-user-handoff-completed+
+           #:+event-type-user-negotiation-room-created+
+           #:+event-type-user-negotiation-artifact-submitted+
+           #:+event-type-user-negotiation-critique-added+
+           #:+event-type-user-negotiation-decision+
            #:agent-cancelled
            #:agent-cancelled-agent-id
            #:agent-record
@@ -813,6 +821,15 @@
            #:find-agent
            #:list-agents
            #:active-agent-count
+           #:find-runtime-agent
+           #:runtime-agent-backend
+           #:runtime-agent-id
+           #:runtime-agent-task
+           #:runtime-agent-status
+           #:runtime-agent-result
+           #:runtime-agent-error-message
+           #:runtime-agent-output
+           #:runtime-agent-terminal-p
            #:spawn-agent
            #:cancel-agent
            #:agent-cancel-requested-p
@@ -1351,6 +1368,62 @@
            #:cached-tool-result
            #:clear-tool-result-cache
            #:clear-tool-metrics
+           ;; Policy types (NXT-127)
+           #:policy-trace-entry
+           #:policy-trace-entry-p
+           #:make-policy-trace-entry
+           #:policy-trace-entry-phase
+           #:policy-trace-entry-source
+           #:policy-trace-entry-decision
+           #:policy-trace-entry-reason-code
+           #:policy-trace-entry-reason
+           #:policy-trace-entry-data
+           #:policy-trace-entry-timestamp
+           #:policy-decision-context
+           #:policy-decision-context-p
+           #:make-policy-decision-context
+           #:build-policy-decision-context
+           #:policy-decision-context-kind
+           #:policy-decision-context-tool-name
+           #:policy-decision-context-path
+           #:policy-decision-context-command
+           #:policy-decision-context-permission-mode
+           #:policy-decision-context-plan-step-index
+           #:policy-decision-context-plan-event
+           #:policy-decision-context-dangerous-p
+           #:policy-decision-context-rules
+           #:policy-decision-context-context-data
+           #:policy-decision-context-decision-id
+           #:policy-decision-context-plist
+           #:policy-rule-table
+           #:policy-rule-table-p
+           #:make-policy-rule-table
+           #:policy-rule-table-name
+           #:policy-rule-table-source
+           #:policy-rule-table-rules
+           #:policy-rule-table-metadata
+           #:policy-rule-table-rule-count
+           #:policy-rule-table-find-rule
+           #:policy-rule-registry
+           #:policy-rule-registry-p
+           #:make-policy-rule-registry
+           #:policy-rule-registry-session-layer
+           #:policy-rule-registry-extension-layers
+           #:policy-rule-registry-metadata
+           #:policy-rule-registry-layers
+           #:policy-rule-registry-layer-count
+           #:policy-rule-registry-rule-count
+           #:policy-rule-registry-find-layer
+           #:policy-rule-registry-composed-rules
+           #:permission-evaluation-structured-trace
+           #:plan-execution-transition-structured-trace
+           #:plan-execution-effect-type-registered-p
+           #:plan-execution-effect-type-metadata
+           #:register-plan-execution-effect-type
+           #:publish-plan-execution-transition-event
+           #:replay-permission-decision-from-trace
+           #:format-policy-trace-report
+           #:diff-permission-decisions
            #:permission-rule
            #:permission-rule-p
            #:permission-rule-id
@@ -1460,6 +1533,16 @@
            #:token-stream-state
            #:token-stream-state-p
            #:make-token-stream-state
+           ;; NXT-129: Stream event journal
+           #:stream-event-journal
+           #:stream-event-journal-p
+           #:make-stream-event-journal
+           #:stream-event-journal-append!
+           #:stream-event-journal-append-policy-trace!
+           #:stream-event-journal-count
+           #:stream-event-journal-clear!
+           #:stream-event-journal-entries-list
+           #:stream-event-journal-replay-snapshot
            #:token-stream-state-status
            #:token-stream-state-started-ms
            #:token-stream-state-ended-ms
@@ -1475,9 +1558,19 @@
            #:token-stream-state-abort-reason
            #:token-stream-state-worker-thread
            #:token-stream-active-p
+           #:token-stream-state-stream-turn-snapshot
            #:token-stream-cancel-requested-p
            #:token-stream-request-cancel
+           #:token-stream-force-reset-if-stuck
            #:token-stream-check-cancel
+           ;; YAML Theme System
+           #:load-yaml-theme
+           #:reload-yaml-theme-if-changed
+           #:yaml-theme-status
+           #:yaml-theme-needs-reload-p
+           #:install-default-yaml-theme
+           #:*yaml-theme-loaded-p*
+           #:*yaml-theme-source-path*
            #:token-stream-set-budget-warning-threshold
            #:token-stream-set-budget-abort-threshold
            #:token-stream-abort
@@ -1518,6 +1611,9 @@
            #:status-bar-state-p
            #:make-status-bar-state
            #:status-bar-state-permission-mode
+           #:status-bar-state-focus-mode
+           #:status-bar-state-output-style
+           #:status-bar-state-delegation-mode
            #:status-bar-state-plan-mode-active-p
            #:status-bar-state-plan-mode-mutating-tools-blocked-p
            #:status-bar-state-branch-name
@@ -1537,6 +1633,9 @@
            #:status-bar-line
            #:status-bar-render-key
            #:make-status-bar-widget
+           #:status-bar-current-output-style
+           #:status-bar-set-output-style!
+           #:+output-style-presets+
            #:*model-router*
            #:provider-health-entry
            #:provider-health-entry-p
@@ -1578,12 +1677,15 @@
            #:chat-ui-state-context-window-limit
            #:chat-ui-state-stream-tool-calls
            #:chat-ui-state-stream-executed-tool-call-keys
+           #:chat-ui-state-stream-event-journal
+           #:chat-ui-state-max-agentic-iterations-override
            #:ensure-chat-ui-state
            #:chat-ui-restore-latest-session
            #:make-chat-message
            #:chat-ui-append-message
            #:chat-ui-add-message
            #:chat-ui-set-input
+           #:chat-ui-cursor-visible-p
            #:chat-ui-submit-input
            #:chat-ui-scroll-history
            #:chat-ui-build-tree
@@ -1815,7 +1917,7 @@
            #:load-prebuilt-bpf-program
            #:bpf-program-filter-events
            #:usdt-disabled-overhead-percent
-           ;; Swarm integration (I83-I93)
+           ;; Swarm integration (I83-I93) + NXT-017/NXT-018
            #:swarm-agent
            #:swarm-agent-p
            #:make-swarm-agent
@@ -1828,6 +1930,14 @@
            #:swarm-agent-result
            #:swarm-agent-thread
            #:swarm-agent-error-message
+           ;; NXT-017: signal tracking and retry semantics
+           #:swarm-agent-signal-name
+           #:swarm-agent-retry-count
+           #:swarm-agent-retry-policy
+           #:swarm-agent-timeout-seconds
+           ;; NXT-018: stalled-run detection
+           #:swarm-agent-heartbeat-at
+           #:swarm-agent-last-output-at
            #:*swarm-registry*
            #:*swarm-counter*
            #:spawn-swarm-agent
@@ -1837,12 +1947,24 @@
            #:find-swarm-agent
            #:clear-swarm-registry
            #:swarm-status-summary
+           ;; NXT-018: heartbeat/stall functions
+           #:update-swarm-agent-heartbeat
+           #:update-swarm-agent-last-output
+           #:detect-stalled-agents
            ;; Inter-user coordination (I253)
            #:register-user-session-peer
            #:unregister-user-session-peer
            #:find-user-session-peer
            #:list-user-session-peers
            #:clear-user-coordination-state
+           #:+event-type-user-handoff-requested+
+           #:+event-type-user-handoff-accepted+
+           #:+event-type-user-handoff-rejected+
+           #:+event-type-user-handoff-completed+
+           #:+event-type-user-negotiation-room-created+
+           #:+event-type-user-negotiation-artifact-submitted+
+           #:+event-type-user-negotiation-critique-added+
+           #:+event-type-user-negotiation-decision+
            #:handoff-between-users
            #:get-user-pending-handoffs
            #:user-handoff-status
@@ -2104,7 +2226,75 @@
            #:worker-dashboard-select
            #:worker-dashboard-selected-output
            #:worker-status-bar-segment
-           #:agent-activity-stream))
+           #:agent-activity-stream
+           ;; NXT-092: IDE context ingestion
+           #:ide-context
+           #:ide-context-p
+           #:make-ide-context
+           #:ide-context-selections
+           #:ide-context-diagnostics
+           #:ide-context-open-files
+           #:ide-context-active-file
+           #:ide-context-timestamp
+           #:*ide-context*
+           #:update-ide-context!
+           #:ide-context-summary
+           #:ide-context-token-estimate
+           ;; NXT-093: IDE context -> prompt / status-bar
+           #:ide-context-prompt-fragment
+           ;; NXT-094/NXT-095: IDE context integration and observability
+           #:clear-ide-context!
+           #:ide-context-prompt-fragment/budget
+           #:+event-type-ide-context-attached+
+           #:+event-type-ide-context-truncated+
+           #:+event-type-ide-context-dropped+
+           #:ide-context-attached-payload
+           #:ide-context-attached-payload-p
+           #:make-ide-context-attached-payload
+           #:ide-context-attached-payload-active-file
+           #:ide-context-attached-payload-open-file-count
+           #:ide-context-attached-payload-selection-count
+           #:ide-context-attached-payload-diagnostic-count
+           #:ide-context-truncated-payload
+           #:ide-context-truncated-payload-p
+           #:make-ide-context-truncated-payload
+           #:ide-context-truncated-payload-token-estimate
+           #:ide-context-truncated-payload-token-budget
+           #:ide-context-truncated-payload-selections-dropped
+           #:ide-context-truncated-payload-diagnostics-dropped
+           #:ide-context-dropped-payload
+           #:ide-context-dropped-payload-p
+           #:make-ide-context-dropped-payload
+           #:ide-context-dropped-payload-active-file
+           #:make-ide-context-attached-event
+           #:make-ide-context-truncated-event
+           #:make-ide-context-dropped-event
+           ;; NXT-106: Cultivar adapter
+           #:cultivar-adapter
+           #:cultivar-adapter-p
+           #:make-cultivar-adapter
+           #:cultivar-adapter-endpoint
+           #:cultivar-adapter-enabled-p
+           #:*cultivar-adapter*
+           #:cultivar-resolve
+           #:cultivar-preview
+           #:cultivar-expand
+           ;; NXT-109: Cultivar context pressure
+           #:cultivar-context-pressure
+           ;; NXT-107: Yore adapter
+           #:yore-adapter
+           #:yore-adapter-p
+           #:make-yore-adapter
+           #:yore-adapter-endpoint
+           #:yore-adapter-enabled-p
+           #:*yore-adapter*
+           #:yore-search-context
+           #:yore-fetch-context
+           ;; NXT-109: Yore context pressure + combined summary
+           #:yore-context-pressure
+           #:%context-pressure-summary
+           ;; NXT-108: IDE context packet builder
+           #:ide-context-build-packet))
 
 (defpackage :amoebum.sandbox
   (:use)
@@ -2220,6 +2410,83 @@
            #:*read-orchestration-supported-extensions*))
 
 (defpackage :amoebum.tools
+  (:use :cl))
+
+(defpackage :amoebum.config
+  (:use :cl))
+
+(defpackage :amoebum.notifications
+  (:use :cl))
+
+(defpackage :amoebum.sessions
+  (:use :cl))
+
+(defpackage :amoebum.plan
+  (:use :cl))
+
+(defpackage :amoebum.extensions
+  (:use :cl))
+
+(defpackage :amoebum.commands.plan
+  (:use :cl)
+  (:import-from :amoebum
+                #:approve-plan-steps
+                #:clear-plan-step-approvals
+                #:current-plan-mode-state
+                #:enter-plan-mode
+                #:exit-plan-mode
+                #:make-slash-command-result
+                #:plan-input-gating-snapshot
+                #:plan-mode-active-p
+                #:plan-mode-state-approved-step-indexes
+                #:plan-mode-state-last-output-path
+                #:plan-mode-state-last-plan-markdown
+                #:plan-mode-state-review-decision
+                #:plan-mode-state-review-last-presented-at
+                #:plan-mode-state-review-notes
+                #:plan-mode-state-review-pending-p
+                #:plan-mode-state-steps
+                #:plan-step-indexes
+                #:refresh-plan-review-markdown
+                #:reorder-plan-step
+                #:set-plan-review-decision
+                #:set-plan-step-approvals
+                #:setconfig
+                #:toggle-plan-mode)
+  (:export #:%plan-command-handler))
+
+(defpackage :amoebum.commands.history
+  (:use :cl)
+  (:import-from :amoebum
+                #:make-slash-command-result)
+  (:export #:%history-handler))
+
+(defpackage :amoebum.commands.index
+  (:use :cl)
+  (:import-from :amoebum
+                #:make-slash-command-result)
+  (:export #:%index-handler))
+
+(defpackage :amoebum.commands.self-modify
+  (:use :cl)
+  (:import-from :amoebum
+                #:make-slash-command-result)
+  (:export #:%self-modify-handler))
+
+(defpackage :amoebum.commands.permissions
+  (:use :cl)
+  (:import-from :amoebum
+                #:make-slash-command-result)
+  (:export #:%permissions-handler
+           #:%permissions-arg-completer))
+
+(defpackage :amoebum.ui
+  (:use :cl))
+
+(defpackage :amoebum.commands
+  (:use :cl))
+
+(defpackage :amoebum.workers
   (:use :cl))
 
 (defpackage :amoebum.internal

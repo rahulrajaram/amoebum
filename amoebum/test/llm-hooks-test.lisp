@@ -48,7 +48,7 @@
   (%with-cleared-llm-hooks
    (lambda ()
      (let* ((base-message (pseudopod:make-message :role "user" :content "hello"))
-            (chat-state (amoebum:make-chat-ui-state
+            (chat-state (amoebum.ui:make-chat-ui-state
                          :messages (list base-message)
                          :stream-client (pseudopod:make-client :api-key "test-key")
                          :stream-runner nil))
@@ -105,7 +105,7 @@
 (test llm-hooks-pre-send-block-cancels-chat-step
   (%with-cleared-llm-hooks
    (lambda ()
-     (let* ((chat-state (amoebum:make-chat-ui-state
+     (let* ((chat-state (amoebum.ui:make-chat-ui-state
                          :messages (list (pseudopod:make-message
                                           :role "user"
                                           :content "blocked"))

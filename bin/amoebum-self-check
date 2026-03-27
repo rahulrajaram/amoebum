@@ -1,0 +1,235 @@
+#!/bin/bash
+# Amoebum Self-Check - Validate amoebum's own source integrity
+# This runs BEFORE loading amoebum to catch syntax errors early
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+ERRORS=0
+WARNINGS=0
+
+log_info() {
+    echo -e "${BLUE}[CHECK]${NC} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+    ((WARNINGS++))
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+    ((ERRORS++))
+}
+
+log_success() {
+    echo -e "${GREEN}[OK]${NC} $1"
+}
+
+show_help() {
+    cat << EOF
+Amoebum Self-Check - Validate source integrity before loading
+
+USAGE:
+    amoebum-self-check [OPTIONS]
+
+OPTIONS:
+    -h, --help          Show this help message
+    -v, --verbose       Verbose output
+    --strict            Fail on warnings too
+    --fix               Attempt auto-fix where possible
+
+DESCRIPTION:
+    This tool validates amoebum's Lisp source files for:
+    - Unbalanced parentheses, brackets, braces
+    - Unclosed strings
+    - Missing critical function definitions
+    - Syntax errors that compile silently
+
+    Run this BEFORE compiling or loading amoebum to catch
+    issues like the March 23, 2025 yaml-theme-loader bug.
+
+EXAMPLES:
+    amoebum-self-check              # Quick validation
+    amoebum-self-check -v           # Detailed output
+    amoebum-self-check --strict     # Fail on any issue
+
+EOF
+}
+
+count_char() {
+    local file="$1"
+    local char="$2"
+    tr -cd "$char" < "$file" | wc -c
+}
+
+check_file_syntax() {
+    local file="$1"
+    local verbose="$2"
+    local basename=$(basename "$file")
+    
+    [[ "$verbose" == "true" ]] && log_info "Checking: $basename"
+    
+    # Count parens
+    local open_parens=$(count_char "$file" '(')
+    local close_parens=$(count_char "$file" ')')
+    
+    if [[ $open_parens -ne $close_parens ]]; then
+        log_error "Unbalanced parens in $basename: $open_parens open, $close_parens close"
+        
+        # Try to find problematic defun/defmacro lines
+        echo "  Potentially affected definitions:"
+        grep -n "^\\s*(defun\\|^\\s*(defmacro\\|^\\s*(defmethod" "$file" 2>/dev/null | head -5 | sed 's/^/    /'
+        return 1
+    fi
+    
+    # Count brackets
+    local open_brackets=$(count_char "$file" '[')
+    local close_brackets=$(count_char "$file" ']')
+    
+    if [[ $open_brackets -ne $close_brackets ]]; then
+        log_error "Unbalanced brackets in $basename: $open_brackets open, $close_brackets close"
+        return 1
+    fi
+    
+    # Count braces
+    local open_braces=$(count_char "$file" '{')
+    local close_braces=$(count_char "$file" '}')
+    
+    if [[ $open_braces -ne $close_braces ]]; then
+        log_error "Unbalanced braces in $basename: $open_braces open, $close_braces close"
+        return 1
+    fi
+    
+    # Check for unclosed strings (rough check)
+    local quote_count=$(count_char "$file" '"')
+    if (( quote_count % 2 != 0 )); then
+        log_warn "Odd number of quotes in $basename ($quote_count) - possible unclosed string"
+    fi
+    
+    log_success "$basename OK"
+    return 0
+}
+
+check_critical_functions() {
+    log_info "Checking critical function definitions..."
+    
+    local yaml_loader="$PROJECT_ROOT/amoebum/src/ui/yaml-theme-loader.lisp"
+    
+    if [[ ! -f "$yaml_loader" ]]; then
+        log_error "yaml-theme-loader.lisp not found"
+        return 1
+    fi
+    
+    if grep -q "(defun load-yaml-theme" "$yaml_loader"; then
+        log_success "load-yaml-theme function found"
+    else
+        log_error "load-yaml-theme function NOT FOUND in yaml-theme-loader.lisp"
+        echo "  This would cause runtime 'undefined function' errors"
+        return 1
+    fi
+}
+
+main() {
+    local verbose=false
+    local strict=false
+    local fix=false
+    
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -v|--verbose)
+                verbose=true
+                shift
+                ;;
+            --strict)
+                strict=true
+                shift
+                ;;
+            --fix)
+                fix=true
+                shift
+                ;;
+            -*)
+                log_error "Unknown option: $1"
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+    
+    echo "========================================"
+    echo "Amoebum Self-Check"
+    echo "========================================"
+    echo ""
+    
+    # Find all Lisp source files
+    local src_dir="$PROJECT_ROOT/amoebum/src"
+    
+    if [[ ! -d "$src_dir" ]]; then
+        log_error "Source directory not found: $src_dir"
+        exit 1
+    fi
+    
+    log_info "Scanning source files..."
+    
+    local files=()
+    while IFS= read -r -d '' file; do
+        files+=("$file")
+    done < <(find "$src_dir" -name "*.lisp" -type f -print0 2>/dev/null)
+    
+    log_info "Found ${#files[@]} Lisp files"
+    echo ""
+    
+    # Check each file
+    for file in "${files[@]}"; do
+        check_file_syntax "$file" "$verbose" || true
+    done
+    
+    echo ""
+    check_critical_functions || true
+    
+    # Summary
+    echo ""
+    echo "========================================"
+    echo "Summary"
+    echo "========================================"
+    
+    if [[ $ERRORS -eq 0 ]]; then
+        echo -e "${GREEN}✓ All checks passed${NC}"
+        echo "  Files checked: ${#files[@]}"
+        echo "  Errors: 0"
+        echo "  Warnings: $WARNINGS"
+        echo ""
+        echo "Amoebum source validation OK - safe to compile/load"
+        exit 0
+    else
+        echo -e "${RED}✗ Validation failed${NC}"
+        echo "  Files checked: ${#files[@]}"
+        echo "  Errors: $ERRORS"
+        echo "  Warnings: $WARNINGS"
+        echo ""
+        echo "Fix errors before compiling or loading amoebum."
+        echo "Run 'amoebum-diagnose syntax' for detailed analysis."
+        
+        if [[ "$strict" == "true" && $WARNINGS -gt 0 ]]; then
+            exit 1
+        elif [[ $ERRORS -gt 0 ]]; then
+            exit 1
+        fi
+    fi
+}
+
+main "$@"

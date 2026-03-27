@@ -437,12 +437,66 @@
          :image-paths image-paths)
         nil))))
 
+(defun %configure-gc-tuning ()
+  "Configure SBCL GC for lower latency and better interactive performance.
+Streaming responses generate substantial short-lived allocation (styled-line
+lists, grapheme segments, cell clones) — a larger nursery lets these objects
+die without triggering GC on every frame."
+  #+sbcl
+  (progn
+    ;; 64MB nursery reduces GC frequency during streaming.  Empirical
+    ;; testing (tui-perf-test.sh, 8 prompts) showed 64MB yields ~3.2x
+    ;; fault-rate growth vs 6.1x at the default 8MB.
+    (setf (sb-ext:bytes-consed-between-gcs) (* 64 1024 1024))
+    ;; Trigger a GC to establish baseline with new settings
+    (sb-ext:gc :full t))
+  #-sbcl
+  nil)
+
 (defun main (&rest argv)
   (activate-amoebum-readtable)
+  (%configure-gc-tuning)
   (let ((effective-argv (or argv
                             #+sbcl (rest sb-ext:*posix-argv*)
                             #-sbcl nil)))
     (reload-config :cli-arguments effective-argv)
+    ;; Load YAML theme if not already loaded by config system
+    ;; The bundled Tokyo Night theme is the default, but can be overridden via:
+    ;;   - :theme-yaml t in config files (auto-detect from standard locations)
+    ;;   - :theme-yaml "/path/to/theme.yaml" in config files (specific path)
+    ;;   - --theme-yaml /path/to/theme.yaml CLI option
+    ;;   - --theme /path/to/theme.yaml CLI option (shorthand)
+    ;; User themes in ~/.config/amoebum/theme.yaml take precedence over bundled.
+    (unless *yaml-theme-loaded-p*
+      (let ((theme-yaml-config (config-value :theme-yaml)))
+        (multiple-value-bind (yaml-success yaml-status)
+            (cond
+              ;; If config explicitly sets :theme-yaml nil, skip YAML theme loading
+              ((null theme-yaml-config)
+               (values t :disabled))
+              ;; If config sets :theme-yaml t, auto-detect (bundled Tokyo Night is fallback)
+              ((eq theme-yaml-config t)
+               (load-yaml-theme :if-not-loaded t))
+              ;; If config sets a specific path, use it
+              ((stringp theme-yaml-config)
+               (if (probe-file (pathname theme-yaml-config))
+                   (load-yaml-theme :cli-path theme-yaml-config :if-not-loaded t)
+                   (progn
+                     (log-runtime-event :level :warn
+                                        :kind "yaml-theme-config-path-not-found"
+                                        :source :main
+                                        :message "Theme YAML path from config not found, using bundled theme."
+                                        :details (list :path theme-yaml-config))
+                     (load-yaml-theme :if-not-loaded t))))
+              ;; Default: load bundled theme
+              (t
+               (load-yaml-theme :if-not-loaded t)))
+          (unless yaml-success
+            (log-runtime-event :level :warn
+                               :kind "yaml-theme-failed"
+                               :source :main
+                               :message "YAML theme loading failed, using built-in Lisp theme."
+                               :details (list :status yaml-status))))))
     (enable-tts-post-receive-hook)
     (let* ((options (%parse-cli-options effective-argv))
            (mode (cond
@@ -467,13 +521,13 @@
                         ((getf options :json-mode-p)
                          (apply #'run-cli-json effective-argv))
                         ((getf options :demo-mode-p)
-                         (run-chat-ui :backend :auto :fps 20
+                         (run-chat-ui :backend :auto :fps 60
                                       :demo t))
                         (t
                          (let ((conversation (%resolve-cli-conversation
                                               :session-id (getf options :session-id)
                                               :resume (getf options :resume))))
-                           (run-chat-ui :backend :auto :fps 20
+                           (run-chat-ui :backend :auto :fps 60
                                         :initial-state (make-chat-ui-state
                                                         :conversation conversation)))))))
                  (setf completedp t))

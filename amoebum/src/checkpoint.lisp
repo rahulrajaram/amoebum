@@ -159,7 +159,7 @@
      (pathname (second value)))
     ((and (consp value)
           (eq (first value) :__vector__))
-     (coerce (mapcar #'%checkpoint-decode-value (rest value)) 'vector))
+     (coerce (mapcar #'%checkpoint-decode-value (second value)) 'vector))
     ((consp value)
      (mapcar #'%checkpoint-decode-value value))
     (t
@@ -457,6 +457,80 @@
                      0))))
     (list-agents :include-completed-p t)))
 
+;;; --- MCP server config snapshot (1B) ---
+
+(defun %mcp-server->snapshot (server)
+  "Capture serializable configuration from a live MCP-SERVER struct."
+  (check-type server mcp-server)
+  (list :name (mcp-server-name server)
+        :transport (mcp-server-transport server)
+        :command (mcp-server-command server)
+        :args (copy-list (mcp-server-args server))
+        :cwd (and (mcp-server-cwd server)
+                  (namestring (mcp-server-cwd server)))
+        :endpoint-url (mcp-server-endpoint-url server)
+        :http-headers (copy-tree (mcp-server-http-headers server))
+        :auto-restart-p (mcp-server-auto-restart-p server)))
+
+(defun %mcp-servers->snapshot ()
+  "Iterate *mcp-tool-server-registry* and snapshot each server's config."
+  (let ((entries '()))
+    (maphash (lambda (name server)
+               (declare (ignore name))
+               (when (mcp-server-p server)
+                 (handler-case
+                     (push (%mcp-server->snapshot server) entries)
+                   (error () nil))))
+             *mcp-tool-server-registry*)
+    (sort entries #'string< :key (lambda (e) (or (getf e :name) "")))))
+
+(defun %restore-mcp-servers-from-snapshot (snapshot)
+  "Re-register and start MCP servers from snapshot config.
+Each entry that fails to start is logged but does not abort the restore."
+  (when (listp snapshot)
+    (dolist (entry snapshot)
+      (when (listp entry)
+        (let ((name (getf entry :name)))
+          ;; Skip if a server with this name is already running
+          (when (and name (not (find-mcp-tool-server name)))
+            (handler-case
+                (let* ((transport (or (getf entry :transport) :stdio))
+                       (server (make-mcp-server
+                                :name name
+                                :transport transport
+                                :command (getf entry :command)
+                                :args (or (getf entry :args) '())
+                                :cwd (getf entry :cwd)
+                                :endpoint-url (getf entry :endpoint-url)
+                                :http-headers (getf entry :http-headers)
+                                :auto-restart-p (getf entry :auto-restart-p))))
+                  (mcp-server-start server)
+                  (register-mcp-tool-server server
+                                            :name name
+                                            :discover-tools-p t))
+              (error (condition)
+                (warn "Failed to restore MCP server ~A: ~A" name condition)))))))))
+
+;;; --- Path approval snapshot (1C) ---
+
+(defun %path-approvals->snapshot ()
+  "Snapshot path approval memory using existing serialization."
+  (%serialize-path-approval-memory))
+
+(defun %restore-path-approvals-from-snapshot (snapshot)
+  "Merge path approvals from a checkpoint snapshot into *path-approval-memory*."
+  (when (and (listp snapshot) (getf snapshot :entries))
+    (let ((raw-entries (getf snapshot :entries))
+          (loaded 0))
+      (when (listp raw-entries)
+        (dolist (entry raw-entries)
+          (let ((normalized (%normalize-persisted-path-approval-entry entry)))
+            (when normalized
+              (%merge-persistent-path-approval-entry normalized)
+              (incf loaded)))))
+      (%trim-path-approval-memory)
+      loaded)))
+
 (defun %conversation->snapshot (conversation)
   (when (typep conversation 'conversation-state)
     (list :session-id (conversation-state-session-id conversation)
@@ -567,7 +641,10 @@
                               conversation
                               extensions
                               tools
-                              memory)
+                              memory
+                              agents
+                              mcp-servers
+                              path-approvals)
   (list :checkpoint-version 1
         :checkpoint-id checkpoint-id
         :created-at created-at
@@ -578,7 +655,10 @@
         :conversation conversation
         :extensions extensions
         :tools tools
-        :memory memory))
+        :memory memory
+        :agents agents
+        :mcp-servers mcp-servers
+        :path-approvals path-approvals))
 
 (defun %write-checkpoint-payload (path payload)
   (ensure-directories-exist path)
@@ -942,7 +1022,10 @@
                    :conversation (%conversation->snapshot resolved-conversation)
                    :extensions (%extensions->snapshot)
                    :tools (%tools->snapshot)
-                   :memory (%memory->snapshot resolved-memory-backend)))
+                   :memory (%memory->snapshot resolved-memory-backend)
+                   :agents (%agents->snapshot)
+                   :mcp-servers (%mcp-servers->snapshot)
+                   :path-approvals (%path-approvals->snapshot)))
          (checkpoint (make-session-checkpoint
                       :id checkpoint-id
                       :path checkpoint-path
@@ -959,13 +1042,29 @@
     (%publish-session-checkpointed event-bus checkpoint payload)
     checkpoint))
 
-(defun restore-session (&key
-                          checkpoint-id
-                          checkpoint-path
-                          project-root
-                          config
-                          memory-backend
-                          event-bus)
+(defstruct (restore-session-context
+            (:constructor %make-restore-session-context
+                (&key checkpoint-id checkpoint-path project-root config
+                      memory-backend event-bus resolved-config
+                      resolved-project-root resolved-path)))
+  checkpoint-id
+  checkpoint-path
+  project-root
+  config
+  memory-backend
+  event-bus
+  resolved-config
+  resolved-project-root
+  resolved-path
+  payload
+  checkpoint
+  effective-project-root
+  restored-config
+  restored-conversation
+  restored-memory-backend)
+
+(defun %restore-session-context (checkpoint-id checkpoint-path project-root
+                                 config memory-backend event-bus)
   (let* ((resolved-config (or config (current-config)))
          (resolved-project-root (%checkpoint-project-root
                                  :project-root project-root
@@ -975,48 +1074,162 @@
                          :checkpoint-path checkpoint-path
                          :project-root resolved-project-root
                          :config resolved-config)))
-    (unless resolved-path
-      (error "Checkpoint ~S not found." (or checkpoint-id checkpoint-path)))
-    (let* ((payload (%read-checkpoint-payload resolved-path))
-           (checkpoint-id* (or (and (listp payload) (getf payload :checkpoint-id))
-                               (pathname-name resolved-path)))
-           (created-at (%checkpoint-created-at payload resolved-path))
-           (trigger (if (and (listp payload) (keywordp (getf payload :trigger)))
-                        (getf payload :trigger)
-                        :manual))
-           (checkpoint (make-session-checkpoint
-                        :id checkpoint-id*
-                        :path resolved-path
-                        :created-at created-at
-                        :auto-p (and (listp payload) (not (null (getf payload :auto-p))))
-                        :trigger trigger))
-           (project-root*
-             (uiop:ensure-directory-pathname
-              (or project-root
-                  (and (listp payload)
-                       (getf payload :project-root)
-                       (pathname (getf payload :project-root)))
-                  resolved-project-root)))
-           (config-snapshot (and (listp payload) (getf payload :config)))
-           (conversation-snapshot (and (listp payload) (getf payload :conversation)))
-           (extensions-snapshot (and (listp payload) (getf payload :extensions)))
-           (tools-snapshot (and (listp payload) (getf payload :tools)))
-           (memory-snapshot (and (listp payload) (getf payload :memory)))
-           (restored-config (%restore-config-from-snapshot config-snapshot project-root*))
-           (restored-conversation (%conversation-from-snapshot conversation-snapshot
-                                                              project-root*)))
-      (%restore-extensions-from-snapshot extensions-snapshot :project-root project-root*)
-      (%restore-tools-from-snapshot tools-snapshot)
-      (setf *memory-backend* nil)
-      (let ((restored-memory-backend (or memory-backend (current-memory-backend))))
-        (%restore-memory-from-snapshot memory-snapshot restored-memory-backend)
-        (%publish-session-restored event-bus checkpoint payload)
-        (checkpoint-mark-activity)
-        (setf *checkpoint-last-auto-checkpoint-at* nil)
-        (list :checkpoint checkpoint
-              :config restored-config
-              :conversation restored-conversation
-              :memory-backend restored-memory-backend)))))
+    (%make-restore-session-context
+     :checkpoint-id checkpoint-id
+     :checkpoint-path checkpoint-path
+     :project-root project-root
+     :config config
+     :memory-backend memory-backend
+     :event-bus event-bus
+     :resolved-config resolved-config
+     :resolved-project-root resolved-project-root
+     :resolved-path resolved-path)))
+
+(defun %restore-session-resolved-path (context)
+  (or (restore-session-context-resolved-path context)
+      (error "Checkpoint ~S not found."
+             (or (restore-session-context-checkpoint-id context)
+                 (restore-session-context-checkpoint-path context)))))
+
+(defun %restore-session-load-payload (context)
+  (let* ((resolved-path (%restore-session-resolved-path context))
+         (payload (%read-checkpoint-payload resolved-path)))
+    (setf (restore-session-context-payload context) payload)
+    payload))
+
+(defun %restore-session-checkpoint-record (payload resolved-path)
+  (let* ((checkpoint-id (or (and (listp payload) (getf payload :checkpoint-id))
+                            (pathname-name resolved-path)))
+         (created-at (%checkpoint-created-at payload resolved-path))
+         (trigger (if (and (listp payload) (keywordp (getf payload :trigger)))
+                      (getf payload :trigger)
+                      :manual)))
+    (make-session-checkpoint
+     :id checkpoint-id
+     :path resolved-path
+     :created-at created-at
+     :auto-p (and (listp payload) (not (null (getf payload :auto-p))))
+     :trigger trigger)))
+
+(defun %restore-session-effective-project-root (context)
+  (let ((payload (restore-session-context-payload context)))
+    (uiop:ensure-directory-pathname
+     (or (restore-session-context-project-root context)
+         (and (listp payload)
+              (getf payload :project-root)
+              (pathname (getf payload :project-root)))
+         (restore-session-context-resolved-project-root context)))))
+
+(defun %restore-session-config-snapshot (context)
+  (let ((payload (restore-session-context-payload context)))
+    (and (listp payload) (getf payload :config))))
+
+(defun %restore-session-conversation-snapshot (context)
+  (let ((payload (restore-session-context-payload context)))
+    (and (listp payload) (getf payload :conversation))))
+
+(defun %restore-session-extensions-snapshot (context)
+  (let ((payload (restore-session-context-payload context)))
+    (and (listp payload) (getf payload :extensions))))
+
+(defun %restore-session-tools-snapshot (context)
+  (let ((payload (restore-session-context-payload context)))
+    (and (listp payload) (getf payload :tools))))
+
+(defun %restore-session-memory-snapshot (context)
+  (let ((payload (restore-session-context-payload context)))
+    (and (listp payload) (getf payload :memory))))
+
+(defun %restore-session-agents-snapshot (context)
+  (let ((payload (restore-session-context-payload context)))
+    (and (listp payload) (getf payload :agents))))
+
+(defun %restore-session-mcp-servers-snapshot (context)
+  (let ((payload (restore-session-context-payload context)))
+    (and (listp payload) (getf payload :mcp-servers))))
+
+(defun %restore-session-path-approvals-snapshot (context)
+  (let ((payload (restore-session-context-payload context)))
+    (and (listp payload) (getf payload :path-approvals))))
+
+(defun %restore-session-core-state (context)
+  (let* ((payload (%restore-session-load-payload context))
+         (project-root (%restore-session-effective-project-root context)))
+    (setf (restore-session-context-checkpoint context)
+          (%restore-session-checkpoint-record payload
+                                             (%restore-session-resolved-path context))
+          (restore-session-context-effective-project-root context) project-root
+          (restore-session-context-restored-config context)
+          (%restore-config-from-snapshot (%restore-session-config-snapshot context)
+                                         project-root)
+          (restore-session-context-restored-conversation context)
+          (%conversation-from-snapshot (%restore-session-conversation-snapshot context)
+                                       project-root))
+    context))
+
+(defun %restore-session-extensions-and-tools (context)
+  (let ((project-root (restore-session-context-effective-project-root context)))
+    (%restore-extensions-from-snapshot (%restore-session-extensions-snapshot context)
+                                       :project-root project-root)
+    (%restore-tools-from-snapshot (%restore-session-tools-snapshot context))
+    context))
+
+(defun %restore-session-memory-backend (context)
+  (setf *memory-backend* nil)
+  (let ((memory-backend (or (restore-session-context-memory-backend context)
+                            (current-memory-backend))))
+    (%restore-memory-from-snapshot (%restore-session-memory-snapshot context)
+                                   memory-backend)
+    (setf (restore-session-context-restored-memory-backend context) memory-backend)
+    context))
+
+(defun %restore-session-finish (context)
+  (%publish-session-restored (restore-session-context-event-bus context)
+                             (restore-session-context-checkpoint context)
+                             (restore-session-context-payload context))
+  (checkpoint-mark-activity)
+  (setf *checkpoint-last-auto-checkpoint-at* nil)
+  (list :checkpoint (restore-session-context-checkpoint context)
+        :config (restore-session-context-restored-config context)
+        :conversation (restore-session-context-restored-conversation context)
+        :memory-backend (restore-session-context-restored-memory-backend context)))
+
+(defun restore-session (&key
+                          checkpoint-id
+                          checkpoint-path
+                          project-root
+                          config
+                          memory-backend
+                          event-bus)
+  (let ((context (%restore-session-context checkpoint-id
+                                           checkpoint-path
+                                           project-root
+                                           config
+                                           memory-backend
+                                           event-bus)))
+    (%restore-session-core-state context)
+    (%restore-session-extensions-and-tools context)
+    (%restore-session-memory-backend context)
+    ;; Restore agents, MCP server configs, and path approvals (1A/1B/1C).
+    ;; Each guard handles backward compat with older checkpoints missing these keys.
+    (let ((agents-snapshot (%restore-session-agents-snapshot context)))
+      (when agents-snapshot
+        (%restore-agents-from-snapshot agents-snapshot)))
+    (let ((mcp-snapshot (%restore-session-mcp-servers-snapshot context)))
+      (when mcp-snapshot
+        (%restore-mcp-servers-from-snapshot mcp-snapshot)))
+    (let ((approvals-snapshot (%restore-session-path-approvals-snapshot context)))
+      (when approvals-snapshot
+        (%restore-path-approvals-from-snapshot approvals-snapshot)))
+    ;; Resume event journal if not already running (1D).
+    (ignore-errors
+      (when (and (fboundp 'start-event-journal)
+                 (or (null *event-journal*)
+                     (not (event-journal-running-p *event-journal*))))
+        (start-event-journal
+         :event-bus (or (restore-session-context-event-bus context)
+                        (current-event-bus)))))
+    (%restore-session-finish context)))
 
 (defun checkpoint-auto-idle-seconds (&optional (config (current-config)))
   (let ((value (and (config-p config)
@@ -1249,6 +1462,10 @@
 
 (defun %image-post-restore-init (&key event-bus terminal-state)
   "Reinitialize after restoring an image."
+  ;; Tune SBCL GC: enlarge nursery so short-lived render-loop objects
+  ;; die in Gen 0 instead of being promoted to Gen 1.
+  #+sbcl
+  (setf (sb-ext:bytes-consed-between-gcs) (* 64 1024 1024))  ; 64 MB nursery
   (let* ((resolved-terminal-state (or terminal-state *image-last-terminal-state*))
          (terminal-reopen-count
            (%run-image-counting-hooks *image-terminal-reopen-hooks*
@@ -1276,6 +1493,112 @@
       (setf *image-last-post-restore-report* report)
       report)))
 
+(defstruct (save-amoebum-image-request
+            (:constructor make-save-amoebum-image-request
+                (&key path project-root config name toplevel-fn
+                      (rotate-p t) resolved-name resolved-path)))
+  path
+  project-root
+  config
+  name
+  toplevel-fn
+  (rotate-p t)
+  resolved-name
+  resolved-path)
+
+(defun %resolve-save-amoebum-image-request (request)
+  (let ((resolved-name (or (save-amoebum-image-request-name request)
+                           (%checkpoint-id-from-time))))
+    (setf (save-amoebum-image-request-resolved-name request) resolved-name
+          (save-amoebum-image-request-resolved-path request)
+          (or (save-amoebum-image-request-path request)
+              (%image-path resolved-name
+                           :project-root (save-amoebum-image-request-project-root request)
+                           :config (save-amoebum-image-request-config request))))
+    request))
+
+(defun %prepare-save-amoebum-image (request)
+  (ensure-directories-exist (save-amoebum-image-request-resolved-path request))
+  (%image-pre-save-cleanup)
+  request)
+
+(defun %checkpoint-before-image-save (request)
+  (handler-case
+      (checkpoint-session :project-root (save-amoebum-image-request-project-root request)
+                          :config (save-amoebum-image-request-config request)
+                          :trigger :image-save
+                          :auto-p nil)
+    (error () nil))
+  request)
+
+(defun %rotate-images-before-save (request)
+  (when (save-amoebum-image-request-rotate-p request)
+    (rotate-images :project-root (save-amoebum-image-request-project-root request)
+                   :config (save-amoebum-image-request-config request)))
+  request)
+
+(defun %default-restored-image-toplevel ()
+  (lambda ()
+    (%image-post-restore-init)
+    #+sbcl
+    (handler-case
+        (handler-bind
+            ((serious-condition
+               (lambda (c)
+                 ;; Skip interactive-interrupt — let the outer handler-case
+                 ;; catch it and exit cleanly with code 0.
+                 (unless (typep c 'sb-sys:interactive-interrupt)
+                   ;; Capture backtrace BEFORE stack unwinds
+                   (ignore-errors
+                     (let ((bt (with-output-to-string (s)
+                                 (sb-debug:print-backtrace :stream s :count 40))))
+                       (log-runtime-condition
+                        c
+                        :kind "restore-error"
+                        :source :checkpoint
+                        :message "Uncaught condition in restored Amoebum image."
+                        :details (list :condition-type (type-of c)
+                                       :argv (rest sb-ext:*posix-argv*))
+                        :include-backtrace-p nil)
+                       ;; Write full backtrace separately
+                       (with-open-file (f (merge-pathnames ".amoebum/runtime/full-backtrace.log"
+                                                           (user-homedir-pathname))
+                                          :direction :output :if-exists :supersede
+                                          :if-does-not-exist :create)
+                         (format f "Condition: ~A~%Type: ~A~%~%~A~%" c (type-of c) bt)
+                         (finish-output f))))
+                   (ignore-errors
+                     (format *error-output* "Restore error (~A): ~A~%" (type-of c) c)
+                     (format *error-output* "Crash log: ~A~%"
+                             (namestring (crash-log-path)))
+                     (write-line "Full backtrace: ~/.amoebum/runtime/full-backtrace.log"
+                                 *error-output*))
+                   (sb-ext:exit :code 1 :abort t)))))
+          (progn
+            (main)
+            (sb-ext:exit :code 0 :abort t)))
+      (sb-sys:interactive-interrupt ()
+        (sb-ext:exit :code 0 :abort t)))
+    #-sbcl
+    (progn
+      (main)
+      (uiop:quit 0))))
+
+(defun %save-amoebum-image-request (request)
+  #+sbcl
+  (progn
+    ;; Compact the heap before save so --dynamic-space-size can shrink it at runtime.
+    (sb-ext:gc :full t)
+    (sb-ext:save-lisp-and-die
+     (save-amoebum-image-request-resolved-path request)
+     :toplevel (or (save-amoebum-image-request-toplevel-fn request)
+                   (%default-restored-image-toplevel))
+     :executable t
+     :purify t))
+  #-sbcl
+  (error "Image save/restore requires SBCL (sb-ext:save-lisp-and-die).")
+  (save-amoebum-image-request-resolved-path request))
+
 (defun save-amoebum-image (&key path project-root config
                                 (name nil)
                                 (toplevel-fn nil)
@@ -1283,50 +1606,18 @@
   "Save the current Lisp image to PATH.
 Pre-save cleanup runs before save; post-restore init runs on resume.
 If ROTATE-P, old images are pruned."
-  (let* ((resolved-name (or name (%checkpoint-id-from-time)))
-         (resolved-path (or path
-                            (%image-path resolved-name
-                                         :project-root project-root
-                                         :config config))))
-    (ensure-directories-exist resolved-path)
-    ;; Pre-save cleanup
-    (%image-pre-save-cleanup)
-    ;; Checkpoint session state before image save
-    (handler-case
-        (checkpoint-session :project-root project-root
-                            :config config
-                            :trigger :image-save
-                            :auto-p nil)
-      (error () nil))
-    ;; Rotate old images
-    (when rotate-p
-      (rotate-images :project-root project-root :config config))
-    ;; Save the image
-    #+sbcl
-    (sb-ext:save-lisp-and-die
-     resolved-path
-     :toplevel (or toplevel-fn
-                   (lambda ()
-                     (%image-post-restore-init)
-                     (handler-case (main)
-                       (error (c)
-                         (log-runtime-condition
-                          c
-                          :kind "restore-error"
-                          :source :checkpoint
-                          :message "Uncaught error in restored Amoebum image."
-                          :details (list :argv
-                                         #+sbcl (rest sb-ext:*posix-argv*)
-                                         #-sbcl nil))
-                         (format *error-output* "Restore error: ~A~%" c)
-                         (format *error-output* "Crash log: ~A~%"
-                                 (namestring (crash-log-path)))
-                         (uiop:quit 1)))))
-     :executable t
-     :purify t)
-    #-sbcl
-    (error "Image save/restore requires SBCL (sb-ext:save-lisp-and-die).")
-    resolved-path))
+  (let ((request (%resolve-save-amoebum-image-request
+                  (make-save-amoebum-image-request
+                   :path path
+                   :project-root project-root
+                   :config config
+                   :name name
+                   :toplevel-fn toplevel-fn
+                   :rotate-p rotate-p))))
+    (%prepare-save-amoebum-image request)
+    (%checkpoint-before-image-save request)
+    (%rotate-images-before-save request)
+    (%save-amoebum-image-request request)))
 
 (defun register-image-pre-save-hook (fn)
   "Register a function to call before saving an image."

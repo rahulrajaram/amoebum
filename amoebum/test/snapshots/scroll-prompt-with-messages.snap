@@ -1,11 +1,9 @@
 --- ptui-snapshot v1 84x20
-| First question about the codebase structure.                                       |
+| > First question about the codebase structure.                                     |
 |                                                                                    |
-| The codebase has 4 ASDF systems: pseudopod, amoebum, sw4rm-sdk, and ptui.          |
+| > The codebase has 4 ASDF systems: pseudopod, amoebum, sw4rm-sdk, and ptui.        |
 |                                                                                    |
-| Can you show me the main entry point?                                              |
-|                                                                                    |
-|                                                                                    |
+| > Can you show me the main entry point?                                            |
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
@@ -15,133 +13,23 @@
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
-| ╭────────────────────────────────────────────────────────────────────────────────╮ |
-| │Line 5                                                                          │ |
-| ╰────────────────────────────────────────────────────────────────────────────────╯ |
-|branch test/scroll | mode full-auto | Tokens: 40/128000 (0%) | stream idle | model m|
+|                                                                                    |
+|                                                                                    |
+|╭────────────────────────────────────────────────────────────────────────────────╮  |
+|│Line 5                                                                          │  |
+|╰────────────────────────────────────────────────────────────────────────────────╯  |
+|branch test/scroll | mode full-auto | Tokens: 40/128000 (0%) | ctx [░░░░░░░░] 0% | s|
 --- attrs
 0,0:bold
 0,1:bold
 0,2:bold
-0,3:bold
-0,4:bold
-0,5:bold
-0,6:bold
-0,7:bold
-0,8:bold
-0,9:bold
-0,10:bold
-0,11:bold
-0,12:bold
-0,13:bold
-0,14:bold
-0,15:bold
-0,16:bold
-0,17:bold
-0,18:bold
-0,19:bold
-0,20:bold
-0,21:bold
-0,22:bold
-0,23:bold
-0,24:bold
-0,25:bold
-0,26:bold
-0,27:bold
-0,28:bold
-0,29:bold
-0,30:bold
-0,31:bold
-0,32:bold
-0,33:bold
-0,34:bold
-0,35:bold
-0,36:bold
-0,37:bold
-0,38:bold
-0,39:bold
-0,40:bold
-0,41:bold
-0,42:bold
-0,43:bold
-0,44:bold
+2,0:bold
+2,1:bold
+2,2:bold
 4,0:bold
 4,1:bold
 4,2:bold
-4,3:bold
-4,4:bold
-4,5:bold
-4,6:bold
-4,7:bold
-4,8:bold
-4,9:bold
-4,10:bold
-4,11:bold
-4,12:bold
-4,13:bold
-4,14:bold
-4,15:bold
-4,16:bold
-4,17:bold
-4,18:bold
-4,19:bold
-4,20:bold
-4,21:bold
-4,22:bold
-4,23:bold
-4,24:bold
-4,25:bold
-4,26:bold
-4,27:bold
-4,28:bold
-4,29:bold
-4,30:bold
-4,31:bold
-4,32:bold
-4,33:bold
-4,34:bold
-4,35:bold
-4,36:bold
-4,37:bold
-17,8:bold,invert
-19,0:bold
-19,1:bold
-19,2:bold
-19,3:bold
-19,4:bold
-19,5:bold
-19,6:bold
-19,7:bold
-19,8:bold
-19,9:bold
-19,10:bold
-19,11:bold
-19,12:bold
-19,13:bold
-19,14:bold
-19,15:bold
-19,16:bold
-19,17:bold
-19,18:bold
-19,19:bold
-19,20:bold
-19,21:bold
-19,22:bold
-19,23:bold
-19,24:bold
-19,25:bold
-19,26:bold
-19,27:bold
-19,28:bold
-19,29:bold
-19,30:bold
-19,31:bold
-19,32:bold
-19,33:bold
-19,34:bold
-19,35:bold
-19,36:bold
-19,37:bold
+17,7:bold,invert
 19,38:bold
 19,39:bold
 19,40:bold
@@ -164,9 +52,6 @@
 19,57:bold
 19,58:bold
 19,59:bold
-19,60:bold
-19,61:bold
-19,62:bold
 19,63:bold
 19,64:bold
 19,65:bold
@@ -184,7 +69,3 @@
 19,77:bold
 19,78:bold
 19,79:bold
-19,80:bold
-19,81:bold
-19,82:bold
-19,83:bold

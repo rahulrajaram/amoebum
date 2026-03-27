@@ -2,150 +2,262 @@
 ;;; Extracts prompt box from chat-ui-build-tree.
 (in-package :amoebum)
 
-(defun chat-panel-handle-input-key (state key text inner-width)
+;;; Forward declarations - defined in chat.lisp which is loaded after this file
+(declaim (ftype function %prompt-wrapped-lines %cursor-to-line-col %line-col-to-cursor-pos))
+
+(defstruct (chat-panel-input-key-context
+            (:constructor %make-chat-panel-input-key-context
+                (&key state key text inner-width input-text cur-pos pos input-width)))
+  state
+  key
+  text
+  inner-width
+  input-text
+  cur-pos
+  pos
+  input-width)
+
+(defun %chat-panel-input-key-context (state key text inner-width)
   (let* ((input-text (chat-ui-state-input-text state))
          (cur-pos (chat-ui-state-cursor-position state))
          (pos (%ensure-cursor-pos input-text cur-pos))
          (input-width (max 1 (- (max 1 inner-width) 2))))
-    (cond
-      ((eql key :text)
-       (if (stringp text)
-           (let ((new-text (%grapheme-insert-at input-text pos text))
-                 (advance (%grapheme-length text)))
-             (chat-ui-set-input state new-text :cursor-position (+ pos advance)))
-           (chat-ui-set-input state input-text)))
-      ((eql key :ctrl-p)
-       (%chat-plan-move-selection! state -1))
-      ((eql key :ctrl-n)
-       (%chat-plan-move-selection! state 1))
-      ((eql key :ctrl-r)
-       (if (chat-ui-state-history-search-active-p state)
-           (%chat-deactivate-history-search! state :restore-input-p t)
-           (%chat-activate-history-search! state)))
-      ((eql key :escape)
-       (when (chat-ui-state-history-search-active-p state)
-         (%chat-deactivate-history-search! state :restore-input-p t))
-       t)
-      ((eql key :ctrl-j)
-       (let ((new-text (%grapheme-insert-at input-text pos (string #\Newline))))
-         (chat-ui-set-input state new-text :cursor-position (1+ pos))))
-      ((eql key :tab)
-       (%handle-command-tab-completion state))
-      ((or (eql key :enter) (eql key :return))
-       ;; If interactive plan execution is awaiting approval and input is empty,
-       ;; approve the next step instead of submitting.
-       (if (and (plan-step-awaiting-approval-p)
-                (zerop (length input-text)))
-           (approve-next-plan-step)
-           (if (%handle-slash-command-input state input-text)
-               t
-               (if (%handle-plan-mode-entry-instruction state input-text)
-                   t
-                   (let ((submitted (chat-ui-submit-input state)))
-                     (when submitted
-                       (if (%handle-memory-candidate state submitted)
-                           (conversation-transition! (%ensure-chat-conversation-state state)
-                                                     :idle)
-                           (%start-streaming-assistant-response state submitted)))))))
-       t)
-      ((eql key :backspace)
-       (if (null cur-pos)
-           ;; Cursor at end — use fast path
-           (chat-ui-set-input state (%pop-last-grapheme input-text))
-           ;; Cursor in middle — grapheme-aware delete before
-           (multiple-value-bind (new-text new-pos)
-               (%grapheme-delete-before input-text pos)
-             (chat-ui-set-input state new-text :cursor-position new-pos)))
-       t)
-      ((eql key :delete)
-       ;; Delete grapheme at cursor position (forward delete)
-       (chat-ui-set-input state (%grapheme-delete-at input-text pos)
-                          :cursor-position pos)
-       t)
-      ((eql key :ctrl-w)
-       ;; Delete word backward from cursor position
-       (if (null cur-pos)
-           (chat-ui-set-input state (%delete-word-backward input-text))
-           (multiple-value-bind (new-text new-pos)
-               (%delete-word-backward-at input-text pos)
-             (chat-ui-set-input state new-text :cursor-position new-pos)))
-       t)
-      ((eql key :ctrl-u)
-       ;; Kill from start to cursor
-       (let* ((clusters (ptui.text.grapheme:split-graphemes input-text))
-              (after (with-output-to-string (out)
-                       (loop for cluster in (nthcdr pos clusters)
-                             do (write-string cluster out)))))
-         (chat-ui-set-input state after :cursor-position 0))
-       t)
-        ((eql key :ctrl-k)
-         ;; Kill from cursor to end
-         (let* ((clusters (ptui.text.grapheme:split-graphemes input-text))
-               (before (with-output-to-string (out)
-                        (loop for cluster in (subseq clusters 0 (min pos (length clusters)))
-                              do (write-string cluster out)))))
-         (chat-ui-set-input state before :cursor-position pos)
-         t))
-      ((eql key :ctrl-a)
-       (setf (chat-ui-state-cursor-position state) 0)
-       t)
-      ((eql key :ctrl-e)
-       (setf (chat-ui-state-cursor-position state) nil)
-       t)
-      ((eql key :left)
-       (when (> pos 0)
-         (setf (chat-ui-state-cursor-position state) (1- pos)))
-       t)
-      ((eql key :right)
-       (let ((len (%grapheme-length input-text)))
-         (if (< pos len)
-             (let ((new-pos (1+ pos)))
-               (setf (chat-ui-state-cursor-position state)
-                     (if (= new-pos len) nil new-pos)))
-             (setf (chat-ui-state-cursor-position state) nil)))
-       t)
-      ((eql key :ctrl-left)
-       (let ((new-pos (%word-boundary-backward input-text pos)))
-         (setf (chat-ui-state-cursor-position state) new-pos))
-       t)
-      ((eql key :ctrl-right)
-       (let* ((new-pos (%word-boundary-forward input-text pos))
-              (len (%grapheme-length input-text)))
-         (setf (chat-ui-state-cursor-position state)
-               (if (>= new-pos len) nil new-pos)))
-       t)
-      ((eql key :home)
-       (setf (chat-ui-state-cursor-position state) 0)
-       t)
-      ((eql key :end)
-       (setf (chat-ui-state-cursor-position state) nil)
-       t)
-      ((eql key :up)
-       (let* ((lines (%prompt-wrapped-lines input-text input-width)))
-         (multiple-value-bind (cur-line cur-col)
-             (%cursor-to-line-col pos lines)
-           (when (> cur-line 0)
-             (let* ((prev-line (nth (1- cur-line) lines))
-                    (target-col (min cur-col (length prev-line)))
-                    (new-pos (%line-col-to-cursor-pos (1- cur-line) target-col lines)))
-               (setf (chat-ui-state-cursor-position state) new-pos)))))
-       t)
-      ((eql key :down)
-       (let* ((lines (%prompt-wrapped-lines input-text input-width)))
-         (multiple-value-bind (cur-line cur-col)
-             (%cursor-to-line-col pos lines)
-           (when (< cur-line (1- (length lines)))
-             (let* ((next-line (nth (1+ cur-line) lines))
-                    (target-col (min cur-col (length next-line)))
-                    (new-pos (%line-col-to-cursor-pos (1+ cur-line) target-col lines)))
-               (setf (chat-ui-state-cursor-position state)
-                     (if (and (= (1+ cur-line) (1- (length lines)))
-                              (= target-col (length next-line)))
-                         nil
-                         new-pos))))))
-       t)
-      (t
-       nil))))
+    (%make-chat-panel-input-key-context
+     :state state
+     :key key
+     :text text
+     :inner-width inner-width
+     :input-text input-text
+     :cur-pos cur-pos
+     :pos pos
+     :input-width input-width)))
+
+(defun %chat-panel-input-handle-text (context)
+  (let ((text (chat-panel-input-key-context-text context))
+        (state (chat-panel-input-key-context-state context))
+        (input-text (chat-panel-input-key-context-input-text context))
+        (pos (chat-panel-input-key-context-pos context)))
+    (if (stringp text)
+        (let ((new-text (%grapheme-insert-at input-text pos text))
+              (advance (%grapheme-length text)))
+          (chat-ui-set-input state new-text :cursor-position (+ pos advance)))
+        (chat-ui-set-input state input-text))))
+
+(defun %chat-panel-input-handle-plan-selection (context delta)
+  (%chat-plan-move-selection! (chat-panel-input-key-context-state context) delta))
+
+(defun %chat-panel-input-handle-history-search-toggle (context)
+  (let ((state (chat-panel-input-key-context-state context)))
+    (if (chat-ui-state-history-search-active-p state)
+        (%chat-deactivate-history-search! state :restore-input-p t)
+        (%chat-activate-history-search! state))))
+
+(defun %chat-panel-input-handle-escape (context)
+  (let ((state (chat-panel-input-key-context-state context)))
+    (when (chat-ui-state-history-search-active-p state)
+      (%chat-deactivate-history-search! state :restore-input-p t))
+    t))
+
+(defun %chat-panel-input-handle-newline (context)
+  (let* ((state (chat-panel-input-key-context-state context))
+         (input-text (chat-panel-input-key-context-input-text context))
+         (pos (chat-panel-input-key-context-pos context))
+         (new-text (%grapheme-insert-at input-text pos (string #\Newline))))
+    (chat-ui-set-input state new-text :cursor-position (1+ pos))))
+
+(defun %chat-panel-input-handle-submit (context)
+  (let ((state (chat-panel-input-key-context-state context))
+        (input-text (chat-panel-input-key-context-input-text context)))
+    (if (and (plan-step-awaiting-approval-p)
+             (zerop (length input-text)))
+        (approve-next-plan-step)
+        (if (%handle-slash-command-input state input-text)
+            t
+            (if (%handle-plan-mode-entry-instruction state input-text)
+                t
+                (let ((submitted (chat-ui-submit-input state)))
+                  (when submitted
+                    (if (%handle-memory-candidate state submitted)
+                        (conversation-transition! (%ensure-chat-conversation-state state)
+                                                  :idle)
+                        (%start-streaming-assistant-response state submitted))))))))
+  t)
+
+(defun %chat-panel-input-handle-backspace (context)
+  (let ((state (chat-panel-input-key-context-state context))
+        (input-text (chat-panel-input-key-context-input-text context))
+        (cur-pos (chat-panel-input-key-context-cur-pos context))
+        (pos (chat-panel-input-key-context-pos context)))
+    (if (null cur-pos)
+        (chat-ui-set-input state (%pop-last-grapheme input-text))
+        (multiple-value-bind (new-text new-pos)
+            (%grapheme-delete-before input-text pos)
+          (chat-ui-set-input state new-text :cursor-position new-pos)))
+    t))
+
+(defun %chat-panel-input-handle-delete (context)
+  (let ((state (chat-panel-input-key-context-state context))
+        (input-text (chat-panel-input-key-context-input-text context))
+        (pos (chat-panel-input-key-context-pos context)))
+    (chat-ui-set-input state (%grapheme-delete-at input-text pos)
+                       :cursor-position pos)
+    t))
+
+(defun %chat-panel-input-handle-delete-word-backward (context)
+  (let ((state (chat-panel-input-key-context-state context))
+        (input-text (chat-panel-input-key-context-input-text context))
+        (cur-pos (chat-panel-input-key-context-cur-pos context))
+        (pos (chat-panel-input-key-context-pos context)))
+    (if (null cur-pos)
+        (chat-ui-set-input state (%delete-word-backward input-text))
+        (multiple-value-bind (new-text new-pos)
+            (%delete-word-backward-at input-text pos)
+          (chat-ui-set-input state new-text :cursor-position new-pos)))
+    t))
+
+(defun %chat-panel-input-handle-kill-before-cursor (context)
+  (let* ((state (chat-panel-input-key-context-state context))
+         (input-text (chat-panel-input-key-context-input-text context))
+         (pos (chat-panel-input-key-context-pos context))
+         (clusters (ptui.text.grapheme:split-graphemes input-text))
+         (after (with-output-to-string (out)
+                  (loop for cluster in (nthcdr pos clusters)
+                        do (write-string cluster out)))))
+    (chat-ui-set-input state after :cursor-position 0)
+    t))
+
+(defun %chat-panel-input-handle-kill-after-cursor (context)
+  (let* ((state (chat-panel-input-key-context-state context))
+         (input-text (chat-panel-input-key-context-input-text context))
+         (pos (chat-panel-input-key-context-pos context))
+         (clusters (ptui.text.grapheme:split-graphemes input-text))
+         (before (with-output-to-string (out)
+                   (loop for cluster in (subseq clusters 0 (min pos (length clusters)))
+                         do (write-string cluster out)))))
+    (chat-ui-set-input state before :cursor-position pos)
+    t))
+
+(defun %chat-panel-input-set-cursor! (context position)
+  (setf (chat-ui-state-cursor-position (chat-panel-input-key-context-state context))
+        position)
+  t)
+
+(defun %chat-panel-input-handle-right (context)
+  (let* ((state (chat-panel-input-key-context-state context))
+         (input-text (chat-panel-input-key-context-input-text context))
+         (pos (chat-panel-input-key-context-pos context))
+         (len (%grapheme-length input-text)))
+    (if (< pos len)
+        (let ((new-pos (1+ pos)))
+          (setf (chat-ui-state-cursor-position state)
+                (if (= new-pos len) nil new-pos)))
+        (setf (chat-ui-state-cursor-position state) nil))
+    t))
+
+(defun %chat-panel-input-handle-ctrl-right (context)
+  (let* ((state (chat-panel-input-key-context-state context))
+         (input-text (chat-panel-input-key-context-input-text context))
+         (pos (chat-panel-input-key-context-pos context))
+         (new-pos (%word-boundary-forward input-text pos))
+         (len (%grapheme-length input-text)))
+    (setf (chat-ui-state-cursor-position state)
+          (if (>= new-pos len) nil new-pos))
+    t))
+
+(defun %chat-panel-input-handle-vertical-move (context delta)
+  (let* ((state (chat-panel-input-key-context-state context))
+         (input-text (chat-panel-input-key-context-input-text context))
+         (pos (chat-panel-input-key-context-pos context))
+         (input-width (chat-panel-input-key-context-input-width context))
+         (lines (%prompt-wrapped-lines input-text input-width))
+         (max-rows 4))  ; Maximum visible content rows in prompt box
+    (multiple-value-bind (cur-line cur-col)
+        (%cursor-to-line-col pos lines)
+      (let ((target-line (+ cur-line delta)))
+        (when (and (>= target-line 0)
+                   (< target-line (length lines)))
+          (let* ((line (nth target-line lines))
+                 (target-col (min cur-col (length line)))
+                 (new-pos (%line-col-to-cursor-pos target-line target-col lines))
+                 (last-line-p (= target-line (1- (length lines)))))
+            (setf (chat-ui-state-cursor-position state)
+                  (if (and last-line-p
+                           (= target-col (length line)))
+                      nil
+                      new-pos))
+            ;; Update scroll offset to ensure cursor stays visible
+            (let* ((current-scroll (or (chat-ui-state-prompt-scroll-offset state) 0))
+                   (total-lines (length lines))
+                   (visible-rows (min max-rows total-lines))
+                   (max-scroll (max 0 (- total-lines visible-rows)))
+                   ;; Calculate new scroll offset to keep cursor in view
+                   (new-scroll
+                     (cond
+                       ;; Cursor moved above visible area - scroll up
+                       ((< target-line current-scroll)
+                        target-line)
+                       ;; Cursor moved below visible area - scroll down
+                       ((>= target-line (+ current-scroll visible-rows))
+                        (max 0 (- target-line visible-rows -1)))
+                       ;; Cursor still visible - keep current scroll
+                       (t current-scroll))))
+              (setf (chat-ui-state-prompt-scroll-offset state)
+                    (min new-scroll max-scroll)))))))
+  t))
+
+(defparameter +chat-panel-input-key-handlers+
+  (list (cons :text #'%chat-panel-input-handle-text)
+        (cons :ctrl-p (lambda (context)
+                        (%chat-panel-input-handle-plan-selection context -1)))
+        (cons :ctrl-n (lambda (context)
+                        (%chat-panel-input-handle-plan-selection context 1)))
+        (cons :ctrl-r #'%chat-panel-input-handle-history-search-toggle)
+        (cons :escape #'%chat-panel-input-handle-escape)
+        (cons :ctrl-j #'%chat-panel-input-handle-newline)
+        (cons :tab (lambda (context)
+                     (%handle-command-tab-completion
+                      (chat-panel-input-key-context-state context))))
+        (cons :enter #'%chat-panel-input-handle-submit)
+        (cons :return #'%chat-panel-input-handle-submit)
+        (cons :backspace #'%chat-panel-input-handle-backspace)
+        (cons :delete #'%chat-panel-input-handle-delete)
+        (cons :ctrl-w #'%chat-panel-input-handle-delete-word-backward)
+        (cons :ctrl-u #'%chat-panel-input-handle-kill-before-cursor)
+        (cons :ctrl-k #'%chat-panel-input-handle-kill-after-cursor)
+        (cons :ctrl-a (lambda (context)
+                        (%chat-panel-input-set-cursor! context 0)))
+        (cons :ctrl-e (lambda (context)
+                        (%chat-panel-input-set-cursor! context nil)))
+        (cons :left (lambda (context)
+                      (let ((pos (chat-panel-input-key-context-pos context)))
+                        (when (> pos 0)
+                          (%chat-panel-input-set-cursor! context (1- pos)))
+                        t)))
+        (cons :right #'%chat-panel-input-handle-right)
+        (cons :ctrl-left (lambda (context)
+                           (%chat-panel-input-set-cursor!
+                            context
+                            (%word-boundary-backward
+                             (chat-panel-input-key-context-input-text context)
+                             (chat-panel-input-key-context-pos context)))))
+        (cons :ctrl-right #'%chat-panel-input-handle-ctrl-right)
+        (cons :home (lambda (context)
+                      (%chat-panel-input-set-cursor! context 0)))
+        (cons :end (lambda (context)
+                     (%chat-panel-input-set-cursor! context nil)))
+        (cons :up (lambda (context)
+                    (%chat-panel-input-handle-vertical-move context -1)))
+        (cons :down (lambda (context)
+                      (%chat-panel-input-handle-vertical-move context 1))))
+  "Key dispatch table for prompt-input editing actions.")
+
+(defun %chat-panel-input-key-handler (key)
+  (cdr (assoc key +chat-panel-input-key-handlers+ :test #'eq)))
+
+(defun chat-panel-handle-input-key (state key text inner-width)
+  (let ((handler (%chat-panel-input-key-handler key)))
+    (when handler
+      (funcall handler (%chat-panel-input-key-context state key text inner-width)))))
 
 (ptui.ui.panel:defpanel prompt-input-panel (chat-state inner-width)
   (:layout
@@ -160,6 +272,7 @@
          :max-rows 4
          :scroll-offset (chat-ui-state-prompt-scroll-offset chat-state)
          :cursor-position (chat-ui-state-cursor-position chat-state)
+         :cursor-visible-p t
          :border-style :rounded))))
   (:keys
     (:text (chat-panel-handle-input-key
@@ -188,3 +301,8 @@
     (:ctrl-w (chat-panel-handle-input-key chat-state :ctrl-w nil inner-width))
     (:ctrl-u (chat-panel-handle-input-key chat-state :ctrl-u nil inner-width))
     (:ctrl-k (chat-panel-handle-input-key chat-state :ctrl-k nil inner-width))))
+
+
+(defun amoebum::%handle-input-key (chat-state key text &optional (inner-width 80))
+  "Compatibility shim for smoke tests that still call the legacy helper."
+  (chat-panel-handle-input-key chat-state key text inner-width))

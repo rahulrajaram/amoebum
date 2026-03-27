@@ -5,13 +5,29 @@
 (defparameter +event-type-agent-spawned+ (%event-type-keyword "agent:spawned"))
 (defparameter +event-type-agent-completed+ (%event-type-keyword "agent:completed"))
 (defparameter +event-type-agent-error+ (%event-type-keyword "agent:error"))
+(defparameter +event-type-user-handoff-requested+ (%event-type-keyword "user:handoff-requested"))
+(defparameter +event-type-user-handoff-accepted+ (%event-type-keyword "user:handoff-accepted"))
+(defparameter +event-type-user-handoff-rejected+ (%event-type-keyword "user:handoff-rejected"))
+(defparameter +event-type-user-handoff-completed+ (%event-type-keyword "user:handoff-completed"))
+(defparameter +event-type-user-negotiation-room-created+ (%event-type-keyword "user:negotiation-room-created"))
+(defparameter +event-type-user-negotiation-artifact-submitted+ (%event-type-keyword "user:negotiation-artifact-submitted"))
+(defparameter +event-type-user-negotiation-critique-added+ (%event-type-keyword "user:negotiation-critique-added"))
+(defparameter +event-type-user-negotiation-decision+ (%event-type-keyword "user:negotiation-decision"))
 
 (defparameter +lifecycle-event-types+
   (list +event-type-git-commit+
         +event-type-git-branch+
         +event-type-agent-spawned+
         +event-type-agent-completed+
-        +event-type-agent-error+))
+        +event-type-agent-error+
+        +event-type-user-handoff-requested+
+        +event-type-user-handoff-accepted+
+        +event-type-user-handoff-rejected+
+        +event-type-user-handoff-completed+
+        +event-type-user-negotiation-room-created+
+        +event-type-user-negotiation-artifact-submitted+
+        +event-type-user-negotiation-critique-added+
+        +event-type-user-negotiation-decision+))
 
 (setf +core-event-types+
       (remove-duplicates (append +core-event-types+ +lifecycle-event-types+)

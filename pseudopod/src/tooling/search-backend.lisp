@@ -66,6 +66,25 @@
   (result-count 0 :type integer)
   (fetched-at 0 :type integer))
 
+(defstruct (search-options
+             (:constructor make-search-options
+                 (&key
+                   (limit 5)
+                   searxng-url
+                   duckduckgo-url
+                   (timeout-seconds *default-search-timeout-seconds*)
+                   (user-agent *default-search-user-agent*)
+                   (min-interval-seconds *default-search-rate-limit-seconds*)
+                   http-get-fn)))
+  "Configuration bundle for SEARCH-BACKEND."
+  (limit 5 :type integer)
+  (searxng-url nil :type (or null string))
+  (duckduckgo-url nil :type (or null string))
+  (timeout-seconds *default-search-timeout-seconds* :type integer)
+  (user-agent *default-search-user-agent* :type string)
+  (min-interval-seconds *default-search-rate-limit-seconds* :type real)
+  (http-get-fn nil :type t))
+
 (defun %search-trim (value)
   (string-trim '(#\Space #\Tab #\Newline #\Return) (or value "")))
 
@@ -345,15 +364,72 @@
             :backend backend
             :message (format nil "Unsupported search backend ~S." backend)))))
 
-(defun search-backend (backend query
-                       &key
-                         (limit 5)
-                         searxng-url
-                         duckduckgo-url
-                         (timeout-seconds *default-search-timeout-seconds*)
-                         (user-agent *default-search-user-agent*)
-                         (min-interval-seconds *default-search-rate-limit-seconds*)
-                         http-get-fn)
+(defun %search-resolve-options (options)
+  (let ((resolved (or options (make-search-options))))
+    (check-type resolved search-options)
+    (make-search-options
+     :limit (if (and (integerp (search-options-limit resolved))
+                     (> (search-options-limit resolved) 0))
+                (min (search-options-limit resolved) 50)
+                5)
+     :searxng-url (search-options-searxng-url resolved)
+     :duckduckgo-url (search-options-duckduckgo-url resolved)
+     :timeout-seconds (if (and (integerp (search-options-timeout-seconds resolved))
+                               (> (search-options-timeout-seconds resolved) 0))
+                          (search-options-timeout-seconds resolved)
+                          *default-search-timeout-seconds*)
+     :user-agent (search-options-user-agent resolved)
+     :min-interval-seconds (coerce (or (search-options-min-interval-seconds resolved) 0.0d0)
+                                   'double-float)
+     :http-get-fn (or (search-options-http-get-fn resolved)
+                      #'%default-search-http-get))))
+
+(defun %search-runner-response (backend url params options)
+  (handler-case
+      (funcall (search-options-http-get-fn options)
+               url
+               :params params
+               :timeout-seconds (search-options-timeout-seconds options)
+               :user-agent (search-options-user-agent options))
+    (pseudopod-search-error (condition)
+      (error condition))
+    (error (condition)
+      (error 'pseudopod-search-error
+             :backend backend
+             :url url
+             :cause condition
+             :message (princ-to-string condition)))))
+
+(defun %search-validated-body (backend url response)
+  (let ((status (getf response :status))
+        (body (or (getf response :body) "")))
+    (unless (and (integerp status) (<= 200 status 299))
+      (error 'pseudopod-search-error
+             :backend backend
+             :url url
+             :status-code status
+             :message (format nil "Search backend returned HTTP status ~A." status)))
+    body))
+
+(defun %search-format-results (parsed-results)
+  (loop for result in parsed-results
+        for rank from 1
+        collect (%search-build-hit result rank)))
+
+(defun %search-parse-results (backend url parser body limit)
+  (handler-case
+      (funcall parser body limit)
+    (pseudopod-search-error (condition)
+      (error condition))
+    (error (condition)
+      (error 'pseudopod-search-parse-error
+             :backend backend
+             :url url
+             :payload body
+             :cause condition
+             :message (princ-to-string condition)))))
+
+(defun search-backend (backend query &optional options)
   "Execute BACKEND search for QUERY and return a normalized SEARCH-RESPONSE.
 
 BACKEND must be one of :SEARXNG or :DUCKDUCKGO.  The response schema is stable
@@ -361,10 +437,7 @@ across backends and always uses SEARCH-HIT structs under SEARCH-RESPONSE-RESULTS
   (check-type backend keyword)
   (check-type query string)
   (let* ((normalized-query (%search-trim query))
-         (normalized-limit (if (and (integerp limit) (> limit 0))
-                               (min limit 50)
-                               5))
-         (runner (or http-get-fn #'%default-search-http-get)))
+         (resolved-options (%search-resolve-options options)))
     (when (%search-empty-string-p normalized-query)
       (error 'pseudopod-search-error
              :backend backend
@@ -372,51 +445,22 @@ across backends and always uses SEARCH-HIT structs under SEARCH-RESPONSE-RESULTS
     (multiple-value-bind (url params parser)
         (%search-backend-request-shape backend
                                        normalized-query
-                                       searxng-url
-                                       duckduckgo-url)
-      (%search-apply-rate-limit min-interval-seconds)
-      (let* ((response
-               (handler-case
-                   (funcall runner
-                            url
-                            :params params
-                            :timeout-seconds timeout-seconds
-                            :user-agent user-agent)
-                 (pseudopod-search-error (condition)
-                   (error condition))
-                 (error (condition)
-                   (error 'pseudopod-search-error
-                          :backend backend
-                          :url url
-                          :cause condition
-                          :message (princ-to-string condition)))))
-             (status (getf response :status))
-             (body (or (getf response :body) "")))
-        (unless (and (integerp status) (<= 200 status 299))
-          (error 'pseudopod-search-error
-                 :backend backend
-                 :url url
-                 :status-code status
-                 :message (format nil "Search backend returned HTTP status ~A." status)))
-        (let* ((parsed-results
-                 (handler-case
-                     (funcall parser body normalized-limit)
-                   (pseudopod-search-error (condition)
-                     (error condition))
-                   (error (condition)
-                     (error 'pseudopod-search-parse-error
-                            :backend backend
-                            :url url
-                            :payload body
-                            :cause condition
-                            :message (princ-to-string condition)))))
-               (hits
-                 (loop for result in parsed-results
-                       for rank from 1
-                       collect (%search-build-hit result rank))))
-          (%make-search-response
-           :backend backend
-           :query normalized-query
-           :results hits
-           :result-count (length hits)
-           :fetched-at (get-universal-time)))))))
+                                       (search-options-searxng-url resolved-options)
+                                       (search-options-duckduckgo-url resolved-options))
+      (%search-apply-rate-limit (search-options-min-interval-seconds resolved-options))
+      (let* ((body (%search-validated-body
+                    backend
+                    url
+                    (%search-runner-response backend url params resolved-options)))
+             (hits (%search-format-results
+                    (%search-parse-results backend
+                                           url
+                                           parser
+                                           body
+                                           (search-options-limit resolved-options)))))
+        (%make-search-response
+         :backend backend
+         :query normalized-query
+         :results hits
+         :result-count (length hits)
+         :fetched-at (get-universal-time))))))

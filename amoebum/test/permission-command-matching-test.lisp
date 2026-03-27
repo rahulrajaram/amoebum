@@ -158,3 +158,15 @@
              :permission-mode :yolo
              :rules rules)
             :allow))))
+
+(test plan-mode-block-retains-plan-specific-trace-details
+  (let ((decision (amoebum:check-permission
+                   :tool :write-file
+                   :path "/tmp/demo.txt"
+                   :permission-mode :plan
+                   :rules nil)))
+    (is (eq decision :deny))
+    (let ((trace (amoebum:last-permission-decision-trace)))
+      (is (eq (getf trace :decision-source) :plan-mode))
+      (is (eq (getf trace :reason-code) :plan-mode-mutating-command-blocked))
+      (is (stringp (getf trace :actionable-reason))))))

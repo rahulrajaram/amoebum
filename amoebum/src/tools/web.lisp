@@ -741,11 +741,12 @@ Returns (values effective-query date-context-or-nil)."
            (pseudopod:search-backend
             :searxng
             query
-            :limit limit
-            :searxng-url searxng-url
-            :timeout-seconds *web-search-default-timeout-seconds*
-            :user-agent user-agent
-            :min-interval-seconds *web-search-rate-limit-seconds*))
+            (pseudopod:make-search-options
+             :limit limit
+             :searxng-url searxng-url
+             :timeout-seconds *web-search-default-timeout-seconds*
+             :user-agent user-agent
+             :min-interval-seconds *web-search-rate-limit-seconds*)))
          (hits (pseudopod:search-response-results response)))
     (mapcar #'%web-pseudopod-hit->result hits)))
 
@@ -754,11 +755,12 @@ Returns (values effective-query date-context-or-nil)."
            (pseudopod:search-backend
             :duckduckgo
             query
-            :limit limit
-            :duckduckgo-url (%web-effective-duckduckgo-url)
-            :timeout-seconds *web-search-default-timeout-seconds*
-            :user-agent user-agent
-            :min-interval-seconds *web-search-rate-limit-seconds*))
+            (pseudopod:make-search-options
+             :limit limit
+             :duckduckgo-url (%web-effective-duckduckgo-url)
+             :timeout-seconds *web-search-default-timeout-seconds*
+             :user-agent user-agent
+             :min-interval-seconds *web-search-rate-limit-seconds*)))
          (hits (pseudopod:search-response-results response)))
     (mapcar #'%web-pseudopod-hit->result hits)))
 

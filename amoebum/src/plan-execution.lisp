@@ -97,6 +97,45 @@
   rollback-notes
   (interactive-p nil :type boolean))
 
+(defstruct (plan-execution-context
+            (:constructor make-plan-execution-context
+                (&key executor
+                      state
+                      (rollback-on-failure-p t)
+                      (signal-failure-p t)
+                      (interactive-p nil)
+                      rollback-directory
+                      (execution-results '())
+                      failure-condition)))
+  executor
+  state
+  (rollback-on-failure-p t :type boolean)
+  (signal-failure-p t :type boolean)
+  (interactive-p nil :type boolean)
+  rollback-directory
+  (execution-results '() :type list)
+  failure-condition)
+
+(defstruct (plan-execution-transition
+            (:constructor make-plan-execution-transition
+                (&key
+                  (state-updates '())
+                  (step-updates '())
+                  (effects '())
+                  (done-p nil)
+                  result
+                  condition
+                  decision-context
+                  (structured-trace '()))))
+  (state-updates '() :type list)
+  (step-updates '() :type list)
+  (effects '() :type list)
+  (done-p nil :type boolean)
+  result
+  condition
+  decision-context
+  (structured-trace '() :type list))
+
 (defparameter *plan-execution-state* (%make-plan-execution-state))
 (defparameter *plan-execution-git-command-runner* nil)
 
@@ -399,6 +438,52 @@
              collect normalized)
      :test #'string=)))
 
+(defun %plan-step-policy-path (step)
+  (check-type step plan-execution-step)
+  (first (copy-list (or (plan-execution-step-file-paths step) '()))))
+
+(defun %plan-step-policy-command (step)
+  (check-type step plan-execution-step)
+  (first (%plan-step-command-previews step)))
+
+(defun %plan-transition-context-data (state step event &key result condition)
+  (check-type state plan-execution-state)
+  (check-type step plan-execution-step)
+  (list :run-id (plan-execution-state-run-id state)
+        :state-status (plan-execution-state-status state)
+        :step-description (plan-execution-step-description step)
+        :step-status (plan-execution-step-status step)
+        :step-file-paths (copy-list (or (plan-execution-step-file-paths step) '()))
+        :approved-step-count (length (or (plan-execution-state-approved-step-indexes state) '()))
+        :pending-step-count (length (or (plan-execution-state-pending-step-indexes state) '()))
+        :completed-step-count (length (or (plan-execution-state-completed-step-indexes state) '()))
+        :event event
+        :result-summary (and result (%summarize-execution-result result))
+        :condition-summary (when condition
+                             (handler-case (princ-to-string condition)
+                               (error () "step execution failed")))))
+
+(defun %build-plan-transition-decision-context (state event step &key result condition)
+  (check-type state plan-execution-state)
+  (check-type step plan-execution-step)
+  (build-policy-decision-context
+   :kind :plan-transition
+   :path (%plan-step-policy-path step)
+   :command (%plan-step-policy-command step)
+   :permission-mode :plan
+   :plan-step-index (plan-execution-step-index step)
+   :plan-event event
+   :rules '()
+   :context-data (%plan-transition-context-data state step event
+                                                :result result
+                                                :condition condition)
+   :decision-id (format nil "~A:~A:~A"
+                        (%safe-plan-execution-string
+                         (plan-execution-state-run-id state)
+                         "plan-exec")
+                        (or (plan-execution-step-index step) "unknown")
+                        event)))
+
 (defun %summarize-execution-result (result)
   (let* ((text (%safe-plan-execution-string result ""))
          (trimmed (string-trim '(#\Space #\Tab #\Newline #\Return) text)))
@@ -587,11 +672,11 @@
 
 (defun reset-plan-execution-state (&optional (state (current-plan-execution-state)))
   (check-type state plan-execution-state)
+  (let ((transition (%dispatch-plan-execution-transition state :reset)))
+    (%apply-plan-execution-transition! state transition))
+  ;; Also clear fields not covered by the transition table state-updates
   (setf (plan-execution-state-run-id state) nil
-        (plan-execution-state-status state) :idle
         (plan-execution-state-created-at state) nil
-        (plan-execution-state-started-at state) nil
-        (plan-execution-state-finished-at state) nil
         (plan-execution-state-source-plan-exited-at state) nil
         (plan-execution-state-source-plan-exit-reason state) nil
         (plan-execution-state-steps state) '()
@@ -600,9 +685,6 @@
         (plan-execution-state-pending-step-indexes state) '()
         (plan-execution-state-completed-step-indexes state) '()
         (plan-execution-state-continuity-output state) '()
-        (plan-execution-state-current-step-index state) nil
-        (plan-execution-state-failure-reason state) nil
-        (plan-execution-state-abort-reason state) nil
         (plan-execution-state-rollback-baseline-stash state) nil
         (plan-execution-state-rollback-baseline-directory state) nil
         (plan-execution-state-rollback-attempted-p state) nil
@@ -616,44 +698,9 @@
                                     run-id)
   (check-type plan-state plan-mode-state)
   (check-type state plan-execution-state)
-  (let* ((steps (copy-list (or (plan-mode-state-steps plan-state) '())))
-         (ordered-indexes (%plan-step-order steps))
-         (approved-step-indexes (%approved-step-indexes-for-execution plan-state
-                                                                      ordered-indexes)))
-    (unless ordered-indexes
-      (error "No plan steps are available for execution."))
-    (unless approved-step-indexes
-      (error "No approved plan steps are available for execution."))
-    (setf (plan-execution-state-run-id state) (or run-id (%next-plan-execution-run-id))
-          (plan-execution-state-status state) :ready
-          (plan-execution-state-created-at state) (get-universal-time)
-          (plan-execution-state-started-at state) nil
-          (plan-execution-state-finished-at state) nil
-          (plan-execution-state-source-plan-exited-at state) (plan-mode-state-exited-at plan-state)
-          (plan-execution-state-source-plan-exit-reason state)
-          (plan-mode-state-last-exit-reason plan-state)
-          (plan-execution-state-steps state)
-          (loop for step in steps
-                collect (%plan-step->execution-step
-                         step
-                         (member (plan-step-index step)
-                                 approved-step-indexes
-                                 :test #'=)))
-          (plan-execution-state-ordered-step-indexes state) ordered-indexes
-          (plan-execution-state-approved-step-indexes state) (copy-list approved-step-indexes)
-          (plan-execution-state-pending-step-indexes state) (copy-list approved-step-indexes)
-          (plan-execution-state-completed-step-indexes state) '()
-          (plan-execution-state-continuity-output state) '()
-          (plan-execution-state-current-step-index state) nil
-          (plan-execution-state-failure-reason state) nil
-          (plan-execution-state-abort-reason state) nil
-          (plan-execution-state-rollback-baseline-stash state) nil
-          (plan-execution-state-rollback-baseline-directory state) nil
-          (plan-execution-state-rollback-attempted-p state) nil
-          (plan-execution-state-rollback-succeeded-p state) nil
-          (plan-execution-state-rollback-notes state) nil)
-    (%publish-plan-step-status-snapshot state)
-    (prime-plan-execution-continuity state)
+  (let ((transition (%dispatch-plan-execution-transition state :initialize
+                      :plan-state plan-state :run-id run-id)))
+    (%apply-plan-execution-transition! state transition)
     state))
 
 (defun plan-execution-ready-p (&optional (state (current-plan-execution-state)))
@@ -731,66 +778,508 @@
 
 (defun start-plan-execution (&optional (state (current-plan-execution-state)))
   (check-type state plan-execution-state)
-  (let ((status (%normalize-plan-execution-status (plan-execution-state-status state))))
-    (unless (member status '(:ready :paused) :test #'eq)
-      (error "Plan execution cannot start from status ~S." status))
-    (when (null (plan-execution-state-started-at state))
-      (setf (plan-execution-state-started-at state) (get-universal-time)))
-    (setf (plan-execution-state-status state) :running
-          (plan-execution-state-finished-at state) nil)
-    (plan-execution-append-output
-     "LIVE> Execution run started."
-     :phase :execution
-     :style :meta
-     :state state)
-    (%append-plan-execution-progress-output state)
+  (let ((transition (%dispatch-plan-execution-transition state :start)))
+    (%apply-plan-execution-transition! state transition)
     state))
 
 (defun pause-plan-execution (&optional (state (current-plan-execution-state)))
   (check-type state plan-execution-state)
-  (unless (eq :running (%normalize-plan-execution-status (plan-execution-state-status state)))
-    (error "Plan execution can only be paused while running."))
-  (setf (plan-execution-state-status state) :paused)
-  (plan-execution-append-output
-   "LIVE> Execution paused."
-   :phase :execution
-   :style :warning
-   :state state)
-  state)
+  (let ((transition (%dispatch-plan-execution-transition state :pause)))
+    (%apply-plan-execution-transition! state transition)
+    state))
 
 (defun resume-plan-execution (&optional (state (current-plan-execution-state)))
   (check-type state plan-execution-state)
-  (unless (eq :paused (%normalize-plan-execution-status (plan-execution-state-status state)))
-    (error "Plan execution can only be resumed from paused state."))
-  (plan-execution-append-output
-   "LIVE> Execution resumed."
-   :phase :execution
-   :style :meta
-   :state state)
-  (start-plan-execution state))
+  (let ((transition (%dispatch-plan-execution-transition state :resume)))
+    (%apply-plan-execution-transition! state transition)
+    state))
 
 (defun abort-plan-execution (&key
                                (state (current-plan-execution-state))
                                reason)
   (check-type state plan-execution-state)
-  (when (%plan-execution-terminal-status-p (plan-execution-state-status state))
-    (error "Plan execution is already terminal (~S)."
-           (plan-execution-state-status state)))
-  (setf (plan-execution-state-status state) :aborted
-        (plan-execution-state-abort-reason state) reason
-        (plan-execution-state-finished-at state) (get-universal-time))
-  (plan-execution-append-output
-   (format nil "LIVE> Execution aborted (~A)."
-           (%safe-plan-execution-string reason "unspecified"))
-   :phase :execution
-   :severity :warning
-   :style :warning
-   :state state)
-  state)
+  (let ((transition (%dispatch-plan-execution-transition state :abort :reason reason)))
+    (%apply-plan-execution-transition! state transition)
+    state))
 
 (defun plan-execution-next-step-index (&optional (state (current-plan-execution-state)))
   (check-type state plan-execution-state)
   (first (plan-execution-state-pending-step-indexes state)))
+
+(defun %make-plan-execution-output-effect (line &key
+                                                  step-index
+                                                  (phase :execution)
+                                                  (severity :info)
+                                                  (style :plain)
+                                                  recovery-actions)
+  (list :kind :output
+        :line line
+        :step-index step-index
+        :phase phase
+        :severity severity
+        :style style
+        :recovery-actions recovery-actions))
+
+(defun %make-plan-execution-status-effect (step-index status)
+  (list :kind :status-event
+        :step-index step-index
+        :status status))
+
+(defun %make-plan-execution-progress-effect ()
+  (list :kind :progress-output))
+
+(defun %apply-plan-execution-state-updates! (state updates)
+  (check-type state plan-execution-state)
+  (loop for (key value) on (or updates '()) by #'cddr
+        do (case key
+             (:status
+              (setf (plan-execution-state-status state) value))
+             (:started-at
+              (setf (plan-execution-state-started-at state) value))
+             (:finished-at
+              (setf (plan-execution-state-finished-at state) value))
+             (:current-step-index
+              (setf (plan-execution-state-current-step-index state) value))
+             (:pending-step-indexes
+              (setf (plan-execution-state-pending-step-indexes state)
+                    (copy-list (or value '()))))
+             (:completed-step-indexes
+              (setf (plan-execution-state-completed-step-indexes state)
+                    (copy-list (or value '()))))
+             (:failure-reason
+              (setf (plan-execution-state-failure-reason state) value))
+             (:abort-reason
+              (setf (plan-execution-state-abort-reason state) value))
+             (otherwise nil)))
+  state)
+
+(defun %apply-plan-execution-step-updates! (state step-updates)
+  (check-type state plan-execution-state)
+  (dolist (update (or step-updates '()) state)
+    (let* ((step-index (getf update :index))
+           (step (and (integerp step-index)
+                      (%find-plan-execution-step state step-index))))
+      (when step
+        (setf (plan-execution-step-status step) (getf update :status)
+              (plan-execution-step-started-at step) (getf update :started-at)
+              (plan-execution-step-finished-at step) (getf update :finished-at))))))
+
+(defun %apply-plan-execution-effect! (state effect)
+  (check-type state plan-execution-state)
+  (case (getf effect :kind)
+    (:output
+     (plan-execution-append-output
+      (getf effect :line)
+      :step-index (getf effect :step-index)
+      :phase (or (getf effect :phase) :execution)
+      :severity (or (getf effect :severity) :info)
+      :style (or (getf effect :style) :plain)
+      :recovery-actions (getf effect :recovery-actions)
+      :state state))
+    (:status-event
+     (let* ((step-index (getf effect :step-index))
+            (step (and (integerp step-index)
+                       (%find-plan-execution-step state step-index))))
+       (when step
+         (%publish-plan-step-status-event state step :status (getf effect :status)))))
+    (:progress-output
+     (%append-plan-execution-progress-output state))
+    (:initialize
+     ;; Apply the bulk initialization from %pe-transition-initialize
+     (let* ((run-id (getf effect :run-id))
+            (ps (getf effect :plan-state))
+            (steps (getf effect :steps))
+            (ordered-indexes (getf effect :ordered-indexes))
+            (approved-step-indexes (getf effect :approved-step-indexes)))
+       (setf (plan-execution-state-run-id state) run-id
+             (plan-execution-state-created-at state) (get-universal-time)
+             (plan-execution-state-started-at state) nil
+             (plan-execution-state-finished-at state) nil
+             (plan-execution-state-source-plan-exited-at state) (plan-mode-state-exited-at ps)
+             (plan-execution-state-source-plan-exit-reason state)
+             (plan-mode-state-last-exit-reason ps)
+             (plan-execution-state-steps state)
+             (loop for step in steps
+                   collect (%plan-step->execution-step
+                            step
+                            (member (plan-step-index step)
+                                    approved-step-indexes
+                                    :test #'=)))
+             (plan-execution-state-ordered-step-indexes state) ordered-indexes
+             (plan-execution-state-approved-step-indexes state) (copy-list approved-step-indexes)
+             (plan-execution-state-pending-step-indexes state) (copy-list approved-step-indexes)
+             (plan-execution-state-completed-step-indexes state) '()
+             (plan-execution-state-continuity-output state) '()
+             (plan-execution-state-current-step-index state) nil
+             (plan-execution-state-failure-reason state) nil
+             (plan-execution-state-abort-reason state) nil
+             (plan-execution-state-rollback-baseline-stash state) nil
+             (plan-execution-state-rollback-baseline-directory state) nil
+             (plan-execution-state-rollback-attempted-p state) nil
+             (plan-execution-state-rollback-succeeded-p state) nil
+             (plan-execution-state-rollback-notes state) nil)
+       (%publish-plan-step-status-snapshot state)
+       (prime-plan-execution-continuity state)))
+    (:delegate-start
+     ;; Resume delegates to start — apply start transition
+     (let ((transition (%dispatch-plan-execution-transition state :start)))
+       (%apply-plan-execution-transition! state transition)))
+    (otherwise nil))
+  state)
+
+(defun %apply-plan-execution-transition! (state transition)
+  (check-type state plan-execution-state)
+  (check-type transition plan-execution-transition)
+  (%apply-plan-execution-state-updates! state
+                                        (plan-execution-transition-state-updates transition))
+  (%apply-plan-execution-step-updates! state
+                                       (plan-execution-transition-step-updates transition))
+  (dolist (effect (plan-execution-transition-effects transition) state)
+    (%apply-plan-execution-effect! state effect)))
+
+(defun %plan-execution-transition-step-running (state &key step now)
+  (check-type state plan-execution-state)
+  (check-type step plan-execution-step)
+  (let* ((step-index (plan-execution-step-index step))
+         (ts (get-universal-time))
+         (decision-context
+           (%build-plan-transition-decision-context state :step-running step))
+         (context-plist (policy-decision-context-plist decision-context)))
+    (make-plan-execution-transition
+     :state-updates (list :current-step-index step-index)
+     :step-updates (list (list :index step-index
+                               :status :running
+                               :started-at now
+                               :finished-at nil))
+     :effects (list (%make-plan-execution-status-effect step-index :running)
+                    (%make-plan-execution-output-effect
+                     (format nil "LIVE> [step ~D running] ~A"
+                             step-index
+                             (%safe-plan-execution-string
+                              (plan-execution-step-description step)
+                              "Executing approved step."))
+                     :step-index step-index
+                     :phase :execution
+                     :style :meta)
+                    (%make-plan-execution-progress-effect))
+     :decision-context decision-context
+     :structured-trace
+     (list (make-policy-trace-entry
+            :phase :input
+            :source :plan-execution
+            :data (list :step-index step-index
+                        :event :step-running
+                        :decision-context context-plist)
+            :timestamp ts)
+           (make-policy-trace-entry
+            :phase :evaluate
+            :source :step-transition
+            :decision :running
+            :data (list :step-index step-index
+                        :decision-context context-plist)
+            :timestamp ts)))))
+
+(defun %plan-execution-transition-step-success (state &key step result now)
+  (check-type state plan-execution-state)
+  (check-type step plan-execution-step)
+  (let* ((step-index (plan-execution-step-index step))
+         (pending (copy-list (or (plan-execution-state-pending-step-indexes state) '())))
+         (remaining (if (and pending (eql (first pending) step-index))
+                        (rest pending)
+                        (remove step-index pending :test #'= :count 1)))
+         (completed (append (copy-list (or (plan-execution-state-completed-step-indexes state) '()))
+                            (list step-index)))
+         (done-p (null remaining))
+         (state-updates (list :pending-step-indexes remaining
+                              :completed-step-indexes completed
+                              :current-step-index nil))
+         (effects (list (%make-plan-execution-status-effect step-index :done)
+                        (%make-plan-execution-output-effect
+                         (format nil "LIVE> [step ~D done] ~A"
+                                 step-index
+                                 (%summarize-execution-result result))
+                         :step-index step-index
+                         :phase :execution
+                         :style :success)))
+         (ts (get-universal-time))
+         (decision-context
+           (%build-plan-transition-decision-context state :step-success step
+                                                    :result result))
+         (context-plist (policy-decision-context-plist decision-context)))
+    (when done-p
+      (setf state-updates (append state-updates
+                                  (list :status :completed
+                                        :finished-at now))
+            effects (append effects
+                            (list (%make-plan-execution-output-effect
+                                   "LIVE> All approved steps completed."
+                                   :phase :execution
+                                   :style :success)))))
+    (setf effects (append effects
+                          (list (%make-plan-execution-progress-effect))))
+    (make-plan-execution-transition
+     :state-updates state-updates
+     :step-updates (list (list :index step-index
+                               :status :completed
+                               :started-at (plan-execution-step-started-at step)
+                               :finished-at now))
+     :effects effects
+     :done-p done-p
+     :result result
+     :decision-context decision-context
+     :structured-trace
+     (list (make-policy-trace-entry
+            :phase :input
+            :source :plan-execution
+            :data (list :step-index step-index
+                        :event :step-success
+                        :decision-context context-plist)
+            :timestamp ts)
+           (make-policy-trace-entry
+            :phase :evaluate
+            :source :step-transition
+            :decision :completed
+            :data (list :step-index step-index
+                        :done-p done-p
+                        :decision-context context-plist)
+            :timestamp ts)))))
+
+(defun %plan-execution-transition-step-failure (state &key step condition now)
+  (check-type state plan-execution-state)
+  (check-type step plan-execution-step)
+  (let* ((step-index (plan-execution-step-index step))
+         (ts (get-universal-time))
+         (decision-context
+           (%build-plan-transition-decision-context state :step-failure step
+                                                    :condition condition))
+         (context-plist (policy-decision-context-plist decision-context)))
+    (make-plan-execution-transition
+     :state-updates (list :status :failed
+                          :failure-reason condition
+                          :current-step-index nil
+                          :finished-at now)
+     :step-updates (list (list :index step-index
+                               :status :blocked
+                               :started-at (or (plan-execution-step-started-at step) now)
+                               :finished-at now))
+     :effects (list (%make-plan-execution-status-effect step-index :blocked)
+                    (%make-plan-execution-output-effect
+                     (format nil
+                             "LIVE> [step ~D failed] ~A. Choose next action: /execute (retry), /plan review, or /plan modify."
+                             step-index
+                             (%safe-plan-execution-string condition "step execution failed"))
+                     :step-index step-index
+                     :phase :execution
+                     :severity :error
+                     :style :error)
+                    (%make-plan-execution-progress-effect))
+     :done-p t
+     :condition condition
+     :decision-context decision-context
+     :structured-trace
+     (list (make-policy-trace-entry
+            :phase :input
+            :source :plan-execution
+            :data (list :step-index step-index
+                        :event :step-failure
+                        :decision-context context-plist)
+            :timestamp ts)
+           (make-policy-trace-entry
+            :phase :evaluate
+            :source :step-transition
+            :decision :failed
+            :reason (when condition
+                      (handler-case (princ-to-string condition)
+                        (error () "step execution failed")))
+            :data (list :step-index step-index
+                        :decision-context context-plist)
+            :timestamp ts)))))
+
+;;; --- Complete transition table (FP-Refine Phase 1, Target 1) ---
+
+(defun %pe-transition-reset (state &key &allow-other-keys)
+  "Pure transition: reset all slots to idle defaults."
+  (declare (ignore state))
+  (make-plan-execution-transition
+   :state-updates (list :status :idle
+                        :started-at nil
+                        :finished-at nil
+                        :current-step-index nil
+                        :failure-reason nil
+                        :abort-reason nil)))
+
+(defun %pe-transition-initialize (state &key plan-state run-id &allow-other-keys)
+  "Pure transition: initialize from idle to ready with plan steps."
+  (let* ((ps (or plan-state (current-plan-mode-state)))
+         (steps (copy-list (or (plan-mode-state-steps ps) '())))
+         (ordered-indexes (%plan-step-order steps))
+         (approved-step-indexes (%approved-step-indexes-for-execution ps ordered-indexes)))
+    (unless ordered-indexes
+      (error "No plan steps are available for execution."))
+    (unless approved-step-indexes
+      (error "No approved plan steps are available for execution."))
+    (make-plan-execution-transition
+     :state-updates (list :status :ready)
+     :effects (list (list :kind :initialize
+                          :run-id (or run-id (%next-plan-execution-run-id))
+                          :plan-state ps
+                          :steps steps
+                          :ordered-indexes ordered-indexes
+                          :approved-step-indexes approved-step-indexes)))))
+
+(defun %pe-transition-start (state &key &allow-other-keys)
+  "Pure transition: move to running, set started-at if first start."
+  (make-plan-execution-transition
+   :state-updates (append (list :status :running
+                                :finished-at nil)
+                          (unless (plan-execution-state-started-at state)
+                            (list :started-at (get-universal-time))))
+   :effects (list (%make-plan-execution-output-effect
+                   "LIVE> Execution run started."
+                   :phase :execution
+                   :style :meta)
+                  (%make-plan-execution-progress-effect))))
+
+(defun %pe-transition-pause (state &key &allow-other-keys)
+  "Pure transition: move to paused."
+  (declare (ignore state))
+  (make-plan-execution-transition
+   :state-updates (list :status :paused)
+   :effects (list (%make-plan-execution-output-effect
+                   "LIVE> Execution paused."
+                   :phase :execution
+                   :style :warning))))
+
+(defun %pe-transition-resume (state &key &allow-other-keys)
+  "Pure transition: resume delegates to start."
+  (declare (ignore state))
+  (make-plan-execution-transition
+   :state-updates nil
+   :effects (list (%make-plan-execution-output-effect
+                   "LIVE> Execution resumed."
+                   :phase :execution
+                   :style :meta)
+                  (list :kind :delegate-start))))
+
+(defun %pe-transition-abort (state &key reason &allow-other-keys)
+  "Pure transition: move to aborted."
+  (declare (ignore state))
+  (make-plan-execution-transition
+   :state-updates (list :status :aborted
+                        :abort-reason reason
+                        :finished-at (get-universal-time))
+   :effects (list (%make-plan-execution-output-effect
+                   (format nil "LIVE> Execution aborted (~A)."
+                           (%safe-plan-execution-string reason "unspecified"))
+                   :phase :execution
+                   :severity :warning
+                   :style :warning))))
+
+(defparameter +plan-execution-transition-table+
+  '(;; Initialization
+    ((:idle :initialize)       . %pe-transition-initialize)
+    ;; Execution control
+    ((:ready :start)           . %pe-transition-start)
+    ((:paused :start)          . %pe-transition-start)
+    ((:running :pause)         . %pe-transition-pause)
+    ((:paused :resume)         . %pe-transition-resume)
+    ;; Step lifecycle (existing handlers)
+    ((:running :step-running)  . %plan-execution-transition-step-running)
+    ((:running :step-success)  . %plan-execution-transition-step-success)
+    ((:running :step-failure)  . %plan-execution-transition-step-failure)
+    ;; Abort (from any non-terminal)
+    ((:idle :abort)            . %pe-transition-abort)
+    ((:ready :abort)           . %pe-transition-abort)
+    ((:running :abort)         . %pe-transition-abort)
+    ((:paused :abort)          . %pe-transition-abort)
+    ;; Reset (from any)
+    ((:idle :reset)            . %pe-transition-reset)
+    ((:ready :reset)           . %pe-transition-reset)
+    ((:running :reset)         . %pe-transition-reset)
+    ((:paused :reset)          . %pe-transition-reset)
+    ((:completed :reset)       . %pe-transition-reset)
+    ((:failed :reset)          . %pe-transition-reset)
+    ((:aborted :reset)         . %pe-transition-reset))
+  "Declarative plan-execution state machine: ((from-status event) . handler-fn-name).")
+
+(defun %dispatch-plan-execution-transition (state event &rest args)
+  "Look up (status, event) in transition table, call handler, return transition."
+  (check-type state plan-execution-state)
+  (let* ((status (plan-execution-state-status state))
+         (key (list status event))
+         (entry (assoc key +plan-execution-transition-table+ :test #'equal)))
+    (unless entry
+      (error 'simple-error
+             :format-control "Invalid plan-execution transition from ~S on event ~S."
+             :format-arguments (list status event)))
+    (apply (symbol-function (cdr entry)) state args)))
+
+(defun %plan-execution-valid-transition-p (from-status event)
+  "Return T if (FROM-STATUS EVENT) is a valid transition."
+  (not (null (assoc (list from-status event) +plan-execution-transition-table+ :test #'equal))))
+
+(defparameter *plan-execution-transition-handlers*
+  (list (cons :step-running #'%plan-execution-transition-step-running)
+        (cons :step-success #'%plan-execution-transition-step-success)
+        (cons :step-failure #'%plan-execution-transition-step-failure)))
+
+;;; NXT-137: Plan-execution effect type registry.
+
+(defparameter *plan-execution-effect-type-registry*
+  (let ((table (make-hash-table :test #'eq)))
+    (setf (gethash :output table) '(:description "Append output text" :side-effect-p t)
+          (gethash :status table) '(:description "Update step status indicator" :side-effect-p t)
+          (gethash :progress table) '(:description "Refresh progress display" :side-effect-p t))
+    table)
+  "Registry mapping plan-execution effect types to metadata.")
+
+(defun plan-execution-effect-type-registered-p (effect-type)
+  "Return T if EFFECT-TYPE is registered."
+  (not (null (gethash effect-type *plan-execution-effect-type-registry*))))
+
+(defun plan-execution-effect-type-metadata (effect-type)
+  "Return metadata plist for EFFECT-TYPE or NIL."
+  (gethash effect-type *plan-execution-effect-type-registry*))
+
+(defun register-plan-execution-effect-type (effect-type &key description (side-effect-p t))
+  "Register a new plan-execution effect type."
+  (setf (gethash effect-type *plan-execution-effect-type-registry*)
+        (list :description description :side-effect-p side-effect-p))
+  effect-type)
+
+;;; NXT-138: Plan-execution transition event bus integration.
+
+(defun publish-plan-execution-transition-event (transition &key event-bus event-type)
+  "Publish TRANSITION to EVENT-BUS as a structured event if both are available."
+  (when (and event-bus
+             (plan-execution-transition-p transition)
+             event-type)
+    (let ((payload (list :state-updates (plan-execution-transition-state-updates transition)
+                         :step-updates (plan-execution-transition-step-updates transition)
+                         :done-p (plan-execution-transition-done-p transition)
+                         :decision-context
+                         (and (plan-execution-transition-decision-context transition)
+                              (policy-decision-context-plist
+                               (plan-execution-transition-decision-context transition)))
+                         :structured-trace (plan-execution-transition-structured-trace transition))))
+      (handler-case
+          (publish event-bus event-type :payload payload)
+        (error () nil))))
+  transition)
+
+(defun %evaluate-plan-execution-transition (state event &rest args &key &allow-other-keys)
+  "Evaluate a plan-execution transition. Dispatches through the transition table
+for events registered there, falls back to *plan-execution-transition-handlers*."
+  (check-type state plan-execution-state)
+  (let* ((status (plan-execution-state-status state))
+         (table-entry (assoc (list status event) +plan-execution-transition-table+ :test #'equal)))
+    (if table-entry
+        (apply (symbol-function (cdr table-entry)) state args)
+        ;; Fallback for backward compat with any external handler registrations
+        (let ((handler (cdr (assoc event *plan-execution-transition-handlers* :test #'eq))))
+          (unless handler
+            (error "Unknown plan execution transition event ~S." event))
+          (apply handler state args)))))
 
 (defun execute-next-approved-plan-step (executor &key (state (current-plan-execution-state)))
   (check-type state plan-execution-state)
@@ -816,61 +1305,33 @@
       (let ((step (%find-plan-execution-step state next-step-index)))
         (unless step
           (error "Missing execution step for approved index ~D." next-step-index))
-        (setf (plan-execution-state-current-step-index state) next-step-index)
-        (%mark-plan-execution-step-running step)
-        (%publish-plan-step-status-event state step :status :running)
-        (plan-execution-append-output
-         (format nil "LIVE> [step ~D running] ~A"
-                 next-step-index
-                 (%safe-plan-execution-string (plan-execution-step-description step)
-                                              "Executing approved step."))
-         :step-index next-step-index
-         :phase :execution
-         :style :meta
-         :state state)
-        (%append-plan-execution-progress-output state)
+        (%apply-plan-execution-transition!
+         state
+         (%evaluate-plan-execution-transition state
+                                             :step-running
+                                             :step step
+                                             :now (get-universal-time)))
         (handler-case
             (let ((result (funcall executor step)))
-              (%mark-plan-execution-step-completed step)
-              (%publish-plan-step-status-event state step :status :done)
-              (setf (plan-execution-state-pending-step-indexes state)
-                    (rest (plan-execution-state-pending-step-indexes state))
-                    (plan-execution-state-completed-step-indexes state)
-                    (append (plan-execution-state-completed-step-indexes state)
-                            (list next-step-index))
-                    (plan-execution-state-current-step-index state) nil)
-              (plan-execution-append-output
-               (format nil "LIVE> [step ~D done] ~A"
-                       next-step-index
-                       (%summarize-execution-result result))
-               :step-index next-step-index
-               :phase :execution
-               :style :success
-               :state state)
-              (%complete-plan-execution-if-finished state)
-              (%append-plan-execution-progress-output state)
-              (values state
-                      step
-                      result
-                      (null (plan-execution-state-pending-step-indexes state))))
+              (let ((transition
+                      (%evaluate-plan-execution-transition state
+                                                          :step-success
+                                                          :step step
+                                                          :result result
+                                                          :now (get-universal-time))))
+                (%apply-plan-execution-transition! state transition)
+                (values state
+                        step
+                        result
+                        (plan-execution-transition-done-p transition))))
           (error (condition)
-            (%mark-plan-execution-step-blocked step)
-            (%publish-plan-step-status-event state step :status :blocked)
-            (setf (plan-execution-state-status state) :failed
-                  (plan-execution-state-failure-reason state) condition
-                  (plan-execution-state-current-step-index state) nil
-                  (plan-execution-state-finished-at state) (get-universal-time))
-            (plan-execution-append-output
-             (format nil
-                     "LIVE> [step ~D failed] ~A. Choose next action: /execute (retry), /plan review, or /plan modify."
-                     next-step-index
-                     (%safe-plan-execution-string condition "step execution failed"))
-             :step-index next-step-index
-             :phase :execution
-             :severity :error
-             :style :error
-             :state state)
-            (%append-plan-execution-progress-output state)
+            (%apply-plan-execution-transition!
+             state
+             (%evaluate-plan-execution-transition state
+                                                 :step-failure
+                                                 :step step
+                                                 :condition condition
+                                                 :now (get-universal-time)))
             (values state step condition t)))))))
 
 (defvar *plan-step-approval-lock* (bt:make-lock "plan-step-approval-lock"))
@@ -901,19 +1362,25 @@
     (setf *plan-step-awaiting-approval-p* nil
           *plan-step-approved-p* nil)))
 
-(defun execute-approved-plan-steps (executor &key
-                                             (state (current-plan-execution-state))
-                                             (rollback-on-failure-p t)
-                                             (signal-failure-p t)
-                                             (interactive-p nil)
-                                             rollback-directory)
-  (check-type state plan-execution-state)
-  (unless (functionp executor)
-    (error "Plan execution executor must be a function."))
-  (let ((execution-results '())
-        (failure-condition nil))
-    (when rollback-on-failure-p
-      (if (%prepare-plan-execution-rollback-baseline state rollback-directory)
+(defun %plan-execution-context-state (context)
+  (check-type context plan-execution-context)
+  (or (plan-execution-context-state context)
+      (error "Plan execution context is missing state.")))
+
+(defun %plan-execution-context-executor (context)
+  (check-type context plan-execution-context)
+  (let ((executor (plan-execution-context-executor context)))
+    (unless (functionp executor)
+      (error "Plan execution executor must be a function."))
+    executor))
+
+(defun %prepare-plan-execution-context-rollback (context)
+  (check-type context plan-execution-context)
+  (let ((state (%plan-execution-context-state context)))
+    (when (plan-execution-context-rollback-on-failure-p context)
+      (if (%prepare-plan-execution-rollback-baseline
+           state
+           (plan-execution-context-rollback-directory context))
           (plan-execution-append-output
            "LIVE> Rollback baseline captured via git."
            :phase :system
@@ -927,76 +1394,124 @@
            :phase :system
            :severity :warning
            :style :warning
-           :state state)))
-    (handler-case
-        (loop
-          with first-step-p = t
-          do
-          ;; In interactive mode, wait for user approval before each step
-          ;; (except the first step which is implicitly approved by /execute).
-          (when (and interactive-p (not first-step-p))
-            (let ((next-idx (plan-execution-next-step-index state)))
-              (when next-idx
-                (plan-execution-append-output
-                 (format nil "LIVE> [step ~D] Waiting for approval... (press Enter in TUI)"
-                         next-idx)
-                 :step-index next-idx
-                 :phase :execution
-                 :style :meta
-                 :state state)
-                (%wait-for-plan-step-approval))))
-          (setf first-step-p nil)
-          (multiple-value-bind (_ step result done-p)
-              (execute-next-approved-plan-step executor :state state)
-            (declare (ignore _))
-            (when step
-              (push (cons (plan-execution-step-index step) result) execution-results))
-            (when done-p
-              ;; execute-next-approved-plan-step catches step errors internally
-              ;; and returns done-p=t with result set to the error condition.
-              ;; Re-signal so the outer handler-case can run rollback logic.
-              (when (typep result 'error)
-                (error result))
-              (%drop-plan-execution-rollback-baseline state)
-              (return (values state (nreverse execution-results) nil nil)))))
-      (error (condition)
-        (setf failure-condition condition
-              (plan-execution-state-status state) :failed
-              (plan-execution-state-failure-reason state) (princ-to-string condition)
-              (plan-execution-state-finished-at state) (get-universal-time))
+           :state state))))
+  context)
+
+(defun %plan-execution-context-await-step-approval (context first-step-p)
+  (check-type context plan-execution-context)
+  (unless (or (not (plan-execution-context-interactive-p context))
+              first-step-p)
+    (let* ((state (%plan-execution-context-state context))
+           (next-idx (plan-execution-next-step-index state)))
+      (when next-idx
         (plan-execution-append-output
-         (format nil "LIVE> Execution failed: ~A"
-                 (%safe-plan-execution-string condition "unknown error"))
+         (format nil "LIVE> [step ~D] Waiting for approval... (press Enter in TUI)"
+                 next-idx)
+         :step-index next-idx
          :phase :execution
-         :severity :error
-         :style :error
-         :step-index (plan-execution-state-current-step-index state)
+         :style :meta
          :state state)
-        (let ((rollback-succeeded-p nil))
-          (when (and rollback-on-failure-p
-                     (or (plan-execution-state-rollback-baseline-stash state)
-                         (plan-execution-state-rollback-baseline-directory state)))
-            (plan-execution-append-output
-             "LIVE> Failure detected; attempting git rollback."
-             :phase :system
-             :severity :warning
-             :style :warning
-             :state state)
-            (setf rollback-succeeded-p (%rollback-plan-execution-via-git state))
-            (plan-execution-append-output
-             (if rollback-succeeded-p
-                 "LIVE> Rollback completed; git baseline restored."
-                 (format nil "LIVE> Rollback failed: ~A"
-                         (%safe-plan-execution-string
-                          (plan-execution-state-rollback-notes state)
-                          "unknown rollback failure")))
-             :phase :system
-             :severity (if rollback-succeeded-p :info :error)
-             :style (if rollback-succeeded-p :success :error)
-             :state state))
-          (if signal-failure-p
-              (error condition)
-              (values state
-                      (nreverse execution-results)
-                      failure-condition
-                      rollback-succeeded-p)))))))
+        (%wait-for-plan-step-approval)))))
+
+(defun %record-plan-execution-result (context step result)
+  (check-type context plan-execution-context)
+  (when step
+    (push (cons (plan-execution-step-index step) result)
+          (plan-execution-context-execution-results context)))
+  context)
+
+(defun %finish-plan-execution-success (context result done-p)
+  (check-type context plan-execution-context)
+  (let ((state (%plan-execution-context-state context)))
+    (when done-p
+      (when (typep result 'error)
+        (error result))
+      (%drop-plan-execution-rollback-baseline state)
+      (return-from %finish-plan-execution-success
+        (values state
+                (nreverse (plan-execution-context-execution-results context))
+                nil
+                nil))))
+  nil)
+
+(defun %execute-approved-plan-steps-loop (context)
+  (check-type context plan-execution-context)
+  (let ((executor (%plan-execution-context-executor context))
+        (state (%plan-execution-context-state context)))
+    (loop
+      with first-step-p = t
+      do (%plan-execution-context-await-step-approval context first-step-p)
+         (setf first-step-p nil)
+         (multiple-value-bind (_ step result done-p)
+             (execute-next-approved-plan-step executor :state state)
+           (declare (ignore _))
+           (%record-plan-execution-result context step result)
+           (multiple-value-bind (completed-state results failure rollback)
+               (%finish-plan-execution-success context result done-p)
+             (when completed-state
+               (return (values completed-state results failure rollback))))))))
+
+(defun %handle-plan-execution-failure (context condition)
+  (check-type context plan-execution-context)
+  (let* ((state (%plan-execution-context-state context))
+         (rollback-succeeded-p nil))
+    (setf (plan-execution-context-failure-condition context) condition
+          (plan-execution-state-status state) :failed
+          (plan-execution-state-failure-reason state) (princ-to-string condition)
+          (plan-execution-state-finished-at state) (get-universal-time))
+    (plan-execution-append-output
+     (format nil "LIVE> Execution failed: ~A"
+             (%safe-plan-execution-string condition "unknown error"))
+     :phase :execution
+     :severity :error
+     :style :error
+     :step-index (plan-execution-state-current-step-index state)
+     :state state)
+    (when (and (plan-execution-context-rollback-on-failure-p context)
+               (or (plan-execution-state-rollback-baseline-stash state)
+                   (plan-execution-state-rollback-baseline-directory state)))
+      (plan-execution-append-output
+       "LIVE> Failure detected; attempting git rollback."
+       :phase :system
+       :severity :warning
+       :style :warning
+       :state state)
+      (setf rollback-succeeded-p (%rollback-plan-execution-via-git state))
+      (plan-execution-append-output
+       (if rollback-succeeded-p
+           "LIVE> Rollback completed; git baseline restored."
+           (format nil "LIVE> Rollback failed: ~A"
+                   (%safe-plan-execution-string
+                    (plan-execution-state-rollback-notes state)
+                    "unknown rollback failure")))
+       :phase :system
+       :severity (if rollback-succeeded-p :info :error)
+       :style (if rollback-succeeded-p :success :error)
+       :state state))
+    (if (plan-execution-context-signal-failure-p context)
+        (error condition)
+        (values state
+                (nreverse (plan-execution-context-execution-results context))
+                (plan-execution-context-failure-condition context)
+                rollback-succeeded-p))))
+
+(defun execute-approved-plan-steps (executor &key
+                                             (state (current-plan-execution-state))
+                                             (rollback-on-failure-p t)
+                                             (signal-failure-p t)
+                                             (interactive-p nil)
+                                             rollback-directory)
+  (check-type state plan-execution-state)
+  (let ((context (make-plan-execution-context
+                  :executor executor
+                  :state state
+                  :rollback-on-failure-p rollback-on-failure-p
+                  :signal-failure-p signal-failure-p
+                  :interactive-p interactive-p
+                  :rollback-directory rollback-directory)))
+    (%plan-execution-context-executor context)
+    (%prepare-plan-execution-context-rollback context)
+    (handler-case
+        (%execute-approved-plan-steps-loop context)
+      (error (condition)
+        (%handle-plan-execution-failure context condition)))))

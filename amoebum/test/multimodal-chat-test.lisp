@@ -43,7 +43,7 @@
     (unwind-protect
          (let* ((image-path (merge-pathnames #P"fixtures/interactive.png" tmp-root))
                 (_ (%i341-write-sample-png image-path))
-                (chat-state (amoebum:make-chat-ui-state :stream-runner nil))
+                (chat-state (amoebum.ui:make-chat-ui-state :stream-runner nil))
                 (prompt (format nil "Please triage this ![screenshot](~A) now."
                                 (namestring image-path))))
            (declare (ignore _))
@@ -70,5 +70,5 @@
              (is-true (search "[image interactive.png]"
                               (amoebum::%message-content->text submitted)
                               :test #'char=))
-             (is (string= "" (amoebum:chat-ui-state-input-text chat-state)))))
+             (is (string= "" (amoebum.ui:chat-ui-state-input-text chat-state)))))
       (%delete-directory-tree-safe tmp-root))))

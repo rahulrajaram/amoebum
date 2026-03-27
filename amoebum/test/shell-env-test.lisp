@@ -450,11 +450,11 @@ the session working directory."
          (project-root (uiop:ensure-directory-pathname tmp-root))
          (env-path (merge-pathnames #P".amoebum/env" project-root))
          (command "printf '%s' \"${I344_EXEC_FLAG:-missing}\"")
-         (old-mode (amoebum:config-permission-mode (amoebum:current-config)))
+         (old-mode (amoebum.config:config-permission-mode (amoebum.config:current-config)))
          (old-shell-working-directory amoebum::*shell-working-directory*))
     (unwind-protect
         (progn
-          (amoebum:setconfig :permission-mode :full-auto)
+          (amoebum.config:setconfig :permission-mode :full-auto)
           (ensure-directories-exist env-path)
           (with-open-file (stream env-path
                                   :direction :output
@@ -490,7 +490,7 @@ the session working directory."
             (is (string= "missing"
                          (string-trim '(#\Space #\Tab #\Newline #\Return)
                                       (getf without-overlay :stdout))))))
-      (amoebum:setconfig :permission-mode old-mode)
+      (amoebum.config:setconfig :permission-mode old-mode)
       (setf amoebum::*shell-working-directory* old-shell-working-directory)
       (ignore-errors
         (uiop:delete-directory-tree project-root :validate t :if-does-not-exist :ignore)))))

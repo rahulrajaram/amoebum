@@ -184,11 +184,16 @@
         "expected non-increasing score order")))
 
 (test search-document-content-search
-  (let ((results (ptui.search.engine:search-content-matches "world" (%make-search-documents)
-                                                           :limit 10
-                                                           :regex-mode nil
-                                                           :case-insensitive nil
-                                                           :multiline-mode nil)))
+  (let ((results
+          (ptui.search.engine:search-content-matches
+           "world"
+           (%make-search-documents)
+           :options
+           (ptui.search.engine:make-search-content-options
+            :limit 10
+            :regex-mode nil
+            :case-insensitive nil
+            :multiline-mode nil))))
     (is (= 1 (length results)))
     (let ((match (first results)))
       (is (string= "notes.md" (ptui.search.engine:search-content-match-path match)))
@@ -218,15 +223,17 @@
            (ptui.search.engine:scan-content-matches
             "needle"
             documents
-            :regex-mode nil
-            :on-match (lambda (_match)
-                        (declare (ignore _match))
-                        (setf stop-p t))
-            :on-progress (lambda (&key done &allow-other-keys)
-                           (declare (ignore done))
-                           (incf progress-count))
-            :cancel-fn (lambda ()
-                         stop-p))))
+            :options
+            (ptui.search.engine:make-search-content-options
+             :regex-mode nil
+             :on-match (lambda (_match)
+                         (declare (ignore _match))
+                         (setf stop-p t))
+             :on-progress (lambda (&key done &allow-other-keys)
+                            (declare (ignore done))
+                            (incf progress-count))
+             :cancel-fn (lambda ()
+                          stop-p)))))
     (is (ptui.search.engine:search-content-scan-result-canceled-p result))
     (is (= 1 (ptui.search.engine:search-content-scan-result-match-count result)))
     (is (>= progress-count 2))))

@@ -41,7 +41,13 @@
     ("(?i)\\bwget\\s[^\\n]*\\|\\s*(?:bash|sh|zsh)\\b" .
      "Piping remote content directly to shell is unsafe")
     ("(?i)\\bcurl\\s[^\\n]*\\|\\s*(?:bash|sh|zsh)\\b" .
-     "Piping remote content directly to shell is unsafe"))
+     "Piping remote content directly to shell is unsafe")
+    ("(?i)\\bsed\\b[^\\n]*\\s-i(?:\\S*)?[^\\n]*\\.(?:lisp|asd|cl|lsp)\\b" .
+     "In-place sed edits of Lisp source are unsafe; use edit-file so syntax validation can run")
+    ("(?i)\\bawk\\b[^\\n]*\\s-i\\s+inplace\\b[^\\n]*\\.(?:lisp|asd|cl|lsp)\\b" .
+     "In-place awk edits of Lisp source are unsafe; use edit-file so syntax validation can run")
+    ("(?i)\\bperl\\b[^\\n]*-(?:[A-Za-z0-9]*i[A-Za-z0-9]*p[A-Za-z0-9]*|[A-Za-z0-9]*p[A-Za-z0-9]*i[A-Za-z0-9]*)\\b[^\\n]*\\.(?:lisp|asd|cl|lsp)\\b" .
+     "In-place perl edits of Lisp source are unsafe; use edit-file so syntax validation can run"))
   "Alist of (REGEX . DENY-REASON) for commands that must be blocked outright.
 Each entry is a cons of a CL-PPCRE regex string and a human-readable reason
 explaining why the command is denied.")

@@ -46,7 +46,7 @@
   (let ((*default-pathname-defaults*
           (pathname "/home/rahul/Documents/amoebum/"))
         (amoebum::*current-config* nil))
-    (let ((state (amoebum:make-chat-ui-state)))
+    (let ((state (amoebum.ui:make-chat-ui-state)))
       (setf (amoebum::chat-ui-state-tree-browser-state state)
             (amoebum::make-empty-tree-browser-state :label "files"))
       (setf (amoebum::tree-browser-state-active-p
@@ -148,6 +148,14 @@
             (is-true (probe-file crash-log))))
       (setf (symbol-function 'amoebum:approval-dialog-confirm!) original-confirm)
       (%delete-directory-tree-safe tmp-root))))
+
+(test approval-key-handler-left-and-right-move-selection
+  (let ((dialog (amoebum:make-approval-dialog-state :active-p t)))
+    (amoebum:approval-dialog-activate! dialog "bash-exec" :decision-id "move-001")
+    (is-true (amoebum:approval-dialog-handle-key! dialog :right))
+    (is (eq :deny (amoebum:approval-dialog-state-selected-option dialog)))
+    (is-true (amoebum:approval-dialog-handle-key! dialog :left))
+    (is (eq :approve (amoebum:approval-dialog-state-selected-option dialog)))))
 
 (test approval-render-failure-falls-back-safely
   (let* ((tmp-root (%make-temp-directory "amoebum-approval-render"))
@@ -289,7 +297,7 @@
                           (not (null amoebum::*pending-approval*))))
                       :timeout-seconds 1.5d0))
                     (multiple-value-bind (_state disposition)
-                        (amoebum:handle-chat-ui-event
+                        (amoebum.ui:handle-chat-ui-event
                          state
                          (ptui.core.events:make-key-event :ctrl-c :ctrlp t))
                       (declare (ignore _state))
@@ -317,7 +325,7 @@
       (setf (amoebum::token-stream-state-status stream-state) :running
             (amoebum::token-stream-state-cancel-requested-p stream-state) nil)
       (multiple-value-bind (updated-state disposition)
-          (amoebum:handle-chat-ui-event
+          (amoebum.ui:handle-chat-ui-event
            state
            (ptui.core.events:make-key-event :ctrl-c :ctrlp t))
         (is (eq state updated-state))
@@ -327,7 +335,7 @@
 (test idle-ctrl-c-requires-second-press-to-exit
   (let ((state (%approval-test-chat-state)))
     (multiple-value-bind (updated-state first-disposition)
-        (amoebum:handle-chat-ui-event
+        (amoebum.ui:handle-chat-ui-event
          state
          (ptui.core.events:make-key-event :ctrl-c :ctrlp t))
       (is (eq state updated-state))
@@ -340,17 +348,41 @@
                        :test #'char-equal))
              (%approval-buffer-lines (%render-approval-test-ui state :cols 84 :rows 20)))))
     (multiple-value-bind (updated-state second-disposition)
-        (amoebum:handle-chat-ui-event
+        (amoebum.ui:handle-chat-ui-event
          state
          (ptui.core.events:make-key-event :ctrl-c :ctrlp t))
       (is (eq state updated-state))
       (is (eq :quit second-disposition))
       (is-false (amoebum::%chat-exit-warning-active-p state)))))
 
+(test heap-monitor-wait-stops-promptly-after-shutdown-request
+  (let ((stop-p nil)
+        (stop-thread nil))
+    (unwind-protect
+        (progn
+          (setf stop-thread
+                (bt:make-thread
+                 (lambda ()
+                   (sleep 0.05d0)
+                   (setf stop-p t))
+                 :name "heap-monitor-stop-test"))
+          (let* ((started (get-internal-real-time))
+                 (stopped (amoebum::%chat-sleep-until-stop
+                           (lambda ()
+                             stop-p)
+                           :seconds 1.0d0
+                           :poll-seconds 0.01d0))
+                 (elapsed (/ (- (get-internal-real-time) started)
+                             internal-time-units-per-second)))
+            (is-true stopped)
+            (is (< elapsed 0.5d0))))
+      (when stop-thread
+        (ignore-errors (bt:join-thread stop-thread))))))
+
 (test text-q-is-routed-without-triggering-quit
   (let ((state (%approval-test-chat-state)))
     (multiple-value-bind (updated-state disposition)
-        (amoebum:handle-chat-ui-event
+        (amoebum.ui:handle-chat-ui-event
          state
          (ptui.core.events:make-key-event :text :text? "q"))
       (is (eq state updated-state))
@@ -380,7 +412,7 @@
                   (not (null amoebum::*pending-approval*))))
               :timeout-seconds 1.5d0))
             (multiple-value-bind (_state disposition)
-                (amoebum:handle-chat-ui-event
+                (amoebum.ui:handle-chat-ui-event
                  state
                  (ptui.core.events:make-key-event :ctrl-c :ctrlp t))
               (declare (ignore _state))

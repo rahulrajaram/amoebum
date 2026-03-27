@@ -48,9 +48,9 @@
     (when response
       ;; Add assistant message to conversation
       (let ((content (or (getf response :content) "")))
-        (amoebum:conversation-state-add-message
+        (amoebum.sessions:conversation-state-add-message
          conversation
-         (amoebum:make-conversation-history-entry
+         (amoebum.sessions:make-conversation-history-entry
           :role "assistant"
           :content content))))
     (values response conversation)))
@@ -64,20 +64,20 @@
   (let ((conv (amoebum::%make-conversation-state
                :session-id "test-loop-001")))
     ;; User message
-    (amoebum:conversation-state-add-message
+    (amoebum.sessions:conversation-state-add-message
      conv
-     (amoebum:make-conversation-history-entry
+     (amoebum.sessions:make-conversation-history-entry
       :role "user"
       :content "Hello"))
     ;; Step
     (multiple-value-bind (response _conv)
         (%mock-conversation-step conv
-          (amoebum:conversation-state-messages conv))
+          (amoebum.sessions:conversation-state-messages conv))
       (declare (ignore _conv))
       (is (not (null response)))
       (is (equal "Hello! How can I help?" (getf response :content)))
       ;; Conversation should have 2 entries
-      (is (= 2 (length (amoebum:conversation-state-entries conv)))))))
+      (is (= 2 (length (amoebum.sessions:conversation-state-entries conv)))))))
 
 (test mock-llm-multi-turn
   "Multi-turn conversation with mock LLM."
@@ -88,22 +88,22 @@
   (let ((conv (amoebum::%make-conversation-state
                :session-id "test-loop-002")))
     ;; Turn 1
-    (amoebum:conversation-state-add-message
-     conv (amoebum:make-conversation-history-entry
+    (amoebum.sessions:conversation-state-add-message
+     conv (amoebum.sessions:make-conversation-history-entry
            :role "user" :content "Turn 1"))
-    (%mock-conversation-step conv (amoebum:conversation-state-messages conv))
+    (%mock-conversation-step conv (amoebum.sessions:conversation-state-messages conv))
     ;; Turn 2
-    (amoebum:conversation-state-add-message
-     conv (amoebum:make-conversation-history-entry
+    (amoebum.sessions:conversation-state-add-message
+     conv (amoebum.sessions:make-conversation-history-entry
            :role "user" :content "Turn 2"))
-    (%mock-conversation-step conv (amoebum:conversation-state-messages conv))
+    (%mock-conversation-step conv (amoebum.sessions:conversation-state-messages conv))
     ;; Turn 3
-    (amoebum:conversation-state-add-message
-     conv (amoebum:make-conversation-history-entry
+    (amoebum.sessions:conversation-state-add-message
+     conv (amoebum.sessions:make-conversation-history-entry
            :role "user" :content "Turn 3"))
-    (%mock-conversation-step conv (amoebum:conversation-state-messages conv))
+    (%mock-conversation-step conv (amoebum.sessions:conversation-state-messages conv))
     ;; Should have 6 entries (3 user + 3 assistant)
-    (is (= 6 (length (amoebum:conversation-state-entries conv))))
+    (is (= 6 (length (amoebum.sessions:conversation-state-entries conv))))
     ;; Request log should have 3 entries
     (is (= 3 (length *mock-llm-request-log*)))))
 
@@ -117,11 +117,11 @@
     :finish-reason :tool-use)
   (let ((conv (amoebum::%make-conversation-state
                :session-id "test-loop-003")))
-    (amoebum:conversation-state-add-message
-     conv (amoebum:make-conversation-history-entry
+    (amoebum.sessions:conversation-state-add-message
+     conv (amoebum.sessions:make-conversation-history-entry
            :role "user" :content "Read hostname"))
     (multiple-value-bind (response _conv)
-        (%mock-conversation-step conv (amoebum:conversation-state-messages conv))
+        (%mock-conversation-step conv (amoebum.sessions:conversation-state-messages conv))
       (declare (ignore _conv))
       ;; Response should have tool calls
       (is (not (null (getf response :tool-calls))))
@@ -136,21 +136,21 @@
   (let ((conv (amoebum::%make-conversation-state
                :session-id "test-loop-004")))
     ;; Simulate tool result being added
-    (amoebum:conversation-state-add-message
-     conv (amoebum:make-conversation-history-entry
+    (amoebum.sessions:conversation-state-add-message
+     conv (amoebum.sessions:make-conversation-history-entry
            :role "user" :content "Read hostname"))
-    (amoebum:conversation-state-add-message
-     conv (amoebum:make-conversation-history-entry
+    (amoebum.sessions:conversation-state-add-message
+     conv (amoebum.sessions:make-conversation-history-entry
            :role "tool"
            :content "myhost"
            :tool-call-id "tc-001"))
     ;; LLM processes tool result
-    (%mock-conversation-step conv (amoebum:conversation-state-messages conv))
+    (%mock-conversation-step conv (amoebum.sessions:conversation-state-messages conv))
     ;; 3 entries: user, tool, assistant
-    (is (= 3 (length (amoebum:conversation-state-entries conv))))
+    (is (= 3 (length (amoebum.sessions:conversation-state-entries conv))))
     ;; Last entry should be assistant
-    (let ((last-entry (car (last (amoebum:conversation-state-entries conv)))))
-      (is (equal "assistant" (amoebum:conversation-history-entry-role last-entry))))))
+    (let ((last-entry (car (last (amoebum.sessions:conversation-state-entries conv)))))
+      (is (equal "assistant" (amoebum.sessions:conversation-history-entry-role last-entry))))))
 
 (test mock-llm-error-recovery
   "Error during LLM step doesn't corrupt conversation state."
@@ -158,16 +158,16 @@
   ;; Don't enqueue anything — dequeue returns nil simulating an error
   (let ((conv (amoebum::%make-conversation-state
                :session-id "test-loop-005")))
-    (amoebum:conversation-state-add-message
-     conv (amoebum:make-conversation-history-entry
+    (amoebum.sessions:conversation-state-add-message
+     conv (amoebum.sessions:make-conversation-history-entry
            :role "user" :content "Hello"))
     (multiple-value-bind (response _conv)
-        (%mock-conversation-step conv (amoebum:conversation-state-messages conv))
+        (%mock-conversation-step conv (amoebum.sessions:conversation-state-messages conv))
       (declare (ignore _conv))
       ;; Response should be nil (no queued response)
       (is (null response))
       ;; Conversation should still be valid with just the user message
-      (is (= 1 (length (amoebum:conversation-state-entries conv)))))))
+      (is (= 1 (length (amoebum.sessions:conversation-state-entries conv)))))))
 
 (test mock-llm-budget-exhaustion
   "Budget exhaustion (empty queue) terminates gracefully."
@@ -176,16 +176,16 @@
   (let ((conv (amoebum::%make-conversation-state
                :session-id "test-loop-006"))
         (step-count 0))
-    (amoebum:conversation-state-add-message
-     conv (amoebum:make-conversation-history-entry
+    (amoebum.sessions:conversation-state-add-message
+     conv (amoebum.sessions:make-conversation-history-entry
            :role "user" :content "Hello"))
     ;; Try multiple steps — should gracefully stop when queue exhausted
     (dotimes (_ 5)
       (let ((response (%mock-llm-dequeue)))
         (when response
           (incf step-count)
-          (amoebum:conversation-state-add-message
-           conv (amoebum:make-conversation-history-entry
+          (amoebum.sessions:conversation-state-add-message
+           conv (amoebum.sessions:make-conversation-history-entry
                  :role "assistant"
                  :content (or (getf response :content) ""))))))
     ;; Only 1 step should have succeeded
@@ -195,10 +195,10 @@
   "conversation-state-messages returns message list."
   (let ((conv (amoebum::%make-conversation-state
                :session-id "test-accessor")))
-    (amoebum:conversation-state-add-message
-     conv (amoebum:make-conversation-history-entry
+    (amoebum.sessions:conversation-state-add-message
+     conv (amoebum.sessions:make-conversation-history-entry
            :role "user" :content "test"))
-    (is (= 1 (length (amoebum:conversation-state-messages conv))))))
+    (is (= 1 (length (amoebum.sessions:conversation-state-messages conv))))))
 
 (test request-log-captures-messages
   "Mock request log captures sent messages."
@@ -206,10 +206,10 @@
   (%mock-llm-enqueue "response")
   (let ((conv (amoebum::%make-conversation-state
                :session-id "test-log")))
-    (amoebum:conversation-state-add-message
-     conv (amoebum:make-conversation-history-entry
+    (amoebum.sessions:conversation-state-add-message
+     conv (amoebum.sessions:make-conversation-history-entry
            :role "user" :content "logged message"))
-    (%mock-conversation-step conv (amoebum:conversation-state-messages conv))
+    (%mock-conversation-step conv (amoebum.sessions:conversation-state-messages conv))
     (is (= 1 (length *mock-llm-request-log*)))
     (let ((req (first *mock-llm-request-log*)))
       (is (listp (getf req :messages))))))

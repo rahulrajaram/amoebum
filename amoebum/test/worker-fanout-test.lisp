@@ -11,22 +11,22 @@
 
 (test worker-group-struct-exists
   "worker-group struct and accessors are defined."
-  (is (fboundp 'amoebum:worker-group-p))
-  (is (fboundp 'amoebum:worker-group-id))
-  (is (fboundp 'amoebum:worker-group-worker-ids))
-  (is (fboundp 'amoebum:worker-group-status)))
+  (is (fboundp 'amoebum.workers:worker-group-p))
+  (is (fboundp 'amoebum.workers:worker-group-id))
+  (is (fboundp 'amoebum.workers:worker-group-worker-ids))
+  (is (fboundp 'amoebum.workers:worker-group-status)))
 
 ;;; --- API functions ---
 
 (test fanout-api-functions-exist
   "Fan-out API functions are bound."
   (is (fboundp 'amoebum:fan-out-workers))
-  (is (fboundp 'amoebum:join-worker-group))
-  (is (fboundp 'amoebum:race-worker-group))
+  (is (fboundp 'amoebum.workers:join-worker-group))
+  (is (fboundp 'amoebum.workers:race-worker-group))
   (is (fboundp 'amoebum:merge-worker-results))
-  (is (fboundp 'amoebum:find-worker-group))
-  (is (fboundp 'amoebum:worker-group-results))
-  (is (fboundp 'amoebum:clear-worker-groups)))
+  (is (fboundp 'amoebum.workers:find-worker-group))
+  (is (fboundp 'amoebum.workers:worker-group-results))
+  (is (fboundp 'amoebum.workers:clear-worker-groups)))
 
 ;;; --- Fan-out spawning ---
 
@@ -37,7 +37,7 @@
          (progn
            (setf amoebum:*worker-supervisor* nil)
            (amoebum:clear-workers)
-           (amoebum:clear-worker-groups)
+           (amoebum.workers:clear-worker-groups)
            (multiple-value-bind (group-id worker-ids)
                (amoebum:fan-out-workers
                 (list (list :type :shell :command "echo one" :cwd "/tmp")
@@ -47,9 +47,9 @@
              (is (= 3 (length worker-ids)))
              (is (every #'stringp worker-ids))
              ;; Group should be registered
-             (let ((group (amoebum:find-worker-group group-id)))
-               (is (amoebum:worker-group-p group))
-               (is (= 3 (length (amoebum:worker-group-worker-ids group)))))))
+             (let ((group (amoebum.workers:find-worker-group group-id)))
+               (is (amoebum.workers:worker-group-p group))
+               (is (= 3 (length (amoebum.workers:worker-group-worker-ids group)))))))
       (setf amoebum:*worker-supervisor* old-sup))))
 
 ;;; --- Join group ---
@@ -61,13 +61,13 @@
          (progn
            (setf amoebum:*worker-supervisor* nil)
            (amoebum:clear-workers)
-           (amoebum:clear-worker-groups)
+           (amoebum.workers:clear-worker-groups)
            (multiple-value-bind (group-id worker-ids)
                (amoebum:fan-out-workers
                 (list (list :type :shell :command "echo one" :cwd "/tmp")
                       (list :type :shell :command "echo two" :cwd "/tmp")))
              (declare (ignore worker-ids))
-             (let ((results (amoebum:join-worker-group group-id)))
+             (let ((results (amoebum.workers:join-worker-group group-id)))
                ;; Should return 2 result triples
                (is (= 2 (length results)))
                ;; Each triple is (worker-id status result)
@@ -89,7 +89,7 @@
          (progn
            (setf amoebum:*worker-supervisor* nil)
            (amoebum:clear-workers)
-           (amoebum:clear-worker-groups)
+           (amoebum.workers:clear-worker-groups)
            (multiple-value-bind (group-id _worker-ids)
                (amoebum:fan-out-workers
                 (list (list :type :shell :command "echo fast" :cwd "/tmp")
@@ -97,7 +97,7 @@
                 :timeout-seconds 30)
              (declare (ignore _worker-ids))
              (multiple-value-bind (winner-id winner-status _result)
-                 (amoebum:race-worker-group group-id)
+                 (amoebum.workers:race-worker-group group-id)
                (declare (ignore _result))
                ;; Should have a winner
                (is (or (stringp winner-id)
@@ -133,8 +133,8 @@
 
 (test clear-worker-groups-clears
   "clear-worker-groups empties the registry."
-  (amoebum:clear-worker-groups)
-  (is (null (amoebum:find-worker-group "nonexistent"))))
+  (amoebum.workers:clear-worker-groups)
+  (is (null (amoebum.workers:find-worker-group "nonexistent"))))
 
 ;;; --- Group with timeout ---
 
@@ -145,12 +145,12 @@
          (progn
            (setf amoebum:*worker-supervisor* nil)
            (amoebum:clear-workers)
-           (amoebum:clear-worker-groups)
+           (amoebum.workers:clear-worker-groups)
            (multiple-value-bind (group-id _wids)
                (amoebum:fan-out-workers
                 (list (list :type :shell :command "echo test" :cwd "/tmp"))
                 :timeout-seconds 60)
              (declare (ignore _wids))
-             (let ((group (amoebum:find-worker-group group-id)))
-               (is (= 60 (amoebum:worker-group-timeout-seconds group))))))
+             (let ((group (amoebum.workers:find-worker-group group-id)))
+               (is (= 60 (amoebum.workers:worker-group-timeout-seconds group))))))
       (setf amoebum:*worker-supervisor* old-sup))))

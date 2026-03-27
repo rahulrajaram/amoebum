@@ -208,6 +208,98 @@
     (values (%agent-output-string agent)
             (agent-record-status agent))))
 
+(defun %swarm-agent-present-p (value)
+  (and (fboundp 'swarm-agent-p)
+       (ignore-errors (swarm-agent-p value))))
+
+(defun %resolve-runtime-agent (agent-or-id backend)
+  (cond
+    ((or (agent-record-p agent-or-id)
+         (%swarm-agent-present-p agent-or-id))
+     agent-or-id)
+    ((null agent-or-id)
+     nil)
+    (t
+     (case backend
+       (:local (find-agent agent-or-id))
+       (:swarm (find-swarm-agent agent-or-id))
+       (otherwise
+        (or (find-agent agent-or-id)
+            (find-swarm-agent agent-or-id)))))))
+
+(defun find-runtime-agent (agent-id &key (backend :auto))
+  (%resolve-runtime-agent agent-id backend))
+
+(defun runtime-agent-backend (agent-or-id &key (backend :auto))
+  (let ((agent (%resolve-runtime-agent agent-or-id backend)))
+    (cond
+      ((agent-record-p agent) :local)
+      ((%swarm-agent-present-p agent) :swarm)
+      (t nil))))
+
+(defun runtime-agent-id (agent-or-id &key (backend :auto))
+  (let ((agent (%resolve-runtime-agent agent-or-id backend)))
+    (cond
+      ((agent-record-p agent) (agent-record-id agent))
+      ((%swarm-agent-present-p agent) (swarm-agent-id agent))
+      (t nil))))
+
+(defun runtime-agent-task (agent-or-id &key (backend :auto))
+  (let ((agent (%resolve-runtime-agent agent-or-id backend)))
+    (cond
+      ((agent-record-p agent) (agent-record-task agent))
+      ((%swarm-agent-present-p agent) (swarm-agent-task agent))
+      (t nil))))
+
+(defun runtime-agent-status (agent-or-id &key (backend :auto))
+  (let ((agent (%resolve-runtime-agent agent-or-id backend)))
+    (cond
+      ((agent-record-p agent) (agent-record-status agent))
+      ((%swarm-agent-present-p agent) (swarm-agent-status agent))
+      (t nil))))
+
+(defun runtime-agent-result (agent-or-id &key (backend :auto))
+  (let ((agent (%resolve-runtime-agent agent-or-id backend)))
+    (cond
+      ((agent-record-p agent) (agent-record-result agent))
+      ((%swarm-agent-present-p agent) (swarm-agent-result agent))
+      (t nil))))
+
+(defun runtime-agent-error-message (agent-or-id &key (backend :auto))
+  (let ((agent (%resolve-runtime-agent agent-or-id backend)))
+    (cond
+      ((agent-record-p agent) (agent-record-error-message agent))
+      ((%swarm-agent-present-p agent) (swarm-agent-error-message agent))
+      (t nil))))
+
+(defun runtime-agent-output (agent-or-id &key (backend :auto))
+  (let ((agent (%resolve-runtime-agent agent-or-id backend)))
+    (cond
+      ((agent-record-p agent)
+       (%agent-output-string agent))
+      ((%swarm-agent-present-p agent)
+       (let ((backing-agent (swarm-agent-backing-agent agent))
+             (result (swarm-agent-result agent))
+             (error-message (swarm-agent-error-message agent)))
+         (if backing-agent
+             (%agent-output-string backing-agent)
+             (with-output-to-string (out)
+               (when (and (stringp result)
+                          (plusp (length result)))
+                 (write-string result out))
+               (when (and (stringp error-message)
+                          (plusp (length error-message)))
+                 (when (and (stringp result)
+                            (plusp (length result)))
+                   (write-char #\Newline out))
+                 (write-string error-message out))))))
+      (t nil))))
+
+(defun runtime-agent-terminal-p (agent-or-id &key (backend :auto))
+  (member (runtime-agent-status agent-or-id :backend backend)
+          '(:completed :failed :cancelled :timeout)
+          :test #'eq))
+
 (defun %default-agent-runner (agent)
   (format t "Running ~A agent ~A~%"
           (string-downcase (symbol-name (agent-record-type agent)))
@@ -224,6 +316,61 @@
   (if (agent-record-cancel-requested-p agent)
       :cancelled
       :completed))
+
+(defun %configured-swarm-delegation-mode (&optional (config (ignore-errors (current-config))))
+  (or (and config (ignore-errors (config-value :swarm-delegation-mode config)))
+      :local))
+
+(defun %spawn-delegation-backend-label (backend)
+  (ecase backend
+    (:local "local")
+    (:swarm "sw4rm")))
+
+(defun %spawned-delegation-record-id (record backend)
+  (ecase backend
+    (:local (agent-record-id record))
+    (:swarm (swarm-agent-id record))))
+
+(defun %spawn-task-via-configured-backend (task-text &key config agent-type parent-message-id
+                                                     persona system-prompt timeout-seconds)
+  "Route TASK-TEXT through the configured local/SW4RM delegation backend.
+Returns two values: the spawned record and the backend keyword (:local or :swarm).
+
+Routing decision (NXT-008)
+--------------------------
+The routing mode is read from the :swarm-delegation-mode key in the active
+config (see `%configured-swarm-delegation-mode`).  Default when absent: :local.
+
+  :local (default)
+    All sub-agents run in-process as bordeaux-threads threads inside the
+    current SBCL image.  Preferred for single-user, single-machine use and
+    during development/testing.  Zero network overhead; full access to shared
+    in-process state (*agent-registry*, event bus, checkpoint store, etc.).
+
+  :networked
+    Delegates through the SW4RM SDK's local-mode router
+    (`spawn-swarm-agent`).  Each task is handed off to a swarm state machine
+    and may be executed by an independent worker process registered in the
+    SW4RM local registry.  Use this when tasks need process isolation,
+    parallel multi-session scheduling, or future networked-peer delegation.
+
+The threshold for choosing :networked over :local is primarily operational:
+switch when the orchestration overhead (state-machine bookkeeping, handoff
+latency) is justified by the isolation or parallelism benefits.  For
+single-session interactive use the :local path is always preferred because
+it avoids unnecessary inter-process serialisation and keeps the agent
+lifecycle fully inspectable within the same runtime."
+  (let ((mode (%configured-swarm-delegation-mode config)))
+    (case mode
+      (:networked
+       (values (spawn-swarm-agent task-text :timeout-seconds timeout-seconds) :swarm))
+      (otherwise
+       (values (spawn-agent task-text
+                            :agent-type (or agent-type :task)
+                            :parent-message-id parent-message-id
+                            :persona persona
+                            :system-prompt system-prompt)
+               :local)))))
 
 (defun %agent-status->probe-phase (status)
   (case status

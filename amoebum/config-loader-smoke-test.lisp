@@ -64,9 +64,11 @@
                     stream))
 
       (setf (gethash :model env-values) "env-model"
-            (gethash :web-search-allow-domains env-values) '(:append ("env.example")))
+            (gethash :web-search-allow-domains env-values) '(:append ("env.example"))
+            (gethash :swarm-delegation-mode env-values) :local)
       (setf (gethash :model cli-values) "cli-model"
-            (gethash :web-search-allow-domains cli-values) '(:append "cli.example"))
+            (gethash :web-search-allow-domains cli-values) '(:append "cli.example")
+            (gethash :swarm-delegation-mode cli-values) :networked)
 
       (let ((cfg (funcall load-config-fn
                           :project-root project-root
@@ -79,6 +81,12 @@
                      "Expected CLI to win for :model.")
         (assert-true (eq :cli (funcall config-layer-source-fn :model cfg))
                      "Expected :model source to be :cli.")
+        (assert-true (eq :networked
+                         (funcall config-value-fn :swarm-delegation-mode cfg))
+                     "Expected CLI to win for :swarm-delegation-mode.")
+        (assert-true (eq :cli
+                         (funcall config-layer-source-fn :swarm-delegation-mode cfg))
+                     "Expected :swarm-delegation-mode source to be :cli.")
         (assert-true (equal '("directory.example"
                               "global.example"
                               "project.example"
@@ -86,6 +94,20 @@
                               "cli.example")
                             (funcall config-value-fn :web-search-allow-domains cfg))
                      "List merge directives did not resolve in expected order: ~S"
-                     (funcall config-value-fn :web-search-allow-domains cfg)))))
+                     (funcall config-value-fn :web-search-allow-domains cfg)))
 
-  (format t "CONFIG_LOADER_SMOKE_OK~%")))
+      (let ((cfg (funcall load-config-fn
+                          :project-root project-root
+                          :directory-root directory-root
+                          :global-config-path global-config
+                          :project-config-path project-config
+                          :environment-values env-values
+                          :cli-values nil)))
+        (assert-true (eq :local
+                         (funcall config-value-fn :swarm-delegation-mode cfg))
+                     "Expected environment to drive :swarm-delegation-mode when CLI value is absent.")
+        (assert-true (eq :env
+                         (funcall config-layer-source-fn :swarm-delegation-mode cfg))
+                     "Expected :swarm-delegation-mode source to be :env without CLI override.")))))
+
+  (format t "CONFIG_LOADER_SMOKE_OK~%"))

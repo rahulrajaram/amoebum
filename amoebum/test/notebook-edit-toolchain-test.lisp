@@ -64,14 +64,14 @@
 
 (test i343-read-file-renders-notebook-content
   (let* ((tmp-root (%make-temp-directory "amoebum-i343-read"))
-         (config (amoebum:current-config))
-         (old-mode (amoebum:config-permission-mode config))
+         (config (amoebum.config:current-config))
+         (old-mode (amoebum.config:config-permission-mode config))
          (old-rules amoebum:*permission-rules*)
          (path (merge-pathnames #P"sample.ipynb" tmp-root)))
     (unwind-protect
         (progn
           (setf amoebum:*permission-rules* nil)
-          (amoebum:setconfig :permission-mode :full-auto)
+          (amoebum.config:setconfig :permission-mode :full-auto)
           (%write-text-file path +i343-baseline-notebook-json+)
           (let ((result (%i343-invoke-tool "read-file" "path" (namestring path))))
             (is (stringp result))
@@ -79,19 +79,19 @@
             (is-true (search "```python" result :test #'char-equal))
             (is-true (search "baseline output" result :test #'char-equal))))
       (setf amoebum:*permission-rules* old-rules)
-      (amoebum:setconfig :permission-mode old-mode)
+      (amoebum.config:setconfig :permission-mode old-mode)
       (%delete-directory-tree-safe tmp-root))))
 
 (test i343-edit-file-preserves-notebook-validity-and-outputs-by-default
   (let* ((tmp-root (%make-temp-directory "amoebum-i343-edit"))
-         (config (amoebum:current-config))
-         (old-mode (amoebum:config-permission-mode config))
+         (config (amoebum.config:current-config))
+         (old-mode (amoebum.config:config-permission-mode config))
          (old-rules amoebum:*permission-rules*)
          (path (merge-pathnames #P"sample.ipynb" tmp-root)))
     (unwind-protect
         (progn
           (setf amoebum:*permission-rules* nil)
-          (amoebum:setconfig :permission-mode :full-auto)
+          (amoebum.config:setconfig :permission-mode :full-auto)
           (%write-text-file path +i343-baseline-notebook-json+)
           (%i343-invoke-tool "read-file" "path" (namestring path))
           (let ((result (%i343-invoke-tool "edit-file"
@@ -108,19 +108,19 @@
                          (%i343-cell-output-text code-cell)))
             (is (= 7 (or (gethash "execution_count" code-cell) -1)))))
       (setf amoebum:*permission-rules* old-rules)
-      (amoebum:setconfig :permission-mode old-mode)
+      (amoebum.config:setconfig :permission-mode old-mode)
       (%delete-directory-tree-safe tmp-root))))
 
 (test i343-write-file-strip-policy-clears-notebook-outputs
   (let* ((tmp-root (%make-temp-directory "amoebum-i343-write"))
-         (config (amoebum:current-config))
-         (old-mode (amoebum:config-permission-mode config))
+         (config (amoebum.config:current-config))
+         (old-mode (amoebum.config:config-permission-mode config))
          (old-rules amoebum:*permission-rules*)
          (path (merge-pathnames #P"sample.ipynb" tmp-root)))
     (unwind-protect
         (progn
           (setf amoebum:*permission-rules* nil)
-          (amoebum:setconfig :permission-mode :full-auto)
+          (amoebum.config:setconfig :permission-mode :full-auto)
           (%write-text-file path +i343-baseline-notebook-json+)
           (%i343-invoke-tool "read-file" "path" (namestring path))
           (let ((result (%i343-invoke-tool "write-file"
@@ -139,5 +139,5 @@
                     (and (listp outputs) (null outputs))))
             (is (null (gethash "execution_count" code-cell)))))
       (setf amoebum:*permission-rules* old-rules)
-      (amoebum:setconfig :permission-mode old-mode)
+      (amoebum.config:setconfig :permission-mode old-mode)
       (%delete-directory-tree-safe tmp-root))))

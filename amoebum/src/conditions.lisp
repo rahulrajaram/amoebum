@@ -149,7 +149,8 @@
          (prompt (ptui.components.prompt-box:make-prompt-box-widget
                   ""
                   :id :recovery-prompt
-                  :min-width 24)))
+                  :min-width 24
+                  :cursor-visible-p t)))
     (ptui.widgets.core:make-box-widget
      (ptui.widgets.core:make-stack-widget
       (append (list header message) options (list prompt))
@@ -298,13 +299,15 @@
    (hook-point :initarg :hook-point
                :initform nil
                :reader hook-execution-error-hook-point)
-   (cause :initarg :cause
+  (cause :initarg :cause
           :initform nil
           :reader hook-execution-error-cause))
   (:report (lambda (condition stream)
-             (format stream "Hook ~S on ~S failed."
-                     (hook-execution-error-hook-id condition)
-                     (hook-execution-error-hook-point condition)))))
+             (let ((cause (hook-execution-error-cause condition)))
+               (format stream "Hook ~S on ~S failed~@[ (~A)~]."
+                       (hook-execution-error-hook-id condition)
+                       (hook-execution-error-hook-point condition)
+                       (and cause (princ-to-string cause)))))))
 
 (define-condition context-overflow-error (amoebum-error)
   ((used-tokens :initarg :used-tokens

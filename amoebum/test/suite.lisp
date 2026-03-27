@@ -9,6 +9,55 @@
 
 (in-suite amoebum-suite)
 
+(defparameter +failure-summary-begin-marker+ "FAILED_TESTS_BEGIN")
+(defparameter +failure-summary-end-marker+ "FAILED_TESTS_END")
+
+(defun %failure-summary-path ()
+  (let ((raw (uiop:getenv "AMOEBUM_TEST_FAILURE_SUMMARY")))
+    (unless (or (null raw) (string= "" (string-trim '(#\Space #\Tab #\Newline) raw)))
+      (uiop:parse-native-namestring raw))))
+
+(defun %failure-test-name (failure)
+  (let ((test-case (it.bese.fiveam::test-case failure)))
+    (and test-case (it.bese.fiveam::name test-case))))
+
+(defun %failure-suite-name (failure)
+  (let* ((test-case (it.bese.fiveam::test-case failure))
+         (suite (and test-case (it.bese.fiveam::test-suite test-case))))
+    (and suite (it.bese.fiveam::name suite))))
+
+(defun %failed-test-records (failed-tests)
+  (let ((seen (make-hash-table :test #'equal))
+        (records '()))
+    (dolist (failure failed-tests (nreverse records))
+      (let ((test-name (%failure-test-name failure)))
+        (when (and test-name (not (gethash test-name seen)))
+          (setf (gethash test-name seen) t)
+          (push (list :test-name test-name
+                      :suite-name (%failure-suite-name failure))
+                records))))))
+
+(defun %emit-failure-summary (records &key (stream *standard-output*))
+  (format stream "~A~%" +failure-summary-begin-marker+)
+  (dolist (record records)
+    (format stream "FAILED_TEST: ~A~@[ suite=~A~]~%"
+            (getf record :test-name)
+            (getf record :suite-name)))
+  (format stream "~A~%" +failure-summary-end-marker+)
+  (finish-output stream))
+
+(defun %write-failure-summary-file (records)
+  (let ((path (%failure-summary-path)))
+    (when path
+      (ensure-directories-exist path)
+      (with-open-file (stream path
+                              :direction :output
+                              :if-exists :supersede
+                              :if-does-not-exist :create
+                              :external-format :utf-8)
+        (%emit-failure-summary records :stream stream))
+      (format t "~&Failure summary written to ~A~%" (namestring path)))))
+
 (defparameter +core-smoke-scripts+
   '(("agents-smoke-test.lisp" "AMOEBUM_AGENTS_SMOKE_OK")
     ("chat-ui-smoke-test.lisp" "AMOEBUM_CHAT_UI_SMOKE_OK")
@@ -168,6 +217,19 @@
 (defun %ui-element-text (element)
   (getf (ptui.ui.elements:ui-element-props element) :text))
 
+(defun %wait-for-runtime-agent-terminal-status (agent-id &key (backend :auto) (timeout-ms 2500))
+  (let ((deadline (+ (get-internal-real-time)
+                     (round (* timeout-ms
+                               internal-time-units-per-second
+                               1/1000)))))
+    (loop
+      for status = (amoebum:runtime-agent-status agent-id :backend backend)
+      when (member status '(:completed :failed :cancelled :timeout) :test #'eq)
+        do (return status)
+      when (> (get-internal-real-time) deadline)
+        do (return nil)
+      do (sleep 0.01))))
+
 (test i23-i82-subsystem-smokes-pass
   (let ((filenames (mapcar #'first +core-smoke-scripts+)))
     (is (>= (+ (* 3 (length +core-smoke-scripts+))
@@ -205,11 +267,11 @@
 (test integration-context-compression-updates-status-bar
   (let* ((bus (amoebum:make-event-bus :capacity 128))
          (compressed-events '())
-         (config (amoebum:current-config))
-         (old-mode (amoebum:config-permission-mode config)))
+         (config (amoebum.config:current-config))
+         (old-mode (amoebum.config:config-permission-mode config)))
     (unwind-protect
         (progn
-          (amoebum:setconfig :permission-mode :full-auto)
+          (amoebum.config:setconfig :permission-mode :full-auto)
           (let ((amoebum::*event-bus* bus)
                 (amoebum::*context-window-limit* 220))
             (amoebum:subscribe bus
@@ -218,10 +280,10 @@
                                  (push event compressed-events)))
             (let ((chat-state
                     (amoebum:ensure-chat-ui-state
-                     (amoebum:make-chat-ui-state
+                     (amoebum.ui:make-chat-ui-state
                       :stream-runner nil
                       :status-bar-state
-                      (amoebum:make-status-bar-state :event-bus bus
+                      (amoebum.ui:make-status-bar-state :event-bus bus
                                                      :model-name "moonshot-v1-8k"
                                                      :branch-name "feature/i62")))))
               (loop for idx from 1 to 28 do
@@ -231,10 +293,10 @@
                  (format nil
                          "I62 context flow message ~D with enough repeated detail to trigger token accounting and compression behavior."
                          idx)))
-              (let* ((status-state (amoebum:chat-ui-state-status-bar-state chat-state))
+              (let* ((status-state (amoebum.ui:chat-ui-state-status-bar-state chat-state))
                      (payload (and compressed-events
                                    (amoebum:event-payload (first compressed-events))))
-                     (first-message (first (amoebum:chat-ui-state-messages chat-state))))
+                     (first-message (first (amoebum.ui:chat-ui-state-messages chat-state))))
                 (is-true compressed-events
                          "Expected at least one context:compressed event from conversation growth.")
                 (is (typep payload 'amoebum:context-compressed-payload))
@@ -245,17 +307,17 @@
                     "Expected positive token savings in context compression payload.")
                 (is (eq (amoebum:context-compressed-payload-trigger payload) :auto)
                     "Expected auto compression trigger from conversation growth.")
-                (is (= (amoebum:chat-ui-state-context-used-tokens chat-state)
-                       (amoebum:status-bar-state-context-used-tokens status-state))
+                (is (= (amoebum.ui:chat-ui-state-context-used-tokens chat-state)
+                       (amoebum.ui:status-bar-state-context-used-tokens status-state))
                     "Expected status bar context usage to match chat state usage.")
                 (is (search "Tokens:"
-                            (amoebum:status-bar-line status-state)
+                            (amoebum.ui:status-bar-line status-state)
                             :test #'char-equal)
                     "Expected status bar line to include context token budget segment.")
                 (is-true (and (pseudopod:message-p first-message)
                               (string= (pseudopod:message-role first-message) "system"))
                          "Expected compressed history summary message at the front of conversation.")))))
-      (amoebum:setconfig :permission-mode old-mode))))
+      (amoebum.config:setconfig :permission-mode old-mode))))
 
 (test integration-git-tool-permission-and-event-flow
   (let* ((bus (amoebum:make-event-bus :capacity 128))
@@ -263,8 +325,8 @@
          (completed-events 0)
          (prompted-events 0)
          (latest-prompted-payload nil)
-         (config (amoebum:current-config))
-         (old-project-root (amoebum:config-project-root config))
+         (config (amoebum.config:current-config))
+         (old-project-root (amoebum.config:config-project-root config))
          (tmp-root (uiop:ensure-directory-pathname
                     (merge-pathnames
                      (make-pathname :directory
@@ -302,7 +364,7 @@
             (run-git "add" "--" "README.md")
             (run-git "commit" "-m" "chore: seed i62 integration repo")
             (run-git "branch" "-m" "main")
-            (amoebum:setconfig :project-root tmp-root)
+            (amoebum.config:setconfig :project-root tmp-root)
 
             (amoebum:subscribe bus
                                amoebum:+event-type-tool-invoked+
@@ -370,7 +432,7 @@
                               "")
                           :test #'char-equal)
                   "Expected permission prompt reason to describe prompt decision.")))
-        (amoebum:setconfig :project-root old-project-root)))))
+        (amoebum.config:setconfig :project-root old-project-root)))))
 
 (test core-packages-and-entrypoints-present
   (is-true (find-package :amoebum))
@@ -482,14 +544,14 @@
         (original-hooks amoebum:*hook-registry*)
         (original-event-bus amoebum:*event-bus*)
         (original-rules amoebum:*permission-rules*)
-        (original-mode (amoebum:config-permission-mode (amoebum:current-config))))
+        (original-mode (amoebum.config:config-permission-mode (amoebum.config:current-config))))
     (unwind-protect
         (progn
           (setf amoebum:*toolset* (pseudopod:make-toolset)
                 amoebum:*hook-registry* (make-hash-table :test #'equal)
                 amoebum:*event-bus* (amoebum:make-event-bus :capacity 64)
                 amoebum:*permission-rules* nil)
-          (amoebum:setconfig :permission-mode :full-auto)
+          (amoebum.config:setconfig :permission-mode :full-auto)
           (let ((tool-execution-count 0)
                 (pre-hook-count 0)
                 (post-hook-count 0)
@@ -520,7 +582,7 @@
                                      (incf post-hook-count)
                                      :ok))
             (let* ((client (pseudopod:make-client :api-key "stub"))
-                   (chat-state (amoebum:make-chat-ui-state
+                   (chat-state (amoebum.ui:make-chat-ui-state
                                 :stream-runner nil
                                 :stream-client client
                                 :stream-tools amoebum:*toolset*))
@@ -563,15 +625,15 @@
             amoebum:*hook-registry* original-hooks
             amoebum:*event-bus* original-event-bus
             amoebum:*permission-rules* original-rules)
-      (amoebum:setconfig :permission-mode original-mode))))
+      (amoebum.config:setconfig :permission-mode original-mode))))
 
 (test integration-chat-step-loop-publishes-tool-error-event-for-caught-tool-failures
   (let ((original-event-bus amoebum:*event-bus*)
-        (original-mode (amoebum:config-permission-mode (amoebum:current-config))))
+        (original-mode (amoebum.config:config-permission-mode (amoebum.config:current-config))))
     (unwind-protect
         (progn
           (setf amoebum:*event-bus* (amoebum:make-event-bus :capacity 64))
-          (amoebum:setconfig :permission-mode :full-auto)
+          (amoebum.config:setconfig :permission-mode :full-auto)
           (let ((tool-error-events 0)
                 (captured-payload nil)
                 (error-callback-bound-p nil))
@@ -581,7 +643,7 @@
                                  (setf captured-payload (amoebum:event-payload event))
                                  (incf tool-error-events)))
             (let* ((client (pseudopod:make-client :api-key "stub"))
-                   (chat-state (amoebum:make-chat-ui-state
+                   (chat-state (amoebum.ui:make-chat-ui-state
                                 :stream-runner nil
                                 :stream-client client))
                    (user-message (amoebum:chat-ui-add-message
@@ -629,14 +691,14 @@
                         (or (amoebum::tool-error-payload-condition captured-payload) "")
                         :test #'char-equal))))
       (setf amoebum:*event-bus* original-event-bus)
-      (amoebum:setconfig :permission-mode original-mode))))
+      (amoebum.config:setconfig :permission-mode original-mode))))
 
 (test stream-tool-call-result-uses-preview-key-to-complete-pending-entry
-  (let* ((chat-state (amoebum:make-chat-ui-state
+  (let* ((chat-state (amoebum.ui:make-chat-ui-state
                       :stream-runner nil
                       :stream-client (pseudopod:make-client :api-key "stub")))
          (preview-key "preview:glob-files:0")
-         (table (amoebum:chat-ui-state-stream-tool-calls chat-state))
+         (table (amoebum.ui:chat-ui-state-stream-tool-calls chat-state))
          (entry (list :key preview-key
                       :tool-name "glob-files"
                       :tool-call-id "glob-files:0"
@@ -659,11 +721,11 @@
     (is-false (amoebum::%stream-tool-call-completion-pending-p chat-state))))
 
 (test stream-tool-call-result-persists-completed-flag-to-preview-table
-  (let* ((chat-state (amoebum:make-chat-ui-state
+  (let* ((chat-state (amoebum.ui:make-chat-ui-state
                       :stream-runner nil
                       :stream-client (pseudopod:make-client :api-key "stub")))
          (preview-key "preview:glob-files:0")
-         (table (amoebum:chat-ui-state-stream-tool-calls chat-state)))
+         (table (amoebum.ui:chat-ui-state-stream-tool-calls chat-state)))
     (setf (gethash preview-key table)
           (list :key preview-key
                 :tool-name "glob-files"
@@ -687,11 +749,11 @@
 (test stream-tool-call-transition-events-publish-once
   (let* ((bus (amoebum:make-event-bus :capacity 32))
          (stream-state (amoebum:make-token-stream-state))
-         (chat-state (amoebum:make-chat-ui-state
+         (chat-state (amoebum.ui:make-chat-ui-state
                       :stream-runner nil
                       :stream-client (pseudopod:make-client :api-key "stub")
                       :stream-state stream-state
-                      :status-bar-state (amoebum:make-status-bar-state
+                      :status-bar-state (amoebum.ui:make-status-bar-state
                                          :event-bus bus
                                          :model-name "stub-model"
                                          :branch-name "master")))
@@ -732,7 +794,7 @@
 
 (test stream-complete-before-argument-complete-defers-finalization-until-result
   (let* ((stream-state (amoebum:make-token-stream-state))
-         (chat-state (amoebum:make-chat-ui-state
+         (chat-state (amoebum.ui:make-chat-ui-state
                       :stream-runner nil
                       :stream-client (pseudopod:make-client :api-key "stub")
                       :stream-state stream-state))
@@ -781,7 +843,7 @@
 
 (test stream-tool-result-before-complete-finalizes-on-complete
   (let* ((stream-state (amoebum:make-token-stream-state))
-         (chat-state (amoebum:make-chat-ui-state
+         (chat-state (amoebum.ui:make-chat-ui-state
                       :stream-runner nil
                       :stream-client (pseudopod:make-client :api-key "stub")
                       :stream-state stream-state))
@@ -896,7 +958,7 @@
             (multiple-value-bind (handledp result)
                 (amoebum:dispatch-slash-command "/i82-skill-bridge 7")
               (let ((output (and result
-                                 (amoebum:slash-command-result-output result))))
+                                 (amoebum.commands:slash-command-result-output result))))
                 (is-true handledp "Expected defskill slash command to dispatch.")
                 (is-true (stringp output))
                 (is (string= output "skill-tool=7"))
@@ -916,12 +978,12 @@
          (original-history amoebum:*tool-history*)
          (original-event-bus amoebum:*event-bus*)
          (original-rules amoebum:*permission-rules*)
-         (original-global-override amoebum:*extensions-global-directory-override*)
-         (original-project-override amoebum:*extensions-project-directory-override*)
-         (original-report amoebum:*extension-load-report*)
-         (original-loaded amoebum:*loaded-extensions*)
-         (original-discovered amoebum::*extension-last-discovered*)
-         (disabled-keys (%hash-table-keys amoebum:*disabled-extensions*))
+         (original-global-override amoebum.extensions:*extensions-global-directory-override*)
+         (original-project-override amoebum.extensions:*extensions-project-directory-override*)
+         (original-report amoebum.extensions:*extension-load-report*)
+         (original-loaded amoebum.extensions:*loaded-extensions*)
+         (original-discovered amoebum.extensions:*extension-last-discovered*)
+         (disabled-keys (%hash-table-keys amoebum.extensions:*disabled-extensions*))
          (tmp-root (%make-temp-directory "amoebum-i82-extension"))
          (global-dir (merge-pathnames #P"global-ext/" tmp-root))
          (project-dir (merge-pathnames #P"project-ext/" tmp-root))
@@ -933,12 +995,12 @@
                 amoebum:*tool-history* (make-hash-table :test #'equal)
                 amoebum:*event-bus* (amoebum:make-event-bus :capacity 64)
                 amoebum:*permission-rules* nil
-                amoebum:*extensions-global-directory-override* global-dir
-                amoebum:*extensions-project-directory-override* project-dir
-                amoebum:*extension-load-report* '()
-                amoebum:*loaded-extensions* '()
-                amoebum::*extension-last-discovered* '())
-          (clrhash amoebum:*disabled-extensions*)
+                amoebum.extensions:*extensions-global-directory-override* global-dir
+                amoebum.extensions:*extensions-project-directory-override* project-dir
+                amoebum.extensions:*extension-load-report* '()
+                amoebum.extensions:*loaded-extensions* '()
+                amoebum.extensions:*extension-last-discovered* '())
+          (clrhash amoebum.extensions:*disabled-extensions*)
           (%write-text-file extension-file
                             "(in-package :amoebum)
 
@@ -959,7 +1021,7 @@
                                (lambda (_event)
                                  (declare (ignore _event))
                                  (incf prompted-events)))
-            (amoebum:load-user-extensions :project-root tmp-root)
+            (amoebum.extensions:load-user-extensions :project-root tmp-root)
             (is (= loaded-events 1))
             (is-true (pseudopod:find-tool amoebum:*toolset* "i82-extension-tool"))
             (let* ((allow-context
@@ -994,21 +1056,21 @@
             amoebum:*tool-history* original-history
             amoebum:*event-bus* original-event-bus
             amoebum:*permission-rules* original-rules
-            amoebum:*extensions-global-directory-override* original-global-override
-            amoebum:*extensions-project-directory-override* original-project-override
-            amoebum:*extension-load-report* original-report
-            amoebum:*loaded-extensions* original-loaded
-            amoebum::*extension-last-discovered* original-discovered)
-      (clrhash amoebum:*disabled-extensions*)
+            amoebum.extensions:*extensions-global-directory-override* original-global-override
+            amoebum.extensions:*extensions-project-directory-override* original-project-override
+            amoebum.extensions:*extension-load-report* original-report
+            amoebum.extensions:*loaded-extensions* original-loaded
+            amoebum.extensions:*extension-last-discovered* original-discovered)
+      (clrhash amoebum.extensions:*disabled-extensions*)
       (dolist (key disabled-keys)
-        (setf (gethash key amoebum:*disabled-extensions*) t))
+        (setf (gethash key amoebum.extensions:*disabled-extensions*) t))
       (%delete-directory-tree-safe tmp-root))))
 
 (test integration-checkpoint-restore-conversation-continuity
-  (let* ((config (amoebum:current-config))
-         (old-project-root (amoebum:config-project-root config))
+  (let* ((config (amoebum.config:current-config))
+         (old-project-root (amoebum.config:config-project-root config))
          (old-event-bus amoebum:*event-bus*)
-         (old-checkpoint-override amoebum:*checkpoint-directory-override*)
+         (old-checkpoint-override amoebum.sessions:*checkpoint-directory-override*)
          (old-toolset amoebum:*toolset*)
          (old-tool-metadata amoebum::*tool-metadata*)
          (old-tool-history amoebum::*tool-history*)
@@ -1022,8 +1084,8 @@
     (unwind-protect
         (progn
           (setf amoebum:*event-bus* bus
-                amoebum:*checkpoint-directory-override* checkpoint-dir)
-          (amoebum:setconfig :project-root project-root)
+                amoebum.sessions:*checkpoint-directory-override* checkpoint-dir)
+          (amoebum.config:setconfig :project-root project-root)
           (amoebum:subscribe bus
                              amoebum:+event-type-session-checkpointed+
                              (lambda (_event)
@@ -1034,7 +1096,7 @@
                              (lambda (_event)
                                (declare (ignore _event))
                                (incf restored-events)))
-          (let* ((conversation (amoebum:make-conversation-state
+          (let* ((conversation (amoebum.sessions:make-conversation-state
                                 :project-root project-root))
                  (user-message (pseudopod:make-message
                                 :role "user"
@@ -1042,40 +1104,40 @@
                  (assistant-message (pseudopod:make-message
                                      :role "assistant"
                                      :content "checkpoint assistant")))
-            (amoebum:conversation-state-add-message conversation user-message :save-p nil)
-            (amoebum:conversation-state-add-message conversation assistant-message :save-p nil)
-            (let* ((checkpoint (amoebum:checkpoint-session
+            (amoebum.sessions:conversation-state-add-message conversation user-message :save-p nil)
+            (amoebum.sessions:conversation-state-add-message conversation assistant-message :save-p nil)
+            (let* ((checkpoint (amoebum.sessions:checkpoint-session
                                 :conversation conversation
                                 :project-root project-root
                                 :event-bus bus))
-                   (restored (amoebum:restore-session
-                              :checkpoint-id (amoebum:session-checkpoint-id checkpoint)
+                   (restored (amoebum.sessions:restore-session
+                              :checkpoint-id (amoebum.sessions:session-checkpoint-id checkpoint)
                               :project-root project-root
                               :event-bus bus))
                    (restored-conversation (getf restored :conversation))
-                   (entries (amoebum:conversation-state-entries restored-conversation)))
+                   (entries (amoebum.sessions:conversation-state-entries restored-conversation)))
               (is (= (length entries) 2))
-              (is (string= (amoebum:conversation-history-entry-content (first entries))
+              (is (string= (amoebum.sessions:conversation-history-entry-content (first entries))
                            "checkpoint user"))
-              (is (string= (amoebum:conversation-history-entry-content (second entries))
+              (is (string= (amoebum.sessions:conversation-history-entry-content (second entries))
                            "checkpoint assistant"))
-              (amoebum:conversation-state-add-message
+              (amoebum.sessions:conversation-state-add-message
                restored-conversation
                (pseudopod:make-message :role "user" :content "post-restore")
                :save-p nil)
-              (let ((continued (amoebum:conversation-state-entries restored-conversation)))
+              (let ((continued (amoebum.sessions:conversation-state-entries restored-conversation)))
                 (is (= (length continued) 3))
-                (is (string= (amoebum:conversation-history-entry-content (third continued))
+                (is (string= (amoebum.sessions:conversation-history-entry-content (third continued))
                              "post-restore")))))
           (is (= checkpointed-events 1))
           (is (= restored-events 1)))
       (setf amoebum:*event-bus* old-event-bus
-            amoebum:*checkpoint-directory-override* old-checkpoint-override
+            amoebum.sessions:*checkpoint-directory-override* old-checkpoint-override
             amoebum:*toolset* old-toolset
             amoebum::*tool-metadata* old-tool-metadata
             amoebum::*tool-history* old-tool-history
             amoebum:*memory-backend* old-memory-backend)
-      (amoebum:setconfig :project-root old-project-root)
+      (amoebum.config:setconfig :project-root old-project-root)
       (%delete-directory-tree-safe tmp-root))))
 
 ;;; -----------------------------------------------------------------------
@@ -1232,8 +1294,17 @@
       ;; Wait for completion
       (multiple-value-bind (result status)
           (amoebum:collect-swarm-result "swarm-1")
-        (is (stringp result))
-        (is (eq :completed status)))
+        (is (string= "Agent completed task: test task" result))
+        (is (eq :completed status))
+        (let* ((serialized (sw4rm-sdk:serialize-agent-state
+                            (amoebum:swarm-agent-state-machine agent)))
+               (history (getf serialized :transition-history))
+               (terminal (car (last history)))
+               (metadata (getf terminal :metadata)))
+          (is (eq :completed (getf serialized :current-state)))
+          (is (eq :completed (getf terminal :to-state)))
+          (is (eq :completed (getf metadata :agent-status)))
+          (is (eql sw4rm-sdk:+fulfilled+ (getf metadata :ack-stage)))))
       (is (= 1 (length (amoebum:list-swarm-agents))))
       (amoebum:clear-swarm-registry)
       (is (= 0 (length (amoebum:list-swarm-agents)))))))
@@ -1242,12 +1313,89 @@
   "Killing a swarm agent should set status to :cancelled."
   (let ((amoebum::*swarm-registry* (make-hash-table :test #'equal))
         (amoebum::*swarm-counter* 0))
-    ;; Spawn and immediately collect (let it finish) then test kill path
-    (let ((agent (amoebum:spawn-swarm-agent "kill test")))
-      (amoebum:collect-swarm-result (amoebum:swarm-agent-id agent))
-      ;; Agent is already completed, kill should still set cancelled
+    (let ((agent (amoebum:spawn-swarm-agent
+                  "kill test"
+                  :runner (lambda (runner-agent)
+                            (loop repeat 200 do
+                              (sleep 0.01)
+                              (amoebum::agent-check-cancel runner-agent))
+                            "slow completion"))))
       (amoebum:kill-swarm-agent (amoebum:swarm-agent-id agent))
-      (is (eq :cancelled (amoebum:swarm-agent-status agent))))))
+      (multiple-value-bind (result status)
+          (amoebum:collect-swarm-result (amoebum:swarm-agent-id agent))
+        (is (null result))
+        (is (eq :cancelled status)))
+      (is (eq :cancelled (amoebum:swarm-agent-status agent)))
+      (is (search "cancelled"
+                  (string-downcase
+                   (or (amoebum:swarm-agent-error-message agent) ""))))
+      (let* ((serialized (sw4rm-sdk:serialize-agent-state
+                          (amoebum:swarm-agent-state-machine agent)))
+             (history (getf serialized :transition-history))
+             (states (mapcar (lambda (entry) (getf entry :to-state)) history))
+             (terminal (car (last history)))
+             (metadata (getf terminal :metadata)))
+        (is (eq :failed (getf serialized :current-state)))
+        (is (member :shutting-down states))
+        (is (eq :failed (getf terminal :to-state)))
+        (is (eq :cancelled (getf metadata :agent-status)))
+        (is (getf metadata :cancelled))
+        (is (eql sw4rm-sdk:+rejected+ (getf metadata :ack-stage)))
+        (is (eql sw4rm-sdk:+forced-preemption+ (getf metadata :error-code)))))))
+
+(test phase5-swarm-agent-failure-maps-to-sw4rm-failed
+  "Runner failures should land in SW4RM failed semantics with internal-error metadata."
+  (let ((amoebum::*swarm-registry* (make-hash-table :test #'equal))
+        (amoebum::*swarm-counter* 0))
+    (let ((agent (amoebum:spawn-swarm-agent
+                  "failure test"
+                  :runner (lambda (_runner-agent)
+                            (error "boom failure")))))
+      (multiple-value-bind (result status)
+          (amoebum:collect-swarm-result (amoebum:swarm-agent-id agent))
+        (is (null result))
+        (is (eq :failed status)))
+      (let* ((serialized (sw4rm-sdk:serialize-agent-state
+                          (amoebum:swarm-agent-state-machine agent)))
+             (history (getf serialized :transition-history))
+             (terminal (car (last history)))
+             (metadata (getf terminal :metadata)))
+        (is (eq :failed (getf serialized :current-state)))
+        (is (eq :failed (getf terminal :to-state)))
+        (is (eq :failed (getf metadata :agent-status)))
+        (is (eql sw4rm-sdk:+failed+ (getf metadata :ack-stage)))
+        (is (eql sw4rm-sdk:+internal-error+ (getf metadata :error-code)))
+        (is (search "boom failure"
+                    (or (getf metadata :error-message) "")))))))
+
+(test phase5-swarm-agent-timeout-maps-to-sw4rm-timeout
+  "Runner timeouts should land in SW4RM timed-out semantics with timeout metadata."
+  (let ((amoebum::*swarm-registry* (make-hash-table :test #'equal))
+        (amoebum::*swarm-counter* 0))
+    (let ((agent (amoebum:spawn-swarm-agent
+                  "timeout test"
+                  :timeout-seconds 1
+                  :runner (lambda (_runner-agent)
+                            (sleep 2)
+                            "late completion"))))
+      (multiple-value-bind (result status)
+          (amoebum:collect-swarm-result (amoebum:swarm-agent-id agent))
+        (is (null result))
+        (is (eq :timeout status)))
+      (let* ((serialized (sw4rm-sdk:serialize-agent-state
+                          (amoebum:swarm-agent-state-machine agent)))
+             (history (getf serialized :transition-history))
+             (states (mapcar (lambda (entry) (getf entry :to-state)) history))
+             (terminal (car (last history)))
+             (metadata (getf terminal :metadata)))
+        (is (eq :failed (getf serialized :current-state)))
+        (is (member :shutting-down states))
+        (is (eq :failed (getf terminal :to-state)))
+        (is (eq :timeout (getf metadata :agent-status)))
+        (is (getf metadata :timed-out))
+        (is (= 1 (getf metadata :timeout-seconds)))
+        (is (eql sw4rm-sdk:+timed-out+ (getf metadata :ack-stage)))
+        (is (eql sw4rm-sdk:+tool-timeout+ (getf metadata :error-code)))))))
 
 (test phase5-swarm-status-summary
   "Swarm status summary should return a formatted string."
@@ -1289,6 +1437,180 @@
                       "extensions-asdf" "perf" "spawn" "approvals"))
     (is-true (amoebum:find-slash-command cmd-name)
              "Expected slash command /~A to be registered." cmd-name)))
+
+(test spawn-command-uses-local-backend-by-default
+  "The /spawn command should run through the local backend end-to-end when delegation mode is :local."
+  (let ((amoebum::*agent-registry* (make-hash-table :test #'equal))
+        (amoebum::*next-agent-sequence* 0)
+        (amoebum::*swarm-registry* (make-hash-table :test #'equal))
+        (amoebum::*swarm-counter* 0)
+        (amoebum::*current-config*
+          (let ((cfg (amoebum.config:load-config :project-root (uiop:getcwd))))
+            (setf (gethash :swarm-delegation-mode (amoebum.config:config-values cfg)) :local)
+            cfg)))
+    (multiple-value-bind (handled result)
+        (amoebum:dispatch-slash-command
+         "/spawn local task"
+         :config amoebum::*current-config*)
+      (is-true handled)
+      (is (typep result 'amoebum.commands:slash-command-result))
+      (is (search "via local backend" (amoebum.commands:slash-command-result-output result)))
+      (is (search "agent task-0001" (amoebum.commands:slash-command-result-output result)))
+      (is (= 1 (hash-table-count amoebum::*agent-registry*)))
+      (is (= 0 (hash-table-count amoebum::*swarm-registry*)))
+      (is (eq :completed (%wait-for-runtime-agent-terminal-status "task-0001" :backend :local)))
+      (is (string= "Agent completed task: local task"
+                   (amoebum:runtime-agent-result "task-0001" :backend :local)))
+      (is (search "Running task agent task-0001"
+                  (or (amoebum:runtime-agent-output "task-0001" :backend :local) "")
+                  :test #'char-equal)))))
+
+(test spawn-command-uses-sw4rm-backend-when-networked
+  "The /spawn command should route through SW4RM end-to-end when delegation mode is :networked."
+  (let ((amoebum::*agent-registry* (make-hash-table :test #'equal))
+        (amoebum::*next-agent-sequence* 0)
+        (amoebum::*swarm-registry* (make-hash-table :test #'equal))
+        (amoebum::*swarm-counter* 0)
+        (amoebum::*current-config*
+          (let ((cfg (amoebum.config:load-config :project-root (uiop:getcwd))))
+            (setf (gethash :swarm-delegation-mode (amoebum.config:config-values cfg)) :networked)
+            cfg)))
+    (multiple-value-bind (handled result)
+        (amoebum:dispatch-slash-command
+         "/spawn networked task"
+         :config amoebum::*current-config*)
+      (is-true handled)
+      (is (typep result 'amoebum.commands:slash-command-result))
+      (is (search "via sw4rm backend" (amoebum.commands:slash-command-result-output result)))
+      (is (search "agent swarm-1" (amoebum.commands:slash-command-result-output result)))
+      (is (= 0 (hash-table-count amoebum::*agent-registry*)))
+      (is (= 1 (hash-table-count amoebum::*swarm-registry*)))
+      (multiple-value-bind (swarm-result swarm-status)
+          (amoebum:collect-swarm-result "swarm-1")
+        (is (eq :completed swarm-status))
+        (is (string= "Agent completed task: networked task" swarm-result)))
+      (is (eq :completed
+              (%wait-for-runtime-agent-terminal-status "swarm-1" :backend :swarm)))
+      (is (string= "Agent completed task: networked task"
+                   (amoebum:runtime-agent-result "swarm-1" :backend :swarm)))
+      (is (search "Running swarm agent swarm-1"
+                  (or (amoebum:runtime-agent-output "swarm-1" :backend :swarm) "")
+                  :test #'char-equal)))))
+
+(test agents-command-lists-running-sw4rm-backed-agents
+  "The /agents slash command should include SW4RM-backed runtime agents."
+  (let ((amoebum::*agent-registry* (make-hash-table :test #'equal))
+        (amoebum::*next-agent-sequence* 0)
+        (amoebum::*swarm-registry* (make-hash-table :test #'equal))
+        (amoebum::*swarm-counter* 0))
+    (let ((agent
+            (amoebum:spawn-swarm-agent
+             "long swarm task"
+             :runner (lambda (runner-agent)
+                       (loop repeat 200 do
+                         (sleep 0.01)
+                         (amoebum::agent-check-cancel runner-agent))
+                       "done"))))
+      (unwind-protect
+          (multiple-value-bind (handled result)
+              (amoebum:dispatch-slash-command "/agents")
+            (is-true handled)
+            (is (typep result 'amoebum.commands:slash-command-result))
+            (let ((output (amoebum.commands:slash-command-result-output result)))
+              (is (search "Running agents (1):" output))
+              (is (search "swarm-1" output))
+              (is (search "sw4rm" output))
+              (is (search "long swarm task" output))))
+        (amoebum:kill-swarm-agent (amoebum:swarm-agent-id agent))))))
+
+(test agent-output-command-uses-runtime-agent-view-for-sw4rm-backend
+  "The /agent output slash command should inspect SW4RM-backed agents returned by /spawn."
+  (let ((amoebum::*agent-registry* (make-hash-table :test #'equal))
+        (amoebum::*next-agent-sequence* 0)
+        (amoebum::*swarm-registry* (make-hash-table :test #'equal))
+        (amoebum::*swarm-counter* 0)
+        (amoebum::*current-config*
+          (let ((cfg (amoebum.config:load-config :project-root (uiop:getcwd))))
+            (setf (gethash :swarm-delegation-mode (amoebum.config:config-values cfg)) :networked)
+            cfg)))
+    (multiple-value-bind (spawn-handled spawn-result)
+        (amoebum:dispatch-slash-command
+         "/spawn networked task"
+         :config amoebum::*current-config*)
+      (is-true spawn-handled)
+      (is (typep spawn-result 'amoebum.commands:slash-command-result))
+      (is (eq :completed
+              (%wait-for-runtime-agent-terminal-status "swarm-1" :backend :swarm)))
+      (multiple-value-bind (handled result)
+          (amoebum:dispatch-slash-command
+           "/agent swarm-1 output"
+           :config amoebum::*current-config*)
+        (is-true handled)
+        (is (typep result 'amoebum.commands:slash-command-result))
+        (let ((output (amoebum.commands:slash-command-result-output result)))
+          (is (search "Agent swarm-1" output))
+          (is (search "sw4rm backend" output))
+          (is (search "Agent completed task: networked task" output))
+          (is (search "Running swarm agent swarm-1" output)))))))
+
+(test slash-command-argument-parser-handles-defaults-choices-and-greedy-text
+  (let* ((command
+           (amoebum.commands:make-slash-command
+            :name "parser-probe"
+            :parameters
+            (list (amoebum.commands:make-slash-command-parameter
+                   :name "mode"
+                   :type :keyword
+                   :required-p t
+                   :choices '(:summary :full))
+                  (amoebum.commands:make-slash-command-parameter
+                   :name "count"
+                   :type :integer
+                   :default 3)
+                  (amoebum.commands:make-slash-command-parameter
+                   :name "notes"
+                   :type :string
+                   :greedy-p t))))
+         (invocation
+           (amoebum.commands:make-slash-command-invocation
+            :name "parser-probe"
+            :argument-tokens '("summary" "hello" "world"))))
+    (multiple-value-bind (arguments errors)
+        (amoebum:parse-slash-command-arguments command invocation)
+      (is (null errors))
+      (is (eq :summary (gethash :MODE arguments)))
+      (is (= 3 (gethash :COUNT arguments)))
+      (is (string= "hello world" (gethash :NOTES arguments))))))
+
+(test slash-command-argument-parser-reports-required-choice-and-arity-errors
+  (let ((command
+          (amoebum.commands:make-slash-command
+           :name "parser-errors"
+           :parameters
+           (list (amoebum.commands:make-slash-command-parameter
+                  :name "mode"
+                  :type :keyword
+                  :required-p t
+                  :choices '(:summary :full))))))
+    (multiple-value-bind (_arguments errors)
+        (amoebum:parse-slash-command-arguments
+         command
+         (amoebum.commands:make-slash-command-invocation
+          :name "parser-errors"
+          :argument-tokens '()))
+      (declare (ignore _arguments))
+      (is (= 1 (length errors)))
+      (is (search "Missing required argument mode." (first errors) :test #'char-equal)))
+    (multiple-value-bind (_arguments errors)
+        (amoebum:parse-slash-command-arguments
+         command
+         (amoebum.commands:make-slash-command-invocation
+          :name "parser-errors"
+          :argument-tokens '("other" "extra")))
+      (declare (ignore _arguments))
+      (is (= 2 (length errors)))
+      (is (search "must be one of summary, full" (first errors) :test #'char-equal))
+      (is (search "Too many arguments for /parser-errors." (second errors) :test #'char-equal)))))
 
 (test phase5-check-count-target
   "Phase 5 should contribute at least 200 additional assertion checks."
@@ -1446,25 +1768,7 @@
 
 (defun %i332-classify-streamed-turn-outcome (events)
   "Classify replayed streamed-turn EVENTS into lifecycle terminal outcomes."
-  (let* ((signals (%i332-replay-streamed-turn-trace events))
-         (saw-stream-complete (getf signals :saw-stream-complete))
-         (saw-stream-progress (getf signals :saw-stream-progress))
-         (saw-text-delta (getf signals :saw-text-delta))
-         (saw-answer (getf signals :saw-answer))
-         (saw-tool-signal (getf signals :saw-tool-signal))
-         (saw-retry (getf signals :saw-retry))
-         (saw-explicit-error (getf signals :saw-explicit-error)))
-    (cond
-      (saw-explicit-error :explicit-error)
-      (saw-retry :retry)
-      (saw-answer :answer)
-      (saw-tool-signal :tool-continuation)
-      ((and saw-stream-complete
-            (or saw-stream-progress saw-text-delta)
-            (not saw-answer)
-            (not saw-tool-signal))
-       :silent-completion)
-      (t :silent-completion))))
+  (amoebum::%classify-streamed-turn-events events))
 
 (test i332-replay-helper-detects-silent-shape-signals
   (let ((signals (%i332-replay-streamed-turn-trace
@@ -1517,7 +1821,15 @@
 
 (defun run-all ()
   "Run all amoebum tests and return T when successful."
-  (let ((amoebum:*desktop-notifications-suppressed* t)
+  (let ((amoebum.notifications:*desktop-notifications-suppressed* t)
+        ;; Keep delivery on the test thread so suppression/mocks are deterministic.
+        (amoebum.notifications:*notification-async-dispatch-p* nil)
         (results (run 'amoebum-suite)))
     (explain! results)
-    (results-status results)))
+    (multiple-value-bind (ok failed-tests _skipped-tests)
+        (results-status results)
+      (declare (ignore _skipped-tests))
+      (let ((records (%failed-test-records failed-tests)))
+        (%emit-failure-summary records)
+        (%write-failure-summary-file records))
+      ok)))

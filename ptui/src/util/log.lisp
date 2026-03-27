@@ -1,11 +1,12 @@
 (defpackage :ptui.util.log
   (:use :cl)
-  (:export #:*log-level* #:log-debug #:log-info #:log-warn #:log-error
+  (:export #:*log-level* #:*log-output* #:log-debug #:log-info #:log-warn #:log-error
            #:with-log-context #:log-kv
-           #:resolve-log-level
-           #:render-stats #:make-render-stats
-           #:render-stats-frame-count #:render-stats-last-frame-ms
-           #:render-stats-last-commit-bytes #:render-stats-last-diff-ops))
+   #:resolve-log-level
+   #:render-stats #:make-render-stats
+   #:render-stats-frame-count #:render-stats-last-frame-ms
+   #:render-stats-last-commit-bytes #:render-stats-last-diff-ops
+   #:render-stats-last-frame-slow-p #:render-stats-last-perf-guard-fired-p))
 
 (in-package :ptui.util.log)
 
@@ -21,6 +22,9 @@
         :info)))
 
 (defparameter *log-level* :info)
+(defparameter *log-output* nil
+  "When non-nil, log output goes here instead of *error-output*.
+Set to a file stream when the TUI is active to prevent stderr corruption.")
 (defparameter *log-context* nil)
 
 (defparameter +level-order+
@@ -42,14 +46,15 @@
 
 (defun %log (level message &rest args)
   (when (level-enabled-p level)
-    (let ((rendered (if args
-                        (apply #'format nil message args)
-                        message)))
-      (format *error-output* "~&[~A] ~A~A~%"
+    (let* ((rendered (if args
+                         (apply #'format nil message args)
+                         message))
+           (out (or *log-output* *error-output*)))
+      (format out "~&[~A] ~A~A~%"
               (string-upcase (symbol-name level))
               rendered
               (format-log-context))
-      (finish-output *error-output*)))
+      (finish-output out)))
   nil)
 
 (defmacro log-debug (message &rest args)
@@ -82,4 +87,6 @@
   (frame-count 0 :type fixnum)
   (last-frame-ms 0 :type fixnum)
   (last-commit-bytes 0 :type fixnum)
-  (last-diff-ops 0 :type fixnum))
+  (last-diff-ops 0 :type fixnum)
+  (last-frame-slow-p nil :type boolean)
+  (last-perf-guard-fired-p nil :type boolean))

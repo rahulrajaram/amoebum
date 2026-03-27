@@ -43,6 +43,97 @@
          (or (char= ch #\Space)
              (char= ch #\Tab)))))
 
+(defstruct (wrap-state (:constructor %make-wrap-state (preserve-spaces)))
+  (line-clusters '())
+  (line-width 0)
+  (word-clusters '())
+  (word-width 0)
+  (lines '())
+  (preserve-spaces preserve-spaces :type boolean))
+
+(defun %wrap-newline-cluster-p (cluster)
+  (string= cluster (string #\Newline)))
+
+(defun %wrap-strip-trailing-spaces! (state engine)
+  (loop while (and (wrap-state-line-clusters state)
+                   (%breakable-cluster-p (first (wrap-state-line-clusters state))))
+        do (let ((width (ptui.text.width:grapheme-width
+                         (first (wrap-state-line-clusters state))
+                         :engine engine)))
+             (pop (wrap-state-line-clusters state))
+             (decf (wrap-state-line-width state) width))))
+
+(defun %wrap-reset-word! (state)
+  (setf (wrap-state-word-clusters state) '()
+        (wrap-state-word-width state) 0))
+
+(defun %wrap-flush-line! (state engine)
+  (unless (wrap-state-preserve-spaces state)
+    (%wrap-strip-trailing-spaces! state engine))
+  (push (%concat-clusters (nreverse (wrap-state-line-clusters state)))
+        (wrap-state-lines state))
+  (setf (wrap-state-line-clusters state) '()
+        (wrap-state-line-width state) 0)
+  (%wrap-reset-word! state))
+
+(defun %wrap-append-cluster! (state cluster width breakablep)
+  (push cluster (wrap-state-line-clusters state))
+  (incf (wrap-state-line-width state) width)
+  (if breakablep
+      (%wrap-reset-word! state)
+      (progn
+        (push cluster (wrap-state-word-clusters state))
+        (incf (wrap-state-word-width state) width))))
+
+(defun %wrap-word-break-possible-p (state cluster-width max-width)
+  (and (wrap-state-word-clusters state)
+       (> (- (wrap-state-line-width state)
+             (wrap-state-word-width state))
+          0)
+       (<= (+ (wrap-state-word-width state) cluster-width) max-width)))
+
+(defun %wrap-reflow-word! (state cluster cluster-width engine)
+  (let ((saved-word (nreverse (wrap-state-word-clusters state))))
+    (setf (wrap-state-line-clusters state)
+          (nthcdr (length saved-word) (wrap-state-line-clusters state)))
+    (decf (wrap-state-line-width state) (wrap-state-word-width state))
+    (%wrap-flush-line! state engine)
+    (dolist (word-cluster saved-word)
+      (%wrap-append-cluster! state
+                             word-cluster
+                             (ptui.text.width:grapheme-width word-cluster :engine engine)
+                             nil))
+    (%wrap-append-cluster! state cluster cluster-width nil)))
+
+(defun %wrap-overflow-cluster! (state cluster cluster-width breakablep max-width engine)
+  (cond
+    (breakablep
+     (%wrap-flush-line! state engine))
+    ((%wrap-word-break-possible-p state cluster-width max-width)
+     (%wrap-reflow-word! state cluster cluster-width engine))
+    (t
+     (%wrap-flush-line! state engine)
+     (%wrap-append-cluster! state cluster cluster-width nil))))
+
+(defun %wrap-process-cluster! (state cluster max-width engine)
+  (when (%wrap-newline-cluster-p cluster)
+    (%wrap-flush-line! state engine)
+    (return-from %wrap-process-cluster!))
+  (let* ((width (ptui.text.width:grapheme-width cluster :engine engine))
+         (breakablep (%breakable-cluster-p cluster)))
+    (cond
+      ((zerop width)
+       (%wrap-append-cluster! state cluster width nil))
+      ((> width max-width)
+       (when (wrap-state-line-clusters state)
+         (%wrap-flush-line! state engine))
+       (%wrap-append-cluster! state cluster width nil)
+       (%wrap-flush-line! state engine))
+      ((> (+ (wrap-state-line-width state) width) max-width)
+       (%wrap-overflow-cluster! state cluster width breakablep max-width engine))
+      (t
+       (%wrap-append-cluster! state cluster width breakablep)))))
+
 (defun wrap-by-width (text max-width &key (engine :auto) (preserve-spaces nil))
   "Wrap TEXT into a list of lines, each bounded by MAX-WIDTH display cells.
 Prefers breaking at word boundaries (spaces). Falls back to character-level
@@ -51,84 +142,13 @@ spaces are kept on wrapped lines (needed for cursor position mapping)."
   (check-type text string)
   (check-type max-width (integer 1 *))
   (let ((clusters (ptui.text.grapheme:split-graphemes text :engine engine))
-        (line-clusters '())
-        (line-width 0)
-        ;; Track last breakable position for word-boundary wrapping
-        (word-clusters '())   ; clusters since last break point
-        (word-width 0)        ; width of clusters since last break point
-        (lines '()))
-    (labels ((%strip-trailing-spaces ()
-               ;; Remove trailing breakable clusters from line-clusters (reversed)
-               (loop while (and line-clusters
-                                (%breakable-cluster-p (first line-clusters)))
-                     do (let ((sp-w (ptui.text.width:grapheme-width
-                                     (first line-clusters) :engine engine)))
-                          (pop line-clusters)
-                          (decf line-width sp-w))))
-             (flush-line ()
-               (unless preserve-spaces (%strip-trailing-spaces))
-               (push (%concat-clusters (nreverse line-clusters)) lines)
-               (setf line-clusters '()
-                     line-width 0
-                     word-clusters '()
-                     word-width 0))
-             (append-cluster (cluster width breakablep)
-               (push cluster line-clusters)
-               (incf line-width width)
-               (if breakablep
-                   ;; Reset word tracking after a breakable cluster
-                   (setf word-clusters '()
-                         word-width 0)
-                   (progn
-                     (push cluster word-clusters)
-                     (incf word-width width)))))
-      (if (null clusters)
-          (setf lines (list ""))
-          (progn
-            (dolist (cluster clusters)
-              (cond
-                ((string= cluster (string #\Newline))
-                 (flush-line))
-                (t
-                 (let* ((width (ptui.text.width:grapheme-width cluster :engine engine))
-                        (breakp (%breakable-cluster-p cluster)))
-                   (cond
-                     ((zerop width)
-                      (append-cluster cluster width nil))
-                     ((> width max-width)
-                      ;; Single cluster wider than line — force its own line
-                      (when line-clusters (flush-line))
-                      (append-cluster cluster width nil)
-                      (flush-line))
-                     ((> (+ line-width width) max-width)
-                      ;; Would overflow. Try to break at word boundary.
-                      (cond
-                        ;; Space itself overflows — just break, skip the space
-                        (breakp
-                         (flush-line))
-                        ;; Word boundary available — rewind to it
-                        ((and word-clusters
-                              (> (- line-width word-width) 0)
-                              (<= (+ word-width width) max-width))
-                         (let ((saved-word (nreverse word-clusters)))
-                           ;; Remove word clusters from line-clusters
-                           (setf line-clusters (nthcdr (length saved-word) line-clusters))
-                           (decf line-width word-width)
-                           (flush-line)
-                           ;; Re-add the word clusters
-                           (dolist (wc saved-word)
-                             (let ((ww (ptui.text.width:grapheme-width wc :engine engine)))
-                               (append-cluster wc ww nil)))
-                           ;; Add the current cluster
-                           (append-cluster cluster width nil)))
-                        ;; No word boundary — hard break
-                        (t
-                         (flush-line)
-                         (append-cluster cluster width nil))))
-                     (t
-                      (append-cluster cluster width breakp)))))))
-            (flush-line))))
-    (nreverse lines)))
+        (state (%make-wrap-state preserve-spaces)))
+    (when (null clusters)
+      (return-from wrap-by-width (list "")))
+    (dolist (cluster clusters)
+      (%wrap-process-cluster! state cluster max-width engine))
+    (%wrap-flush-line! state engine)
+    (nreverse (wrap-state-lines state))))
 
 (defun %ellipsis-string (ellipsis)
   (cond

@@ -2,7 +2,8 @@
 # tui-input-test.sh — Interactive tmux tests for prompt editing, scrolling,
 # stream cancellation, history search, and input navigation.
 #
-# Uses --demo mode to avoid API key requirements.
+# Starts with a real saved-image typing smoke, then uses --demo mode for
+# deterministic response assertions.
 # Tests verify observable text in captured tmux panes.
 
 set -euo pipefail
@@ -40,17 +41,59 @@ watch_pause() {
 # --- helpers ---
 
 capture_pane() {
+    tmux has-session -t "$SESSION" 2>/dev/null || return 1
     tmux capture-pane -t "$SESSION" -p -S -100
 }
 
 capture_prompt_area() {
     # Capture only the last 4 lines of the pane (prompt box + status bar)
     # to avoid false matches against message history
+    tmux has-session -t "$SESSION" 2>/dev/null || return 1
     tmux capture-pane -t "$SESSION" -p | tail -4
+}
+
+capture_status_line() {
+    tmux has-session -t "$SESSION" 2>/dev/null || return 1
+    tmux capture-pane -t "$SESSION" -p | tail -1
+}
+
+binary_exit_marker() {
+    local content="$1"
+    printf '%s\n' "$content" | grep -o '__AMOEBUM_EXIT__=[0-9][0-9]*' | tail -1 || true
+}
+
+assert_binary_alive() {
+    local label="$1" content marker
+    if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+        echo "  FAIL: $label (tmux session exited)"
+        FAILED=$((FAILED + 1))
+        return 1
+    fi
+    content="$(capture_pane || true)"
+    marker="$(binary_exit_marker "$content")"
+    if [ -n "$marker" ]; then
+        echo "  FAIL: $label (amoebum exited: $marker)"
+        echo "  --- captured pane (last 20 lines) ---"
+        printf '%s\n' "$content" | tail -20
+        echo "  --- end ---"
+        FAILED=$((FAILED + 1))
+        return 1
+    fi
+    return 0
 }
 
 assert_contains() {
     local label="$1" needle="$2" haystack="$3"
+    local marker
+    marker="$(binary_exit_marker "$haystack")"
+    if [ -n "$marker" ]; then
+        echo "  FAIL: $label (amoebum exited: $marker)"
+        echo "  --- captured pane (last 20 lines) ---"
+        printf '%s\n' "$haystack" | tail -20
+        echo "  --- end ---"
+        FAILED=$((FAILED + 1))
+        return
+    fi
     if echo "$haystack" | grep -qiF "$needle"; then
         echo "  PASS: $label (found '$needle')"
         PASSED=$((PASSED + 1))
@@ -65,6 +108,16 @@ assert_contains() {
 
 assert_not_contains() {
     local label="$1" needle="$2" haystack="$3"
+    local marker
+    marker="$(binary_exit_marker "$haystack")"
+    if [ -n "$marker" ]; then
+        echo "  FAIL: $label (amoebum exited: $marker)"
+        echo "  --- captured pane (last 20 lines) ---"
+        printf '%s\n' "$haystack" | tail -20
+        echo "  --- end ---"
+        FAILED=$((FAILED + 1))
+        return
+    fi
     if echo "$haystack" | grep -qiF "$needle"; then
         echo "  FAIL: $label (unexpected '$needle' found)"
         echo "  --- captured pane (last 20 lines) ---"
@@ -80,7 +133,15 @@ assert_not_contains() {
 wait_for_text() {
     local needle="$1" timeout="${2:-10}" elapsed=0
     while [ "$elapsed" -lt "$timeout" ]; do
-        if capture_pane | grep -qiF "$needle"; then
+        if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+            return 1
+        fi
+        local content
+        content="$(capture_pane || true)"
+        if [ -n "$(binary_exit_marker "$content")" ]; then
+            return 1
+        fi
+        if printf '%s\n' "$content" | grep -qiF "$needle"; then
             return 0
         fi
         sleep 0.5
@@ -92,7 +153,77 @@ wait_for_text() {
 wait_for_text_gone() {
     local needle="$1" timeout="${2:-10}" elapsed=0
     while [ "$elapsed" -lt "$timeout" ]; do
-        if ! capture_pane | grep -qiF "$needle"; then
+        if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+            return 1
+        fi
+        local content
+        content="$(capture_pane || true)"
+        if [ -n "$(binary_exit_marker "$content")" ]; then
+            return 1
+        fi
+        if ! printf '%s\n' "$content" | grep -qiF "$needle"; then
+            return 0
+        fi
+        sleep 0.5
+        elapsed=$((elapsed + 1))
+    done
+    return 1
+}
+
+wait_for_status_text() {
+    local needle="$1" timeout="${2:-10}" elapsed=0
+    while [ "$elapsed" -lt "$timeout" ]; do
+        if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+            return 1
+        fi
+        local status
+        status="$(capture_status_line || true)"
+        if printf '%s\n' "$status" | grep -qiF "$needle"; then
+            return 0
+        fi
+        sleep 0.5
+        elapsed=$((elapsed + 1))
+    done
+    return 1
+}
+
+wait_for_status_ready() {
+    local timeout="${1:-20}" elapsed=0
+    while [ "$elapsed" -lt "$timeout" ]; do
+        if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+            return 1
+        fi
+        local status
+        status="$(capture_status_line || true)"
+        if printf '%s\n' "$status" | grep -qiF "mode " \
+            && printf '%s\n' "$status" | grep -qiF "model "; then
+            return 0
+        fi
+        sleep 0.5
+        elapsed=$((elapsed + 1))
+    done
+    return 1
+}
+
+wait_for_stream_done() {
+    wait_for_status_text "stream done" "${1:-20}"
+}
+
+wait_for_stream_not_running() {
+    local timeout="${1:-20}" elapsed=0
+    while [ "$elapsed" -lt "$timeout" ]; do
+        if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+            return 1
+        fi
+        local status
+        status="$(capture_status_line || true)"
+        if ! printf '%s\n' "$status" | grep -qiF "stream "; then
+            return 0
+        fi
+        if printf '%s\n' "$status" | grep -qiF "stream done" \
+            || printf '%s\n' "$status" | grep -qiF "stream cancelled" \
+            || printf '%s\n' "$status" | grep -qiF "stream failed" \
+            || printf '%s\n' "$status" | grep -qiF "stream idle"; then
             return 0
         fi
         sleep 0.5
@@ -104,8 +235,19 @@ wait_for_text_gone() {
 start_session() {
     tmux kill-session -t "$SESSION" 2>/dev/null || true
     sleep 0.5
-    tmux new-session -d -s "$SESSION" -x 120 -y 40 "$BINARY --demo"
-    sleep 3
+    tmux new-session -d -s "$SESSION" -x 120 -y 40 \
+        "env TERM=screen-256color '$BINARY' --demo; rc=\$?; printf '\n__AMOEBUM_EXIT__=%s\n' \"\$rc\"; sleep 30"
+    wait_for_text "Type below and press Enter." 20 || die "amoebum did not reach interactive prompt"
+    assert_binary_alive "startup remains alive" || die "amoebum exited during startup"
+}
+
+start_real_session() {
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    sleep 0.5
+    tmux new-session -d -s "$SESSION" -x 120 -y 40 \
+        "env TERM=screen-256color '$BINARY'; rc=\$?; printf '\n__AMOEBUM_EXIT__=%s\n' \"\$rc\"; sleep 30"
+    wait_for_status_ready 20 || die "amoebum did not reach an interactive status bar"
+    assert_binary_alive "real-mode startup remains alive" || die "amoebum exited during startup"
 }
 
 end_session() {
@@ -122,6 +264,26 @@ echo "=== TUI Input & Navigation Tests ==="
 echo "Binary: $BINARY"
 echo "Session: $SESSION"
 echo ""
+
+# ============================================================
+# Group 0: Real Binary Smoke
+# ============================================================
+
+# --- Test 0: Real binary raw typing stays alive ---
+echo "Test 0: Real binary raw typing stays alive"
+
+start_real_session
+watch_pause
+
+tmux send-keys -t "$SESSION" "hello"
+sleep 0.5
+watch_pause
+
+assert_binary_alive "real-mode typing remains alive"
+PROMPT="$(capture_prompt_area)"
+assert_contains "real-mode typed text visible" "hello" "$PROMPT"
+
+end_session
 
 # ============================================================
 # Group 1: Prompt Text Input & Display
@@ -425,7 +587,8 @@ tmux send-keys -t "$SESSION" "long" Enter
 # The long response has 20 sections × ~50 words × 0.02s/word ≈ 20s
 wait_for_text "Section 20" 80 || true
 # Wait for streaming to finish
-wait_for_text_gone "Streaming" 40 || true
+wait_for_stream_done 40 || true
+wait_for_text_gone "Streaming... Press Ctrl-C to stop early." 40 || true
 sleep 1
 watch_pause
 
@@ -476,16 +639,17 @@ start_session
 watch_pause
 
 tmux send-keys -t "$SESSION" "long" Enter
-wait_for_text "Streaming" 8 || true
+wait_for_text "Streaming... Press Ctrl-C to stop early." 8 || true
 watch_pause
 
 tmux send-keys -t "$SESSION" Escape
-wait_for_text_gone "Streaming" 10 || true
+wait_for_stream_not_running 10 || true
+wait_for_text_gone "Streaming... Press Ctrl-C to stop early." 10 || true
 sleep 0.5
 watch_pause
 
 CONTENT="$(capture_pane)"
-assert_not_contains "streaming hint gone after escape" "Streaming" "$CONTENT"
+assert_not_contains "streaming hint gone after escape" "Streaming... Press Ctrl-C to stop early." "$CONTENT"
 assert_contains "partial response preserved" "Long Response" "$CONTENT"
 
 end_session
@@ -498,10 +662,11 @@ start_session
 watch_pause
 
 tmux send-keys -t "$SESSION" "long" Enter
-wait_for_text "Streaming" 8 || true
+wait_for_text "Streaming... Press Ctrl-C to stop early." 8 || true
 
 tmux send-keys -t "$SESSION" Escape
-wait_for_text_gone "Streaming" 10 || true
+wait_for_stream_not_running 10 || true
+wait_for_text_gone "Streaming... Press Ctrl-C to stop early." 10 || true
 sleep 0.5
 
 # Type into prompt after cancellation
@@ -528,9 +693,13 @@ watch_pause
 # Build some history
 tmux send-keys -t "$SESSION" "hello" Enter
 wait_for_text "Demo Response" 10 || true
+wait_for_stream_done 20 || true
+wait_for_text_gone "Streaming... Press Ctrl-C to stop early." 20 || true
 sleep 1
 tmux send-keys -t "$SESSION" "code" Enter
 wait_for_text "fibonacci" 10 || true
+wait_for_stream_done 20 || true
+wait_for_text_gone "Streaming... Press Ctrl-C to stop early." 20 || true
 sleep 1
 
 # Activate history search
@@ -614,7 +783,8 @@ watch_pause
 tmux send-keys -t "$SESSION" "hello" Enter
 wait_for_text "Demo Response" 20 || true
 # Wait for streaming to finish before checking prompt
-wait_for_text_gone "Streaming" 20 || true
+wait_for_stream_done 20 || true
+wait_for_text_gone "Streaming... Press Ctrl-C to stop early." 20 || true
 sleep 1
 watch_pause
 
@@ -627,7 +797,8 @@ echo "Test 25: Second message after first"
 
 tmux send-keys -t "$SESSION" "code" Enter
 wait_for_text "fibonacci" 20 || true
-wait_for_text_gone "Streaming" 20 || true
+wait_for_stream_done 20 || true
+wait_for_text_gone "Streaming... Press Ctrl-C to stop early." 20 || true
 sleep 1
 watch_pause
 

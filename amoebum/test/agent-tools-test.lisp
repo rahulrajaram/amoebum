@@ -102,7 +102,7 @@
           (setf amoebum:*event-bus* (amoebum:make-event-bus :capacity 64)
                 amoebum::*worker-supervisor* (make-instance 'amoebum::in-process-supervisor))
           (amoebum:clear-workers)
-          (amoebum:clear-worker-groups)
+          (amoebum.workers:clear-worker-groups)
           ;; Fan out 2 shell workers
           (multiple-value-bind (group-id worker-ids)
               (amoebum:fan-out-workers
@@ -112,7 +112,7 @@
             (is (stringp group-id))
             (is (= 2 (length worker-ids)))
             ;; Join and collect results
-            (let ((results (amoebum:join-worker-group group-id)))
+            (let ((results (amoebum.workers:join-worker-group group-id)))
               (is (= 2 (length results)))
               ;; Each result is (worker-id status result)
               (dolist (triple results)

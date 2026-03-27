@@ -78,10 +78,10 @@
            (multiple-value-bind (handledp result)
                (amoebum:dispatch-slash-command
                 "/agent-activity --type tool-call --limit 5"
-                :config (amoebum:current-config))
-             (let ((output (amoebum:slash-command-result-output result)))
+                :config (amoebum.config:current-config))
+             (let ((output (amoebum.commands:slash-command-result-output result)))
                (is-true handledp)
-               (is (amoebum:slash-command-result-p result))
+               (is (amoebum.commands:slash-command-result-p result))
                (is (stringp output))
                (is (search "type=tool-call" output :test #'char-equal))
                (is (search "tool-call" output :test #'char-equal)))))

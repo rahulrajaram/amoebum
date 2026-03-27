@@ -69,6 +69,22 @@
     (is (search "segment 2/3" (amoebum::shell-safety-result-reason result)
                 :test #'char-equal))))
 
+(test shell-safety-blocks-sed-in-place-lisp-edit
+  "In-place sed edits against Lisp source are blocked."
+  (let ((result (amoebum::evaluate-shell-safety-policy
+                 "sed -i 's/foo/bar/' amoebum/src/macros/defhook.lisp")))
+    (is (eq :deny (amoebum::shell-safety-result-decision result)))
+    (is (search "edit-file" (amoebum::shell-safety-result-reason result)
+                :test #'char-equal))))
+
+(test shell-safety-blocks-perl-in-place-lisp-edit
+  "In-place perl edits against Lisp source are blocked."
+  (let ((result (amoebum::evaluate-shell-safety-policy
+                 "perl -0pi -e 's/foo/bar/' amoebum/src/ui/chat.lisp")))
+    (is (eq :deny (amoebum::shell-safety-result-decision result)))
+    (is (search "Lisp source" (amoebum::shell-safety-result-reason result)
+                :test #'char-equal))))
+
 ;;; --- Escalation triggered --------------------------------------------------
 
 (test shell-safety-escalates-sudo
@@ -140,6 +156,12 @@
 (test shell-safety-allows-grep
   "grep is allowed."
   (let ((result (amoebum::evaluate-shell-safety-policy "grep -r 'pattern' src/")))
+    (is (eq :allow (amoebum::shell-safety-result-decision result)))))
+
+(test shell-safety-allows-read-only-sed
+  "Read-only sed inspection is allowed."
+  (let ((result (amoebum::evaluate-shell-safety-policy
+                 "sed -n '1,20p' amoebum/src/macros/defhook.lisp")))
     (is (eq :allow (amoebum::shell-safety-result-decision result)))))
 
 ;;; --- Deny reason is always provided ----------------------------------------

@@ -91,8 +91,8 @@
          (link-path (merge-pathnames #P"links/work.txt" tmp-root))
          (target-a (merge-pathnames #P"targets/a.txt" tmp-root))
          (target-b (merge-pathnames #P"targets/b.txt" tmp-root))
-         (config (amoebum:current-config))
-         (old-mode (amoebum:config-permission-mode config))
+         (config (amoebum.config:current-config))
+         (old-mode (amoebum.config:config-permission-mode config))
          (old-rules amoebum:*permission-rules*)
          (old-hook amoebum::*permission-path-identity-recheck-hook*))
     (unwind-protect
@@ -106,7 +106,7 @@
                              (namestring link-path))
           (setf amoebum:*permission-rules* nil)
           (clrhash amoebum::*permission-path-identity-check-cache*)
-          (amoebum:setconfig :permission-mode :full-auto)
+          (amoebum.config:setconfig :permission-mode :full-auto)
           (is (eq (amoebum:check-permission
                    :tool :write-file
                    :path (namestring link-path)
@@ -132,5 +132,5 @@
                         :path-identity-changed))))))
       (setf amoebum:*permission-rules* old-rules
             amoebum::*permission-path-identity-recheck-hook* old-hook)
-      (amoebum:setconfig :permission-mode old-mode)
+      (amoebum.config:setconfig :permission-mode old-mode)
       (%delete-directory-tree-safe tmp-root))))

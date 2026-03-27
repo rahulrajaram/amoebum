@@ -50,10 +50,10 @@
     (unwind-protect
          (progn
            (setf amoebum::*worker-dashboard-state* nil)
-           (is (eq t (amoebum:toggle-worker-dashboard)))     ; nil -> t
-           (is (amoebum:worker-dashboard-visible-p))
-           (is (eq nil (amoebum:toggle-worker-dashboard)))   ; t -> nil
-           (is (not (amoebum:worker-dashboard-visible-p))))
+           (is (eq t (amoebum.workers:toggle-worker-dashboard)))     ; nil -> t
+           (is (amoebum.workers:worker-dashboard-visible-p))
+           (is (eq nil (amoebum.workers:toggle-worker-dashboard)))   ; t -> nil
+           (is (not (amoebum.workers:worker-dashboard-visible-p))))
       (setf amoebum::*worker-dashboard-state* old-state))))
 
 ;;; --- Subscribe/unsubscribe ---
@@ -65,11 +65,11 @@
     (unwind-protect
          (progn
            (setf amoebum::*worker-dashboard-state* nil)
-           (let ((state (amoebum:worker-dashboard-subscribe :event-bus bus)))
+           (let ((state (amoebum.workers:worker-dashboard-subscribe :event-bus bus)))
              ;; Should have subscription IDs for all 6 worker event types
              (is (= 6 (length (amoebum::worker-dashboard-state-subscription-ids state))))
              ;; Unsubscribe
-             (amoebum:worker-dashboard-unsubscribe :event-bus bus)
+             (amoebum.workers:worker-dashboard-unsubscribe :event-bus bus)
              (is (null (amoebum::worker-dashboard-state-subscription-ids state)))))
       (setf amoebum::*worker-dashboard-state* old-state))))
 
@@ -88,6 +88,55 @@
              (is (listp (ptui.ui.elements:ui-element-children tree)))))
       (setf amoebum:*worker-supervisor* old-sup))))
 
+(test dashboard-renders-runtime-agent-status-labels
+  "Agent-backed rows should show unified local/SW4RM runtime status labels."
+  (let ((old-sup amoebum:*worker-supervisor*)
+        (old-agent-registry amoebum::*agent-registry*)
+        (old-swarm-registry amoebum::*swarm-registry*))
+    (unwind-protect
+         (progn
+           (setf amoebum:*worker-supervisor* nil
+                 amoebum::*agent-registry* (make-hash-table :test #'equal)
+                 amoebum::*swarm-registry* (make-hash-table :test #'equal))
+           (amoebum:clear-workers)
+           (setf (gethash "task-0001" amoebum::*agent-registry*)
+                 (amoebum::%make-agent-record
+                  :id "task-0001"
+                  :type :task
+                  :task "local task"
+                  :status :running))
+           (setf (gethash "swarm-1" amoebum::*swarm-registry*)
+                 (amoebum:make-swarm-agent
+                  :id "swarm-1"
+                  :task "swarm task"
+                  :status :completed))
+           (amoebum::%store-worker
+            (amoebum::%make-worker-record
+             :id "w-agent-local" :type :agent :label "Local worker row"
+             :status :running :created-at 1
+             :backend :in-process :inner-id "task-0001"))
+           (amoebum::%store-worker
+            (amoebum::%make-worker-record
+             :id "w-agent-swarm" :type :agent :label "Swarm worker row"
+             :status :completed :created-at 2
+             :backend :swarm :inner-id "swarm-1"))
+           (let ((local-line (amoebum::%worker-status-line
+                              (find "w-agent-local"
+                                    (amoebum.workers:worker-list)
+                                    :key #'amoebum.workers:worker-record-id
+                                    :test #'equal)))
+                 (swarm-line (amoebum::%worker-status-line
+                              (find "w-agent-swarm"
+                                    (amoebum.workers:worker-list)
+                                    :key #'amoebum.workers:worker-record-id
+                                    :test #'equal))))
+             (is (search "[local/running]" local-line :test #'char-equal))
+             (is (search "[swarm/completed]" swarm-line :test #'char-equal))))
+      (amoebum:clear-workers)
+      (setf amoebum:*worker-supervisor* old-sup
+            amoebum::*agent-registry* old-agent-registry
+            amoebum::*swarm-registry* old-swarm-registry))))
+
 ;;; --- Status bar segment ---
 
 (test worker-status-bar-segment
@@ -97,9 +146,36 @@
          (progn
            (setf amoebum:*worker-supervisor* nil)
            (amoebum:clear-workers)
-           (let ((segment (amoebum:worker-status-bar-segment)))
+           (let ((segment (amoebum.workers:worker-status-bar-segment)))
              (is (stringp segment))))
       (setf amoebum:*worker-supervisor* old-sup))))
+
+(test worker-status-bar-segment-includes-runtime-agent-summary
+  "worker-status-bar-segment should expose unified runtime-agent status for active agent workers."
+  (let ((old-sup amoebum:*worker-supervisor*)
+        (old-agent-registry amoebum::*agent-registry*))
+    (unwind-protect
+         (progn
+           (setf amoebum:*worker-supervisor* nil
+                 amoebum::*agent-registry* (make-hash-table :test #'equal))
+           (amoebum:clear-workers)
+           (setf (gethash "task-0001" amoebum::*agent-registry*)
+                 (amoebum::%make-agent-record
+                  :id "task-0001"
+                  :type :task
+                  :task "local status"
+                  :status :running))
+           (amoebum::%store-worker
+            (amoebum::%make-worker-record
+             :id "w-agent-local" :type :agent :label "Local worker"
+             :status :running :created-at 1
+             :backend :in-process :inner-id "task-0001"))
+           (let ((segment (amoebum.workers:worker-status-bar-segment)))
+             (is (search "W:1" segment :test #'char-equal))
+             (is (search "A:1xlocal/running" (remove #\Space segment) :test #'char-equal))))
+      (amoebum:clear-workers)
+      (setf amoebum:*worker-supervisor* old-sup
+            amoebum::*agent-registry* old-agent-registry))))
 
 ;;; --- Select/drill-down ---
 
@@ -110,7 +186,7 @@
          (progn
            (setf amoebum::*worker-dashboard-state* nil)
            (amoebum:ensure-worker-dashboard-state)
-           (amoebum:worker-dashboard-select "w-test-001")
+           (amoebum.workers:worker-dashboard-select "w-test-001")
            (is (equal "w-test-001"
                       (amoebum::worker-dashboard-state-selected-worker-id
                        amoebum::*worker-dashboard-state*))))
@@ -122,5 +198,5 @@
     (unwind-protect
          (progn
            (setf amoebum::*worker-dashboard-state* nil)
-           (is (null (amoebum:worker-dashboard-selected-output))))
+           (is (null (amoebum.workers:worker-dashboard-selected-output))))
       (setf amoebum::*worker-dashboard-state* old-state))))

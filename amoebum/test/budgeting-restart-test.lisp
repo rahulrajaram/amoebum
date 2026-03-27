@@ -72,14 +72,14 @@
 
 (test i364-stream-budget-enforcement-uses-summarize-fallback
   (let* ((state (amoebum:ensure-chat-ui-state
-                 (amoebum:make-chat-ui-state
-                  :status-bar-state (amoebum:make-status-bar-state))))
-         (stream-state (amoebum:chat-ui-state-stream-state state)))
-    (setf (amoebum:chat-ui-state-messages state)
+                 (amoebum.ui:make-chat-ui-state
+                  :status-bar-state (amoebum.ui:make-status-bar-state))))
+         (stream-state (amoebum.ui:chat-ui-state-stream-state state)))
+    (setf (amoebum.ui:chat-ui-state-messages state)
           (list (amoebum:make-chat-message "user" "Summarize the architecture changes.")
                 (amoebum:make-chat-message "assistant" "" :partial t)))
-    (setf (amoebum:chat-ui-state-context-window-limit state) 10
-          (amoebum:chat-ui-state-context-used-tokens state) 9)
+    (setf (amoebum.ui:chat-ui-state-context-window-limit state) 10
+          (amoebum.ui:chat-ui-state-context-used-tokens state) 9)
     (setf (amoebum::token-stream-state-status stream-state) :running
           (amoebum::token-stream-state-token-count stream-state) 9
           (amoebum::token-stream-state-target-message-index stream-state) 1
@@ -88,7 +88,7 @@
             #'amoebum:default-budget-exhaustion-restart-selector))
       (is-true (amoebum::%enforce-stream-token-budget-if-needed state)))
     (let* ((summary (amoebum:token-stream-progress-summary stream-state))
-           (assistant (nth 1 (amoebum:chat-ui-state-messages state)))
+           (assistant (nth 1 (amoebum.ui:chat-ui-state-messages state)))
            (content (and (typep assistant 'pseudopod:message)
                          (amoebum::%message-content->text assistant))))
       (is-true (getf summary :aborted-p))

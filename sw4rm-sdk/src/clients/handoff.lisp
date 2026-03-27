@@ -70,6 +70,57 @@
                      (handoff-rejected-rejection-code condition)
                      (handoff-rejected-rejection-reason condition)))))
 
+(defstruct (handoff-request
+             (:constructor make-handoff-request
+                 (&key request-id
+                       from-agent
+                       to-agent
+                       reason
+                       budget
+                       delegation-policy
+                       (context-snapshot "")
+                       (capabilities-required '())
+                       (priority 0)
+                       timeout-ms)))
+  "Normalized caller-side handoff envelope for delegation negotiation."
+  request-id
+  from-agent
+  to-agent
+  reason
+  budget
+  delegation-policy
+  (context-snapshot "" :type string)
+  (capabilities-required '() :type list)
+  (priority 0)
+  timeout-ms)
+
+(defstruct (delegation-runtime
+             (:constructor %make-delegation-runtime
+                 (&key request
+                       request-id
+                       budget
+                       policy
+                       redirect-bound
+                       max-retries-on-overloaded
+                       visited-agents
+                       now-fn
+                       sleep-fn
+                       rand-fn
+                       (retry-index 0)
+                       (redirect-hops 0))))
+  request
+  request-id
+  budget
+  policy
+  redirect-bound
+  max-retries-on-overloaded
+  visited-agents
+  now-fn
+  sleep-fn
+  rand-fn
+  (retry-index 0)
+  (redirect-hops 0))
+
 (defun %required-string (plist key)
   "Read KEY from PLIST and require a non-empty string value."
   (let ((value (getf plist key)))
@@ -328,150 +379,276 @@ Returns two values:
                (bounded (max 0.0d0 (min exponential max-backoff-ms))))
           (max 0 (floor (max 0.0d0 (funcall rand-uniform-fn 0.0d0 bounded))))))))
 
-(defun delegate-to-swarm
-    (send-handoff-fn
-     &key
-       from-agent
-       to-agent
-       reason
-       budget
-       delegation-policy
-       request-id
-       (context-snapshot "")
-       (capabilities-required '())
-       (priority 0)
-       timeout-ms
-       now-ms-fn
-       sleep-seconds-fn
-       rand-uniform-fn)
-  "Execute caller-side SW4-005 delegation redirect/retry semantics.
+(defun %coerce-handoff-request (request)
+  "Return REQUEST as a handoff-request struct."
+  (cond
+    ((handoff-request-p request) request)
+    ((listp request)
+     (make-handoff-request
+      :request-id (or (getf request :request-id) (getf request :handoff-id))
+      :from-agent (getf request :from-agent)
+      :to-agent (getf request :to-agent)
+      :reason (getf request :reason)
+      :budget (getf request :budget)
+      :delegation-policy (getf request :delegation-policy)
+      :context-snapshot
+      (or (getf request :context-snapshot)
+          (getf request :context)
+          "")
+      :capabilities-required (copy-list (or (getf request :capabilities-required) '()))
+      :priority (or (getf request :priority) 0)
+      :timeout-ms (getf request :timeout-ms)))
+    (t
+     (error 'validation-error
+            :message "handoff-request must be a plist or handoff-request struct"
+            :field "handoff-request"
+            :constraint "plist-or-struct"))))
 
-SEND-HANDOFF-FN receives a normalized handoff request plist and must return a
-handoff response plist."
-  (%required-string (list :value from-agent) :value)
-  (%required-string (list :value to-agent) :value)
-  (%required-string (list :value reason) :value)
-  (unless (listp budget)
+(defun %validate-delegation-request (request)
+  "Validate REQUEST before caller-side delegation begins."
+  (%required-string (list :value (handoff-request-from-agent request)) :value)
+  (%required-string (list :value (handoff-request-to-agent request)) :value)
+  (%required-string (list :value (handoff-request-reason request)) :value)
+  (unless (listp (handoff-request-budget request))
     (error 'validation-error
            :message "budget plist is required for cross-swarm delegation"
            :field "budget"
            :constraint "plist"))
-  (let ((deadline (getf budget :deadline-epoch-ms)))
+  (let ((deadline (getf (handoff-request-budget request) :deadline-epoch-ms)))
     (unless (and (integerp deadline) (> deadline 0))
       (error 'validation-error
              :message "budget.deadline-epoch-ms is required for cross-swarm delegation"
              :field "budget.deadline-epoch-ms"
              :constraint "positive integer")))
-  (when (and timeout-ms (or (not (integerp timeout-ms)) (< timeout-ms 0)))
-    (error 'validation-error
-           :message "timeout-ms must be >= 0"
-           :field "timeout-ms"
-           :constraint "non-negative integer"))
+  (let ((timeout-ms (handoff-request-timeout-ms request)))
+    (when (and timeout-ms (or (not (integerp timeout-ms)) (< timeout-ms 0)))
+      (error 'validation-error
+             :message "timeout-ms must be >= 0"
+             :field "timeout-ms"
+             :constraint "non-negative integer"))))
 
-  (let* ((now-fn (or now-ms-fn #'%now-ms))
-         (sleep-fn (or sleep-seconds-fn #'%default-sleep-seconds))
-         (rand-fn (or rand-uniform-fn #'%default-rand-uniform))
-         (policy (%normalize-delegation-policy delegation-policy))
-         (request-budget (%copy-plist budget))
-         (request-id-value (or request-id (generate-uuid)))
-         (request (list :request-id request-id-value
-                        :handoff-id request-id-value
-                        :from-agent from-agent
-                        :to-agent to-agent
-                        :reason reason
-                        :context-snapshot context-snapshot
-                        :capabilities-required (copy-list capabilities-required)
-                        :priority priority
-                        :budget request-budget
-                        :delegation-policy policy))
-         (max-retries-on-overloaded (getf policy :max-retries-on-overloaded))
-         (redirect-bound (%effective-max-redirects policy))
-         (visited-agents (list to-agent))
-         (retry-index 0)
-         (redirect-hops 0))
-    (when timeout-ms
-      (setf (getf request :timeout-ms) timeout-ms))
+(defun %prepare-handoff-envelope (request)
+  "Build the plist envelope sent to SEND-HANDOFF-FN."
+  (let* ((normalized-request (%coerce-handoff-request request))
+         (_ (%validate-delegation-request normalized-request))
+         (policy (%normalize-delegation-policy
+                  (handoff-request-delegation-policy normalized-request)))
+         (request-budget (%copy-plist (handoff-request-budget normalized-request)))
+         (request-id (or (handoff-request-request-id normalized-request)
+                         (generate-uuid)))
+         (envelope
+           (list :request-id request-id
+                 :handoff-id request-id
+                 :from-agent (handoff-request-from-agent normalized-request)
+                 :to-agent (handoff-request-to-agent normalized-request)
+                 :reason (handoff-request-reason normalized-request)
+                 :context-snapshot (handoff-request-context-snapshot normalized-request)
+                 :capabilities-required
+                 (copy-list (handoff-request-capabilities-required normalized-request))
+                 :priority (handoff-request-priority normalized-request)
+                 :budget request-budget
+                 :delegation-policy policy)))
+    (when (handoff-request-timeout-ms normalized-request)
+      (setf (getf envelope :timeout-ms)
+            (handoff-request-timeout-ms normalized-request)))
+    (values envelope request-id policy request-budget)))
+
+(defun %make-delegation-state (request now-ms-fn sleep-seconds-fn rand-uniform-fn)
+  "Create mutable runtime state for delegation negotiation."
+  (multiple-value-bind (envelope request-id policy budget)
+      (%prepare-handoff-envelope request)
+    (%make-delegation-runtime
+     :request envelope
+     :request-id request-id
+     :budget budget
+     :policy policy
+     :redirect-bound (%effective-max-redirects policy)
+     :max-retries-on-overloaded (getf policy :max-retries-on-overloaded)
+     :visited-agents (list (getf envelope :to-agent))
+     :now-fn (or now-ms-fn #'%now-ms)
+     :sleep-fn (or sleep-seconds-fn #'%default-sleep-seconds)
+     :rand-fn (or rand-uniform-fn #'%default-rand-uniform))))
+
+(defun %delegation-budget-exhausted-p (runtime now-ms)
+  "Return T when RUNTIME cannot fund another attempt."
+  (%budget-exhausted-p (delegation-runtime-budget runtime) now-ms))
+
+(defun %perform-handoff-attempt (runtime send-handoff-fn start-ms)
+  "Execute one handoff attempt and account for elapsed wall time."
+  (let* ((response (funcall send-handoff-fn
+                            (%copy-plist (delegation-runtime-request runtime))))
+         (end-ms (funcall (delegation-runtime-now-fn runtime)))
+         (elapsed-ms (max (- end-ms start-ms) 0)))
+    (%consume-wall-time (delegation-runtime-budget runtime) elapsed-ms)
+    (values response end-ms)))
+
+(defun %retry-wait-allowed-p (runtime wait-ms end-ms)
+  "Return T when WAIT-MS fits inside the remaining delegation budget."
+  (let ((remaining-deadline-ms
+          (- (getf (delegation-runtime-budget runtime) :deadline-epoch-ms) end-ms))
+        (remaining-wall-time-ms
+          (getf (delegation-runtime-budget runtime) :wall-time-remaining-ms)))
+    (and (> wait-ms 0)
+         (or (not (integerp remaining-wall-time-ms))
+             (<= wait-ms remaining-wall-time-ms))
+         (<= wait-ms remaining-deadline-ms))))
+
+(defun %sleep-for-retry (runtime wait-ms)
+  "Sleep for WAIT-MS and deduct the observed wall-time cost."
+  (let ((before-sleep-ms (funcall (delegation-runtime-now-fn runtime))))
+    (funcall (delegation-runtime-sleep-fn runtime) (/ wait-ms 1000.0d0))
+    (let ((after-sleep-ms (funcall (delegation-runtime-now-fn runtime))))
+      (%consume-wall-time (delegation-runtime-budget runtime)
+                          (max (- after-sleep-ms before-sleep-ms) 0)))))
+
+(defun %handle-overloaded-response (runtime response end-ms)
+  "Advance overloaded retry negotiation.
+
+Returns two values:
+  action   - :retry or :return
+  payload  - response plist when action is :return; otherwise NIL."
+  (if (>= (delegation-runtime-retry-index runtime)
+          (delegation-runtime-max-retries-on-overloaded runtime))
+      (values :return response)
+      (let ((wait-ms (%next-retry-wait-ms
+                      response
+                      (delegation-runtime-retry-index runtime)
+                      (delegation-runtime-policy runtime)
+                      (delegation-runtime-rand-fn runtime))))
+        (incf (delegation-runtime-retry-index runtime))
+        (if (%retry-wait-allowed-p runtime wait-ms end-ms)
+            (progn
+              (%sleep-for-retry runtime wait-ms)
+              (values :retry nil))
+            (values :return response)))))
+
+(defun %redirect-target-from-response (response)
+  "Return the normalized redirect target from RESPONSE."
+  (let ((raw-target (getf response :redirect-to-agent-id)))
+    (and (stringp raw-target)
+         (string-trim '(#\Space #\Tab #\Newline #\Return) raw-target))))
+
+(defun %apply-next-target (runtime next-target)
+  "Retarget RUNTIME to NEXT-TARGET and record it in the visited set."
+  (setf (getf (delegation-runtime-request runtime) :to-agent) next-target)
+  (push next-target (delegation-runtime-visited-agents runtime)))
+
+(defun %handle-rejection-response (runtime response)
+  "Process non-redirect rejection responses.
+
+Returns two values:
+  action   - :retry or :return
+  payload  - response plist when action is :return; otherwise NIL."
+  (multiple-value-bind (action next-target)
+      (%handle-rejection-restart response (delegation-runtime-request-id runtime))
+    (if (and (eq action :retry)
+             (stringp next-target)
+             (> (length next-target) 0)
+             (not (member next-target
+                          (delegation-runtime-visited-agents runtime)
+                          :test #'string=)))
+        (progn
+          (%apply-next-target runtime next-target)
+          (values :retry nil))
+        (values :return response))))
+
+(defun %handle-redirect-response (runtime response)
+  "Process SW4-005 redirect responses.
+
+Returns two values:
+  action   - :retry or :return
+  payload  - response plist when action is :return; otherwise NIL."
+  (if (not (getf (delegation-runtime-policy runtime) :allow-spillover-routing))
+      (values :return response)
+      (let ((target-agent (%redirect-target-from-response response)))
+        (cond
+          ((or (null target-agent) (= (length target-agent) 0))
+           (values :return
+                   (%invalid-redirect-response
+                    (delegation-runtime-request-id runtime)
+                    "Redirect response missing non-empty redirect_to_agent_id")))
+          ((member target-agent
+                   (delegation-runtime-visited-agents runtime)
+                   :test #'string=)
+           (values :return
+                   (%invalid-redirect-response
+                    (delegation-runtime-request-id runtime)
+                    (format nil "Redirect loop detected for agent '~A'" target-agent))))
+          ((>= (delegation-runtime-redirect-hops runtime)
+               (delegation-runtime-redirect-bound runtime))
+           (values :return response))
+          (t
+           (%apply-next-target runtime target-agent)
+           (incf (delegation-runtime-redirect-hops runtime))
+           (values :retry nil))))))
+
+(defun %negotiate-handoff-response (runtime response end-ms)
+  "Route RESPONSE through accepted/overloaded/rejection/redirect phases."
+  (cond
+    ((getf response :accepted)
+     (values :return response))
+    ((%delegation-budget-exhausted-p runtime end-ms)
+     (values :return
+             (%deadline-exhausted-response
+              (delegation-runtime-request-id runtime))))
+    ((eql (getf response :rejection-code) +overloaded+)
+     (%handle-overloaded-response runtime response end-ms))
+    ((eql (getf response :rejection-code) +redirect+)
+     (%handle-redirect-response runtime response))
+    (t
+     (%handle-rejection-response runtime response))))
+
+(defun %delegation-loop-step (runtime send-handoff-fn start-ms)
+  "Execute one attempt/negotiate iteration.
+Returns (values :done result) when negotiation yields a terminal response,
+or (values :continue nil) to signal another retry."
+  (multiple-value-bind (response end-ms)
+      (%perform-handoff-attempt runtime send-handoff-fn start-ms)
+    (multiple-value-bind (action payload)
+        (%negotiate-handoff-response runtime response end-ms)
+      (if (eq action :return)
+          (values :done payload)
+          (values :continue nil)))))
+
+(defun delegate-to-swarm
+    (send-handoff-fn handoff-request
+     &key now-ms-fn sleep-seconds-fn rand-uniform-fn)
+  "Execute caller-side SW4-005 delegation redirect/retry semantics.
+
+SEND-HANDOFF-FN receives a normalized handoff request plist and must return a
+handoff response plist. HANDOFF-REQUEST may be a plist or handoff-request
+struct."
+  (let ((runtime (%make-delegation-state
+                  handoff-request
+                  now-ms-fn
+                  sleep-seconds-fn
+                  rand-uniform-fn)))
     (loop
-      for start-ms = (funcall now-fn)
+      for start-ms = (funcall (delegation-runtime-now-fn runtime))
       do
-         (when (%budget-exhausted-p request-budget start-ms)
-           (return (%deadline-exhausted-response request-id-value)))
-         (let* ((response (funcall send-handoff-fn (%copy-plist request)))
-                (end-ms (funcall now-fn))
-                (elapsed-ms (max (- end-ms start-ms) 0)))
-           (%consume-wall-time request-budget elapsed-ms)
-
-           (when (getf response :accepted)
-             (return response))
-           (when (%budget-exhausted-p request-budget end-ms)
-             (return (%deadline-exhausted-response request-id-value)))
-
-           (let ((rejection-code (getf response :rejection-code)))
-             (if (eql rejection-code +overloaded+)
-                 (progn
-                   (when (>= retry-index max-retries-on-overloaded)
-                     (return response))
-                   (let ((wait-ms (%next-retry-wait-ms
-                                   response retry-index policy rand-fn)))
-                     (incf retry-index)
-                     (let ((remaining-deadline-ms
-                             (- (getf request-budget :deadline-epoch-ms) end-ms))
-                           (remaining-wall-time-ms
-                             (getf request-budget :wall-time-remaining-ms)))
-                       (when (or (<= wait-ms 0)
-                                 (and (integerp remaining-wall-time-ms)
-                                      (> wait-ms remaining-wall-time-ms))
-                                 (> wait-ms remaining-deadline-ms))
-                         (return response)))
-                     (let ((before-sleep-ms (funcall now-fn)))
-                       (funcall sleep-fn (/ wait-ms 1000.0d0))
-                       (let ((after-sleep-ms (funcall now-fn)))
-                         (%consume-wall-time request-budget
-                                             (max (- after-sleep-ms before-sleep-ms) 0))))))
-                (if (not (eql rejection-code +redirect+))
-                     (multiple-value-bind (action next-target)
-                         (%handle-rejection-restart response request-id-value)
-                       (if (and (eq action :retry)
-                                (stringp next-target)
-                                (> (length next-target) 0)
-                                (not (member next-target visited-agents :test #'string=)))
-                           (progn
-                             (setf (getf request :to-agent) next-target)
-                             (push next-target visited-agents))
-                           (return response)))
-                     (if (not (getf policy :allow-spillover-routing))
-                         (return response)
-                         (let* ((raw-target (getf response :redirect-to-agent-id))
-                                (target-agent
-                                  (and (stringp raw-target)
-                                       (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                                    raw-target))))
-                           (when (or (null target-agent)
-                                     (= (length target-agent) 0))
-                             (return (%invalid-redirect-response
-                                      request-id-value
-                                      "Redirect response missing non-empty redirect_to_agent_id")))
-                           (when (member target-agent visited-agents :test #'string=)
-                             (return (%invalid-redirect-response
-                                      request-id-value
-                                      (format nil
-                                              "Redirect loop detected for agent '~A'"
-                                              target-agent))))
-                           (when (>= redirect-hops redirect-bound)
-                             (return response))
-                           (setf (getf request :to-agent) target-agent)
-                           (push target-agent visited-agents)
-                           (incf redirect-hops))))))))))
+         (when (%delegation-budget-exhausted-p runtime start-ms)
+           (return (%deadline-exhausted-response
+                    (delegation-runtime-request-id runtime))))
+         (multiple-value-bind (status result)
+             (%delegation-loop-step runtime send-handoff-fn start-ms)
+           (when (eq status :done)
+             (return result))))))
 
 (defun %normalize-handoff-request (request)
   "Validate and normalize a handoff REQUEST plist.
 
 Returns two values: normalized-request and handoff-id."
-  (%required-string request :from-agent)
-  (%required-string request :to-agent)
-  (%required-string request :reason)
-
-  (let* ((normalized (%copy-plist (%sanitize-handoff-request request)))
+  (let* ((request-plist
+           (if (handoff-request-p request)
+               (multiple-value-bind (envelope _request-id _policy _budget)
+                   (%prepare-handoff-envelope request)
+                 (declare (ignore _request-id _policy _budget))
+                 envelope)
+               request)))
+    (%required-string request-plist :from-agent)
+    (%required-string request-plist :to-agent)
+    (%required-string request-plist :reason)
+    (let* ((normalized (%copy-plist (%sanitize-handoff-request request-plist)))
          (budget (getf normalized :budget))
          (policy (getf normalized :delegation-policy))
          (handoff-id (or (getf normalized :request-id)
@@ -495,7 +672,7 @@ Returns two values: normalized-request and handoff-id."
     (setf (getf normalized :request-id) handoff-id)
     (setf (getf normalized :handoff-id) handoff-id)
 
-    (values normalized handoff-id)))
+      (values normalized handoff-id))))
 
 (defun %get-handoff-entry-or-signal (client handoff-id)
   "Fetch a handoff entry or signal RPC-ERROR if it does not exist."

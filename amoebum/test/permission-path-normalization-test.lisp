@@ -72,14 +72,14 @@
     (write-string content stream)))
 
 (defmacro %with-i348-project-root ((project-root) &body body)
-  `(let* ((cfg (amoebum:current-config))
-          (old-project-root (amoebum:config-project-root cfg)))
+  `(let* ((cfg (amoebum.config:current-config))
+          (old-project-root (amoebum.config:config-project-root cfg)))
      (unwind-protect
          (progn
-           (setf (amoebum:config-project-root cfg)
+           (setf (amoebum.config:config-project-root cfg)
                  (uiop:ensure-directory-pathname ,project-root))
            ,@body)
-       (setf (amoebum:config-project-root cfg) old-project-root))))
+       (setf (amoebum.config:config-project-root cfg) old-project-root))))
 
 (test permission-check-denies-path-traversal-outside-project-root
   (let* ((tmp-root (%make-temp-directory "amoebum-i348-traversal"))

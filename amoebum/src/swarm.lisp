@@ -15,7 +15,13 @@
             (:constructor make-swarm-agent
                 (&key id task (status :initializing)
                       (created-at (get-universal-time))
-                      state-machine result thread error-message)))
+                      state-machine result thread error-message backing-agent
+                      signal-name
+                      (retry-count 0)
+                      retry-policy
+                      timeout-seconds
+                      heartbeat-at
+                      last-output-at)))
   (id "" :type string)
   (task "" :type string)
   (status :initializing :type keyword)
@@ -24,7 +30,16 @@
   (state-machine nil)
   (result nil)
   (thread nil)
-  (error-message nil :type (or null string)))
+  (error-message nil :type (or null string))
+  (backing-agent nil)
+  ;; NXT-017: Signal tracking and retry semantics
+  (signal-name nil :type (or null string))   ; e.g. "SIGTERM", "SIGKILL"
+  (retry-count 0 :type integer)              ; number of times this agent has been retried
+  (retry-policy nil)                         ; plist: (:max-retries N :backoff-strategy :none/:linear/:exponential)
+  (timeout-seconds nil :type (or null number)) ; stored for record-keeping
+  ;; NXT-018: Stalled-run detection
+  (heartbeat-at nil :type (or null integer)) ; universal-time of last heartbeat
+  (last-output-at nil :type (or null integer))) ; universal-time of last output activity
 
 (defvar *swarm-registry* (make-hash-table :test #'equal)
   "Hash-table of id -> swarm-agent.")
@@ -34,21 +49,146 @@
 (defun %next-swarm-id ()
   (format nil "swarm-~A" (incf *swarm-counter*)))
 
+(defun %swarm-transition-safe (agent target-state &key metadata)
+  (let ((state-machine (swarm-agent-state-machine agent)))
+    (when state-machine
+      (handler-case
+          (sw4rm-sdk::transition-to state-machine target-state :metadata metadata)
+        (error ()
+          nil)))))
+
+(defun %swarm-status-metadata (status &key timeout-seconds error-message)
+  (let ((metadata (list :agent-status status)))
+    (when error-message
+      (setf metadata (append metadata (list :error-message error-message))))
+    (case status
+      (:queued
+       (append metadata (list :ack-stage sw4rm-sdk:+received+)))
+      (:running
+       (append metadata (list :ack-stage sw4rm-sdk:+read+)))
+      (:cancelling
+       (append metadata (list :ack-stage sw4rm-sdk:+rejected+
+                              :error-code sw4rm-sdk:+forced-preemption+
+                              :cancelled t)))
+      (:completed
+       (append metadata (list :ack-stage sw4rm-sdk:+fulfilled+)))
+      (:failed
+       (append metadata (list :ack-stage sw4rm-sdk:+failed+
+                              :error-code sw4rm-sdk:+internal-error+)))
+      (:cancelled
+       (append metadata (list :ack-stage sw4rm-sdk:+rejected+
+                              :error-code sw4rm-sdk:+forced-preemption+
+                              :cancelled t)))
+      (:timeout
+       (append metadata (list :ack-stage sw4rm-sdk:+timed-out+
+                              :error-code sw4rm-sdk:+tool-timeout+
+                              :timed-out t
+                              :timeout-seconds timeout-seconds)))
+      (otherwise
+       metadata))))
+
+(defun %swarm-mark-running (agent)
+  (let ((backing-agent (swarm-agent-backing-agent agent)))
+    (when backing-agent
+      (setf (agent-record-status backing-agent) :running
+            (agent-record-started-ms backing-agent) (%agent-now-ms))))
+  (setf (swarm-agent-status agent) :running)
+  (%swarm-transition-safe agent :scheduled
+                          :metadata (%swarm-status-metadata :queued))
+  (%swarm-transition-safe agent :running
+                          :metadata (%swarm-status-metadata :running))
+  agent)
+
+(defun %swarm-mark-cancelling (agent)
+  (let ((backing-agent (swarm-agent-backing-agent agent)))
+    (when backing-agent
+      (setf (agent-record-cancel-requested-p backing-agent) t
+            (agent-record-status backing-agent) :cancelling)))
+  (%swarm-transition-safe agent :shutting-down
+                          :metadata (%swarm-status-metadata :cancelling))
+  agent)
+
+(defun %swarm-mark-terminal (agent status result error-message &key timeout-seconds stdout stderr signal-name)
+  (let ((backing-agent (swarm-agent-backing-agent agent))
+        (metadata (%swarm-status-metadata status
+                                          :timeout-seconds timeout-seconds
+                                          :error-message error-message))
+        (finished-ms (%agent-now-ms)))
+    (when backing-agent
+      (setf (agent-record-status backing-agent) status
+            (agent-record-finished-ms backing-agent) finished-ms
+            (agent-record-result backing-agent) result
+            (agent-record-stdout backing-agent) stdout
+            (agent-record-stderr backing-agent) stderr
+            (agent-record-error-message backing-agent) error-message))
+    (when (and backing-agent (eq status :cancelled))
+      (setf (agent-record-cancel-requested-p backing-agent) t))
+  (setf (swarm-agent-status agent) status
+        (swarm-agent-result agent) result
+        (swarm-agent-error-message agent) error-message
+        (swarm-agent-finished-at agent) (get-universal-time))
+  ;; NXT-017: record signal name and effective timeout-seconds on the struct
+  (when signal-name
+    (setf (swarm-agent-signal-name agent) signal-name))
+  (when timeout-seconds
+    (setf (swarm-agent-timeout-seconds agent) timeout-seconds))
+  (case status
+    (:completed
+     (%swarm-transition-safe agent :completed :metadata metadata))
+    (:failed
+     (%swarm-transition-safe agent :failed :metadata metadata))
+    (:cancelled
+     (%swarm-transition-safe agent :shutting-down :metadata metadata)
+     (%swarm-transition-safe agent :failed :metadata metadata))
+    (:timeout
+     (%swarm-transition-safe agent :shutting-down :metadata metadata)
+     (%swarm-transition-safe agent :failed :metadata metadata)))
+  agent))
+
+(defun %swarm-runner-finished-status (runner-agent)
+  (if (agent-record-cancel-requested-p runner-agent)
+      :cancelled
+      :completed))
+
 ;;; --- Lifecycle ---
 
-(defun spawn-swarm-agent (task &key (id nil) (event-bus (current-event-bus)))
-  "Spawn a new swarm sub-agent for TASK. Returns a swarm-agent."
+(defun spawn-swarm-agent (task &key
+                               (id nil)
+                               (event-bus (current-event-bus))
+                               runner
+                               timeout-seconds
+                               (retry-count 0)
+                               retry-policy)
+  "Spawn a new swarm sub-agent for TASK. Returns a swarm-agent.
+NXT-017: Accepts RETRY-COUNT (number of prior retries) and RETRY-POLICY
+\(plist with :max-retries, :backoff-strategy, :backoff-base-seconds).
+NXT-018: Records heartbeat-at and last-output-at timestamps on the agent struct."
   (let* ((agent-id (or id (%next-swarm-id)))
-         (agent (make-swarm-agent :id agent-id :task task :status :initializing)))
+         (spawn-time (get-universal-time))
+         (runner-agent (%make-agent-record
+                        :id agent-id
+                        :type :swarm
+                        :task task
+                        :status :queued
+                        :created-ms (%agent-now-ms)))
+         (agent (make-swarm-agent :id agent-id
+                                  :task task
+                                  :status :initializing
+                                  :backing-agent runner-agent
+                                  :retry-count retry-count
+                                  :retry-policy retry-policy
+                                  :timeout-seconds timeout-seconds
+                                  :heartbeat-at spawn-time
+                                  :last-output-at spawn-time))
+         (agent-runner (or runner #'%default-agent-runner)))
     (setf (gethash agent-id *swarm-registry*) agent)
     ;; Create a state machine for the agent
     (handler-case
         (let ((sm (make-instance 'sw4rm-sdk::agent-state-machine)))
           (setf (swarm-agent-state-machine agent) sm)
           ;; Transition to RUNNABLE
-          (handler-case
-              (sw4rm-sdk::transition-to sm :runnable)
-            (error () nil)))
+          (%swarm-transition-safe agent :runnable
+                                  :metadata (%swarm-status-metadata :queued)))
       (error () nil))
     ;; Publish spawn event
     (publish event-bus
@@ -59,23 +199,72 @@
     (setf (swarm-agent-thread agent)
           (bt:make-thread
            (lambda ()
-             (handler-case
-                 (progn
-                   (setf (swarm-agent-status agent) :running)
-                   ;; The actual task execution would go here
-                   ;; For now, mark as completed with a placeholder result
-                   (setf (swarm-agent-result agent)
-                         (format nil "Agent ~A completed task: ~A" agent-id task)
-                         (swarm-agent-status agent) :completed
-                         (swarm-agent-finished-at agent) (get-universal-time))
-                   (publish event-bus
-                            (make-event :type +event-type-agent-complete+
-                                        :source "swarm"
-                                        :payload (list :id agent-id))))
-               (error (c)
-                 (setf (swarm-agent-status agent) :failed
-                       (swarm-agent-error-message agent) (princ-to-string c)
-                       (swarm-agent-finished-at agent) (get-universal-time)))))
+             (let ((stdout-stream (make-string-output-stream))
+                   (stderr-stream (make-string-output-stream))
+                   (result nil)
+                   (status :completed)
+                   (error-message nil)
+                   (terminal-signal-name nil))
+               ;; NXT-018: update heartbeat when thread starts running
+               (setf (swarm-agent-heartbeat-at agent) (get-universal-time))
+               (%swarm-mark-running agent)
+               (handler-case
+                   (let ((*standard-output* stdout-stream)
+                         (*error-output* stderr-stream))
+                     (setf result
+                           #+sbcl
+                           (if (and timeout-seconds
+                                    (numberp timeout-seconds)
+                                    (> timeout-seconds 0))
+                               (sb-ext:with-timeout timeout-seconds
+                                 (funcall agent-runner runner-agent))
+                               (funcall agent-runner runner-agent))
+                           #-sbcl
+                           (funcall agent-runner runner-agent)
+                           status (%swarm-runner-finished-status runner-agent)))
+                 (agent-cancelled (condition)
+                   (setf status :cancelled
+                         ;; NXT-017: record SIGTERM as the signal that
+                         ;; caused cooperative cancellation
+                         terminal-signal-name "SIGTERM"
+                         error-message (princ-to-string condition)))
+                 #+sbcl
+                 (sb-ext:timeout (_condition)
+                   (setf status :timeout
+                         ;; NXT-017: timeout is a SIGALRM-like expiry
+                         terminal-signal-name "SIGALRM"
+                         error-message (format nil "Swarm agent ~A timed out after ~A seconds."
+                                               agent-id
+                                               timeout-seconds)))
+                 (error (condition)
+                   (if (agent-record-cancel-requested-p runner-agent)
+                       (setf status :cancelled
+                             terminal-signal-name "SIGTERM"
+                             error-message (princ-to-string condition))
+                       (setf status :failed
+                             error-message (princ-to-string condition)))))
+               ;; NXT-018: update last-output-at if any output was produced
+               (let ((stdout-text (get-output-stream-string stdout-stream))
+                     (stderr-text (get-output-stream-string stderr-stream)))
+                 (when (or (plusp (length stdout-text))
+                           (plusp (length stderr-text)))
+                   (setf (swarm-agent-last-output-at agent) (get-universal-time)))
+                 (%swarm-mark-terminal agent status result error-message
+                                       :timeout-seconds timeout-seconds
+                                       :signal-name terminal-signal-name
+                                       :stdout stdout-text
+                                       :stderr stderr-text))
+               (publish event-bus
+                        (make-event :type (if (eq status :cancelled)
+                                              +event-type-agent-cancelled+
+                                              +event-type-agent-complete+)
+                                    :source "swarm"
+                                    :payload (list :id agent-id
+                                                   :status status
+                                                   :task task
+                                                   :signal-name terminal-signal-name
+                                                   :retry-count (swarm-agent-retry-count agent)
+                                                   :error-message error-message)))))
            :name (format nil "swarm-~A" agent-id)))
     agent))
 
@@ -90,20 +279,26 @@
     (values (swarm-agent-result agent)
             (swarm-agent-status agent))))
 
-(defun kill-swarm-agent (agent-id &key (event-bus (current-event-bus)))
-  "Terminate a running swarm agent."
+(defun kill-swarm-agent (agent-id &key (event-bus (current-event-bus)) (signal-name "SIGKILL"))
+  "Terminate a running swarm agent.
+NXT-017: SIGNAL-NAME records which signal caused termination (default SIGKILL)."
   (let ((agent (gethash agent-id *swarm-registry*)))
     (unless agent
       (error "Swarm agent ~A not found." agent-id))
     (let ((thread (swarm-agent-thread agent)))
+      (when (member (swarm-agent-status agent) '(:initializing :running) :test #'eq)
+        (%swarm-mark-cancelling agent))
       (when (and thread (bt:thread-alive-p thread))
-        (bt:destroy-thread thread)))
-    (setf (swarm-agent-status agent) :cancelled
-          (swarm-agent-finished-at agent) (get-universal-time))
-    (publish event-bus
-             (make-event :type +event-type-agent-cancelled+
-                         :source "swarm"
-                         :payload (list :id agent-id)))
+        (bt:join-thread thread)))
+    (unless (member (swarm-agent-status agent) '(:completed :failed :cancelled :timeout) :test #'eq)
+      (%swarm-mark-terminal agent :cancelled nil "Swarm agent cancelled."
+                            :signal-name signal-name)
+      (publish event-bus
+               (make-event :type +event-type-agent-cancelled+
+                           :source "swarm"
+                           :payload (list :id agent-id
+                                          :status :cancelled
+                                          :signal-name signal-name))))
     agent))
 
 ;;; --- Registry Queries ---
@@ -140,6 +335,83 @@
                 (if (> (length (swarm-agent-task a)) 50)
                     (subseq (swarm-agent-task a) 0 50)
                     (swarm-agent-task a)))))))
+
+;;; ---------------------------------------------------------------------------
+;;; NXT-018: Stalled-run detection via heartbeat and last-output timestamps
+;;; ---------------------------------------------------------------------------
+
+(defun update-swarm-agent-heartbeat (agent-id)
+  "Refresh the heartbeat timestamp for AGENT-ID to the current time.
+Called by long-running runners periodically to signal liveness.
+Returns T if the agent was found and updated, NIL otherwise."
+  (let ((agent (gethash agent-id *swarm-registry*)))
+    (when agent
+      (setf (swarm-agent-heartbeat-at agent) (get-universal-time))
+      t)))
+
+(defun update-swarm-agent-last-output (agent-id)
+  "Refresh the last-output-at timestamp for AGENT-ID to the current time.
+Call when new stdout/stderr output is produced during execution.
+Returns T if the agent was found and updated, NIL otherwise."
+  (let ((agent (gethash agent-id *swarm-registry*)))
+    (when agent
+      (setf (swarm-agent-last-output-at agent) (get-universal-time))
+      t)))
+
+(defun %swarm-agent-stalled-p (agent heartbeat-threshold-seconds output-threshold-seconds now)
+  "Return T if AGENT appears stalled.
+An agent is stalled when it is in a non-terminal status AND either:
+  - its heartbeat-at is older than HEARTBEAT-THRESHOLD-SECONDS, or
+  - its last-output-at is older than OUTPUT-THRESHOLD-SECONDS (when non-nil threshold)."
+  (let ((status (swarm-agent-status agent)))
+    (when (member status '(:initializing :running) :test #'eq)
+      (let ((heartbeat (swarm-agent-heartbeat-at agent))
+            (last-out (swarm-agent-last-output-at agent)))
+        (or (and heartbeat-threshold-seconds
+                 heartbeat
+                 (> (- now heartbeat) heartbeat-threshold-seconds))
+            (and output-threshold-seconds
+                 last-out
+                 (> (- now last-out) output-threshold-seconds)))))))
+
+(defun detect-stalled-agents (&key
+                                (heartbeat-threshold-seconds 60)
+                                (output-threshold-seconds nil)
+                                (status nil))
+  "Return a list of swarm agents that appear stalled.
+An agent is considered stalled if it is non-terminal and either:
+  - HEARTBEAT-THRESHOLD-SECONDS have elapsed since its last heartbeat, or
+  - OUTPUT-THRESHOLD-SECONDS have elapsed since its last output (if provided).
+
+Optionally filter by STATUS (e.g. :running).
+
+Each returned element is a plist:
+  (:agent <swarm-agent> :id <string> :status <keyword>
+   :seconds-since-heartbeat <number-or-nil>
+   :seconds-since-output <number-or-nil>)"
+  (let ((now (get-universal-time))
+        (stalled '()))
+    (maphash (lambda (_id agent)
+               (declare (ignore _id))
+               (when (or (null status)
+                         (eq status (swarm-agent-status agent)))
+                 (when (%swarm-agent-stalled-p agent
+                                               heartbeat-threshold-seconds
+                                               output-threshold-seconds
+                                               now)
+                   (let* ((heartbeat (swarm-agent-heartbeat-at agent))
+                          (last-out (swarm-agent-last-output-at agent))
+                          (secs-hb (and heartbeat (- now heartbeat)))
+                          (secs-out (and last-out (- now last-out))))
+                     (push (list :agent agent
+                                 :id (swarm-agent-id agent)
+                                 :status (swarm-agent-status agent)
+                                 :seconds-since-heartbeat secs-hb
+                                 :seconds-since-output secs-out)
+                           stalled)))))
+             *swarm-registry*)
+    (sort stalled #'> :key (lambda (entry)
+                              (or (getf entry :seconds-since-heartbeat) 0)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Inter-user coordination and delegation (I253)
@@ -337,6 +609,14 @@
     (incf *user-handoff-sequence*)
     (format nil "user-handoff-~D" *user-handoff-sequence*)))
 
+(defun %publish-user-coordination-event (event-type payload &key (severity :info))
+  (publish (current-event-bus)
+           event-type
+           :source :sw4rm-user-coordination
+           :severity severity
+           :payload payload)
+  payload)
+
 (defun clear-user-coordination-state ()
   "Clear user session registration, delegation, and negotiation state."
   (bt:with-lock-held (*user-coordination-lock*)
@@ -450,9 +730,19 @@
     (when timeout-ms
       (setf (getf request :timeout-ms) timeout-ms))
     (let ((response (sw4rm-sdk:initiate-handoff (%ensure-user-handoff-client) request)))
-      (append response
-              (list :from-session-id (%coordination-require-string from-session-id "from-session-id")
-                    :to-session-id (%coordination-require-string to-session-id "to-session-id"))))))
+      (let ((payload
+              (append response
+                      (list :from-session-id (%coordination-require-string from-session-id "from-session-id")
+                            :to-session-id (%coordination-require-string to-session-id "to-session-id")
+                            :agent-id from-agent-id
+                            :from-agent-id from-agent-id
+                            :to-agent-id to-agent-id
+                            :reason resolved-reason
+                            :context-snapshot (or sanitized-context "")
+                            :capabilities-required (copy-list capabilities-required)
+                            :priority priority))))
+        (%publish-user-coordination-event +event-type-user-handoff-requested+ payload)
+        payload))))
 
 (defun get-user-pending-handoffs (session-id)
   "Return pending handoff requests routed to SESSION-ID."
@@ -472,21 +762,57 @@
 
 (defun accept-user-handoff (handoff-id)
   "Accept HANDOFF-ID on the local coordination bus."
-  (sw4rm-sdk:accept-handoff (%ensure-user-handoff-client) handoff-id))
+  (let* ((response (sw4rm-sdk:accept-handoff (%ensure-user-handoff-client) handoff-id))
+         (status (or (ignore-errors (user-handoff-status handoff-id))
+                     response))
+         (payload (append status
+                          (list :handoff-id handoff-id
+                                :agent-id (or (getf status :to-agent)
+                                              (getf status :to-agent-id)
+                                              (getf response :to-agent)
+                                              (getf response :to-agent-id))))))
+    (%publish-user-coordination-event +event-type-user-handoff-accepted+ payload)
+    payload))
 
 (defun reject-user-handoff (handoff-id reason &key rejection-code retry-after-ms redirect-to-agent-id)
   "Reject HANDOFF-ID with optional protocol metadata."
-  (sw4rm-sdk:reject-handoff-with-options (%ensure-user-handoff-client)
-                                         handoff-id
-                                         reason
-                                         :rejection-code (or rejection-code
-                                                             sw4rm-sdk:+error-code-unspecified+)
-                                         :retry-after-ms retry-after-ms
-                                         :redirect-to-agent-id redirect-to-agent-id))
+  (let* ((resolved-code (or rejection-code sw4rm-sdk:+error-code-unspecified+))
+         (response (sw4rm-sdk:reject-handoff-with-options (%ensure-user-handoff-client)
+                                                          handoff-id
+                                                          reason
+                                                          :rejection-code resolved-code
+                                                          :retry-after-ms retry-after-ms
+                                                          :redirect-to-agent-id redirect-to-agent-id))
+         (status (or (ignore-errors (user-handoff-status handoff-id))
+                     response))
+         (payload (append status
+                          (list :handoff-id handoff-id
+                                :reason reason
+                                :rejection-code resolved-code
+                                :retry-after-ms retry-after-ms
+                                :redirect-to-agent-id redirect-to-agent-id
+                                :agent-id (or (getf status :to-agent)
+                                              (getf status :to-agent-id)
+                                              (getf response :to-agent)
+                                              (getf response :to-agent-id))))))
+    (%publish-user-coordination-event +event-type-user-handoff-rejected+
+                                      payload
+                                      :severity :warning)
+    payload))
 
 (defun complete-user-handoff (handoff-id)
   "Mark HANDOFF-ID as complete."
-  (sw4rm-sdk:complete-handoff (%ensure-user-handoff-client) handoff-id))
+  (let* ((response (sw4rm-sdk:complete-handoff (%ensure-user-handoff-client) handoff-id))
+         (status (or (ignore-errors (user-handoff-status handoff-id))
+                     response))
+         (payload (append status
+                          (list :handoff-id handoff-id
+                                :agent-id (or (getf status :to-agent)
+                                              (getf status :to-agent-id)
+                                              (getf response :to-agent)
+                                              (getf response :to-agent-id))))))
+    (%publish-user-coordination-event +event-type-user-handoff-completed+ payload)
+    payload))
 
 (defun create-user-negotiation-room (room-id participant-session-ids
                                      &key description metadata)
@@ -506,7 +832,17 @@
       (bt:with-lock-held (*user-coordination-lock*)
         (setf (gethash resolved-room-id *user-negotiation-room-participants*)
               participants))
-      (append response (list :participant-session-ids participants)))))
+      (let ((payload (append response
+                             (list :room-id resolved-room-id
+                                   :participant-session-ids participants
+                                   :description description
+                                   :metadata metadata
+                                   :agent-id (and participants
+                                                  (%registered-agent-id-for-session
+                                                   (first participants)))))))
+        (%publish-user-coordination-event +event-type-user-negotiation-room-created+
+                                          payload)
+        payload))))
 
 (defun submit-user-negotiation-artifact (room-id proposer-session-id artifact-id artifact
                                          &key requested-critic-session-ids
@@ -528,7 +864,18 @@
                          :aggregation-strategy aggregation-strategy)))
     (when timeout-ms
       (setf (getf proposal :timeout-ms) timeout-ms))
-    (sw4rm-sdk:submit-artifact (%ensure-user-negotiation-client) proposal)))
+    (let ((response (sw4rm-sdk:submit-artifact (%ensure-user-negotiation-client) proposal)))
+      (%publish-user-coordination-event
+       +event-type-user-negotiation-artifact-submitted+
+       (list :artifact-id resolved-artifact-id
+             :room-id resolved-room-id
+             :proposer-session-id proposer-session-id
+             :requested-critic-session-ids (copy-list requested-critic-session-ids)
+             :agent-id proposer-agent-id
+             :metadata metadata
+             :timeout-ms timeout-ms
+             :response response))
+      response)))
 
 (defun add-user-negotiation-critique (room-id artifact-id critic-session-id passed
                                       &key score details)
@@ -536,14 +883,26 @@
   (let* ((resolved-room-id (%coordination-require-string room-id "room-id"))
          (resolved-artifact-id (%coordination-require-string artifact-id "artifact-id"))
          (critic-agent-id (%registered-agent-id-for-session critic-session-id)))
-    (sw4rm-sdk:add-critique
-     (%ensure-user-negotiation-client)
-     (list :artifact-id resolved-artifact-id
-           :negotiation-room-id resolved-room-id
-           :critic-id critic-agent-id
-           :passed (if passed t nil)
-           :score score
-           :details details))))
+    (let ((response
+            (sw4rm-sdk:add-critique
+             (%ensure-user-negotiation-client)
+             (list :artifact-id resolved-artifact-id
+                   :negotiation-room-id resolved-room-id
+                   :critic-id critic-agent-id
+                   :passed (if passed t nil)
+                   :score score
+                   :details details))))
+      (%publish-user-coordination-event
+       +event-type-user-negotiation-critique-added+
+       (list :artifact-id resolved-artifact-id
+             :room-id resolved-room-id
+             :critic-session-id critic-session-id
+             :agent-id critic-agent-id
+             :passed (if passed t nil)
+             :score score
+             :details details
+             :response response))
+      response)))
 
 (defun get-user-negotiation-room-status (room-id)
   "Return room status enriched with session IDs."
@@ -564,7 +923,14 @@
 
 (defun wait-for-user-negotiation-decision (artifact-id &key (timeout-s 30.0) (poll-interval-s 0.1))
   "Wait for a negotiation decision for ARTIFACT-ID."
-  (sw4rm-sdk:wait-for-decision (%ensure-user-negotiation-client)
-                               artifact-id
-                               :timeout-s timeout-s
-                               :poll-interval-s poll-interval-s))
+  (let ((decision (sw4rm-sdk:wait-for-decision (%ensure-user-negotiation-client)
+                                               artifact-id
+                                               :timeout-s timeout-s
+                                               :poll-interval-s poll-interval-s)))
+    (%publish-user-coordination-event
+     +event-type-user-negotiation-decision+
+     (append decision
+             (list :artifact-id artifact-id
+                   :agent-id (or (getf decision :proposer-id)
+                                 (getf decision :agent-id)))))
+    decision))

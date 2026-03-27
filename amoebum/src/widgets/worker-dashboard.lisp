@@ -43,6 +43,71 @@
               trimmed))
         "")))
 
+(defun %worker-runtime-backend (worker)
+  (case (worker-record-backend worker)
+    (:swarm :swarm)
+    (:in-process :local)
+    (otherwise nil)))
+
+(defun %worker-runtime-status-label (worker)
+  (when (and (eq (worker-record-type worker) :agent)
+             (worker-record-inner-id worker))
+    (let* ((backend (%worker-runtime-backend worker))
+           (agent (and backend
+                       (find-runtime-agent (worker-record-inner-id worker)
+                                           :backend backend)))
+           (status (or (and agent (runtime-agent-status agent :backend backend))
+                       (worker-record-status worker))))
+      (format nil "[~A/~A]"
+              (string-downcase (symbol-name (or backend :agent)))
+              (string-downcase (symbol-name status))))))
+
+(defun %worker-status-line (worker)
+  (format nil "  ~A ~A~@[ ~A~] ~A  ~A  ~A"
+          (%worker-status-indicator (worker-record-status worker))
+          (worker-record-id worker)
+          (%worker-runtime-status-label worker)
+          (let ((label (worker-record-label worker)))
+            (if (> (length label) 30)
+                (concatenate 'string (subseq label 0 27) "...")
+                label))
+          (%worker-elapsed-string worker)
+          (%worker-output-tail worker 40)))
+
+(defun %active-agent-worker-runtime-counts ()
+  (let ((counts (make-hash-table :test #'equal)))
+    (dolist (worker (worker-list :include-finished nil))
+      (when (and (eq (worker-record-type worker) :agent)
+                 (worker-record-inner-id worker))
+        (let* ((backend (%worker-runtime-backend worker))
+               (agent (and backend
+                           (find-runtime-agent (worker-record-inner-id worker)
+                                               :backend backend)))
+          (status (or (and agent (runtime-agent-status agent :backend backend))
+                           (worker-record-status worker))))
+          (when backend
+            (incf (gethash (list backend status) counts 0))))))
+    (let ((entries '()))
+      (maphash (lambda (key count)
+                 (push (list (first key) (second key) count) entries))
+               counts)
+      (sort entries #'string<
+            :key (lambda (entry)
+                   (format nil "~A/~A"
+                           (first entry)
+                           (second entry)))))))
+
+(defun %worker-runtime-summary-segment ()
+  (let ((entries (%active-agent-worker-runtime-counts)))
+    (when entries
+      (format nil "A:~{~A~^, ~}"
+              (mapcar (lambda (entry)
+                        (format nil "~Dx~A/~A"
+                                (third entry)
+                                (string-downcase (symbol-name (first entry)))
+                                (string-downcase (symbol-name (second entry)))))
+                      entries)))))
+
 ;;; --- Helper to create UI elements ---
 
 (defun %dash-text (content)
@@ -75,16 +140,7 @@
           (list (%dash-text "  No workers."))
           (mapcar
            (lambda (worker)
-             (%dash-text
-              (format nil "  ~A ~A ~A  ~A  ~A"
-                      (%worker-status-indicator (worker-record-status worker))
-                      (worker-record-id worker)
-                      (let ((label (worker-record-label worker)))
-                        (if (> (length label) 30)
-                            (concatenate 'string (subseq label 0 27) "...")
-                            label))
-                      (%worker-elapsed-string worker)
-                      (%worker-output-tail worker 40))))
+             (%dash-text (%worker-status-line worker)))
            visible))))))
 
 ;;; --- Dashboard state for event-driven updates ---
@@ -162,7 +218,14 @@
 
 (defun worker-status-bar-segment ()
   "Return a status bar segment string for the worker system."
-  (let ((active (active-worker-count)))
-    (if (plusp active)
-        (format nil "W:~D" active)
-        "")))
+  (let ((active (active-worker-count))
+        (runtime-summary (%worker-runtime-summary-segment)))
+    (cond
+      ((and (zerop active) (null runtime-summary))
+       "")
+      ((null runtime-summary)
+       (format nil "W:~D" active))
+      ((zerop active)
+       runtime-summary)
+      (t
+       (format nil "W:~D ~A" active runtime-summary)))))

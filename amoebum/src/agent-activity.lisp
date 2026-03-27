@@ -121,6 +121,46 @@
              :activity-type :idle
              :description "Agent cancellation requested."
              :metadata payload))
+      ((eq event-type +event-type-user-handoff-requested+)
+       (list :agent-id (%event->agent-id event)
+             :activity-type :waiting
+             :description "SW4RM handoff requested."
+             :metadata payload))
+      ((eq event-type +event-type-user-handoff-accepted+)
+       (list :agent-id (%event->agent-id event)
+             :activity-type :waiting
+             :description "SW4RM handoff accepted."
+             :metadata payload))
+      ((eq event-type +event-type-user-handoff-rejected+)
+       (list :agent-id (%event->agent-id event)
+             :activity-type :idle
+             :description "SW4RM handoff rejected."
+             :metadata payload))
+      ((eq event-type +event-type-user-handoff-completed+)
+       (list :agent-id (%event->agent-id event)
+             :activity-type :idle
+             :description "SW4RM handoff completed."
+             :metadata payload))
+      ((eq event-type +event-type-user-negotiation-room-created+)
+       (list :agent-id (%event->agent-id event)
+             :activity-type :waiting
+             :description "SW4RM negotiation room created."
+             :metadata payload))
+      ((eq event-type +event-type-user-negotiation-artifact-submitted+)
+       (list :agent-id (%event->agent-id event)
+             :activity-type :waiting
+             :description "SW4RM negotiation artifact submitted."
+             :metadata payload))
+      ((eq event-type +event-type-user-negotiation-critique-added+)
+       (list :agent-id (%event->agent-id event)
+             :activity-type :inference
+             :description "SW4RM negotiation critique submitted."
+             :metadata payload))
+      ((eq event-type +event-type-user-negotiation-decision+)
+       (list :agent-id (%event->agent-id event)
+             :activity-type :idle
+             :description "SW4RM negotiation decision recorded."
+             :metadata payload))
       ((or (eq event-type +event-type-tool-call-started+)
            (eq event-type +event-type-tool-call-argument-complete+)
            (eq event-type +event-type-tool-invoked+)

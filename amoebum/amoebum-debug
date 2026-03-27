@@ -1,0 +1,21 @@
+#!/bin/bash
+# amoebum-debug - Run amoebum with debug output for theme loading
+
+cd /home/rahul/Documents/amoebum/amoebum
+
+echo "=== Amoebum Theme Debug Launch ==="
+echo ""
+
+# Export so SBCL can find all the local projects
+export SBCL_HOME=""
+
+sbcl --noinform \
+     --eval "(load \"/home/rahul/Documents/amoebum/ptui/.tools/quicklisp/setup.lisp\")" \
+     --eval "(push \"/home/rahul/Documents/amoebum/amoebum/\" asdf:*central-registry*)" \
+     --eval "(push \"/home/rahul/Documents/amoebum/ptui/\" asdf:*central-registry*)" \
+     --eval "(push \"/home/rahul/Documents/amoebum/pseudopod/\" asdf:*central-registry*)" \
+     --eval "(push \"/home/rahul/Documents/amoebum/sw4rm-sdk/\" asdf:*central-registry*)" \
+     --eval "(ql:quickload :amoebum :silent t)" \
+     --eval "(in-package :amoebum)" \
+     --eval "(amoebum:main)" \
+     "$@"

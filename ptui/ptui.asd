@@ -8,7 +8,7 @@
   ((:file "src/term/caps")))
 
 (asdf:defsystem "ptui/core"
-  :description "PTUI core types/events/color"
+  :description "PTUI core types/events/color/theme"
   :author "Ralph"
   :license "MIT"
   :depends-on ("ptui/caps")
@@ -16,7 +16,8 @@
   :components
   ((:file "src/core/color")
    (:file "src/core/types")
-   (:file "src/core/events")))
+   (:file "src/core/events")
+   (:file "src/core/theme")))
 
 (asdf:defsystem "ptui/util"
   :description "PTUI utilities (log/time)"
@@ -26,7 +27,8 @@
   :serial t
   :components
   ((:file "src/util/log")
-   (:file "src/util/time")))
+   (:file "src/util/time")
+   (:file "src/util/scroll")))
 
 (asdf:defsystem "ptui/search"
   :description "PTUI file-set search primitives (glob matcher/scan engine)"
@@ -232,8 +234,10 @@
    (:file "src/core/color")
    (:file "src/core/types")
    (:file "src/core/events")
+   (:file "src/core/theme")
    (:file "src/util/log")
    (:file "src/util/time")
+   (:file "src/util/scroll")
    (:file "src/search/glob")
    (:file "src/search/engine")
    (:file "src/runtime/queue")
@@ -340,7 +344,8 @@
   :depends-on ("ptui" "ptui/components" "ptui/test-support" "fiveam")
   :serial t
   :components
-  ((:file "test/defwidget-test")
+  ((:file "test/theme-test")
+   (:file "test/defwidget-test")
    (:file "test/snapshot-test")
    (:file "test/event-filters-test")
    (:file "test/ansi-parser-test")
@@ -355,6 +360,7 @@
    (:file "test/views-test")
    (:file "test/render-test")
    (:file "test/text-test")
+   (:file "test/scroll-util-test")
    (:file "test/backend-test")
    (:file "test/input-test")
    (:file "test/streaming-widget-test")

@@ -468,6 +468,28 @@ skip-tool-call, abort-step, or ask-user."
               :reason-code reason-code
               :permission-mode (%context-effective-permission-mode context)))))
 
+(defun %permission-evaluation-effect (evaluation tool-name arguments)
+  (check-type evaluation permission-evaluation)
+  (let* ((context (permission-evaluation-context evaluation))
+         (decision-context (permission-evaluation-decision-context evaluation))
+         (resolved-path (%coerce-path-string (%extract-path-argument arguments)))
+         (resolved-command (%coerce-command-string (%extract-command-argument arguments)))
+         (decision (permission-evaluation-decision evaluation))
+         (reason (or (permission-evaluation-reason evaluation)
+                     (format nil "permission decision ~A" decision))))
+    (list :kind decision
+          :decision-id (permission-check-context-decision-id context)
+          :tool-name tool-name
+          :path resolved-path
+          :command resolved-command
+          :reason reason
+          :actionable-reason (or (permission-evaluation-actionable-reason evaluation)
+                                 reason)
+          :reason-code (permission-evaluation-reason-code evaluation)
+          :decision-context (and decision-context
+                                 (policy-decision-context-plist decision-context))
+          :trace (permission-evaluation-trace evaluation))))
+
 (defun %check-permission-or-signal (tool-name arguments context)
   (let* ((path-arg (%coerce-path-string
                     (%extract-path-argument arguments)))
@@ -476,34 +498,34 @@ skip-tool-call, abort-step, or ask-user."
          (effective-mode (%context-effective-permission-mode context))
          (metadata (find-tool-metadata tool-name))
          (dangerous-p (and metadata (tool-metadata-dangerous-p metadata)))
-         (decision (check-permission :tool tool-name
-                                     :path path-arg
-                                     :command command-arg
-                                     :dangerous-p dangerous-p
-                                     :permission-mode effective-mode))
-         (trace (last-permission-decision-trace))
-         (reason-code (and (listp trace) (getf trace :reason-code)))
-         (decision-reason (or (and (listp trace) (getf trace :reason))
-                              (format nil "permission decision ~A" decision)))
-         (actionable-reason (or (and (listp trace) (getf trace :actionable-reason))
-                                decision-reason)))
+         (evaluation
+           (evaluate-permission-decision
+            :tool tool-name
+            :path path-arg
+            :command command-arg
+            :dangerous-p dangerous-p
+            :permission-mode effective-mode))
+         (_materialized
+           (%materialize-permission-evaluation! evaluation :record-history-p t))
+         (effect (%permission-evaluation-effect evaluation tool-name arguments)))
+    (declare (ignore _materialized))
     (cond
-      ((eq decision :allow) nil)  ; permitted
-      ((eq decision :prompt)
+      ((eq (getf effect :kind) :allow) nil)
+      ((eq (getf effect :kind) :prompt)
        ;; Publish the event so the TUI can show the approval dialog,
        ;; then block until the user resolves it.
        (%publish-permission-prompted context
                                      tool-name
                                      arguments
-                                     decision
-                                     :reason decision-reason
-                                     :reason-code reason-code)
+                                     (getf effect :kind)
+                                     :reason (getf effect :reason)
+                                     :reason-code (getf effect :reason-code))
        (let* ((pa (wait-for-pending-approval
                    tool-name arguments
-                   :path path-arg
-                   :command command-arg
-                   :reason decision-reason
-                   :decision-id (%next-permission-decision-id)
+                   :path (getf effect :path)
+                   :command (getf effect :command)
+                   :reason (getf effect :reason)
+                   :decision-id (getf effect :decision-id)
                    :cancel-thunk (context-permission-cancel-thunk context)))
               (user-decision (pending-approval-decision pa))
               (decision-source (pending-approval-decision-source pa))
@@ -536,30 +558,30 @@ skip-tool-call, abort-step, or ask-user."
            (error 'tool-permission-denied
                   :tool-name tool-name
                   :arguments arguments
-                  :reason-code reason-code
+                  :reason-code (getf effect :reason-code)
                   :message (format nil "Tool ~S denied: ~A."
                                    tool-name
                                    decision-reason-text)
                   :reason decision-reason-text))))
       (t
        ;; :deny or any other non-allow decision
-       (when (eq decision :deny)
+       (when (eq (getf effect :kind) :deny)
          (%publish-permission-blocked context
                                       tool-name
                                       arguments
-                                      decision
-                                      :reason decision-reason
-                                      :actionable-reason actionable-reason
-                                      :reason-code reason-code))
+                                      (getf effect :kind)
+                                      :reason (getf effect :reason)
+                                      :actionable-reason (getf effect :actionable-reason)
+                                      :reason-code (getf effect :reason-code)))
        (error 'tool-permission-denied
               :tool-name tool-name
               :arguments arguments
-              :reason-code reason-code
+              :reason-code (getf effect :reason-code)
               :message (format nil "Permission decision ~A for tool ~S: ~A."
-                               decision
+                               (getf effect :kind)
                                tool-name
-                               actionable-reason)
-              :reason actionable-reason)))))
+                               (getf effect :actionable-reason))
+              :reason (getf effect :actionable-reason))))))
 
 ;; Monotonic time delegated to monotonic-ms in util.lisp
 

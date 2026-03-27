@@ -760,66 +760,124 @@
       (%conversation-trim (pathname-name path))
       (%conversation-generate-session-id)))
 
+(defstruct (conversation-load-context
+            (:constructor %make-conversation-load-context
+                (&key session-path project-root)))
+  session-path
+  project-root
+  resolved-path
+  payload
+  root
+  session-id
+  manifest-path
+  active-fork
+  fork-path
+  fork-payload
+  effective-payload
+  entries
+  created-at
+  updated-at
+  forks
+  branch-point)
+
+(defun %conversation-payload-valid-p (payload)
+  (and (listp payload) (keywordp (first payload))))
+
+(defun %conversation-load-open (context)
+  (let ((resolved-path (and (conversation-load-context-session-path context)
+                            (probe-file (conversation-load-context-session-path context)))))
+    (when resolved-path
+      (let ((payload (%conversation-read-sexp-file resolved-path)))
+        (when (%conversation-payload-valid-p payload)
+          (setf (conversation-load-context-resolved-path context) resolved-path
+                (conversation-load-context-payload context) payload)
+          context)))))
+
+(defun %conversation-load-fork-payload (context)
+  (let* ((payload (conversation-load-context-payload context))
+         (resolved-path (conversation-load-context-resolved-path context))
+         (root (%conversation-normalize-project-root
+                (or (conversation-load-context-project-root context)
+                    (make-pathname :name nil :type nil :defaults resolved-path))))
+         (session-id (%conversation-session-id-from-path resolved-path payload))
+         (active-fork (%conversation-normalize-fork-name
+                       (or (getf payload :active-fork)
+                           +conversation-default-fork-name+)))
+         (fork-path (conversation-fork-path session-id active-fork :project-root root))
+         (fork-payload (and (probe-file fork-path)
+                            (%conversation-read-sexp-file fork-path)))
+         (effective-payload (if (%conversation-payload-valid-p fork-payload)
+                                fork-payload
+                                payload)))
+    (setf (conversation-load-context-root context) root
+          (conversation-load-context-session-id context) session-id
+          (conversation-load-context-manifest-path context)
+          (conversation-session-path session-id :project-root root)
+          (conversation-load-context-active-fork context) active-fork
+          (conversation-load-context-fork-path context) fork-path
+          (conversation-load-context-fork-payload context) fork-payload
+          (conversation-load-context-effective-payload context) effective-payload)
+    context))
+
+(defun %conversation-load-history (context)
+  (let* ((payload (conversation-load-context-payload context))
+         (effective (conversation-load-context-effective-payload context))
+         (entries (%conversation-copy-entries
+                   (mapcar #'%conversation-entry-coerce
+                           (or (getf effective :entries) '()))))
+         (created-at (or (getf payload :created-at)
+                         (getf effective :created-at)
+                         (%conversation-now)))
+         (updated-at (or (getf effective :updated-at)
+                         (getf payload :updated-at)
+                         created-at))
+         (forks (%conversation-normalize-forks
+                 (or (getf effective :forks)
+                     (getf payload :forks))
+                 (conversation-load-context-active-fork context)
+                 entries))
+         (fork-record (%conversation-find-fork-record forks
+                                                      (conversation-load-context-active-fork context)))
+         (branch-point (or (and fork-record (getf fork-record :branch-point))
+                           (getf effective :fork-branch-point)
+                           (getf payload :fork-branch-point))))
+    (setf (conversation-load-context-entries context) entries
+          (conversation-load-context-created-at context) created-at
+          (conversation-load-context-updated-at context) updated-at
+          (conversation-load-context-forks context) forks
+          (conversation-load-context-branch-point context) branch-point)
+    context))
+
+(defun %conversation-load-build (context)
+  (let ((payload (conversation-load-context-payload context))
+        (effective (conversation-load-context-effective-payload context)))
+    (%make-conversation-state
+     :session-id (conversation-load-context-session-id context)
+     :state (%conversation-normalize-state
+             (or (getf effective :state) (getf payload :state)))
+     :entries (conversation-load-context-entries context)
+     :created-at (if (integerp (conversation-load-context-created-at context))
+                     (conversation-load-context-created-at context)
+                     (%conversation-now))
+     :updated-at (if (integerp (conversation-load-context-updated-at context))
+                     (conversation-load-context-updated-at context)
+                     (%conversation-now))
+     :active-fork (conversation-load-context-active-fork context)
+     :fork-branch-point (%conversation-sanitize-branch-point
+                         (conversation-load-context-branch-point context))
+     :forks (conversation-load-context-forks context)
+     :project-root (conversation-load-context-root context)
+     :session-path (conversation-load-context-manifest-path context))))
+
 (defun conversation-load (session-path &key project-root)
-  (let ((resolved-path (and session-path (probe-file session-path))))
-    (unless resolved-path
-      (return-from conversation-load nil))
-    (let ((payload (%conversation-read-sexp-file resolved-path)))
-      (unless (and (listp payload) (keywordp (first payload)))
-        (return-from conversation-load nil))
-      (let* ((root (%conversation-normalize-project-root
-                    (or project-root
-                        (make-pathname :name nil :type nil :defaults resolved-path))))
-             (session-id (%conversation-session-id-from-path resolved-path payload))
-             (manifest-path (conversation-session-path session-id :project-root root))
-             (active-fork (%conversation-normalize-fork-name
-                           (or (getf payload :active-fork)
-                               +conversation-default-fork-name+)))
-             (fork-path (conversation-fork-path session-id active-fork
-                                                :project-root root))
-             (fork-payload
-               (and (probe-file fork-path)
-                    (%conversation-read-sexp-file fork-path)))
-             (effective (if (and (listp fork-payload)
-                                 (keywordp (first fork-payload)))
-                            fork-payload
-                            payload))
-             (entries (%conversation-copy-entries
-                       (mapcar #'%conversation-entry-coerce
-                               (or (getf effective :entries) '()))))
-             (created-at (or (getf payload :created-at)
-                             (getf effective :created-at)
-                             (%conversation-now)))
-             (updated-at (or (getf effective :updated-at)
-                             (getf payload :updated-at)
-                             created-at))
-             (forks (%conversation-normalize-forks
-                     (or (getf effective :forks)
-                         (getf payload :forks))
-                     active-fork
-                     entries))
-             (fork-record (%conversation-find-fork-record forks active-fork))
-             (branch-point (or (and fork-record (getf fork-record :branch-point))
-                               (getf effective :fork-branch-point)
-                               (getf payload :fork-branch-point)))
-             (conversation
-               (%make-conversation-state
-                :session-id session-id
-                :state (%conversation-normalize-state
-                        (or (getf effective :state) (getf payload :state)))
-                :entries entries
-                :created-at (if (integerp created-at)
-                                created-at
-                                (%conversation-now))
-                :updated-at (if (integerp updated-at)
-                                updated-at
-                                (%conversation-now))
-                :active-fork active-fork
-                :fork-branch-point (%conversation-sanitize-branch-point branch-point)
-                :forks forks
-                :project-root root
-                :session-path manifest-path)))
-        conversation))))
+  (let ((context (%conversation-load-open
+                  (%make-conversation-load-context
+                   :session-path session-path
+                   :project-root project-root))))
+    (when context
+      (%conversation-load-fork-payload context)
+      (%conversation-load-history context)
+      (%conversation-load-build context))))
 
 (defun %conversation-file-write-date (path)
   (or (ignore-errors (file-write-date path))
@@ -996,54 +1054,89 @@
             (> (conversation-history-search-result-index left)
                (conversation-history-search-result-index right)))))))))
 
+(defstruct (history-search-context
+            (:constructor %make-history-search-context
+                (&key resolved-role resolved-tool since-ts until-ts
+                      max-results entries)))
+  resolved-role
+  resolved-tool
+  since-ts
+  until-ts
+  max-results
+  entries)
+
+(defun %history-search-context (conversation role tool since until limit)
+  (%make-history-search-context
+   :resolved-role (%history-normalize-role role)
+   :resolved-tool (%history-normalize-tool-name tool)
+   :since-ts (parse-history-timestamp since)
+   :until-ts (parse-history-timestamp until)
+   :max-results (if (and (integerp limit) (> limit 0)) limit 20)
+   :entries (coerce (conversation-state-entries conversation) 'vector)))
+
+(defun %history-search-valid-range-p (context)
+  (let ((since-ts (history-search-context-since-ts context))
+        (until-ts (history-search-context-until-ts context)))
+    (not (and since-ts until-ts (> since-ts until-ts)))))
+
+(defun %history-entry-time-match-p (entry context)
+  (let ((stamp (conversation-history-entry-timestamp entry)))
+    (and (or (null (history-search-context-since-ts context))
+             (and (integerp stamp)
+                  (>= stamp (history-search-context-since-ts context))))
+         (or (null (history-search-context-until-ts context))
+             (and (integerp stamp)
+                  (<= stamp (history-search-context-until-ts context)))))))
+
+(defun %history-entry-role-match-p (entry context)
+  (let ((resolved-role (history-search-context-resolved-role context))
+        (entry-role (string-downcase
+                     (or (conversation-history-entry-role entry)
+                         "assistant"))))
+    (or (null resolved-role)
+        (string= resolved-role entry-role))))
+
+(defun %history-search-entry-result (entries index query context)
+  (let ((entry (aref entries index)))
+    (when (and (%history-entry-role-match-p entry context)
+               (%history-entry-time-match-p entry context)
+               (%history-entry-matches-tool-p entry
+                                              (history-search-context-resolved-tool context)))
+      (multiple-value-bind (content-match-p content-score)
+          (%history-content-score query (conversation-history-entry-content entry))
+        (when content-match-p
+          (make-conversation-history-search-result
+           :index index
+           :score (+ content-score
+                     (if (history-search-context-resolved-role context) 60 0)
+                     (if (history-search-context-resolved-tool context) 80 0))
+           :entry (%conversation-copy-entry entry)
+           :before (and (> index 0)
+                        (%conversation-copy-entry (aref entries (1- index))))
+           :after (and (< (1+ index) (length entries))
+                       (%conversation-copy-entry (aref entries (1+ index))))))))))
+
+(defun %history-search-collect-matches (query context)
+  (let ((entries (history-search-context-entries context))
+        (matches '()))
+    (loop for index from 0 below (length entries) do
+      (let ((result (%history-search-entry-result entries index query context)))
+        (when result
+          (push result matches))))
+    matches))
+
 (defun history-search (conversation
                        &key query role tool since until (limit 20))
   (check-type conversation conversation-state)
-  (let* ((resolved-role (%history-normalize-role role))
-         (resolved-tool (%history-normalize-tool-name tool))
-         (since-ts (parse-history-timestamp since))
-         (until-ts (parse-history-timestamp until))
-         (max-results (if (and (integerp limit) (> limit 0))
-                          limit
-                          20))
-         (entries (coerce (conversation-state-entries conversation) 'vector))
-         (entry-count (length entries))
-         (matches '()))
-    (when (and since-ts until-ts (> since-ts until-ts))
+  (let ((context (%history-search-context conversation role tool since until limit)))
+    (unless (%history-search-valid-range-p context)
       (return-from history-search '()))
-    (loop for index from 0 below entry-count do
-      (let* ((entry (aref entries index))
-             (entry-role (string-downcase
-                          (or (conversation-history-entry-role entry)
-                              "assistant")))
-             (stamp (conversation-history-entry-timestamp entry))
-             (role-match-p (or (null resolved-role)
-                               (string= resolved-role entry-role)))
-             (time-match-p (and (or (null since-ts)
-                                    (and (integerp stamp) (>= stamp since-ts)))
-                                (or (null until-ts)
-                                    (and (integerp stamp) (<= stamp until-ts)))))
-             (tool-match-p (%history-entry-matches-tool-p entry resolved-tool)))
-        (when (and role-match-p time-match-p tool-match-p)
-          (multiple-value-bind (content-match-p content-score)
-              (%history-content-score query (conversation-history-entry-content entry))
-            (when content-match-p
-              (let ((score (+ content-score
-                              (if resolved-role 60 0)
-                              (if resolved-tool 80 0))))
-                (push (make-conversation-history-search-result
-                       :index index
-                       :score score
-                       :entry (%conversation-copy-entry entry)
-                       :before (and (> index 0)
-                                    (%conversation-copy-entry
-                                     (aref entries (1- index))))
-                       :after (and (< (1+ index) entry-count)
-                                   (%conversation-copy-entry
-                                    (aref entries (1+ index)))))
-                      matches)))))))
-    (let ((ranked (sort matches #'%history-search-result-better-p)))
-      (subseq ranked 0 (min max-results (length ranked))))))
+    (let ((ranked (sort (%history-search-collect-matches query context)
+                        #'%history-search-result-better-p)))
+      (subseq ranked
+              0
+              (min (history-search-context-max-results context)
+                   (length ranked))))))
 
 (defun conversation-search-history (conversation
                                     &key query role tool since until (limit 20))

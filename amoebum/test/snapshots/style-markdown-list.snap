@@ -1,84 +1,32 @@
 --- ptui-snapshot v1 84x20
-| Summarize the steps.                                                               |
+| > Summarize the steps.                                                             |
 |                                                                                    |
-| Key points:                                                                        |
+| > Key points:                                                                      |
 |                                                                                    |
-| - First bullet item                                                                |
-| - Second bullet item                                                               |
-| - Third bullet item                                                                |
+|   - First bullet item                                                              |
+|   - Second bullet item                                                             |
+|   - Third bullet item                                                              |
 |                                                                                    |
-| Steps:                                                                             |
+|   Steps:                                                                           |
 |                                                                                    |
-| 1. Read the file                                                                   |
-| 2. Parse the contents                                                              |
-| 3. Write the output                                                                |
+|   1. Read the file                                                                 |
+|   2. Parse the contents                                                            |
+|   3. Write the output                                                              |
 |                                                                                    |
 |                                                                                    |
 |                                                                                    |
-| ╭────────────────────────────────────────────────────────────────────────────────╮ |
-| │                                                                                │ |
-| ╰────────────────────────────────────────────────────────────────────────────────╯ |
-|branch test/style | mode full-auto | Tokens: 41/128000 (0%) | stream idle | model mo|
+|╭────────────────────────────────────────────────────────────────────────────────╮  |
+|│                                                                                │  |
+|╰────────────────────────────────────────────────────────────────────────────────╯  |
+|branch test/style | mode full-auto | Tokens: 41/128000 (0%) | ctx [░░░░░░░░] 0% | st|
 --- attrs
 0,0:bold
 0,1:bold
 0,2:bold
-0,3:bold
-0,4:bold
-0,5:bold
-0,6:bold
-0,7:bold
-0,8:bold
-0,9:bold
-0,10:bold
-0,11:bold
-0,12:bold
-0,13:bold
-0,14:bold
-0,15:bold
-0,16:bold
-0,17:bold
-0,18:bold
-0,19:bold
-0,20:bold
-17,2:bold,invert
-19,0:bold
-19,1:bold
-19,2:bold
-19,3:bold
-19,4:bold
-19,5:bold
-19,6:bold
-19,7:bold
-19,8:bold
-19,9:bold
-19,10:bold
-19,11:bold
-19,12:bold
-19,13:bold
-19,14:bold
-19,15:bold
-19,16:bold
-19,17:bold
-19,18:bold
-19,19:bold
-19,20:bold
-19,21:bold
-19,22:bold
-19,23:bold
-19,24:bold
-19,25:bold
-19,26:bold
-19,27:bold
-19,28:bold
-19,29:bold
-19,30:bold
-19,31:bold
-19,32:bold
-19,33:bold
-19,34:bold
-19,35:bold
-19,36:bold
+2,0:bold
+2,1:bold
+2,2:bold
+17,1:bold,invert
 19,37:bold
 19,38:bold
 19,39:bold
@@ -101,9 +49,6 @@
 19,56:bold
 19,57:bold
 19,58:bold
-19,59:bold
-19,60:bold
-19,61:bold
 19,62:bold
 19,63:bold
 19,64:bold
@@ -121,8 +66,3 @@
 19,76:bold
 19,77:bold
 19,78:bold
-19,79:bold
-19,80:bold
-19,81:bold
-19,82:bold
-19,83:bold

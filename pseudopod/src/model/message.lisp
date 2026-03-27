@@ -25,6 +25,10 @@
   (partial nil)
   (reasoning-content nil :type (or null string)))
 
+(defparameter +tool-call-reasoning-fallback+
+  "Tool call required to continue."
+  "Non-empty fallback Moonshot/Kimi accepts for assistant tool_call messages.")
+
 (defun %copy-hash-table (table)
   (let ((copy (make-hash-table :test #'equal)))
     (when (hash-table-p table)
@@ -184,6 +188,16 @@
           when (and (stringp candidate) (plusp (length candidate)))
             do (return candidate))))
 
+(defun %non-empty-reasoning-content (value)
+  (when (stringp value)
+    (let ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return) value)))
+      (when (plusp (length trimmed))
+        value))))
+
+(defun %tool-call-reasoning-content-or-fallback (value)
+  (or (%non-empty-reasoning-content value)
+      +tool-call-reasoning-fallback+))
+
 (defun %coerce-tool-calls (tool-calls)
   (cond
     ((null tool-calls) nil)
@@ -233,11 +247,13 @@
                (not (gethash "reasoning_content" hash)))
       ;; Kimi K2.5 requires reasoning_content on assistant messages with
       ;; tool_calls when thinking is enabled. Use stored value, fall back
-      ;; to extracting from content parts, default to empty string.
-      (let ((reasoning (or (message-reasoning-content message)
-                           (%extract-reasoning-content (message-content message)))))
+      ;; to extracting from content parts, default to a non-empty placeholder.
+      (let ((reasoning (or (%non-empty-reasoning-content
+                            (message-reasoning-content message))
+                           (%extract-reasoning-content
+                            (message-content message)))))
         (setf (gethash "reasoning_content" hash)
-              (or reasoning ""))))
+              (%tool-call-reasoning-content-or-fallback reasoning))))
     (when (message-partial message)
       (setf (gethash "partial" hash) (message-partial message)))
     hash))

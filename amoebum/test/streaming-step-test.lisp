@@ -128,3 +128,161 @@
     (let ((lines (amoebum:streaming-markdown-renderer-render-lines renderer 80)))
       (is (listp lines))
       (is (>= (length lines) 1)))))
+
+(test chat-stream-turn-snapshot-tracks-answer-lifecycle
+  "The live chat stream snapshot should accumulate normalized streamed-turn events."
+  (let* ((state (amoebum:ensure-chat-ui-state
+                 (amoebum.ui:make-chat-ui-state :stream-runner nil)))
+         (snapshot (amoebum::chat-ui-state-stream-turn-snapshot state)))
+    (amoebum::%record-chat-stream-event! state '(:kind :text-delta :text "hello "))
+    (amoebum::%record-chat-stream-event! state '(:kind :text-delta :text "world"))
+    (amoebum::%record-chat-stream-event! state '(:kind :answer-finalized))
+    (amoebum::%record-chat-stream-event! state '(:kind :stream-progress :status :completed))
+    (is (string= "hello world"
+                 (pseudopod:stream-turn-snapshot-content snapshot)))
+    (is (eq :completed
+            (pseudopod:stream-turn-snapshot-status snapshot)))
+    (is (eq :answer
+            (pseudopod:stream-turn-snapshot-terminal-outcome snapshot)))))
+
+(test chat-stream-turn-snapshot-tracks-tool-continuation-lifecycle
+  "Tool-call previews should register as tool continuation signals in the shared snapshot."
+  (let* ((state (amoebum:ensure-chat-ui-state
+                 (amoebum.ui:make-chat-ui-state :stream-runner nil)))
+         (snapshot (amoebum::chat-ui-state-stream-turn-snapshot state))
+         (tool-call (pseudopod:make-tool-call
+                     :id "tc-1"
+                     :name "lookup"
+                     :arguments "{\"query\":\"lisp\"}")))
+    (amoebum::%record-chat-stream-event! state
+                                         (list :kind :tool-call-delta
+                                               :index 0
+                                               :tool-call tool-call
+                                               :tool-call-id "tc-1"
+                                               :tool-name "lookup"
+                                               :arguments "{\"query\":\"lisp\"}"
+                                               :arguments-complete-p t))
+    (amoebum::%record-chat-stream-event! state '(:kind :stream-progress :status :completed))
+    (is (= 1 (length (pseudopod:stream-turn-snapshot-tool-calls snapshot))))
+    (is (eq :tool-continuation
+            (pseudopod:stream-turn-snapshot-terminal-outcome snapshot)))))
+
+;;; --- NXT-126: Token stream emitters use canonical :type key ---
+
+(test token-stream-emitters-use-type-key
+  "Emitted events should carry :type, not :kind."
+  (let ((state (amoebum:make-token-stream-state)))
+    (setf (amoebum::token-stream-state-status state) :running)
+    (amoebum:token-stream-emit-chunk state "hello")
+    (let ((events '()))
+      (ptui.runtime.queue:queue-pop-all (amoebum::token-stream-state-events state)
+                                        )
+      ;; Re-emit after clearing stale pop
+      (amoebum:token-stream-emit-chunk state "world")
+      (multiple-value-bind (popped count)
+          (ptui.runtime.queue:queue-pop-all (amoebum::token-stream-state-events state))
+        (declare (ignore count))
+        (setf events popped))
+      (let ((event (first events)))
+        (is (eq :text-delta (getf event :type)))
+        (is (null (getf event :kind)))
+        (is (string= "world" (getf event :text)))))))
+
+(test token-stream-drain-dispatches-on-type-key
+  "Drain should update counts from :type :text-delta events."
+  (let ((state (amoebum:make-token-stream-state))
+        (dispatched '()))
+    (setf (amoebum::token-stream-state-status state) :running)
+    (amoebum:token-stream-emit-chunk state "hello ")
+    (amoebum:token-stream-emit-chunk state "world")
+    (amoebum:token-stream-drain-events state
+      (lambda (event) (push event dispatched)))
+    (is (= 2 (length dispatched)))
+    (is (= 2 (amoebum::token-stream-state-chunk-count state)))))
+
+;;; --- NXT-129: Stream event journal ---
+
+(test stream-event-journal-append-and-count
+  "Journal should track events and count correctly."
+  (let ((journal (amoebum:make-stream-event-journal :capacity 100)))
+    (amoebum:stream-event-journal-append! journal '(:type :text-delta :text "hello"))
+    (amoebum:stream-event-journal-append! journal '(:type :text-delta :text "world"))
+    (is (= 2 (amoebum:stream-event-journal-count journal)))
+    (amoebum:stream-event-journal-clear! journal)
+    (is (= 0 (amoebum:stream-event-journal-count journal)))))
+
+(test stream-event-journal-drops-oldest-on-overflow
+  "Journal should drop oldest quarter when capacity exceeded."
+  (let ((journal (amoebum:make-stream-event-journal :capacity 8)))
+    (dotimes (i 9)
+      (amoebum:stream-event-journal-append! journal (list :type :text-delta :text (format nil "~D" i))))
+    (is (<= (amoebum:stream-event-journal-count journal) 8))))
+
+(test chat-stream-event-journal-captures-live-stream-events
+  "The live chat reducer should also append normalized stream journal entries."
+  (let* ((state (amoebum:ensure-chat-ui-state
+                 (amoebum.ui:make-chat-ui-state :stream-runner nil)))
+         (journal (amoebum:chat-ui-state-stream-event-journal state)))
+    (amoebum::%record-chat-stream-event! state '(:kind :text-delta :text "hello"))
+    (amoebum::%record-chat-stream-event! state '(:type :answer-finalized))
+    (let ((entries (amoebum:stream-event-journal-entries-list journal)))
+      (is (= 2 (length entries)))
+      (is (equal '(:stream-event :stream-event)
+                 (mapcar (lambda (entry) (getf entry :kind)) entries)))
+      (is (eq :text-delta (getf (first entries) :event-type)))
+      (is (eq :answer-finalized (getf (second entries) :event-type))))))
+
+(test stream-event-journal-combines-stream-events-and-policy-traces
+  "A single journal should preserve both stream and policy events in append order."
+  (let* ((state (amoebum:ensure-chat-ui-state
+                 (amoebum.ui:make-chat-ui-state :stream-runner nil)))
+         (journal (amoebum:chat-ui-state-stream-event-journal state))
+         (trace (list (amoebum:make-policy-trace-entry
+                       :phase :input
+                       :source :permission-check
+                       :data '(:tool-name "read-file")
+                       :timestamp 1000)
+                      (amoebum:make-policy-trace-entry
+                       :phase :evaluate
+                       :source :rule-match
+                       :decision :allow
+                       :reason-code :explicit-allow
+                       :reason "matched allow rule"
+                       :timestamp 1001))))
+    (amoebum::%record-chat-stream-event! state '(:kind :text-delta :text "hello"))
+    (amoebum:stream-event-journal-append-policy-trace! journal trace)
+    (let ((entries (amoebum:stream-event-journal-entries-list journal)))
+      (is (= 3 (length entries)))
+      (is (equal '(:stream-event :policy-trace :policy-trace)
+                 (mapcar (lambda (entry) (getf entry :kind)) entries)))
+      (is (eq :input (getf (second entries) :phase)))
+      (is (eq :evaluate (getf (third entries) :phase)))
+      (is (eq :allow (getf (third entries) :decision))))))
+
+(test clear-stream-tool-tracking-clears-unified-event-journal
+  "Resetting per-turn stream tracking should clear the shared journal too."
+  (let* ((state (amoebum:ensure-chat-ui-state
+                 (amoebum.ui:make-chat-ui-state :stream-runner nil)))
+         (journal (amoebum:chat-ui-state-stream-event-journal state)))
+    (amoebum::%record-chat-stream-event! state '(:kind :text-delta :text "hello"))
+    (amoebum:stream-event-journal-append-policy-trace!
+     journal
+     (list (amoebum:make-policy-trace-entry
+            :phase :materialize
+            :source :final
+            :decision :allow
+            :timestamp 1002)))
+    (is (= 2 (amoebum:stream-event-journal-count journal)))
+    (amoebum::%clear-stream-tool-tracking! state)
+    (is (= 0 (amoebum:stream-event-journal-count journal)))))
+
+;;; --- NXT-143: token-stream-state snapshot slot ---
+
+(test token-stream-state-carries-snapshot-slot
+  "Token stream state should have a stream-turn-snapshot slot."
+  (let ((state (amoebum:make-token-stream-state))
+        (snapshot (pseudopod:make-stream-turn-snapshot)))
+    (setf (amoebum::token-stream-state-stream-turn-snapshot state) snapshot)
+    (is (eq snapshot (amoebum::token-stream-state-stream-turn-snapshot state)))
+    (amoebum::%token-stream-reset! state)
+    (is (null (amoebum::token-stream-state-stream-turn-snapshot state)))))

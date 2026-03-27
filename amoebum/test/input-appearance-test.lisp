@@ -33,7 +33,7 @@ Protects against stale project root from prior serialization tests."
 (defun %safe-make-chat-ui-state (&key (branch-name "test"))
   "Build a chat-ui-state, working around stale project root errors from prior tests."
   (with-safe-chat-env
-    (let ((state (amoebum:make-chat-ui-state
+    (let ((state (amoebum.ui:make-chat-ui-state
                   :status-bar-state (%snapshot-status-bar-state
                                      :branch-name branch-name))))
       ;; Replace tree browser with empty (deterministic, no filesystem access)
@@ -103,6 +103,15 @@ Protects against stale project root from prior serialization tests."
   (let* ((state (%input-test-chat-state :input-text ""))
          (buffer (%safe-render-chat-ui state :cols 84 :rows 20)))
     (%assert-input-snapshot buffer "prompt-box-after-ctrl-u")))
+
+(test chat-panel-input-handler-dispatches-ctrl-k-and-right
+  (let ((state (%input-test-chat-state :input-text "hello world")))
+    (amoebum:chat-ui-set-input state "hello world" :cursor-position 5)
+    (is-true (amoebum::chat-panel-handle-input-key state :ctrl-k nil 40))
+    (is (string= "hello" (amoebum::chat-ui-state-input-text state)))
+    (is (= 5 (amoebum::chat-ui-state-cursor-position state)))
+    (is-true (amoebum::chat-panel-handle-input-key state :right nil 40))
+    (is-false (amoebum::chat-ui-state-cursor-position state))))
 
 ;;; --- Unit tests for %delete-word-backward ---
 

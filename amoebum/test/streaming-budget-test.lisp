@@ -9,14 +9,14 @@
 (test streaming-budget-enforcement-emits-token-events-and-stats
   (let* ((bus (amoebum:make-event-bus :capacity 256))
          (chunk-payloads '())
-         (original-context-limit (amoebum:config-value :context-window-limit
-                                                       (amoebum:current-config)))
-         (original-threshold (amoebum:config-value :stream-budget-abort-threshold-percent
-                                                   (amoebum:current-config))))
+         (original-context-limit (amoebum.config:config-value :context-window-limit
+                                                       (amoebum.config:current-config)))
+         (original-threshold (amoebum.config:config-value :stream-budget-abort-threshold-percent
+                                                   (amoebum.config:current-config))))
     (unwind-protect
         (progn
-          (amoebum:setconfig :context-window-limit 5)
-          (amoebum:setconfig :stream-budget-abort-threshold-percent 40)
+          (amoebum.config:setconfig :context-window-limit 5)
+          (amoebum.config:setconfig :stream-budget-abort-threshold-percent 40)
           (let ((amoebum::*event-bus* bus))
             (amoebum:subscribe bus
                                amoebum:+event-type-llm-stream-chunk+
@@ -32,12 +32,12 @@
                        (sleep 0.02d0)))
                    (state
                      (amoebum:ensure-chat-ui-state
-                      (amoebum:make-chat-ui-state
+                      (amoebum.ui:make-chat-ui-state
                        :stream-runner runner
-                       :status-bar-state (amoebum:make-status-bar-state))))
-                   (stream-state (amoebum:chat-ui-state-stream-state state)))
-              (setf (amoebum:chat-ui-state-context-window-limit state) 5)
-              (setf (amoebum:chat-ui-state-context-used-tokens state) 0)
+                       :status-bar-state (amoebum.ui:make-status-bar-state))))
+                   (stream-state (amoebum.ui:chat-ui-state-stream-state state)))
+              (setf (amoebum.ui:chat-ui-state-context-window-limit state) 5)
+              (setf (amoebum.ui:chat-ui-state-context-used-tokens state) 0)
               (amoebum:chat-ui-set-input state "trigger")
               (let ((user-message (amoebum:chat-ui-submit-input state)))
                 (amoebum::%start-streaming-assistant-response state user-message))
@@ -67,8 +67,8 @@
                              (amoebum:llm-stream-chunk-payload-token (first ordered))))
                 (is (= 1
                        (amoebum:llm-stream-chunk-payload-token-index (first ordered))))))))
-      (amoebum:setconfig :context-window-limit original-context-limit)
-      (amoebum:setconfig :stream-budget-abort-threshold-percent original-threshold))))
+      (amoebum.config:setconfig :context-window-limit original-context-limit)
+      (amoebum.config:setconfig :stream-budget-abort-threshold-percent original-threshold))))
 
 (test streaming-budget-smoke-sentinel
   (is-true t)

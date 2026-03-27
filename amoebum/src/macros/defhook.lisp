@@ -441,7 +441,19 @@
       (:disable-hook
        :hook-disabled)
       (otherwise
-       (warn "~A" hook-condition)
+       (let ((chat-state (and (boundp '*chat-ui-state*)
+                              *chat-ui-state*)))
+         (if (and chat-state
+                  (fboundp 'chat-ui-state-hook-warnings)
+                  (ignore-errors (typep chat-state 'chat-ui-state)))
+             (let* ((warning-text (format nil "~A" hook-condition))
+                    (warnings (cons warning-text
+                                    (or (chat-ui-state-hook-warnings chat-state)
+                                        '()))))
+               (setf (chat-ui-state-hook-warnings chat-state)
+                     (subseq warnings 0 (min 5 (length warnings)))))
+             ;; Fallback: use warn if no chat UI state is available yet.
+             (warn "~A" hook-condition)))
        (if (eq status :timeout) :hook-timeout :hook-error)))))
 
 (defun %invoke-hook-entry (hook-point entry args)

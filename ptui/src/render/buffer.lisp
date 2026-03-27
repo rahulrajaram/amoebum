@@ -1,6 +1,9 @@
 (defpackage :ptui.render.buffer
   (:use :cl)
-  (:export #:make-buffer #:buffer-clear #:buffer-draw-text
+  (:export #:make-buffer #:buffer-clear #:buffer-reset
+           #:buffer-dimensions-match-p
+           #:buffer-draw-text
+           #:buffer-draw-styled-segments
            #:buffer-fill-rect #:buffer-draw-border
            #:buffer-subrect #:with-clip
            #:write-cell-if-visible))
@@ -75,10 +78,29 @@
 (defun buffer-index (buf x y)
   (+ x (* y (ptui.core.types:cell-buffer-cols buf))))
 
+(defun copy-cell-into (dst src)
+  "Copy SRC cell data into DST cell in-place. Zero allocation."
+  (setf (ptui.core.types:cell-glyph dst) (ptui.core.types:cell-glyph src)
+        (ptui.core.types:cell-fg dst) (ptui.core.types:cell-fg src)
+        (ptui.core.types:cell-bg dst) (ptui.core.types:cell-bg src))
+  (let ((da (ptui.core.types:cell-attrs dst))
+        (sa (ptui.core.types:cell-attrs src)))
+    (setf (ptui.core.types:attrs-boldp da) (ptui.core.types:attrs-boldp sa)
+          (ptui.core.types:attrs-italicp da) (ptui.core.types:attrs-italicp sa)
+          (ptui.core.types:attrs-underlinep da) (ptui.core.types:attrs-underlinep sa)
+          (ptui.core.types:attrs-invertp da) (ptui.core.types:attrs-invertp sa)
+          (ptui.core.types:attrs-dimp da) (ptui.core.types:attrs-dimp sa)
+          (ptui.core.types:attrs-strikep da) (ptui.core.types:attrs-strikep sa)))
+  dst)
+
 (defun write-cell-if-visible (buf x y cell clip)
   (when (point-in-rect-p x y clip)
-    (setf (svref (ptui.core.types:cell-buffer-cells buf) (buffer-index buf x y))
-          (clone-cell cell))))
+    (let* ((idx (buffer-index buf x y))
+           (existing (svref (ptui.core.types:cell-buffer-cells buf) idx)))
+      (if existing
+          (copy-cell-into existing cell)
+          (setf (svref (ptui.core.types:cell-buffer-cells buf) idx)
+                (clone-cell cell))))))
 
 (defun make-buffer (cols rows &key (fill (make-default-cell)))
   (let* ((count (* cols rows))
@@ -88,11 +110,43 @@
     (ptui.core.types:make-cell-buffer cols rows cells)))
 
 (defun buffer-clear (buf &key (fill (make-default-cell)))
+  "Clear buffer by resetting existing cells in-place where possible."
   (let* ((cells (ptui.core.types:cell-buffer-cells buf))
          (count (length cells)))
     (loop for i from 0 below count do
-      (setf (svref cells i) (clone-cell fill))))
+      (let ((existing (svref cells i)))
+        (if existing
+            (reset-cell existing)
+            (setf (svref cells i) (clone-cell fill))))))
   nil)
+
+(defun reset-cell (cell)
+  "Reset CELL in-place to default state without allocating."
+  (setf (ptui.core.types:cell-glyph cell) " "
+        (ptui.core.types:cell-fg cell) nil
+        (ptui.core.types:cell-bg cell) nil)
+  (let ((attrs (ptui.core.types:cell-attrs cell)))
+    (setf (ptui.core.types:attrs-boldp attrs) nil
+          (ptui.core.types:attrs-italicp attrs) nil
+          (ptui.core.types:attrs-underlinep attrs) nil
+          (ptui.core.types:attrs-invertp attrs) nil
+          (ptui.core.types:attrs-dimp attrs) nil
+          (ptui.core.types:attrs-strikep attrs) nil))
+  cell)
+
+(defun buffer-reset (buf)
+  "Reset all cells in BUF to defaults in-place. Zero allocation."
+  (let* ((cells (ptui.core.types:cell-buffer-cells buf))
+         (count (length cells)))
+    (loop for i from 0 below count do
+      (reset-cell (svref cells i))))
+  nil)
+
+(defun buffer-dimensions-match-p (buf cols rows)
+  "Return T if BUF has the given dimensions."
+  (and buf
+       (= (ptui.core.types:cell-buffer-cols buf) cols)
+       (= (ptui.core.types:cell-buffer-rows buf) rows)))
 
 (defun styled-segment->cells (segment)
   (labels ((continuation-cell (template)
@@ -106,16 +160,20 @@
                                  collect (continuation-cell cell)))
                    (list (clone-cell cell)))))
            (string->cells (text template)
+             ;; P1 FIX: Use cons + nreverse instead of nconc for O(1) per iteration
+             ;; instead of O(n) per iteration
              (let ((cells '()))
                (flet ((append-cell (cell)
-                        (setf cells (nconc cells (list cell)))))
+                        ;; Was: (setf cells (nconc cells (list cell))) - O(n) each!
+                        ;; Now: O(1) push, reverse once at end
+                        (push cell cells)))
                  (dolist (cluster (ptui.text.grapheme:split-graphemes text))
                    (let ((width (ptui.text.width:grapheme-width cluster)))
                      (cond
                        ;; Zero-width clusters attach to the previous base cluster.
                        ((<= width 0)
                         (when cells
-                          (let ((last (car (last cells))))
+                          (let ((last (car cells)))
                             (setf (ptui.core.types:cell-glyph last)
                                   (concatenate 'string
                                                (ptui.core.types:cell-glyph last)
@@ -123,8 +181,9 @@
                        (t
                         (append-cell (cell-with-glyph template cluster))
                         (loop repeat (1- width) do
-                          (append-cell (continuation-cell template))))))))
-               cells)))
+                          (append-cell (continuation-cell template)))))))
+               ;; Reverse once at end - O(n) total instead of O(n²)
+               (nreverse cells)))))
     (cond
       ((stringp segment)
        (string->cells segment (make-default-cell)))
@@ -151,6 +210,64 @@
 (defun buffer-subrect (buf rect)
   (rect-intersection (clip-for-buffer buf) rect))
 
+(defun %draw-segment-direct (buf x y clip limit dx-start segment)
+  "Write a single styled-text segment directly into BUF. Returns new dx offset."
+  (let ((dx dx-start))
+    (flet ((emit-glyph (glyph template)
+             (when (< dx limit)
+               (let ((ex (svref (ptui.core.types:cell-buffer-cells buf)
+                                (buffer-index buf (+ x dx) y))))
+                 (when (and ex (point-in-rect-p (+ x dx) y clip))
+                   (setf (ptui.core.types:cell-glyph ex) glyph
+                         (ptui.core.types:cell-fg ex) (ptui.core.types:cell-fg template)
+                         (ptui.core.types:cell-bg ex) (ptui.core.types:cell-bg template))
+                   (let ((da (ptui.core.types:cell-attrs ex))
+                         (sa (ptui.core.types:cell-attrs template)))
+                     (setf (ptui.core.types:attrs-boldp da) (ptui.core.types:attrs-boldp sa)
+                           (ptui.core.types:attrs-italicp da) (ptui.core.types:attrs-italicp sa)
+                           (ptui.core.types:attrs-underlinep da) (ptui.core.types:attrs-underlinep sa)
+                           (ptui.core.types:attrs-invertp da) (ptui.core.types:attrs-invertp sa)
+                           (ptui.core.types:attrs-dimp da) (ptui.core.types:attrs-dimp sa)
+                           (ptui.core.types:attrs-strikep da) (ptui.core.types:attrs-strikep sa))))
+               (incf dx)))
+           (emit-continuation (template)
+             (when (< dx limit)
+               (let ((ex (svref (ptui.core.types:cell-buffer-cells buf)
+                                (buffer-index buf (+ x dx) y))))
+                 (when (and ex (point-in-rect-p (+ x dx) y clip))
+                   (setf (ptui.core.types:cell-glyph ex) ""
+                         (ptui.core.types:cell-fg ex) (ptui.core.types:cell-fg template)
+                         (ptui.core.types:cell-bg ex) (ptui.core.types:cell-bg template))
+                   (let ((da (ptui.core.types:cell-attrs ex))
+                         (sa (ptui.core.types:cell-attrs template)))
+                     (setf (ptui.core.types:attrs-boldp da) (ptui.core.types:attrs-boldp sa)
+                           (ptui.core.types:attrs-italicp da) (ptui.core.types:attrs-italicp sa)
+                           (ptui.core.types:attrs-underlinep da) (ptui.core.types:attrs-underlinep sa)
+                           (ptui.core.types:attrs-invertp da) (ptui.core.types:attrs-invertp sa)
+                           (ptui.core.types:attrs-dimp da) (ptui.core.types:attrs-dimp sa)
+                           (ptui.core.types:attrs-strikep da) (ptui.core.types:attrs-strikep sa))))
+               (incf dx))))
+      (labels ((draw-string (text template)
+                 (dolist (cluster (ptui.text.grapheme:split-graphemes text))
+                   (let ((width (ptui.text.width:grapheme-width cluster)))
+                     (cond
+                       ((<= width 0) nil) ; skip zero-width in direct mode
+                       (t
+                        (emit-glyph cluster template)
+                        (loop repeat (1- width) do (emit-continuation template))))))))
+        (cond
+          ((stringp segment)
+           (draw-string segment (make-default-cell)))
+          ((typep segment 'ptui.core.types:cell)
+           (let ((width (ptui.text.width:string-width (ptui.core.types:cell-glyph segment))))
+             (emit-glyph (ptui.core.types:cell-glyph segment) segment)
+             (loop repeat (max 0 (1- width)) do (emit-continuation segment))))
+          ((and (consp segment)
+                (stringp (first segment))
+                (typep (second segment) 'ptui.core.types:cell))
+           (draw-string (first segment) (second segment))))))))
+    dx))
+
 (defun buffer-draw-text (buf x y styled-text &key (max-width nil))
   (let* ((clip (clip-for-buffer buf))
          (cells (flatten-styled-text styled-text))
@@ -160,6 +277,83 @@
           while (< dx limit)
           do (write-cell-if-visible buf (+ x dx) y cell clip)))
   nil)
+
+(defun buffer-draw-styled-segments (buf x y segments style-resolver &key (max-width nil))
+  "Write compact (text . style-id) segments directly into buffer cells.
+STYLE-RESOLVER is a function: style-id → ptui cell (used as template).
+Zero intermediate cell/attrs allocation — mutates pre-existing buffer cells."
+  (let* ((clip (clip-for-buffer buf))
+         (limit (if max-width (max 0 max-width) most-positive-fixnum))
+         (dx 0)
+         (cells-array (ptui.core.types:cell-buffer-cells buf))
+         (buf-cols (ptui.core.types:cell-buffer-cols buf)))
+    (declare (type fixnum dx limit buf-cols))
+    (dolist (segment segments)
+      (when (>= dx limit) (return))
+      (let* ((text (if (and (consp segment) (stringp (car segment)))
+                       (car segment)
+                       (if (stringp segment) segment "")))
+             (template (cond
+                         ;; Compact segment: (text . fixnum-style-id)
+                         ((and (consp segment)
+                               (stringp (car segment))
+                               (typep (cdr segment) 'fixnum))
+                          (funcall style-resolver (cdr segment)))
+                         ;; Already resolved: (text cell)
+                         ((and (consp segment)
+                               (stringp (first segment))
+                               (typep (second segment) 'ptui.core.types:cell))
+                          (second segment))
+                         ;; Cell directly
+                         ((typep segment 'ptui.core.types:cell)
+                          (setf text (ptui.core.types:cell-glyph segment))
+                          segment)
+                         ;; Plain string
+                         ((stringp segment)
+                          (make-default-cell))
+                         (t (make-default-cell)))))
+        (dolist (cluster (ptui.text.grapheme:split-graphemes text))
+          (when (>= dx limit) (return))
+          (let ((width (ptui.text.width:grapheme-width cluster)))
+            (when (> width 0)
+              (let ((abs-x (+ x dx)))
+                (when (point-in-rect-p abs-x y clip)
+                  (let* ((idx (+ abs-x (* y buf-cols)))
+                         (ex (svref cells-array idx)))
+                    (when ex
+                      (setf (ptui.core.types:cell-glyph ex) cluster
+                            (ptui.core.types:cell-fg ex) (ptui.core.types:cell-fg template)
+                            (ptui.core.types:cell-bg ex) (ptui.core.types:cell-bg template))
+                      (let ((da (ptui.core.types:cell-attrs ex))
+                            (sa (ptui.core.types:cell-attrs template)))
+                        (setf (ptui.core.types:attrs-boldp da) (ptui.core.types:attrs-boldp sa)
+                              (ptui.core.types:attrs-italicp da) (ptui.core.types:attrs-italicp sa)
+                              (ptui.core.types:attrs-underlinep da) (ptui.core.types:attrs-underlinep sa)
+                              (ptui.core.types:attrs-invertp da) (ptui.core.types:attrs-invertp sa)
+                              (ptui.core.types:attrs-dimp da) (ptui.core.types:attrs-dimp sa)
+                              (ptui.core.types:attrs-strikep da) (ptui.core.types:attrs-strikep sa)))))))
+              (incf dx)
+              ;; Continuation cells for wide characters
+              (loop repeat (1- width) do
+                (when (>= dx limit) (return))
+                (let ((abs-x (+ x dx)))
+                  (when (point-in-rect-p abs-x y clip)
+                    (let* ((idx (+ abs-x (* y buf-cols)))
+                           (ex (svref cells-array idx)))
+                      (when ex
+                        (setf (ptui.core.types:cell-glyph ex) ""
+                              (ptui.core.types:cell-fg ex) (ptui.core.types:cell-fg template)
+                              (ptui.core.types:cell-bg ex) (ptui.core.types:cell-bg template))
+                        (let ((da (ptui.core.types:cell-attrs ex))
+                              (sa (ptui.core.types:cell-attrs template)))
+                          (setf (ptui.core.types:attrs-boldp da) (ptui.core.types:attrs-boldp sa)
+                                (ptui.core.types:attrs-italicp da) (ptui.core.types:attrs-italicp sa)
+                                (ptui.core.types:attrs-underlinep da) (ptui.core.types:attrs-underlinep sa)
+                                (ptui.core.types:attrs-invertp da) (ptui.core.types:attrs-invertp sa)
+                                (ptui.core.types:attrs-dimp da) (ptui.core.types:attrs-dimp sa)
+                                (ptui.core.types:attrs-strikep da) (ptui.core.types:attrs-strikep sa)))))))
+                (incf dx)))))))
+    nil))
 
 (defun buffer-fill-rect (buf rect cell)
   (let ((clip (buffer-subrect buf rect)))

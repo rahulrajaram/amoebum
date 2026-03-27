@@ -22,22 +22,23 @@
             (pseudopod:search-backend
              :searxng
              "amoebum adapter"
-             :limit 3
-             :searxng-url "https://search.example/query"
-             :min-interval-seconds 0
-             :timeout-seconds 17
-             :user-agent "pseudopod-test-agent/1"
-             :http-get-fn
-             (lambda (url &key params timeout-seconds user-agent)
-               (setf captured-url url
-                     captured-params params
-                     captured-timeout timeout-seconds
-                     captured-user-agent user-agent)
-               (list :status 200
-                     :body
-                     "{\"results\":[{\"title\":\"Alpha\",\"url\":\"https://docs.example/a\",\"content\":\"First result\"},{\"url\":\"https://docs.example/b\",\"snippet\":\"Second result\"}]}"
-                     :effective-url url
-                     :content-type "application/json")))))
+             (pseudopod:make-search-options
+              :limit 3
+              :searxng-url "https://search.example/query"
+              :min-interval-seconds 0
+              :timeout-seconds 17
+              :user-agent "pseudopod-test-agent/1"
+              :http-get-fn
+              (lambda (url &key params timeout-seconds user-agent)
+                (setf captured-url url
+                      captured-params params
+                      captured-timeout timeout-seconds
+                      captured-user-agent user-agent)
+                (list :status 200
+                      :body
+                      "{\"results\":[{\"title\":\"Alpha\",\"url\":\"https://docs.example/a\",\"content\":\"First result\"},{\"url\":\"https://docs.example/b\",\"snippet\":\"Second result\"}]}"
+                      :effective-url url
+                      :content-type "application/json"))))))
       (is-true (pseudopod:search-response-p response))
       (is (eq :searxng (pseudopod:search-response-backend response)))
       (is (string= "amoebum adapter" (pseudopod:search-response-query response)))
@@ -67,17 +68,18 @@
           (pseudopod:search-backend
            :duckduckgo
            "lisp parser"
-           :limit 2
-           :duckduckgo-url "https://duck.example/html/"
-           :min-interval-seconds 0
-           :http-get-fn
-           (lambda (url &key params timeout-seconds user-agent)
-             (declare (ignore params timeout-seconds user-agent))
-             (list :status 200
-                   :body
-                   "<html><body><a class='result__a' href='https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Fguide'>Guide &amp; Notes</a><div class='result__snippet'>Read &lt;b&gt;this&lt;/b&gt; first.</div></body></html>"
-                   :effective-url url
-                   :content-type "text/html")))))
+           (pseudopod:make-search-options
+            :limit 2
+            :duckduckgo-url "https://duck.example/html/"
+            :min-interval-seconds 0
+            :http-get-fn
+            (lambda (url &key params timeout-seconds user-agent)
+              (declare (ignore params timeout-seconds user-agent))
+              (list :status 200
+                    :body
+                    "<html><body><a class='result__a' href='https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Fguide'>Guide &amp; Notes</a><div class='result__snippet'>Read &lt;b&gt;this&lt;/b&gt; first.</div></body></html>"
+                    :effective-url url
+                    :content-type "text/html"))))))
     (is-true (pseudopod:search-response-p response))
     (is (eq :duckduckgo (pseudopod:search-response-backend response)))
     (is (= 1 (pseudopod:search-response-result-count response)))
@@ -104,14 +106,16 @@
           (setf pseudopod::*search-last-request-at* 0.0d0)
           (pseudopod:search-backend :searxng
                                     "first"
-                                    :searxng-url "https://search.example/query"
-                                    :min-interval-seconds 0.2d0
-                                    :http-get-fn runner)
+                                    (pseudopod:make-search-options
+                                     :searxng-url "https://search.example/query"
+                                     :min-interval-seconds 0.2d0
+                                     :http-get-fn runner))
           (pseudopod:search-backend :searxng
                                     "second"
-                                    :searxng-url "https://search.example/query"
-                                    :min-interval-seconds 0.2d0
-                                    :http-get-fn runner)
+                                    (pseudopod:make-search-options
+                                     :searxng-url "https://search.example/query"
+                                     :min-interval-seconds 0.2d0
+                                     :http-get-fn runner))
           (is (= 2 (length timestamps)))
           (let* ((ordered (nreverse timestamps))
                  (delta (- (second ordered) (first ordered))))
@@ -125,21 +129,23 @@
     (pseudopod:search-backend
      :searxng
      "broken backend"
-     :searxng-url "https://search.example/query"
-     :min-interval-seconds 0
-     :http-get-fn
-     (lambda (url &key params timeout-seconds user-agent)
-       (declare (ignore url params timeout-seconds user-agent))
-       (list :status 503 :body "unavailable" :effective-url "" :content-type "text/plain")))))
+     (pseudopod:make-search-options
+      :searxng-url "https://search.example/query"
+      :min-interval-seconds 0
+      :http-get-fn
+      (lambda (url &key params timeout-seconds user-agent)
+        (declare (ignore url params timeout-seconds user-agent))
+        (list :status 503 :body "unavailable" :effective-url "" :content-type "text/plain"))))))
 
 (test search-backend-parse-error
   (signals pseudopod:pseudopod-search-parse-error
     (pseudopod:search-backend
      :searxng
      "invalid payload"
-     :searxng-url "https://search.example/query"
-     :min-interval-seconds 0
-     :http-get-fn
-     (lambda (url &key params timeout-seconds user-agent)
-       (declare (ignore url params timeout-seconds user-agent))
-       (list :status 200 :body "{not-json" :effective-url "" :content-type "application/json")))))
+     (pseudopod:make-search-options
+      :searxng-url "https://search.example/query"
+      :min-interval-seconds 0
+      :http-get-fn
+      (lambda (url &key params timeout-seconds user-agent)
+        (declare (ignore url params timeout-seconds user-agent))
+        (list :status 200 :body "{not-json" :effective-url "" :content-type "application/json"))))))

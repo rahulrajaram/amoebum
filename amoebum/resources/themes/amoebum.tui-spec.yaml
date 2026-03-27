@@ -1,0 +1,278 @@
+# ============================================================================
+# Amoebum Tokyo Night Theme
+# ============================================================================
+# This is the canonical YAML theme for amoebum, extracted from the legacy
+# Lisp-based theme definition (theme-amoebum.lisp).
+#
+# To use: symlink or copy to ~/.config/amoebum/theme.yaml
+# or specify via --theme-yaml <path>
+
+metadata:
+  name: "amoebum-tokyo-night"
+  description: "Tokyo Night inspired dark theme for amoebum"
+  version: "1.0.0"
+  base: dark
+
+# ----------------------------------------------------------------------------
+# Palette - Named colors that can be referenced by roles
+# ----------------------------------------------------------------------------
+palette:
+  # Core backgrounds
+  bg: "16 18 24"
+  bg-alt: "30 36 46"
+  bg-code: "36 42 54"
+  bg-code-fence: "58 70 86"
+  
+  # Core foregrounds
+  text: "220 226 236"
+  text-dim: "160 170 186"
+  text-muted: "116 124 138"
+  
+  # Accent colors (Tokyo Night palette)
+  blue: "122 162 247"
+  cyan: "125 207 255"
+  amber: "224 175 104"
+  yellow: "240 198 116"
+  green: "158 206 106"
+  red: "242 143 173"
+  pink: "242 143 173"
+  purple: "187 154 247"
+  teal: "26 188 156"
+  
+  # UI elements
+  border: "109 140 189"
+  tree-indent: "64 72 86"
+  tree-glyph: "116 124 138"
+
+# ----------------------------------------------------------------------------
+# Roles - Semantic styling for UI elements
+# ----------------------------------------------------------------------------
+roles:
+  # Message labels
+  user-label:
+    fg: amber
+    bold: true
+  assistant-label:
+    fg: blue
+    bold: true
+  tool-label:
+    fg: cyan
+    bold: true
+    
+  # Message content
+  user:
+    fg: text
+  assistant:
+    fg: text
+  tool:
+    fg: cyan
+  system:
+    fg: text-dim
+    
+  # Status indicators
+  warning:
+    fg: yellow
+    bold: true
+  error:
+    fg: red
+    bold: true
+  meta:
+    fg: text-muted
+    
+  # Status bar
+  status-bar:
+    fg: text-dim
+    bg: bg-alt
+    
+  # Context usage indicators
+  context-green:
+    fg: green
+    bg: bg-alt
+    bold: true
+  context-yellow:
+    fg: yellow
+    bg: bg-alt
+    bold: true
+  context-red:
+    fg: red
+    bg: bg-alt
+    bold: true
+    
+  # Input prompt
+  prompt:
+    fg: text
+  prompt-border:
+    fg: border
+    
+  # Markdown rendering - headings
+  assistant-heading:
+    fg: blue
+    bold: true
+    
+  # Markdown rendering - code blocks
+  assistant-code:
+    fg: text
+    bg: bg-code
+  assistant-code-fence:
+    fg: bg-code-fence
+    dim: true
+    bg: bg-code
+  assistant-code-keyword:
+    fg: pink
+    bold: true
+    bg: bg-code
+  assistant-code-string:
+    fg: green
+    bg: bg-code
+  assistant-code-function:
+    fg: blue
+    bg: bg-code
+  assistant-code-comment:
+    fg: text-muted
+    italic: true
+    bg: bg-code
+  assistant-code-number:
+    fg: yellow
+    bg: bg-code
+  assistant-inline-code:
+    fg: text
+    bg: bg-code
+    
+  # Approval dialog
+  approval-label:
+    fg: text-muted
+  approval-command:
+    fg: cyan
+  approval-path:
+    fg: green
+    
+  # Tool preview panel
+  tool-preview-keyword:
+    fg: text-muted
+  tool-preview-tool:
+    fg: blue
+    bold: true
+  tool-preview-status-streaming:
+    fg: text-muted
+    dim: true
+  tool-preview-status-running:
+    fg: yellow
+  tool-preview-status-error:
+    fg: red
+    bold: true
+  tool-preview-args-label:
+    fg: text-muted
+  tool-preview-args:
+    fg: text
+  tool-preview-error:
+    fg: red
+  tool-preview-error-text:
+    fg: red
+    bold: true
+  tool-preview-spinner:
+    fg: blue
+    
+  # Tree browser
+  tree-row-indent:
+    fg: tree-indent
+  tree-glyph-open:
+    fg: tree-glyph
+  tree-glyph-expanded:
+    fg: green
+    bold: true
+  tree-glyph-collapsed:
+    fg: yellow
+    bold: true
+  tree-status-empty:
+    fg: bg-code-fence
+  tree-directory-name:
+    fg: blue
+    bold: true
+  tree-file-name:
+    fg: text
+
+# ----------------------------------------------------------------------------
+# Markdown syntax highlighting overrides
+# ----------------------------------------------------------------------------
+markdown:
+  code-background: bg-code
+  code-foreground: text
+  fence-color: bg-code-fence
+  keyword-color: pink
+  heading-color: blue
+  inline-code-background: bg-code
+  inline-code-foreground: text
+
+# ----------------------------------------------------------------------------
+# Layout configuration (optional - uses defaults if not specified)
+# ----------------------------------------------------------------------------
+layout:
+  direction: column
+  spacing: 0
+  
+  # Panel definitions with heights and visibility conditions
+  panels:
+    - name: provider-dashboard
+      height: 5
+      when: provider-visible-p
+      content-type: provider-health-panel
+      
+    - name: tree-browser
+      height: 10
+      when: tree-active-p
+      content-type: tree-browser
+      
+    - name: plan-view
+      height: 12
+      when: plan-active-p
+      content-type: plan-presentation
+      
+    - name: message-history
+      height: flex
+      weight: 1
+      content-type: dynamic-list
+      scrollable: true
+      scrollbar: auto
+      
+    - name: approval-dialog
+      height: 8
+      when: approval-active-p
+      content-type: overlay
+      overlay-type: approval
+      
+    - name: fuzzy-picker
+      height: 8
+      when: picker-active-p
+      content-type: overlay
+      overlay-type: fuzzy-picker
+      
+    - name: input-prompt
+      height: 3
+      content-type: prompt-box
+      border-style: rounded
+      
+    - name: status-bar
+      height: 1
+      content-type: status-bar
+
+# ----------------------------------------------------------------------------
+# Behavior configuration
+# ----------------------------------------------------------------------------
+behavior:
+  scroll:
+    page-step: 0.5
+    follow-output: true
+    
+  input:
+    fuzzy-picker: true
+    history-search: true
+    
+  notifications:
+    desktop: false
+    sound: false
+    
+  keys:
+    reload: "r"
+    quit: "q"
+    palette: "p"
+    roles: "R"

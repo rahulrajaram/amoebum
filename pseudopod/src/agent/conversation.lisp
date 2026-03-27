@@ -140,12 +140,13 @@
                                (make-toolset)))
          (result
            (step (conversation-client conversation)
-                 :messages (%conversation-request-messages conversation)
-                 :tools (%resolve-conversation-tools conversation tools)
-                 :toolset resolved-toolset
-                 :max-steps max-steps
-                 :on-tool-call on-tool-call
-                 :on-tool-result on-tool-result)))
+                 (make-agent-step-context
+                  :messages (%conversation-request-messages conversation)
+                  :tools (%resolve-conversation-tools conversation tools)
+                  :toolset resolved-toolset
+                  :max-steps max-steps
+                  :on-tool-call on-tool-call
+                  :on-tool-result on-tool-result))))
     (setf (conversation-toolset conversation) resolved-toolset)
     (setf (conversation-history conversation)
           (%strip-leading-system-message (step-result-history result)))

@@ -3,7 +3,8 @@
   (:export #:run-all
            #:constraint-spec-suite
            #:constraint-solver-suite
-           #:constraint-layout-suite))
+           #:constraint-layout-suite
+           #:padding-gutter-suite))
 
 (in-package :ptui.test.constraints)
 
@@ -262,7 +263,106 @@
     ;; Total adds up
     (is (= (loop for (nil . v) in result sum v) total))))
 
+;;; ===================================================================
+;;; Padding and Gutter Paint Tests
+;;; ===================================================================
+
+(def-suite padding-gutter-suite
+  :description "PTUI padding and gutter paint behavior.")
+
+(in-suite padding-gutter-suite)
+
+(defun %make-test-element (direction constraints children &key padding gutters)
+  "Build a :constraint-layout element with optional padding/gutters for testing."
+  (ptui.ui.elements:make-element
+   :constraint-layout
+   :props (append
+           (list :direction direction :constraints constraints)
+           (when padding (list :padding padding))
+           (when gutters (list :gutters gutters)))
+   :children children))
+
+(defun %make-text-child (id text)
+  (ptui.ui.elements:make-element :text :id id :props (list :text text)))
+
+(defun %cell-at (buf x y)
+  "Access cell at (x, y) in buffer."
+  (svref (ptui.core.types:cell-buffer-cells buf)
+         (+ x (* y (ptui.core.types:cell-buffer-cols buf)))))
+
+(test padding-reduces-main-axis
+  "Column with padding (2 0 2 0) in 24 rows: solver gets 20 rows.
+Children should paint within padded area."
+  (let* ((constraints (list (ptui.layout.constraints:fixed 'header 3)
+                            (ptui.layout.constraints:flex 'content)))
+         (children (list (%make-text-child 'header "H")
+                         (%make-text-child 'content "C")))
+         (elem (%make-test-element :column constraints children
+                                   :padding '(2 0 2 0)))
+         (buf (ptui.render.buffer:make-buffer 80 24)))
+    ;; Should not error
+    (ptui.ui.app::%paint-element elem buf 0 0 80 24)
+    ;; Row 0 should be empty (pad-top=2), content starts at row 2
+    (let ((cell-row0 (%cell-at buf 0 0))
+          (cell-row2 (%cell-at buf 0 2)))
+      (is (string= (ptui.core.types:cell-glyph cell-row0) " "))
+      (is (string= (ptui.core.types:cell-glyph cell-row2) "H")))))
+
+(test padding-reduces-cross-axis
+  "Column with padding (0 3 0 3) in 80 cols: children get 74 cols."
+  (let* ((constraints (list (ptui.layout.constraints:flex 'main)))
+         (children (list (%make-text-child 'main "Text content here")))
+         (elem (%make-test-element :column constraints children
+                                   :padding '(0 3 0 3)))
+         (buf (ptui.render.buffer:make-buffer 80 24)))
+    (ptui.ui.app::%paint-element elem buf 0 0 80 24)
+    ;; Column 0 should be empty (pad-left=3), text starts at column 3
+    (let ((cell-col0 (%cell-at buf 0 0))
+          (cell-col3 (%cell-at buf 3 0)))
+      (is (string= (ptui.core.types:cell-glyph cell-col0) " "))
+      (is (string= (ptui.core.types:cell-glyph cell-col3) "T")))))
+
+(test padding-offsets-children
+  "First child starts at (pad-left, pad-top) not (0, 0)."
+  (let* ((constraints (list (ptui.layout.constraints:flex 'main)))
+         (children (list (%make-text-child 'main "X")))
+         (elem (%make-test-element :column constraints children
+                                   :padding '(1 2 1 2)))
+         (buf (ptui.render.buffer:make-buffer 80 24)))
+    (ptui.ui.app::%paint-element elem buf 0 0 80 24)
+    ;; (0,0) should be empty, (2,1) should have "X"
+    (is (string= (ptui.core.types:cell-glyph (%cell-at buf 0 0)) " "))
+    (is (string= (ptui.core.types:cell-glyph (%cell-at buf 2 1)) "X"))))
+
+(test gutter-offsets-child-x
+  "Region with :gutter 2: child starts at x+2, width reduced by 2."
+  (let* ((constraints (list (ptui.layout.constraints:flex 'history)
+                            (ptui.layout.constraints:fixed 'status 1)))
+         (children (list (%make-text-child 'history "Message line")
+                         (%make-text-child 'status "OK")))
+         (elem (%make-test-element :column constraints children
+                                   :gutters '((history . 2))))
+         (buf (ptui.render.buffer:make-buffer 80 24)))
+    (ptui.ui.app::%paint-element elem buf 0 0 80 24)
+    ;; History text should NOT appear at column 0/1 (gutter), but at column 2
+    (is (string= (ptui.core.types:cell-glyph (%cell-at buf 0 0)) " "))
+    (is (string= (ptui.core.types:cell-glyph (%cell-at buf 1 0)) " "))
+    (is (string= (ptui.core.types:cell-glyph (%cell-at buf 2 0)) "M"))))
+
+(test no-padding-no-change
+  "Omitting :padding behaves exactly as before."
+  (let* ((constraints (list (ptui.layout.constraints:fixed 'header 3)
+                            (ptui.layout.constraints:flex 'content)))
+         (children (list (%make-text-child 'header "Header text")
+                         (%make-text-child 'content "Content")))
+         (elem (%make-test-element :column constraints children))
+         (buf (ptui.render.buffer:make-buffer 80 24)))
+    (ptui.ui.app::%paint-element elem buf 0 0 80 24)
+    ;; Header text should start at column 0, row 0
+    (is (string= (ptui.core.types:cell-glyph (%cell-at buf 0 0)) "H"))))
+
 (defun run-all ()
   (run! 'constraint-spec-suite)
   (run! 'constraint-solver-suite)
-  (run! 'constraint-layout-suite))
+  (run! 'constraint-layout-suite)
+  (run! 'padding-gutter-suite))

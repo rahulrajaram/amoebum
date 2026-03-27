@@ -33,6 +33,18 @@
    #:search-content-scan-result-scanned-documents
    #:search-content-scan-result-total-documents
    #:search-content-scan-result-canceled-p
+   #:search-content-options
+   #:search-content-options-p
+   #:make-search-content-options
+   #:search-content-options-limit
+   #:search-content-options-regex-mode
+   #:search-content-options-case-insensitive
+   #:search-content-options-multiline-mode
+   #:search-content-options-before-context
+   #:search-content-options-after-context
+   #:search-content-options-on-match
+   #:search-content-options-on-progress
+   #:search-content-options-cancel-fn
    #:scan-content-matches
    #:search-content-matches))
 
@@ -76,6 +88,39 @@
   (match-count 0 :type fixnum)
   (scanned-documents 0 :type fixnum)
   (total-documents 0 :type fixnum)
+  (canceled-p nil :type boolean))
+
+(defstruct (search-content-options
+            (:constructor make-search-content-options
+                (&key
+                  limit
+                  (regex-mode t)
+                  (case-insensitive nil)
+                  (multiline-mode nil)
+                  (before-context 0)
+                  (after-context 0)
+                  on-match
+                  on-progress
+                  cancel-fn)))
+  limit
+  (regex-mode t :type boolean)
+  (case-insensitive nil :type boolean)
+  (multiline-mode nil :type boolean)
+  (before-context 0 :type (integer 0 *))
+  (after-context 0 :type (integer 0 *))
+  on-match
+  on-progress
+  cancel-fn)
+
+(defstruct (search-content-runtime
+            (:constructor make-search-content-runtime
+                (&key scanner documents total-documents)))
+  scanner
+  (documents '() :type list)
+  (total-documents 0 :type fixnum)
+  (all-matches '() :type list)
+  (match-count 0 :type fixnum)
+  (scanned-documents 0 :type fixnum)
   (canceled-p nil :type boolean))
 
 (defun %normalize-path-text (value)
@@ -337,125 +382,136 @@
                    :matched-text match-text
                    :score (%content-score line-index column-index (- end start))
                    :context-before (%context-lines lines before-start line-index)
-                   :context-after (%context-lines lines (1+ line-index) after-end))
+                  :context-after (%context-lines lines (1+ line-index) after-end))
                   matches)))))
     (nreverse matches)))
 
-(defun scan-content-matches (pattern documents
-                             &key
-                               limit
-                               (regex-mode t)
-                               (case-insensitive nil)
-                               (multiline-mode nil)
-                               (before-context 0)
-                               (after-context 0)
-                               on-match
-                               on-progress
-                               cancel-fn)
-  "Search DOCUMENTS for PATTERN with optional streaming callbacks.
-Returns a SEARCH-CONTENT-SCAN-RESULT."
-  (when (and limit (< limit 0))
-    (error "LIMIT must be non-negative, got ~S." limit))
-  (when (< before-context 0)
-    (error "BEFORE-CONTEXT must be non-negative, got ~S." before-context))
-  (when (< after-context 0)
-    (error "AFTER-CONTEXT must be non-negative, got ~S." after-context))
-  (when on-match
-    (check-type on-match function))
-  (when on-progress
-    (check-type on-progress function))
-  (when cancel-fn
-    (check-type cancel-fn function))
-  (let ((query (or pattern "")))
-    (when (zerop (length query))
-      (return-from scan-content-matches
-        (make-search-content-scan-result
-         :matches '()
-         :match-count 0
-         :scanned-documents 0
-         :total-documents 0
-         :canceled-p nil)))
-    (let* ((effective-pattern (if regex-mode
-                                  query
-                                  (cl-ppcre:quote-meta-chars query)))
-           (scanner (cl-ppcre:create-scanner effective-pattern
-                                             :case-insensitive-mode case-insensitive
-                                             :multi-line-mode multiline-mode
-                                             :single-line-mode multiline-mode))
-           (normalized-documents (map 'list #'%ensure-search-document documents))
-           (total-documents (length normalized-documents))
-           (all-matches '())
-           (match-count 0)
-           (scanned-documents 0)
-           (canceled-p nil))
-      (labels ((cancelled-p ()
-                 (and cancel-fn (funcall cancel-fn)))
-               (emit-progress (&key (done nil) (cancelled canceled-p) latest-match)
-                 (when on-progress
-                   (funcall on-progress
-                            :match-count match-count
-                            :scanned-documents scanned-documents
-                            :total-documents total-documents
-                            :done done
-                            :cancelled cancelled
-                            :latest-match latest-match))))
-        (emit-progress)
-        (block scan
-          (dolist (document normalized-documents)
-            (when (cancelled-p)
-              (setf canceled-p t)
-              (return-from scan nil))
-            (incf scanned-documents)
-            (let ((document-matches
-                    (%document-content-matches scanner
-                                               document
-                                               before-context
-                                               after-context
-                                               multiline-mode)))
-              (dolist (match document-matches)
-                (incf match-count)
-                (push match all-matches)
-                (when on-match
-                  (funcall on-match match))
-                (emit-progress :latest-match match)
-                (when (cancelled-p)
-                  (setf canceled-p t)
-                  (return-from scan nil))))
-            (emit-progress))))
-      (let* ((sorted (sort all-matches #'%content-match-better-p))
-             (limited (if limit
-                          (subseq sorted 0 (min limit (length sorted)))
-                          sorted)))
-        (when on-progress
-          (funcall on-progress
-                   :match-count match-count
-                   :scanned-documents scanned-documents
-                   :total-documents total-documents
-                   :done t
-                   :cancelled canceled-p
-                   :latest-match nil))
-        (make-search-content-scan-result
-         :matches limited
-         :match-count match-count
-         :scanned-documents scanned-documents
-         :total-documents total-documents
-         :canceled-p canceled-p)))))
+(defun %validate-search-content-options (options)
+  (let ((limit (search-content-options-limit options))
+        (before-context (search-content-options-before-context options))
+        (after-context (search-content-options-after-context options))
+        (on-match (search-content-options-on-match options))
+        (on-progress (search-content-options-on-progress options))
+        (cancel-fn (search-content-options-cancel-fn options)))
+    (when (and limit (< limit 0))
+      (error "LIMIT must be non-negative, got ~S." limit))
+    (when (< before-context 0)
+      (error "BEFORE-CONTEXT must be non-negative, got ~S." before-context))
+    (when (< after-context 0)
+      (error "AFTER-CONTEXT must be non-negative, got ~S." after-context))
+    (when on-match
+      (check-type on-match function))
+    (when on-progress
+      (check-type on-progress function))
+    (when cancel-fn
+      (check-type cancel-fn function))
+    options))
 
-(defun search-content-matches (pattern documents
-                               &key
-                                 limit
-                                 (regex-mode t)
-                                 (case-insensitive nil)
-                                 (multiline-mode nil)
-                                 (before-context 0)
-                                 (after-context 0))
+(defun %resolve-search-content-options (options)
+  (let ((resolved (or options (make-search-content-options))))
+    (check-type resolved search-content-options)
+    (%validate-search-content-options resolved)))
+
+(defun %empty-search-content-scan-result ()
+  (make-search-content-scan-result
+   :matches '()
+   :match-count 0
+   :scanned-documents 0
+   :total-documents 0
+   :canceled-p nil))
+
+(defun %make-search-content-runtime (pattern documents options)
+  (let* ((effective-pattern
+           (if (search-content-options-regex-mode options)
+               pattern
+               (cl-ppcre:quote-meta-chars pattern)))
+         (normalized-documents (map 'list #'%ensure-search-document documents)))
+    (make-search-content-runtime
+     :scanner (cl-ppcre:create-scanner
+               effective-pattern
+               :case-insensitive-mode
+               (search-content-options-case-insensitive options)
+               :multi-line-mode (search-content-options-multiline-mode options)
+               :single-line-mode (search-content-options-multiline-mode options))
+     :documents normalized-documents
+     :total-documents (length normalized-documents))))
+
+(defun %content-scan-cancelled-p (runtime options)
+  (let ((cancel-fn (search-content-options-cancel-fn options)))
+    (when (and cancel-fn (funcall cancel-fn))
+      (setf (search-content-runtime-canceled-p runtime) t))))
+
+(defun %emit-content-scan-progress (runtime options &key (done nil) latest-match)
+  (let ((on-progress (search-content-options-on-progress options)))
+    (when on-progress
+      (funcall on-progress
+               :match-count (search-content-runtime-match-count runtime)
+               :scanned-documents (search-content-runtime-scanned-documents runtime)
+               :total-documents (search-content-runtime-total-documents runtime)
+               :done done
+               :cancelled (search-content-runtime-canceled-p runtime)
+               :latest-match latest-match))))
+
+(defun %record-content-scan-match (runtime options match)
+  (incf (search-content-runtime-match-count runtime))
+  (push match (search-content-runtime-all-matches runtime))
+  (let ((on-match (search-content-options-on-match options)))
+    (when on-match
+      (funcall on-match match)))
+  (%emit-content-scan-progress runtime options :latest-match match))
+
+(defun %scan-content-document (runtime options document)
+  (incf (search-content-runtime-scanned-documents runtime))
+  (dolist (match (%document-content-matches
+                  (search-content-runtime-scanner runtime)
+                  document
+                  (search-content-options-before-context options)
+                  (search-content-options-after-context options)
+                  (search-content-options-multiline-mode options)))
+    (%record-content-scan-match runtime options match)
+    (when (%content-scan-cancelled-p runtime options)
+      (return-from %scan-content-document nil)))
+  t)
+
+(defun %finalize-search-content-scan (runtime options)
+  (let* ((sorted (sort (search-content-runtime-all-matches runtime)
+                       #'%content-match-better-p))
+         (limit (search-content-options-limit options))
+         (limited (if limit
+                      (subseq sorted 0 (min limit (length sorted)))
+                      sorted)))
+    (%emit-content-scan-progress runtime options :done t)
+    (make-search-content-scan-result
+     :matches limited
+     :match-count (search-content-runtime-match-count runtime)
+     :scanned-documents (search-content-runtime-scanned-documents runtime)
+     :total-documents (search-content-runtime-total-documents runtime)
+     :canceled-p (search-content-runtime-canceled-p runtime))))
+
+(defun %scan-content-documents (pattern documents options)
+  (let ((runtime (%make-search-content-runtime pattern documents options)))
+    (%emit-content-scan-progress runtime options)
+    (dolist (document (search-content-runtime-documents runtime))
+      (when (%content-scan-cancelled-p runtime options)
+        (return))
+      (%scan-content-document runtime options document)
+      (when (search-content-runtime-canceled-p runtime)
+        (return))
+      (%emit-content-scan-progress runtime options))
+    (%finalize-search-content-scan runtime options)))
+
+(defun scan-content-matches (pattern documents &key options)
+  "Search DOCUMENTS for PATTERN with SEARCH-CONTENT-OPTIONS streaming callbacks.
+Returns a SEARCH-CONTENT-SCAN-RESULT."
+  (let* ((options (%resolve-search-content-options options))
+         (query (or pattern "")))
+    (if (zerop (length query))
+        (%empty-search-content-scan-result)
+        (%scan-content-documents query documents options))))
+
+(defun search-content-matches (pattern documents &key options)
   "Search DOCUMENTS for PATTERN and return ranked search-content-match entries."
   (search-content-scan-result-matches
    (scan-content-matches pattern
                          documents
-                         :limit limit
-                         :regex-mode regex-mode
-                         :case-insensitive case-insensitive
-                         :multiline-mode multiline-mode
-                         :before-context before-context
-                         :after-context after-context)))
+                         :options options)))

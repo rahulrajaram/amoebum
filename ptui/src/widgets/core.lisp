@@ -93,15 +93,19 @@ For compatibility, BORDERP continues to request default :rounded border when BOR
    :focusablep t
    :children '()))
 
-(defun make-scroll-widget (child &key id key viewport-width viewport-height (offset 0))
-  "Create a scrollable viewport element wrapping CHILD."
+(defun make-scroll-widget (child &key id key viewport-width viewport-height (offset 0)
+                                      scroll-bar)
+  "Create a scrollable viewport element wrapping CHILD.
+SCROLL-BAR when non-nil enables a visible scrollbar on the right edge."
   (ptui.ui.elements:make-element
    :scroll
    :id id
    :key key
-   :props (list :viewport-width viewport-width
-                :viewport-height viewport-height
-                :offset (max 0 offset))
+   :props (append (list :viewport-width viewport-width
+                        :viewport-height viewport-height
+                        :offset (max 0 offset))
+                  (when scroll-bar
+                    (list :scroll-bar scroll-bar)))
    :children (if child (list child) '())))
 
 (defun %layout-size (w h)

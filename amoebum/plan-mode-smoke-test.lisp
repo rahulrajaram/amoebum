@@ -170,7 +170,45 @@
             (message-role (message)
               (string-downcase (or (funcall message-role-fn message) "")))
             (bool-true-p (value)
-               (not (null value))))
+               (not (null value)))
+            (segment-text (segment)
+              (let ((compact-segment-p-fn (funcall fn-in "COMPACT-SEGMENT-P" amoebum-pkg)))
+                (if (funcall compact-segment-p-fn segment)
+                    (funcall (funcall fn-in "COMPACT-SEGMENT-TEXT" amoebum-pkg) segment)
+                    (getf segment :text ""))))
+            (segment-field (segment field)
+              (let ((compact-segment-p-fn (funcall fn-in "COMPACT-SEGMENT-P" amoebum-pkg)))
+                (if (funcall compact-segment-p-fn segment)
+                    (let* ((lookup-style-fn (funcall fn-in "LOOKUP-STYLE" amoebum-pkg))
+                           (compact-style-id-fn
+                             (funcall fn-in "COMPACT-SEGMENT-STYLE-ID" amoebum-pkg))
+                           (style-entry-role-fn (funcall fn-in "STYLE-ENTRY-ROLE" amoebum-pkg))
+                           (style-entry-boldp-fn (funcall fn-in "STYLE-ENTRY-BOLDP" amoebum-pkg))
+                           (style-entry-italicp-fn (funcall fn-in "STYLE-ENTRY-ITALICP" amoebum-pkg))
+                           (style-entry-underlinep-fn
+                             (funcall fn-in "STYLE-ENTRY-UNDERLINEP" amoebum-pkg))
+                           (style-entry-invertp-fn (funcall fn-in "STYLE-ENTRY-INVERTP" amoebum-pkg))
+                           (style-entry-dimp-fn (funcall fn-in "STYLE-ENTRY-DIMP" amoebum-pkg))
+                           (style-entry-strikep-fn (funcall fn-in "STYLE-ENTRY-STRIKEP" amoebum-pkg))
+                           (entry (funcall lookup-style-fn
+                                           (funcall compact-style-id-fn segment))))
+                      (ecase field
+                        (:role (funcall style-entry-role-fn entry))
+                        (:boldp (funcall style-entry-boldp-fn entry))
+                        (:italicp (funcall style-entry-italicp-fn entry))
+                        (:underlinep (funcall style-entry-underlinep-fn entry))
+                        (:invertp (funcall style-entry-invertp-fn entry))
+                        (:dimp (funcall style-entry-dimp-fn entry))
+                        (:strikep (funcall style-entry-strikep-fn entry))))
+                    (getf segment field))))
+            (styled-lines-contain-role-p (styled-lines roles)
+              (loop for line in styled-lines
+                    thereis (loop for segment in line
+                                  thereis (let ((text (segment-text segment)))
+                                            (and (plusp (length text))
+                                                 (member (segment-field segment :role)
+                                                         roles
+                                                         :test #'eq)))))))
       (funcall setconfig-fn :plan-mode nil)
       (funcall setconfig-fn :permission-mode :full-auto)
       (funcall clear-steps-fn)
@@ -612,16 +650,11 @@
                                         review-output
                                         120))
                  (has-code-highlighting
-                   (loop for line in styled-lines
-                         thereis (loop for segment in line
-                                       for role = (and (listp segment)
-                                                       (keywordp (first segment))
-                                                       (getf segment :role))
-                                       thereis (member role
-                                                       '(:assistant-code
-                                                         :assistant-code-keyword
-                                                         :assistant-code-fence)
-                                                       :test #'eq)))))
+                   (styled-lines-contain-role-p
+                    styled-lines
+                    '(:assistant-code
+                      :assistant-code-keyword
+                      :assistant-code-fence))))
             (assert-true (contains-text-p review-output
                                           "Plan review:")
                          "Expected /plan review output heading, got ~S."
@@ -1275,16 +1308,11 @@
                                         captured-message
                                         120))
                  (has-code-highlighting
-                   (loop for line in styled-lines
-                         thereis (loop for segment in line
-                                       for role = (and (listp segment)
-                                                       (keywordp (first segment))
-                                                       (getf segment :role))
-                                       thereis (member role
-                                                       '(:assistant-code
-                                                         :assistant-code-keyword
-                                                         :assistant-code-fence)
-                                                       :test #'eq)))))
+                   (styled-lines-contain-role-p
+                    styled-lines
+                    '(:assistant-code
+                      :assistant-code-keyword
+                      :assistant-code-fence))))
             (assert-true has-code-highlighting
                          "Expected captured plan markdown to render with code syntax highlighting roles.")))
         (multiple-value-bind (handledp review-result)

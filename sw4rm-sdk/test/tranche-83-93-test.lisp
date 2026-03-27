@@ -178,11 +178,12 @@
                           :status :rejected
                           :rejection-code sw4rm-sdk:+no-route+
                           :rejection-reason "missing route")))
-              :from-agent "agent-a"
-              :to-agent "agent-b"
-              :reason "capability-gap"
-              :budget (list :deadline-epoch-ms (+ 100000 (sw4rm-sdk::%now-ms))
-                            :wall-time-remaining-ms 100000)))))
+              (sw4rm-sdk:make-handoff-request
+               :from-agent "agent-a"
+               :to-agent "agent-b"
+               :reason "capability-gap"
+               :budget (list :deadline-epoch-ms (+ 100000 (sw4rm-sdk::%now-ms))
+                             :wall-time-remaining-ms 100000))))))
     (is (stringp serialized))
     (is (not (null decoded)))
     (is (= 2 attempts))

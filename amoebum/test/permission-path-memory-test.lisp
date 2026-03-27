@@ -26,14 +26,14 @@
              amoebum::*path-approval-memory-loaded-p* old-loaded))))
 
 (defmacro %with-i350-project-root ((project-root) &body body)
-  `(let* ((cfg (amoebum:current-config))
-          (old-project-root (amoebum:config-project-root cfg)))
+  `(let* ((cfg (amoebum.config:current-config))
+          (old-project-root (amoebum.config:config-project-root cfg)))
      (unwind-protect
           (progn
-            (setf (amoebum:config-project-root cfg)
+            (setf (amoebum.config:config-project-root cfg)
                   (uiop:ensure-directory-pathname ,project-root))
             ,@body)
-       (setf (amoebum:config-project-root cfg) old-project-root))))
+       (setf (amoebum.config:config-project-root cfg) old-project-root))))
 
 (test i350-allow-once-applies-to-single-followup-check
   (%with-i350-path-memory-isolated
@@ -125,15 +125,15 @@
       (multiple-value-bind (handled result)
           (amoebum:dispatch-slash-command "/permissions session")
         (is-true handled)
-        (is-true (typep result 'amoebum:slash-command-result))
-        (let ((output (or (amoebum:slash-command-result-output result) "")))
+        (is-true (typep result 'amoebum.commands:slash-command-result))
+        (let ((output (or (amoebum.commands:slash-command-result-output result) "")))
           (is-true (search "Session path approvals" output :test #'char-equal))
           (is-true (search "scope=session" output :test #'char-equal))
           (is-true (search path output :test #'char-equal))))
       (multiple-value-bind (handled result)
           (amoebum:dispatch-slash-command "/permissions reset session")
         (is-true handled)
-        (is-true (typep result 'amoebum:slash-command-result))
-        (let ((output (or (amoebum:slash-command-result-output result) "")))
+        (is-true (typep result 'amoebum.commands:slash-command-result))
+        (let ((output (or (amoebum.commands:slash-command-result-output result) "")))
           (is-true (search "Removed 1 path approval" output :test #'char-equal))))
       (is (null (amoebum:list-path-approvals :scope :session))))))

@@ -76,6 +76,35 @@
     (is (string= (symbol-name (car (fourth translated))) "DEFAPP"))
     (is (eq (second (fourth translated)) 'packet-app))))
 
+(test packet-forms-definition-units-provide-shared-definition-ir
+  (let* ((forms
+           '((:ptui
+              (:breadcrumbs breadcrumb-line (segments))
+              (:panel packet-panel (segments)
+               (:layout
+                (:column
+                 (header :fixed 1 (breadcrumb-line segments)))))
+              (:app packet-app (:fps 5)
+               (packet-panel (list "a" "b"))))))
+         (units (ptui.ui.definition-loader:packet-forms-definition-units
+                 forms
+                 :path "<test>"))
+         (compiled (ptui.ui.definition-loader:compile-definition-units
+                    units
+                    :path "<test>")))
+    (is (equal (mapcar #'ptui.ui.definition-loader:definition-unit-kind units)
+               '(:widget :panel :app)))
+    (is (eq (ptui.ui.definition-loader:definition-unit-name (first units))
+            'breadcrumb-line))
+    (is (eq (ptui.ui.definition-loader:definition-unit-name (second units))
+            'packet-panel))
+    (is (eq (ptui.ui.definition-loader:definition-unit-name (third units))
+            'packet-app))
+    (is (= (length compiled) 3))
+    (is (string= (symbol-name (caar compiled)) "DEFWIDGET"))
+    (is (string= (symbol-name (car (second compiled))) "DEFPANEL"))
+    (is (string= (symbol-name (car (third compiled))) "DEFAPP"))))
+
 (test validate-definition-form-rejects-non-allowlisted-ops
   (signals ptui.ui.definition-loader:definition-loader-error
     (ptui.ui.definition-loader:validate-definition-form

@@ -127,24 +127,27 @@
                 (subseq entry (1+ pos)))
         (values entry ""))))
 
+(defun %coerce-process-env-pair (name value)
+  (cons (intern (string-upcase name) :keyword)
+        (or value "")))
+
+(defun %coerce-process-env-entry (entry)
+  (cond
+    ((and (consp entry) (keywordp (car entry)))
+     entry)
+    ((and (consp entry) (stringp (car entry)))
+     (%coerce-process-env-pair (car entry) (cdr entry)))
+    ((stringp entry)
+     (multiple-value-bind (name value)
+         (%split-env-assignment entry)
+       (%coerce-process-env-pair name value)))
+    (t
+     (error "Unsupported environment entry ~S." entry))))
+
 (defun %coerce-process-env (env-vars)
   "Normalize ENV-VARS into the alist shape expected by RUN-PROGRAM :ENV."
   (when env-vars
-    (mapcar (lambda (entry)
-              (cond
-                ((and (consp entry) (keywordp (car entry)))
-                 entry)
-                ((and (consp entry) (stringp (car entry)))
-                 (cons (intern (string-upcase (car entry)) :keyword)
-                       (or (cdr entry) "")))
-                ((stringp entry)
-                 (multiple-value-bind (name value)
-                     (%split-env-assignment entry)
-                   (cons (intern (string-upcase name) :keyword)
-                         value)))
-                (t
-                 (error "Unsupported environment entry ~S." entry))))
-            env-vars)))
+    (mapcar #'%coerce-process-env-entry env-vars)))
 
 (defun %utf8-char-size (char)
   (let ((code (char-code char)))
@@ -223,7 +226,44 @@
             omitted-chars)))
 
 #+sbcl
-(defun %run-shell-command-sbcl (command cwd timeout-seconds
+(defstruct (shell-run-context
+            (:constructor make-shell-run-context
+                (&key command cwd timeout-seconds max-output-chars
+                 max-output-bytes max-output-lines resolved-shell
+                 process-env prepared-command invocation invocation-text
+                 policy-command-text)))
+  command
+  cwd
+  timeout-seconds
+  max-output-chars
+  max-output-bytes
+  max-output-lines
+  resolved-shell
+  process-env
+  prepared-command
+  invocation
+  invocation-text
+  policy-command-text)
+
+#+sbcl
+(defstruct (shell-run-state
+            (:constructor make-shell-run-state ()))
+  process
+  stdout-thread
+  stderr-thread
+  (stdout "")
+  (stderr "")
+  stdout-truncated-p
+  stderr-truncated-p
+  (stdout-omitted 0)
+  (stderr-omitted 0)
+  (total-output-bytes 0)
+  (total-output-lines 0)
+  termination-cause
+  (monitor-lock (sb-thread:make-mutex :name "amoebum-shell-output-monitor")))
+
+#+sbcl
+(defun %make-shell-run-context (command cwd timeout-seconds
                                 max-output-chars max-output-bytes max-output-lines
                                 &key shell-executable profile-files env-vars)
   (let* ((resolved-shell (or shell-executable "bash"))
@@ -232,215 +272,295 @@
                                (wrap-command-with-shell-profile-init
                                 command profile-files)
                                command))
-         (invocation (list resolved-shell "-lc" prepared-command))
-         (invocation-text (%command->string invocation))
-         (policy-command-text (or command prepared-command))
-         (process nil)
-         (stdout-thread nil)
-         (stderr-thread nil)
-         (stdout "")
-         (stderr "")
-         (stdout-truncated-p nil)
-         (stderr-truncated-p nil)
-         (stdout-omitted 0)
-         (stderr-omitted 0)
-         (total-output-bytes 0)
-         (total-output-lines 0)
-         (termination-cause nil)
-         (monitor-lock (sb-thread:make-mutex :name "amoebum-shell-output-monitor")))
-    (flet ((set-termination-cause (cause)
-             (sb-thread:with-mutex (monitor-lock)
-               (when (null termination-cause)
-                 (setf termination-cause cause)
-                 t)))
-           (monitor-char (char)
-             (let ((cause nil))
-               (sb-thread:with-mutex (monitor-lock)
-                 (incf total-output-bytes (%utf8-char-size char))
-                 (when (char= char #\Newline)
-                   (incf total-output-lines))
-                 (when (null termination-cause)
-                   (cond
-                     ((> total-output-bytes max-output-bytes)
-                      (setf termination-cause :output-bytes
-                            cause :output-bytes))
-                     ((> total-output-lines max-output-lines)
-                      (setf termination-cause :output-lines
-                            cause :output-lines)))))
-               (when cause
-                 (%terminate-shell-process process))))
-           (current-termination-cause ()
-             (sb-thread:with-mutex (monitor-lock)
-               termination-cause)))
-      (unwind-protect
-           (progn
-             (when (sandbox-read-only-p)
-               (error 'sandbox-violation
-                      :operation :bash-exec
-                      :reason "sandbox mode read-only denies shell execution"
-                      :details invocation-text))
-             (let ((decision (check-permission :tool :bash-exec
-                                               :command policy-command-text
-                                               :dangerous-p (dangerous-command-p policy-command-text))))
-               (when (and (eq decision :prompt)
-                          (not (%bash-exec-running-under-pipeline-p)))
-                 (let* ((trace (last-permission-decision-trace))
-                        (reason (or (and (listp trace) (getf trace :actionable-reason))
-                                    (and (listp trace) (getf trace :reason))
-                                    "approval required"))
-                        (reason-code (and (listp trace) (getf trace :reason-code))))
-                   (error 'tool-permission-denied
-                          :tool-name :bash-exec
-                          :arguments nil
-                          :reason-code reason-code
-                          :reason reason
-                          :message (format nil
-                                           "Permission decision ~A for tool ~S: ~A."
-                                           decision
-                                           :bash-exec
-                                           reason)))))
-             (%assert-permission-allowed :tool :bash-exec
-                                         :command policy-command-text
-                                         :dangerous-p (dangerous-command-p policy-command-text))
-             (setf process
-                   (if process-env
-                       (sb-ext:run-program resolved-shell
-                                           (list "-lc" prepared-command)
-                                           :search t
-                                           :wait nil
-                                           :directory cwd
-                                           :env process-env
-                                           :input nil
-                                           :output :stream
-                                           :error :stream)
-                       (sb-ext:run-program resolved-shell
-                                           (list "-lc" prepared-command)
-                                           :search t
-                                           :wait nil
-                                           :directory cwd
-                                           :input nil
-                                           :output :stream
-                                           :error :stream)))
+         (invocation (list resolved-shell "-lc" prepared-command)))
+    (make-shell-run-context
+     :command command
+     :cwd cwd
+     :timeout-seconds timeout-seconds
+     :max-output-chars max-output-chars
+     :max-output-bytes max-output-bytes
+     :max-output-lines max-output-lines
+     :resolved-shell resolved-shell
+     :process-env process-env
+     :prepared-command prepared-command
+     :invocation invocation
+     :invocation-text (%command->string invocation)
+     :policy-command-text (or command prepared-command))))
 
-             (setf stdout-thread
-                   (sb-thread:make-thread
-                    (lambda ()
-                      (multiple-value-setq (stdout stdout-truncated-p stdout-omitted)
-                        (%capture-shell-stream (sb-ext:process-output process)
-                                               max-output-chars
-                                               #'monitor-char)))
-                    :name "amoebum-shell-stdout-reader"))
-             (setf stderr-thread
-                   (sb-thread:make-thread
-                    (lambda ()
-                      (multiple-value-setq (stderr stderr-truncated-p stderr-omitted)
-                        (%capture-shell-stream (sb-ext:process-error process)
-                                               max-output-chars
-                                               #'monitor-char)))
-                    :name "amoebum-shell-stderr-reader"))
+#+sbcl
+(defun %shell-set-termination-cause (state cause)
+  (sb-thread:with-mutex ((shell-run-state-monitor-lock state))
+    (when (null (shell-run-state-termination-cause state))
+      (setf (shell-run-state-termination-cause state) cause)
+      t)))
 
-             (let ((deadline (+ (get-internal-real-time)
-                                (* timeout-seconds internal-time-units-per-second))))
-               (loop
-                 (unless (%shell-process-alive-p process)
-                   (return))
-                 (when (>= (get-internal-real-time) deadline)
-                   (when (set-termination-cause :timeout)
-                     (%terminate-shell-process process))
-                   (return))
-                 (when (member (current-termination-cause)
-                               '(:output-bytes :output-lines)
-                               :test #'eq)
-                   (return))
-                 (sleep *shell-process-poll-interval-seconds*)))
+#+sbcl
+(defun %shell-current-termination-cause (state)
+  (sb-thread:with-mutex ((shell-run-state-monitor-lock state))
+    (shell-run-state-termination-cause state)))
 
-             (unless (%wait-for-shell-process-exit process 1.0d0)
-               (%terminate-shell-process process)
-               (%wait-for-shell-process-exit process 1.0d0))
-             (when stdout-thread
-               (ignore-errors
-                 (sb-ext:with-timeout 2
-                   (sb-thread:join-thread stdout-thread))))
-             (when stderr-thread
-               (ignore-errors
-                 (sb-ext:with-timeout 2
-                   (sb-thread:join-thread stderr-thread))))
+#+sbcl
+(defun %shell-monitor-char (state context char)
+  (let ((cause nil))
+    (sb-thread:with-mutex ((shell-run-state-monitor-lock state))
+      (incf (shell-run-state-total-output-bytes state) (%utf8-char-size char))
+      (when (char= char #\Newline)
+        (incf (shell-run-state-total-output-lines state)))
+      (when (null (shell-run-state-termination-cause state))
+        (cond
+          ((> (shell-run-state-total-output-bytes state)
+              (shell-run-context-max-output-bytes context))
+           (setf (shell-run-state-termination-cause state) :output-bytes
+                 cause :output-bytes))
+          ((> (shell-run-state-total-output-lines state)
+              (shell-run-context-max-output-lines context))
+           (setf (shell-run-state-termination-cause state) :output-lines
+                 cause :output-lines)))))
+    (when cause
+      (%terminate-shell-process (shell-run-state-process state)))))
 
-             (let ((exit-code (ignore-errors (sb-ext:process-exit-code process)))
-                   (cause (current-termination-cause)))
-               (cond
-                 ((eq cause :timeout)
-                  (list :status :timeout
-                        :command command
-                        :cwd (coerce-path-string cwd)
-                        :stdout stdout
-                        :stderr stderr
-                        :exit-code nil
-                        :timed-out t
-                        :runaway-output-p nil
-                        :runaway-output-reason nil
-                        :output-bytes total-output-bytes
-                        :output-lines total-output-lines
-                        :output-byte-limit max-output-bytes
-                        :output-line-limit max-output-lines
-                        :stdout-truncated-p stdout-truncated-p
-                        :stderr-truncated-p stderr-truncated-p
-                        :stdout-omitted-chars stdout-omitted
-                        :stderr-omitted-chars stderr-omitted))
-                 ((member cause '(:output-bytes :output-lines) :test #'eq)
-                  (let ((diagnostic (format nil
-                                            "Process terminated: output limit exceeded (~A > ~D, bytes=~D lines=~D)."
-                                            (if (eq cause :output-bytes)
-                                                "bytes"
-                                                "lines")
-                                            (if (eq cause :output-bytes)
-                                                max-output-bytes
-                                                max-output-lines)
-                                            total-output-bytes
-                                            total-output-lines)))
-                    (list :status :failed
-                          :command command
-                          :cwd (coerce-path-string cwd)
-                          :stdout stdout
-                          :stderr (%append-diagnostic-line stderr diagnostic)
-                          :exit-code nil
-                          :timed-out nil
-                          :runaway-output-p t
-                          :runaway-output-reason (if (eq cause :output-bytes)
-                                                     :byte-limit
-                                                     :line-limit)
-                          :output-bytes total-output-bytes
-                          :output-lines total-output-lines
-                          :output-byte-limit max-output-bytes
-                          :output-line-limit max-output-lines
-                          :stdout-truncated-p stdout-truncated-p
-                          :stderr-truncated-p stderr-truncated-p
-                          :stdout-omitted-chars stdout-omitted
-                          :stderr-omitted-chars stderr-omitted)))
-                 (t
-                  (list :status :completed
-                        :command command
-                        :cwd (coerce-path-string cwd)
-                        :stdout stdout
-                        :stderr stderr
-                        :exit-code exit-code
-                        :timed-out nil
-                        :runaway-output-p nil
-                        :runaway-output-reason nil
-                        :output-bytes total-output-bytes
-                        :output-lines total-output-lines
-                        :output-byte-limit max-output-bytes
-                        :output-line-limit max-output-lines
-                        :stdout-truncated-p stdout-truncated-p
-                        :stderr-truncated-p stderr-truncated-p
-                        :stdout-omitted-chars stdout-omitted
-                        :stderr-omitted-chars stderr-omitted)))))
-        (progn
-          (when process
-            (when (%shell-process-alive-p process)
-              (%terminate-shell-process process)
-              (%wait-for-shell-process-exit process 0.5d0))
-            (ignore-errors (sb-ext:process-close process))))))))
+#+sbcl
+(defun %shell-permission-trace-reason (trace)
+  (or (and (listp trace) (getf trace :actionable-reason))
+      (and (listp trace) (getf trace :reason))
+      "approval required"))
+
+#+sbcl
+(defun %shell-signal-prompt-denial (decision)
+  (let* ((trace (last-permission-decision-trace))
+         (reason (%shell-permission-trace-reason trace))
+         (reason-code (and (listp trace) (getf trace :reason-code))))
+    (error 'tool-permission-denied
+           :tool-name :bash-exec
+           :arguments nil
+           :reason-code reason-code
+           :reason reason
+           :message (format nil
+                            "Permission decision ~A for tool ~S: ~A."
+                            decision
+                            :bash-exec
+                            reason))))
+
+#+sbcl
+(defun %shell-permission-decision (policy-command-text)
+  (check-permission :tool :bash-exec
+                    :command policy-command-text
+                    :dangerous-p (dangerous-command-p policy-command-text)))
+
+#+sbcl
+(defun %shell-ensure-execution-permitted (context)
+  (let ((policy-command-text (shell-run-context-policy-command-text context)))
+    (when (sandbox-read-only-p)
+      (error 'sandbox-violation
+             :operation :bash-exec
+             :reason "sandbox mode read-only denies shell execution"
+             :details (shell-run-context-invocation-text context)))
+    (let ((decision (%shell-permission-decision policy-command-text)))
+      (when (and (eq decision :prompt)
+                 (not (%bash-exec-running-under-pipeline-p)))
+        (%shell-signal-prompt-denial decision)))
+    (%assert-permission-allowed :tool :bash-exec
+                                :command policy-command-text
+                                :dangerous-p (dangerous-command-p policy-command-text))))
+
+#+sbcl
+(defun %shell-spawn-process (context state)
+  (setf (shell-run-state-process state)
+        (if (shell-run-context-process-env context)
+            (sb-ext:run-program (shell-run-context-resolved-shell context)
+                                (list "-lc" (shell-run-context-prepared-command context))
+                                :search t
+                                :wait nil
+                                :directory (shell-run-context-cwd context)
+                                :env (shell-run-context-process-env context)
+                                :input nil
+                                :output :stream
+                                :error :stream)
+            (sb-ext:run-program (shell-run-context-resolved-shell context)
+                                (list "-lc" (shell-run-context-prepared-command context))
+                                :search t
+                                :wait nil
+                                :directory (shell-run-context-cwd context)
+                                :input nil
+                                :output :stream
+                                :error :stream))))
+
+#+sbcl
+(defun %shell-start-capture-thread (state context stream-reader setter thread-name)
+  (sb-thread:make-thread
+   (lambda ()
+     (funcall setter
+              (multiple-value-list
+               (%capture-shell-stream (funcall stream-reader (shell-run-state-process state))
+                                      (shell-run-context-max-output-chars context)
+                                      (lambda (char)
+                                        (%shell-monitor-char state context char))))))
+   :name thread-name))
+
+#+sbcl
+(defun %shell-start-capture-threads (context state)
+  (setf (shell-run-state-stdout-thread state)
+        (%shell-start-capture-thread
+         state
+         context
+         #'sb-ext:process-output
+         (lambda (values)
+           (destructuring-bind (stdout stdout-truncated-p stdout-omitted) values
+             (setf (shell-run-state-stdout state) stdout
+                   (shell-run-state-stdout-truncated-p state) stdout-truncated-p
+                   (shell-run-state-stdout-omitted state) stdout-omitted)))
+         "amoebum-shell-stdout-reader"))
+  (setf (shell-run-state-stderr-thread state)
+        (%shell-start-capture-thread
+         state
+         context
+         #'sb-ext:process-error
+         (lambda (values)
+           (destructuring-bind (stderr stderr-truncated-p stderr-omitted) values
+             (setf (shell-run-state-stderr state) stderr
+                   (shell-run-state-stderr-truncated-p state) stderr-truncated-p
+                   (shell-run-state-stderr-omitted state) stderr-omitted)))
+         "amoebum-shell-stderr-reader")))
+
+#+sbcl
+(defun %shell-await-monitored-process (context state)
+  (let ((deadline (+ (get-internal-real-time)
+                     (* (shell-run-context-timeout-seconds context)
+                        internal-time-units-per-second))))
+    (loop
+      (unless (%shell-process-alive-p (shell-run-state-process state))
+        (return))
+      (when (>= (get-internal-real-time) deadline)
+        (when (%shell-set-termination-cause state :timeout)
+          (%terminate-shell-process (shell-run-state-process state)))
+        (return))
+      (when (member (%shell-current-termination-cause state)
+                    '(:output-bytes :output-lines)
+                    :test #'eq)
+        (return))
+      (sleep *shell-process-poll-interval-seconds*))))
+
+#+sbcl
+(defun %shell-collect-process-exit (state)
+  (unless (%wait-for-shell-process-exit (shell-run-state-process state) 1.0d0)
+    (%terminate-shell-process (shell-run-state-process state))
+    (%wait-for-shell-process-exit (shell-run-state-process state) 1.0d0)))
+
+#+sbcl
+(defun %shell-join-capture-thread (thread)
+  (when thread
+    (ignore-errors
+      (sb-ext:with-timeout 2
+        (sb-thread:join-thread thread)))))
+
+#+sbcl
+(defun %shell-join-capture-threads (state)
+  (%shell-join-capture-thread (shell-run-state-stdout-thread state))
+  (%shell-join-capture-thread (shell-run-state-stderr-thread state)))
+
+#+sbcl
+(defun %shell-base-result (context state)
+  (list :command (shell-run-context-command context)
+        :cwd (coerce-path-string (shell-run-context-cwd context))
+        :stdout (shell-run-state-stdout state)
+        :stderr (shell-run-state-stderr state)
+        :output-bytes (shell-run-state-total-output-bytes state)
+        :output-lines (shell-run-state-total-output-lines state)
+        :output-byte-limit (shell-run-context-max-output-bytes context)
+        :output-line-limit (shell-run-context-max-output-lines context)
+        :stdout-truncated-p (shell-run-state-stdout-truncated-p state)
+        :stderr-truncated-p (shell-run-state-stderr-truncated-p state)
+        :stdout-omitted-chars (shell-run-state-stdout-omitted state)
+        :stderr-omitted-chars (shell-run-state-stderr-omitted state)))
+
+#+sbcl
+(defun %shell-timeout-result (context state)
+  (append (list :status :timeout
+                :exit-code nil
+                :timed-out t
+                :runaway-output-p nil
+                :runaway-output-reason nil)
+          (%shell-base-result context state)))
+
+#+sbcl
+(defun %shell-runaway-output-result (context state cause)
+  (let ((diagnostic (format nil
+                            "Process terminated: output limit exceeded (~A > ~D, bytes=~D lines=~D)."
+                            (if (eq cause :output-bytes)
+                                "bytes"
+                                "lines")
+                            (if (eq cause :output-bytes)
+                                (shell-run-context-max-output-bytes context)
+                                (shell-run-context-max-output-lines context))
+                            (shell-run-state-total-output-bytes state)
+                            (shell-run-state-total-output-lines state)))
+        (result (%shell-base-result context state)))
+    (setf (getf result :stderr)
+          (%append-diagnostic-line (shell-run-state-stderr state) diagnostic))
+    (append (list :status :failed
+                  :exit-code nil
+                  :timed-out nil
+                  :runaway-output-p t
+                  :runaway-output-reason (if (eq cause :output-bytes)
+                                             :byte-limit
+                                             :line-limit))
+            result)))
+
+#+sbcl
+(defun %shell-completed-result (context state)
+  (append (list :status :completed
+                :exit-code (ignore-errors
+                             (sb-ext:process-exit-code (shell-run-state-process state)))
+                :timed-out nil
+                :runaway-output-p nil
+                :runaway-output-reason nil)
+          (%shell-base-result context state)))
+
+#+sbcl
+(defun %shell-collect-result (context state)
+  (let ((cause (%shell-current-termination-cause state)))
+    (cond
+      ((eq cause :timeout)
+       (%shell-timeout-result context state))
+      ((member cause '(:output-bytes :output-lines) :test #'eq)
+       (%shell-runaway-output-result context state cause))
+      (t
+       (%shell-completed-result context state)))))
+
+#+sbcl
+(defun %shell-close-process (state)
+  (let ((process (shell-run-state-process state)))
+    (when process
+      (when (%shell-process-alive-p process)
+        (%terminate-shell-process process)
+        (%wait-for-shell-process-exit process 0.5d0))
+      (ignore-errors
+        (sb-ext:process-close process)))))
+
+#+sbcl
+ (defun %shell-execute-command-phases (command cwd timeout-seconds
+                                      max-output-chars max-output-bytes max-output-lines
+                                      &key shell-executable profile-files env-vars)
+  (let ((context (%make-shell-run-context command
+                                          cwd
+                                          timeout-seconds
+                                          max-output-chars
+                                          max-output-bytes
+                                          max-output-lines
+                                          :shell-executable shell-executable
+                                          :profile-files profile-files
+                                          :env-vars env-vars))
+        (state (make-shell-run-state)))
+    (unwind-protect
+         (progn
+           (%shell-ensure-execution-permitted context)
+           (%shell-spawn-process context state)
+           (%shell-start-capture-threads context state)
+           (%shell-await-monitored-process context state)
+           (%shell-collect-process-exit state)
+           (%shell-join-capture-threads state)
+           (%shell-collect-result context state))
+      (%shell-close-process state))))
 
 (defun %run-shell-command (command cwd timeout-seconds max-output-chars
                            &key shell-executable profile-files env-vars
@@ -448,15 +568,15 @@
   (let ((max-output-bytes* (%normalize-max-output-bytes max-output-bytes))
         (max-output-lines* (%normalize-max-output-lines max-output-lines)))
     #+sbcl
-    (%run-shell-command-sbcl command
-                             cwd
-                             timeout-seconds
-                             max-output-chars
-                             max-output-bytes*
-                             max-output-lines*
-                             :shell-executable shell-executable
-                             :profile-files profile-files
-                             :env-vars env-vars)
+    (%shell-execute-command-phases command
+                                   cwd
+                                   timeout-seconds
+                                   max-output-chars
+                                   max-output-bytes*
+                                   max-output-lines*
+                                   :shell-executable shell-executable
+                                   :profile-files profile-files
+                                   :env-vars env-vars)
     #-sbcl
     (let* ((resolved-shell (or shell-executable "bash"))
            (process-env (%coerce-process-env env-vars))
@@ -662,45 +782,79 @@
      :name (format nil "amoebum-shell-task-~A" task-id))
     (%snapshot-shell-task task)))
 
+(defstruct (shell-execution-options
+            (:constructor make-shell-execution-options
+                (&key shell-executable background-p
+                 enable-profile-init-p enable-project-env-p)))
+  shell-executable
+  background-p
+  enable-profile-init-p
+  enable-project-env-p)
+
+(defun %decode-shell-execution-options (shell-or-background
+                                        init-shell-profile-p
+                                        init-project-env-p
+                                        background)
+  (let ((legacy-call-p (and (null init-shell-profile-p)
+                            (null init-project-env-p)
+                            (null background))))
+    (make-shell-execution-options
+     :shell-executable (unless legacy-call-p shell-or-background)
+     :background-p (if legacy-call-p shell-or-background background)
+     :enable-profile-init-p (and (not legacy-call-p) init-shell-profile-p)
+     :enable-project-env-p (and (not legacy-call-p) init-project-env-p))))
+
+(defun %run-shell-command-with-runtime (command directory timeout-seconds
+                                        max-output-chars max-output-bytes max-output-lines
+                                        resolved-shell profiles env-vars background-p)
+  (if background-p
+      (%start-background-shell-task command
+                                    directory
+                                    timeout-seconds
+                                    max-output-chars
+                                    max-output-bytes
+                                    max-output-lines
+                                    :shell-executable resolved-shell
+                                    :profile-files profiles
+                                    :env-vars env-vars)
+      (%run-shell-command command
+                          directory
+                          timeout-seconds
+                          max-output-chars
+                          :max-output-bytes max-output-bytes
+                          :max-output-lines max-output-lines
+                          :shell-executable resolved-shell
+                          :profile-files profiles
+                          :env-vars env-vars)))
+
 (defun %execute-shell-command (command cwd timeout-seconds
                                max-output-chars max-output-bytes max-output-lines
                                &optional shell-or-background
                                  init-shell-profile-p
                                  init-project-env-p
                                  background)
-  (let* ((legacy-call-p (and (null init-shell-profile-p)
-                             (null init-project-env-p)
-                             (null background)))
-         (shell-executable (unless legacy-call-p shell-or-background))
-         (background-p (if legacy-call-p shell-or-background background))
-         (enable-profile-init-p (and (not legacy-call-p) init-shell-profile-p))
-         (enable-project-env-p (and (not legacy-call-p) init-project-env-p)))
+  (let ((options (%decode-shell-execution-options shell-or-background
+                                                  init-shell-profile-p
+                                                  init-project-env-p
+                                                  background)))
     (multiple-value-bind (directory resolved-shell profiles env-vars)
         (%prepare-shell-runtime cwd
-                                enable-profile-init-p
-                                enable-project-env-p
-                                enable-project-env-p
-                                shell-executable)
+                                (shell-execution-options-enable-profile-init-p options)
+                                (shell-execution-options-enable-project-env-p options)
+                                (shell-execution-options-enable-project-env-p options)
+                                (shell-execution-options-shell-executable options))
       (%persist-shell-directory directory)
-      (if background-p
-          (%start-background-shell-task command
-                                        directory
-                                        timeout-seconds
-                                        max-output-chars
-                                        max-output-bytes
-                                        max-output-lines
-                                        :shell-executable resolved-shell
-                                        :profile-files profiles
-                                        :env-vars env-vars)
-          (%run-shell-command command
-                              directory
-                              timeout-seconds
-                              max-output-chars
-                              :max-output-bytes max-output-bytes
-                              :max-output-lines max-output-lines
-                              :shell-executable resolved-shell
-                              :profile-files profiles
-                              :env-vars env-vars)))))
+      (%run-shell-command-with-runtime
+       command
+       directory
+       timeout-seconds
+       max-output-chars
+       max-output-bytes
+       max-output-lines
+       resolved-shell
+       profiles
+       env-vars
+       (shell-execution-options-background-p options)))))
 
 (defun %fetch-shell-task (task-id)
   (let ((normalized-task-id (%trim-whitespace task-id)))

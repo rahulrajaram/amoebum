@@ -121,16 +121,35 @@
    :context-before (getf entry :context-before)
    :context-after (getf entry :context-after)))
 
-(defun %search-orchestration-content-hits (files root query before after case-insensitive)
+(defun %search-orchestration-content-match-plists (files root path-glob query before after case-insensitive
+                                                   use-rg-content)
+  (if use-rg-content
+      (multiple-value-bind (matches file-count match-count)
+          (%grep-via-rg query root path-glob
+                        before after nil
+                        case-insensitive nil :content)
+        (declare (ignore file-count match-count))
+        matches)
+      (%grep-matches-via-search-widget files
+                                       query
+                                       before
+                                       after
+                                       nil
+                                       case-insensitive
+                                       nil
+                                       root)))
+
+(defun %search-orchestration-content-hits (files root path-glob query before after case-insensitive
+                                           use-rg-content)
   (mapcar #'%search-orchestration-content-hit-from-plist
-          (%grep-matches-via-search-widget files
-                                           query
-                                           before
-                                           after
-                                           nil
-                                           case-insensitive
-                                           nil
-                                           root)))
+          (%search-orchestration-content-match-plists files
+                                                      root
+                                                      path-glob
+                                                      query
+                                                      before
+                                                      after
+                                                      case-insensitive
+                                                      use-rg-content)))
 
 (defun %search-orchestration-backend-rank (backend)
   (ecase backend
@@ -196,7 +215,8 @@
   (let* ((normalized-query (%search-orchestration-normalize-query query))
          (effective-limit (%search-orchestration-normalize-limit limit))
          (root-path (%resolve-search-root root))
-         (normalized-extensions (%search-orchestration-normalize-extensions extensions)))
+         (normalized-extensions (%search-orchestration-normalize-extensions extensions))
+         (use-rg-content (and include-content (%rg-executable))))
     (unless (or include-content include-files)
       (error "At least one backend must be enabled (INCLUDE-CONTENT or INCLUDE-FILES)."))
     (let* ((file-candidates
@@ -204,6 +224,7 @@
                   (%matching-files-sorted :glob-files root-path path-glob :limit nil)))
            (content-candidates
              (and include-content
+                  (not use-rg-content)
                   (%matching-files-sorted :grep-content root-path path-glob :limit nil)))
            (file-hits
              (if include-files
@@ -216,10 +237,12 @@
              (if include-content
                  (%search-orchestration-content-hits content-candidates
                                                     root-path
+                                                    path-glob
                                                     normalized-query
                                                     before
                                                     after
-                                                    case-insensitive)
+                                                    case-insensitive
+                                                    use-rg-content)
                  '()))
            (merged (append content-hits file-hits))
            (filtered

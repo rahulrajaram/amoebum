@@ -144,6 +144,54 @@
                            "Expected /history tool-filter query to include tool entry.")))
 
           (multiple-value-bind (handledp result)
+              (funcall dispatch-fn
+                       (format nil "/history --role=tool --limit=1 tool=read-file since=~D until=~D"
+                               base-ts
+                               (+ base-ts 3))
+                       :chat-state chat-state)
+            (let ((output (funcall result-output-fn result)))
+              (assert-true handledp "Expected /history key=value query to be handled.")
+              (assert-true (contains-text-p output "role=tool")
+                           "Expected /history key=value query to include normalized role filter.")
+              (assert-true (contains-text-p output "limit=1")
+                           "Expected /history key=value query to include explicit limit.")
+              (assert-true (contains-text-p output "TOOL:")
+                           "Expected /history key=value query to include tool entry.")))
+
+          (multiple-value-bind (handledp result)
+              (funcall dispatch-fn
+                       (format nil "/history --since ~D --until ~D --limit nope"
+                               (+ base-ts 3)
+                               base-ts)
+                       :chat-state chat-state)
+            (let ((output (funcall result-output-fn result)))
+              (assert-true handledp "Expected invalid /history query to still be handled.")
+              (assert-true (contains-text-p output "Invalid integer \"nope\" for --limit.")
+                           "Expected invalid /history query to report bad limit, got ~S."
+                           output)
+              (assert-true (contains-text-p output "Timestamp range is invalid")
+                           "Expected invalid /history query to report bad timestamp range, got ~S."
+                           output)
+              (assert-true (contains-text-p output "Usage: /history")
+                           "Expected invalid /history query to include usage, got ~S."
+                           output)))
+
+          (multiple-value-bind (handledp result)
+              (funcall dispatch-fn
+                       (format nil "/history deploy --tool --since ~D --until ~D"
+                               base-ts
+                               (+ base-ts 3))
+                       :chat-state chat-state)
+            (let ((output (funcall result-output-fn result)))
+              (assert-true handledp "Expected trailing-option /history query to still be handled.")
+              (assert-true (contains-text-p output "Missing value for --tool.")
+                           "Expected trailing option to report missing tool value, got ~S."
+                           output)
+              (assert-true (contains-text-p output "Usage: /history")
+                           "Expected trailing option to include usage, got ~S."
+                           output)))
+
+          (multiple-value-bind (handledp result)
               (funcall dispatch-fn "/clear" :chat-state chat-state)
             (assert-true handledp "Expected /clear prompt to be handled.")
             (assert-true (eq (funcall result-action-fn result) :none)

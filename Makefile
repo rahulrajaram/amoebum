@@ -1,4 +1,4 @@
-.PHONY: build test test-ptui test-amoebum check check-dist-ignore prepare-quicklisp-compat clean
+.PHONY: build test test-ptui test-amoebum check check-parens check-dist-ignore prepare-quicklisp-compat clean
 
 REPO_ROOT := $(CURDIR)
 QUICKLISP_SETUP ?= $(HOME)/quicklisp/setup.lisp
@@ -11,6 +11,7 @@ else
   QUICKLISP_SETUP_RESOLVED := $(QUICKLISP_SETUP)
 endif
 QUICKLISP_COMPAT_SETUP := $(REPO_ROOT)/ptui/.tools/quicklisp/setup.lisp
+AMOEBUM_TEST_FAILURE_SUMMARY ?= $(REPO_ROOT)/tmp/amoebum-test-failures.log
 
 build:
 	bash bin/build-binary.sh
@@ -42,6 +43,8 @@ test-ptui: prepare-quicklisp-compat
                        (asdf:test-system :ptui/tests)))"
 
 test-amoebum: prepare-quicklisp-compat
+	rm -f "$(AMOEBUM_TEST_FAILURE_SUMMARY)"
+	AMOEBUM_TEST_FAILURE_SUMMARY="$(AMOEBUM_TEST_FAILURE_SUMMARY)" \
 	sbcl --noinform --non-interactive \
 	  --eval "(require :asdf)" \
 	  --eval "(let ((*compile-verbose* nil) (*load-verbose* nil)) \
@@ -54,10 +57,14 @@ test-amoebum: prepare-quicklisp-compat
                        (asdf:load-asd (truename \"$(REPO_ROOT)/amoebum/amoebum.asd\")) \
                        (asdf:test-system :amoebum/test)))"
 
+check-parens:
+	bash ./bin/check-parens.sh
+
 check-dist-ignore:
 	bash ./bin/check-dist-ignore.sh
 
 check:
+	$(MAKE) check-parens
 	$(MAKE) check-dist-ignore
 	$(MAKE) test
 	$(MAKE) build

@@ -82,22 +82,209 @@
           (subseq sorted 0 (min limit (length sorted)))
           sorted))))
 
+(defparameter +search-max-file-bytes+ 262144
+  "Skip files larger than 256 KB to avoid heap pressure during grep.")
+
 (defun %read-file-content-safe (path)
   (handler-case
-      (uiop:read-file-string path :external-format :utf-8)
+      (let ((size (ignore-errors (with-open-file (s path) (file-length s)))))
+        (if (and size (> size +search-max-file-bytes+))
+            ""
+            (uiop:read-file-string path :external-format :utf-8)))
     (error () "")))
 
-(defun %search-documents-for-files (files)
-  (mapcar (lambda (file)
-            (ptui.search.engine:make-search-document
-             :path (coerce-path-string file)
-             :content (%read-file-content-safe file)))
-          files))
+(defun %make-file-search-document-stream (files)
+  "Create a lazy document stream so fallback grep does not preload every file."
+  (let* ((vector (coerce files 'vector))
+         (cursor 0)
+         (total (length vector)))
+    (ptui.components.search-widget:make-search-widget-stream
+     :total-items total
+     :next (lambda ()
+             (if (>= cursor total)
+                 (values nil t)
+                 (let* ((file (aref vector cursor))
+                        (done-p (= (1+ cursor) total))
+                        (document
+                          (ptui.search.engine:make-search-document
+                           :path (coerce-path-string file)
+                           :content (%read-file-content-safe file))))
+                   (incf cursor)
+                   (values document done-p))))
+     :cancel (lambda ()
+               (setf cursor total)
+               t))))
+
+;;; --- ripgrep-backed grep ---
+
+(defun %rg-executable ()
+  "Return the path to rg, or NIL if not found."
+  (let ((candidates (list (merge-pathnames ".cargo/bin/rg"
+                                           (user-homedir-pathname))
+                          #P"/usr/bin/rg"
+                          #P"/usr/local/bin/rg")))
+    (find-if #'probe-file candidates)))
+
+(defun %rg-build-argv (pattern root-path path-glob before after limit
+                       case-insensitive multiline-mode output-mode)
+  "Build argument list for rg --json invocation."
+  (declare (ignore root-path output-mode))
+  (let ((args (list "--json" "--no-heading")))
+    (when (and before (plusp before))
+      (push (format nil "-B~D" before) args))
+    (when (and after (plusp after))
+      (push (format nil "-A~D" after) args))
+    (when case-insensitive
+      (push "-i" args))
+    (when multiline-mode
+      (push "--multiline" args))
+    ;; File glob filter (rg uses --glob, not shell globs)
+    (when (and path-glob (not (string= path-glob "**/*")))
+      (push "--glob" args)
+      (push path-glob args))
+    ;; The pattern and search root
+    (nconc (nreverse args) (list "--" pattern "."))))
+
+(defun %rg-strip-newline (text)
+  "Remove trailing newline from rg line text."
+  (if (and (plusp (length text))
+           (char= (char text (1- (length text))) #\Newline))
+      (subseq text 0 (1- (length text)))
+      text))
+
+(defun %rg-resolve-path (path-text root-path)
+  "Resolve an rg-reported path against ROOT-PATH, preserving absolute paths."
+  (let* ((path (pathname path-text))
+         (resolved (if (uiop:absolute-pathname-p path)
+                       path
+                       (merge-pathnames path root-path))))
+    (or (ignore-errors (truename resolved)) resolved)))
+
+(defun %rg-parse-json-lines (stream root-path limit)
+  "Parse rg --json output. Returns (values matches file-count match-count)."
+  (let ((matches '())
+        (match-count 0)
+        (files-seen (make-hash-table :test #'equal))
+        (context-before '())
+        (context-after-target nil))
+    (labels ((flush-context-after ()
+               ;; Attach accumulated context-after to the previous match
+               (when context-after-target
+                 (setf (getf context-after-target :context-after)
+                       (nreverse (getf context-after-target :context-after)))
+                 (setf context-after-target nil)))
+             (process-line (line)
+               (let* ((json (handler-case (jonathan:parse line :as :hash-table)
+                              (error () (return-from process-line))))
+                      (type (gethash "type" json)))
+                 (cond
+                   ((string= type "context")
+                    (let* ((data (gethash "data" json))
+                           (line-number (gethash "line_number" data 0))
+                           (text (%rg-strip-newline
+                                  (gethash "text" (gethash "lines" data) "")))
+                           (context-entry (list :line line-number :text text)))
+                      (if context-after-target
+                          ;; Accumulating context-after for previous match
+                          (push context-entry (getf context-after-target :context-after))
+                          ;; Accumulating context-before for next match
+                          (push context-entry context-before))))
+                   ((string= type "match")
+                    (flush-context-after)
+                    (when (and limit (>= match-count limit))
+                      (return-from process-line))
+                    (let* ((data (gethash "data" json))
+                           (path-text (gethash "text" (gethash "path" data) ""))
+                           (resolved-path (%rg-resolve-path path-text root-path))
+                           (resolved-path-text (coerce-path-string resolved-path))
+                           (line-number (gethash "line_number" data 0))
+                           (line-text (%rg-strip-newline
+                                       (gethash "text" (gethash "lines" data) "")))
+                           (submatches (gethash "submatches" data))
+                           (first-sub (and submatches (plusp (length submatches))
+                                           (elt submatches 0)))
+                           (matched-text (if first-sub
+                                             (gethash "text" (gethash "match" first-sub) "")
+                                             ""))
+                           (column (if first-sub
+                                       (1+ (gethash "start" first-sub 0))
+                                       1))
+                           (relative (%relative-path-text resolved-path root-path))
+                           (match-plist
+                             (list :path resolved-path-text
+                                   :relative-path relative
+                                   :modified-at (%path-mtime resolved-path)
+                                   :line line-number
+                                   :column column
+                                   :text line-text
+                                   :matched-text matched-text
+                                   :context-before (nreverse context-before)
+                                   :context-after '())))
+                      (setf (gethash resolved-path-text files-seen) t)
+                      (push match-plist matches)
+                      (incf match-count)
+                      (setf context-before '())
+                      (setf context-after-target match-plist)))
+                   ((string= type "begin")
+                    (setf context-before '())
+                    (flush-context-after))
+                   ((string= type "end")
+                    (flush-context-after)
+                    (setf context-before '()))))))
+      (loop for line = (read-line stream nil nil)
+            while line
+            do (process-line line))
+      (flush-context-after))
+    (values (nreverse matches)
+            (hash-table-count files-seen)
+            match-count)))
+
+(defun %grep-via-rg (pattern root-path path-glob before after limit
+                     case-insensitive multiline-mode output-mode)
+  "Run ripgrep and parse results. Returns (values matches file-count match-count)."
+  (let* ((rg (%rg-executable))
+         (argv (%rg-build-argv pattern root-path path-glob
+                               before after limit
+                               case-insensitive multiline-mode output-mode))
+         (cmd (cons (namestring rg) argv)))
+    (multiple-value-bind (output error-output exit-code)
+        (uiop:run-program cmd
+                          :output :string
+                          :error-output :string
+                          :directory root-path
+                          :ignore-error-status t)
+      (declare (ignore error-output))
+      ;; rg exits 0=matches, 1=no matches, 2=error
+      (if (> exit-code 1)
+          (values '() 0 0)
+          (with-input-from-string (s output)
+            (multiple-value-bind (matches file-count match-count)
+                (%rg-parse-json-lines s root-path limit)
+              (values matches file-count match-count)))))))
 
 (defun %mtime-from-table (table key)
   (multiple-value-bind (value present-p)
       (gethash key table)
     (if present-p value 0)))
+
+(defun %grep-match-better-p (left right)
+  (let ((left-mtime (or (getf left :modified-at) 0))
+        (right-mtime (or (getf right :modified-at) 0))
+        (left-path (or (getf left :path) ""))
+        (right-path (or (getf right :path) ""))
+        (left-line (or (getf left :line) most-positive-fixnum))
+        (right-line (or (getf right :line) most-positive-fixnum))
+        (left-column (or (getf left :column) most-positive-fixnum))
+        (right-column (or (getf right :column) most-positive-fixnum)))
+    (cond
+      ((> left-mtime right-mtime) t)
+      ((< left-mtime right-mtime) nil)
+      ((string< left-path right-path) t)
+      ((string< right-path left-path) nil)
+      ((< left-line right-line) t)
+      ((> left-line right-line) nil)
+      (t
+       (< left-column right-column)))))
 
 (defun %content-match-better-p (left right mtime-table)
   (let* ((left-path (ptui.search.engine:search-content-match-path left))
@@ -157,7 +344,7 @@
 (defun %grep-files-with-matches (matches)
   (let ((seen (make-hash-table :test #'equal))
         (files '()))
-    (dolist (match matches)
+    (dolist (match (sort (copy-list matches) #'%grep-match-better-p))
       (let ((path (getf match :path)))
         (unless (gethash path seen)
           (setf (gethash path seen) t)
@@ -165,8 +352,9 @@
     (nreverse files)))
 
 (defun %grep-output-payload (mode matches)
-  (let* ((files (%grep-files-with-matches matches))
-         (match-count (length matches))
+  (let* ((sorted-matches (sort (copy-list matches) #'%grep-match-better-p))
+         (files (%grep-files-with-matches sorted-matches))
+         (match-count (length sorted-matches))
          (file-count (length files)))
     (append
      (list :output-mode mode
@@ -175,7 +363,7 @@
      (ecase mode
        (:content
         (list :count match-count
-              :matches matches))
+              :matches sorted-matches))
        (:files_with_matches
         (list :count file-count
               :matches files))
@@ -196,17 +384,21 @@
                    :multiline-mode multiline-mode
                    :before-context before
                    :after-context after))
-           (documents (%search-documents-for-files files)))
-      (ptui.components.search-widget:search-widget-start-content-search
+           (stream (%make-file-search-document-stream files))
+           (batch-size (ptui.components.search-widget:search-widget-batch-size state)))
+      (ptui.components.search-widget:search-widget-start-content-search-stream
        state
        pattern
-       documents
+       stream
        :limit nil
        :regex-mode t
        :case-insensitive case-insensitive
        :multiline-mode multiline-mode
        :before-context before
        :after-context after)
+      (loop while (eq (ptui.components.search-widget:search-widget-status state) :streaming)
+            do (ptui.components.search-widget:search-widget-step state
+                                                                 :max-items batch-size))
       (let* ((raw (copy-list (ptui.components.search-widget:search-widget-content-results state)))
              (sorted (sort raw
                            (lambda (left right)
@@ -259,19 +451,32 @@
   (%ensure-non-negative-integer "AFTER" after)
   (%ensure-non-negative-integer "LIMIT" limit)
   (let* ((mode (%normalize-grep-output-mode output-mode))
-         (root-path (%resolve-search-root root))
-         (files (%matching-files-sorted :grep-content root-path path-glob :limit nil))
-         (matches (%grep-matches-via-search-widget files
-                                                   pattern
-                                                   before
-                                                   after
-                                                   limit
-                                                   case-insensitive
-                                                   multiline
-                                                   root-path)))
-    (append
-     (list :root (coerce-path-string root-path)
-           :pattern pattern
-           :path-glob path-glob
-           :multiline multiline)
-     (%grep-output-payload mode matches))))
+         (root-path (%resolve-search-root root)))
+    (if (%rg-executable)
+        ;; Fast path: use ripgrep
+        (multiple-value-bind (matches file-count match-count)
+            (%grep-via-rg pattern root-path path-glob
+                          before after limit
+                          case-insensitive multiline mode)
+          (append
+           (list :root (coerce-path-string root-path)
+                 :pattern pattern
+                 :path-glob path-glob
+                 :multiline multiline)
+           (%grep-output-payload mode matches)))
+        ;; Fallback: in-process search widget (old path)
+        (let* ((files (%matching-files-sorted :grep-content root-path path-glob :limit nil))
+               (matches (%grep-matches-via-search-widget files
+                                                         pattern
+                                                         before
+                                                         after
+                                                         limit
+                                                         case-insensitive
+                                                         multiline
+                                                         root-path)))
+          (append
+           (list :root (coerce-path-string root-path)
+                 :pattern pattern
+                 :path-glob path-glob
+                 :multiline multiline)
+           (%grep-output-payload mode matches))))))

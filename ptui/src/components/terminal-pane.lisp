@@ -530,15 +530,16 @@ Primary constructor — prefer this over raw struct access."
 
 (defun %max-scroll-offset (state viewport-height)
   (let ((line-count (length (%display-lines state))))
-    (max 0 (- line-count viewport-height))))
+    (ptui.util.scroll:max-scroll-offset line-count viewport-height)))
 
 (defun %clamp-scroll-offset! (state &key viewport-height)
   (let* ((height (or viewport-height (length (%display-lines state))))
-         (max-offset (%max-scroll-offset state (max 1 height))))
+         (line-count (length (%display-lines state))))
     (setf (terminal-pane-state-scroll-offset state)
-          (max 0
-               (min (terminal-pane-state-scroll-offset state)
-                    max-offset))))
+          (ptui.util.scroll:clamp-scroll-offset
+           (terminal-pane-state-scroll-offset state)
+           line-count
+           (max 1 height))))
   state)
 
 (defun %refresh-status! (state)
@@ -734,10 +735,15 @@ Primary constructor — prefer this over raw struct access."
   (check-type state terminal-pane-state)
   (check-type delta integer)
   (check-type viewport-height (integer 1 *))
-  (let* ((max-offset (%max-scroll-offset state viewport-height))
-         (next-offset (+ (terminal-pane-state-scroll-offset state) delta)))
+  (let* ((line-count (length (%display-lines state)))
+         (next-offset
+           (ptui.util.scroll:apply-scroll-delta
+            (terminal-pane-state-scroll-offset state)
+            delta
+            line-count
+            viewport-height)))
     (setf (terminal-pane-state-scroll-offset state)
-          (max 0 (min max-offset next-offset))))
+          next-offset))
   state)
 
 (defun terminal-pane-scroll-home (state &key (viewport-height 12))
@@ -873,27 +879,24 @@ Primary constructor — prefer this over raw struct access."
     (return-from terminal-pane-handle-event
       (list :action :ignored :state state)))
   (let* ((key (ptui.core.events:key-event-key event))
-         (text (ptui.core.events:key-event-text? event))
-         (page-step (max 1 (1- viewport-height))))
+         (text (ptui.core.events:key-event-text? event)))
     (cond
-      ((eq key :up)
-       (terminal-pane-scroll state 1 :viewport-height viewport-height)
-       (list :action :scrolled :delta 1 :state state))
-      ((eq key :down)
-       (terminal-pane-scroll state -1 :viewport-height viewport-height)
-       (list :action :scrolled :delta -1 :state state))
-      ((eq key :page-up)
-       (terminal-pane-scroll state page-step :viewport-height viewport-height)
-       (list :action :scrolled :delta page-step :state state))
-      ((eq key :page-down)
-       (terminal-pane-scroll state (- page-step) :viewport-height viewport-height)
-       (list :action :scrolled :delta (- page-step) :state state))
-      ((eq key :home)
-       (terminal-pane-scroll-home state :viewport-height viewport-height)
-       (list :action :scrolled-home :state state))
-      ((eq key :end)
-       (terminal-pane-scroll-end state)
-       (list :action :scrolled-end :state state))
+      ((multiple-value-bind (action delta)
+           (ptui.util.scroll:key-scroll-action key :viewport-height viewport-height)
+         (case action
+           (:delta
+            (terminal-pane-scroll state delta :viewport-height viewport-height)
+            (return-from terminal-pane-handle-event
+              (list :action :scrolled :delta delta :state state)))
+           (:home
+            (terminal-pane-scroll-home state :viewport-height viewport-height)
+            (return-from terminal-pane-handle-event
+              (list :action :scrolled-home :state state)))
+           (:end
+            (terminal-pane-scroll-end state)
+            (return-from terminal-pane-handle-event
+              (list :action :scrolled-end :state state)))
+           (otherwise nil))))
       ((or (eq key :search-next)
            (and (eq key :text) (string= text "n")))
        (terminal-pane-search-next state :viewport-height viewport-height)

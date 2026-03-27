@@ -15,13 +15,13 @@
     (unwind-protect
         (progn
           (%write-text-file file
-                            (format nil "---~%name: code-reviewer~%description: Expert at reviewing code~%capabilities: [code-review, static-analysis]~%model: claude-opus-4-6~%---~%~%You are an expert code reviewer."))
+                            (format nil "---~%name: code-reviewer~%description: Expert at reviewing code~%capabilities: [code-review, static-analysis]~%model: moonshot-v1-128k~%---~%~%You are an expert code reviewer."))
           (let ((persona (amoebum:parse-persona-file file)))
             (is-true (amoebum:persona-definition-p persona))
             (is (string= "code-reviewer" (amoebum:persona-definition-name persona)))
             (is (string= "Expert at reviewing code" (amoebum:persona-definition-description persona)))
             (is (equal '("code-review" "static-analysis") (amoebum:persona-definition-capabilities persona)))
-            (is (string= "claude-opus-4-6" (amoebum:persona-definition-model persona)))
+            (is (string= "moonshot-v1-128k" (amoebum:persona-definition-model persona)))
             (is (search "expert code reviewer" (amoebum:persona-definition-system-prompt persona)
                         :test #'char-equal))))
       (%delete-directory-tree-safe tmp-dir))))

@@ -18,7 +18,9 @@
    #:%compile-panel-keys
    #:%compile-panel-effects
    #:%compile-panel-styles
-   #:%parse-panel-sections))
+   #:%parse-panel-sections
+   #:%normalize-padding
+   #:%parse-container-options))
 
 (in-package :ptui.ui.panel)
 
@@ -157,14 +159,17 @@ Returns NIL when no styles are defined."
                    (member (car container-form) '(:column :row)))
         (%signal-syntax-error panel-name :layout
                               (format nil "Invalid :layout form ~S." container-form)))
-      (loop for region in (cdr container-form)
-            for region-name = (first region)
-            do (when (gethash region-name seen)
-                 (%signal-syntax-error panel-name :layout
-                                       (format nil "Duplicate region name ~S in :layout."
-                                               region-name)))
-            do (setf (gethash region-name seen) t)
-            collect region-name))))
+      (multiple-value-bind (options regions)
+          (%parse-container-options (cdr container-form))
+        (declare (ignore options))
+        (loop for region in regions
+              for region-name = (first region)
+              do (when (gethash region-name seen)
+                   (%signal-syntax-error panel-name :layout
+                                         (format nil "Duplicate region name ~S in :layout."
+                                                 region-name)))
+              do (setf (gethash region-name seen) t)
+              collect region-name)))))
 
 (defun %validate-style-regions (panel-name layout-regions style-specs)
   (dolist (style-spec style-specs)
@@ -267,21 +272,27 @@ Returns (values bindings all-var-names all-setter-names)."
   (when (and layout-forms (consp layout-forms))
     (let ((container-form (first layout-forms)))
       (when (and (consp container-form) (member (car container-form) '(:column :row)))
-        (dolist (region (cdr container-form))
-          (let ((when-clause (%region-when-clause region)))
-            (when when-clause
-              (%warn-unbound-when-vars panel-name when-clause known-symbols))))))))
+        (multiple-value-bind (options regions)
+            (%parse-container-options (cdr container-form))
+          (declare (ignore options))
+          (dolist (region regions)
+            (let ((when-clause (%region-when-clause region)))
+              (when when-clause
+                (%warn-unbound-when-vars panel-name when-clause known-symbols)))))))))
 
 (defun %validate-layout-regions (panel-name layout-forms)
   (when layout-forms
     (let ((seen (make-hash-table :test #'eq)))
-      (dolist (region (cdr (first layout-forms)))
-        (let ((region-name (first region)))
-          (when (gethash region-name seen)
-            (%signal-syntax-error panel-name :layout
-                                  (format nil "Duplicate region name ~S in :layout."
-                                          region-name)))
-          (setf (gethash region-name seen) t))))))
+      (multiple-value-bind (options regions)
+          (%parse-container-options (cdr (first layout-forms)))
+        (declare (ignore options))
+        (dolist (region regions)
+          (let ((region-name (first region)))
+            (when (gethash region-name seen)
+              (%signal-syntax-error panel-name :layout
+                                    (format nil "Duplicate region name ~S in :layout."
+                                            region-name)))
+            (setf (gethash region-name seen) t)))))))
 
 (defun %compile-data-binding (panel-name spec all-params all-state-vars)
   "Compile a single (:data (name expr &key deps)) into use-memo binding form.
@@ -374,28 +385,57 @@ Consume-bindings are let* binding clauses."
 ;;; I289: defpanel Layout and Keys Compilation
 ;;; ===================================================================
 
+(defun %normalize-padding (spec)
+  "Normalize padding spec to (top right bottom left).
+NIL -> (0 0 0 0), N -> (N N N N), (V H) -> (V H V H), (T R B L) -> (T R B L)."
+  (cond
+    ((null spec) '(0 0 0 0))
+    ((integerp spec) (list spec spec spec spec))
+    ((and (listp spec) (= (length spec) 2))
+     (list (first spec) (second spec) (first spec) (second spec)))
+    ((and (listp spec) (= (length spec) 4))
+     spec)
+    (t (error "Invalid padding spec ~S. Expected integer, (vert horiz), or (top right bottom left)." spec))))
+
+(defun %parse-container-options (rest)
+  "Parse keyword options from container form until first region.
+Regions are lists whose car is a symbol (not a keyword).
+Returns (values options-plist region-list)."
+  (let ((options '())
+        (remaining rest))
+    (loop while (and remaining (keywordp (car remaining)))
+          do (push (car remaining) options)
+             (push (cadr remaining) options)
+             (setf remaining (cddr remaining)))
+    (values (nreverse options) remaining)))
+
 (defun %parse-region-form (region-form)
-  "Parse a region form into (values name sizing-type sizing-value when-clause body).
-Handles optional :when clause: (name :fixed N :when pred body...)."
+  "Parse a region form into (values name sizing-type sizing-value when-clause gutter body).
+Handles optional :when and :gutter clauses: (name :fixed N :when pred :gutter N body...)."
   (let ((name (first region-form))
         (sizing-type (second region-form))
         (sizing-value (third region-form))
         (rest (cdddr region-form))
-        (when-clause nil))
+        (when-clause nil)
+        (gutter nil))
     ;; Check for :when keyword after sizing-value
     (when (and rest (eq (first rest) :when))
       (setf when-clause (second rest))
       (setf rest (cddr rest)))
-    (values name sizing-type sizing-value when-clause rest)))
+    ;; Check for :gutter keyword
+    (when (and rest (eq (first rest) :gutter))
+      (setf gutter (second rest))
+      (setf rest (cddr rest)))
+    (values name sizing-type sizing-value when-clause gutter rest)))
 
 (defun %compile-region-constraint (region-form)
   "Extract constraint spec from a :region form.
 (name :fixed N body...) -> (ptui.layout.constraints:fixed 'name N)
 (name :flex N body...) -> (ptui.layout.constraints:flex 'name :weight N)
 (name :percentage N body...) -> (ptui.layout.constraints:percentage 'name N)"
-  (multiple-value-bind (name sizing-type sizing-value when-clause body)
+  (multiple-value-bind (name sizing-type sizing-value when-clause gutter body)
       (%parse-region-form region-form)
-    (declare (ignore when-clause body))
+    (declare (ignore when-clause gutter body))
     (case sizing-type
       (:fixed `(ptui.layout.constraints:fixed ',name ,sizing-value))
       (:flex `(ptui.layout.constraints:flex ',name :weight ,(or sizing-value 1)))
@@ -405,18 +445,25 @@ Handles optional :when clause: (name :fixed N :when pred body...)."
 
 (defun %region-when-clause (region-form)
   "Extract the :when clause from a region form, or NIL if absent."
-  (multiple-value-bind (name sizing-type sizing-value when-clause body)
+  (multiple-value-bind (name sizing-type sizing-value when-clause gutter body)
       (%parse-region-form region-form)
-    (declare (ignore name sizing-type sizing-value body))
+    (declare (ignore name sizing-type sizing-value gutter body))
     when-clause))
+
+(defun %region-gutter (region-form)
+  "Extract the :gutter value from a region form, or NIL if absent."
+  (multiple-value-bind (name sizing-type sizing-value when-clause gutter body)
+      (%parse-region-form region-form)
+    (declare (ignore name sizing-type sizing-value when-clause body))
+    gutter))
 
 (defun %compile-region-body (region-form)
   "Extract the body expression from a :region form.
 (name :fixed N body-expr) -> body-expr
 (name :fixed N :when pred body-expr) -> body-expr"
-  (multiple-value-bind (name sizing-type sizing-value when-clause body)
+  (multiple-value-bind (name sizing-type sizing-value when-clause gutter body)
       (%parse-region-form region-form)
-    (declare (ignore name sizing-type sizing-value when-clause))
+    (declare (ignore name sizing-type sizing-value when-clause gutter))
     (if (= (length body) 1)
         (first body)
         `(progn ,@body))))
@@ -453,10 +500,19 @@ the child in a box widget."
                    %child-node))
             '%child-node))))
 
+(defun %collect-gutters (regions)
+  "Collect an alist of (region-name . gutter-width) for regions with :gutter."
+  (loop for region in regions
+        for name = (first region)
+        for gutter = (%region-gutter region)
+        when gutter
+          collect (cons name gutter)))
+
 (defun %compile-layout-tree (layout-forms &optional region-style-fn)
   "Compile :layout section into constraint-layout element construction.
 Returns form that builds a ui-element of type :constraint-layout.
-Supports :when on regions — conditional regions are omitted when predicate is falsy."
+Supports :when on regions — conditional regions are omitted when predicate is falsy.
+Supports :padding on containers and :gutter on regions."
   (when (null layout-forms)
     (return-from %compile-layout-tree
       `(ptui.ui.elements:make-element :node)))
@@ -465,47 +521,59 @@ Supports :when on regions — conditional regions are omitted when predicate is 
                  (member (car container-form) '(:column :row)))
       (error "defpanel :layout must start with (:column ...) or (:row ...). Got: ~S"
              container-form))
-    (let* ((direction (car container-form))
-           (regions (cdr container-form))
-           (has-conditional (some #'%region-when-clause regions)))
-      (if (not has-conditional)
-          ;; Simple case: no conditional regions — static constraints and children
-          (let ((constraints (mapcar #'%compile-region-constraint regions))
-                (children (loop for region in regions
-                                for name = (first region)
-                                collect (%compile-child-form name
-                                                           (%compile-region-body region)
-                                                           region-style-fn))))
-            `(ptui.ui.elements:make-element
-              :constraint-layout
-              :props (list :direction ,(if (eq direction :column) :column :row)
-                           :constraints (list ,@constraints))
-              :children (list ,@children)))
-          ;; Conditional case: build constraints and children lists dynamically
-          (let ((constraint-entries
-                  (loop for region in regions
-                        for name = (first region)
-                        for when-clause = (%region-when-clause region)
-                        for constraint-form = (%compile-region-constraint region)
-                        for child-form = (%compile-child-form name
-                                                             (%compile-region-body region)
-                                                             region-style-fn)
-                        if when-clause
-                          collect `(when ,when-clause
-                                    (push ,constraint-form %constraints)
-                                    (push ,child-form %children))
-                        else
-                          collect `(progn
-                                    (push ,constraint-form %constraints)
-                                    (push ,child-form %children)))))
-            `(let ((%constraints '())
-                   (%children '()))
-               ,@constraint-entries
-               (ptui.ui.elements:make-element
-                :constraint-layout
-                :props (list :direction ,(if (eq direction :column) :column :row)
-                             :constraints (nreverse %constraints))
-                :children (nreverse %children))))))))
+    (let ((direction (car container-form)))
+      (multiple-value-bind (container-options region-list)
+          (%parse-container-options (cdr container-form))
+        (let* ((regions region-list)
+               (padding-spec (getf container-options :padding))
+               (gutters (%collect-gutters regions))
+               (has-conditional (some #'%region-when-clause regions))
+               (extra-props
+                 (append
+                  (when padding-spec
+                    `(:padding ',(%normalize-padding padding-spec)))
+                  (when gutters
+                    `(:gutters ',gutters)))))
+          (if (not has-conditional)
+              ;; Simple case: no conditional regions — static constraints and children
+              (let ((constraints (mapcar #'%compile-region-constraint regions))
+                    (children (loop for region in regions
+                                    for name = (first region)
+                                    collect (%compile-child-form name
+                                                               (%compile-region-body region)
+                                                               region-style-fn))))
+                `(ptui.ui.elements:make-element
+                  :constraint-layout
+                  :props (list :direction ,(if (eq direction :column) :column :row)
+                               :constraints (list ,@constraints)
+                               ,@extra-props)
+                  :children (list ,@children)))
+              ;; Conditional case: build constraints and children lists dynamically
+              (let ((constraint-entries
+                      (loop for region in regions
+                            for name = (first region)
+                            for when-clause = (%region-when-clause region)
+                            for constraint-form = (%compile-region-constraint region)
+                            for child-form = (%compile-child-form name
+                                                                 (%compile-region-body region)
+                                                                 region-style-fn)
+                            if when-clause
+                              collect `(when ,when-clause
+                                        (push ,constraint-form %constraints)
+                                        (push ,child-form %children))
+                            else
+                              collect `(progn
+                                        (push ,constraint-form %constraints)
+                                        (push ,child-form %children)))))
+                `(let ((%constraints '())
+                       (%children '()))
+                   ,@constraint-entries
+                   (ptui.ui.elements:make-element
+                    :constraint-layout
+                    :props (list :direction ,(if (eq direction :column) :column :row)
+                                 :constraints (nreverse %constraints)
+                                 ,@extra-props)
+                    :children (nreverse %children))))))))))
 
 (defun %compile-key-pattern (pattern)
   "Compile a defpanel :keys pattern into a condition form.
