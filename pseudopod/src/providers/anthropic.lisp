@@ -170,6 +170,27 @@
       (t
        nil))))
 
+;;; --- Anthropic Content-Part Coercion Dispatch Table (FP-Refine Phase 2) ---
+
+(defun %anthropic-coerce-text-block-part (hash)
+  (%anthropic-make-text-block
+   (or (%trimmed-non-empty-string (gethash "text" hash))
+       (%trimmed-non-empty-string (gethash "content" hash))
+       "")))
+
+(defun %anthropic-coerce-image-block-part (hash)
+  (or (%anthropic-image-block-from-part hash)
+      (let ((fallback (%trimmed-non-empty-string (gethash "text" hash))))
+        (and fallback (%anthropic-make-text-block fallback)))))
+
+(defparameter +anthropic-content-part-coercers+
+  '(("text"        . %anthropic-coerce-text-block-part)
+    ("image"       . %anthropic-coerce-image-block-part)
+    ("input_image" . %anthropic-coerce-image-block-part)
+    ("image_url"   . %anthropic-coerce-image-block-part))
+  "Dispatch table mapping content-part type strings to Anthropic coercion handlers.
+Each handler: (hash-table) -> coerced hash-table | nil.")
+
 (defun %anthropic-coerce-content-part-block (part)
   (let* ((hash (cond
                  ((content-part-p part) (content-part-to-hash part))
@@ -183,24 +204,13 @@
          (type (and (hash-table-p hash)
                     (string-downcase (or (gethash "type" hash) "")))))
     (cond
-      ((null hash)
-       nil)
-      ((string= type "text")
-       (%anthropic-make-text-block
-        (or (%trimmed-non-empty-string (gethash "text" hash))
-            (%trimmed-non-empty-string (gethash "content" hash))
-            "")))
-      ((or (string= type "image")
-           (string= type "input_image")
-           (string= type "image_url"))
-       (or (%anthropic-image-block-from-part hash)
-           (let ((fallback (%trimmed-non-empty-string (gethash "text" hash))))
-             (and fallback (%anthropic-make-text-block fallback)))))
-      (t
-       (let ((fallback (%trimmed-non-empty-string
-                        (or (gethash "text" hash)
-                            (gethash "content" hash)))))
-         (and fallback (%anthropic-make-text-block fallback)))))))
+      ((null hash) nil)
+      (t (or (%dispatch-content-part-coercion type +anthropic-content-part-coercers+ hash)
+             ;; Fallthrough: unknown type — extract text if available
+             (let ((fallback (%trimmed-non-empty-string
+                              (or (gethash "text" hash)
+                                  (gethash "content" hash)))))
+               (and fallback (%anthropic-make-text-block fallback))))))))
 
 (defun %anthropic-coerce-content-blocks (content)
   (let ((parts (cond

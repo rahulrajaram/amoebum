@@ -698,42 +698,36 @@
       (t
        :exact))))
 
+;;; --- Argument Pattern Selector Dispatch Table (FP-Refine Phase 2, Target 3) ---
+
+(defparameter +argument-pattern-selectors+
+  '(("program:"    . :program)
+    ("prog:"       . :program)
+    ("flag:"       . :flag)
+    ("flags:"      . :flag)
+    ("option:"     . :flag)
+    ("options:"    . :flag)
+    ("positional:" . :positional)
+    ("position:"   . :positional)
+    ("pos:"        . :positional)
+    ("arg:"        . :argument)
+    ("args:"       . :argument)
+    ("token:"      . :token)
+    ("argv:"       . :token))
+  "Dispatch table mapping prefix strings to argument selector keywords.
+Used by %argument-pattern-components to classify argument patterns.")
+
 (defun %argument-pattern-components (pattern)
   (let ((normalized (%normalize-permission-command pattern)))
     (when normalized
-      (flet ((consume (prefix selector)
-               (values selector
-                       (%trim-command-whitespace
-                        (subseq normalized (length prefix))))))
-        (cond
-          ((%string-prefix-ci-p "program:" normalized)
-           (consume "program:" :program))
-          ((%string-prefix-ci-p "prog:" normalized)
-           (consume "prog:" :program))
-          ((%string-prefix-ci-p "flag:" normalized)
-           (consume "flag:" :flag))
-          ((%string-prefix-ci-p "flags:" normalized)
-           (consume "flags:" :flag))
-          ((%string-prefix-ci-p "option:" normalized)
-           (consume "option:" :flag))
-          ((%string-prefix-ci-p "options:" normalized)
-           (consume "options:" :flag))
-          ((%string-prefix-ci-p "positional:" normalized)
-           (consume "positional:" :positional))
-          ((%string-prefix-ci-p "position:" normalized)
-           (consume "position:" :positional))
-          ((%string-prefix-ci-p "pos:" normalized)
-           (consume "pos:" :positional))
-          ((%string-prefix-ci-p "arg:" normalized)
-           (consume "arg:" :argument))
-          ((%string-prefix-ci-p "args:" normalized)
-           (consume "args:" :argument))
-          ((%string-prefix-ci-p "token:" normalized)
-           (consume "token:" :token))
-          ((%string-prefix-ci-p "argv:" normalized)
-           (consume "argv:" :token))
-          (t
-           (values :argument normalized)))))))
+      (let ((match (assoc-if (lambda (prefix)
+                               (%string-prefix-ci-p prefix normalized))
+                             +argument-pattern-selectors+)))
+        (if match
+            (values (cdr match)
+                    (%trim-command-whitespace
+                     (subseq normalized (length (car match)))))
+            (values :argument normalized))))))
 
 (defun %validate-argument-pattern (argument-pattern)
   (let ((normalized (%normalize-permission-command argument-pattern)))
@@ -1383,20 +1377,33 @@
                         (setf default decision)))))))
     default))
 
+;;; --- Permission Mode Default Decision Table (FP-Refine Phase 2, Target 4) ---
+
+(defparameter +permission-mode-defaults+
+  '((:plan       . :prompt)
+    (:supervised . :prompt)
+    (:full-auto  . :allow)
+    (:yolo       . :allow))
+  "Maps permission modes to their default decisions.
+:auto-edit has special logic via %auto-edit-default-decision.")
+
+(defun %auto-edit-default-decision (tool path command)
+  "Compute the default decision for :auto-edit mode.
+Shell tools -> :prompt; file tools or path present -> :allow; otherwise :prompt."
+  (cond
+    ((%shell-tool-p tool command) :prompt)
+    ((or path
+         (member (%tool-name tool) *auto-edit-tool-names* :test #'string=))
+     :allow)
+    (t :prompt)))
+
 (defun %mode-default-decision (mode tool path command)
-  (case mode
-    (:plan :prompt)
-    (:supervised :prompt)
-    (:auto-edit
-     (cond
-       ((%shell-tool-p tool command) :prompt)
-       ((or path
-            (member (%tool-name tool) *auto-edit-tool-names* :test #'string=))
-        :allow)
-       (t :prompt)))
-    (:full-auto :allow)
-    (:yolo :allow)
-    (otherwise :prompt)))
+  (if (eq mode :auto-edit)
+      (%auto-edit-default-decision tool path command)
+      (let ((entry (assoc mode +permission-mode-defaults+)))
+        (if entry
+            (cdr entry)
+            :prompt))))
 
 (defun %plan-mode-enabled-p ()
   (not (null (cfg :plan-mode))))

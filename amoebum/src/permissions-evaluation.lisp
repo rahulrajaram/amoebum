@@ -167,23 +167,75 @@
           (permission-check-context-path-memory-checked-p context) t))
   (permission-check-context-path-memory-allowed-p context))
 
+;;; --- Permission Decision Dispatch Tables (FP-Refine Phase 2, Target 4) ---
+
+(defun %permission-context-plan-mode-blocked-p (context)
+  "Predicate: is the request blocked by plan mode?"
+  (permission-check-context-plan-mode-blocked-p context))
+
+(defun %permission-context-rule-denies-p (context)
+  "Predicate: does any path or command rule deny the request?"
+  (or (eq (permission-check-context-path-decision context) :deny)
+      (eq (permission-check-context-command-decision context) :deny)))
+
+(defun %permission-context-plan-readonly-allows-p (context)
+  "Predicate: is the tool allowed by plan-mode readonly list?"
+  (%plan-mode-readonly-allowed-p (permission-check-context-tool context)))
+
+(defun %permission-context-command-allows-p (context)
+  "Predicate: does the command rule explicitly allow?"
+  (eq (permission-check-context-command-decision context) :allow))
+
+(defun %permission-context-path-allows-p (context)
+  "Predicate: does the path rule explicitly allow?"
+  (eq (permission-check-context-path-decision context) :allow))
+
+(defun %permission-context-has-mcp-decision-p (context)
+  "Predicate: is there a non-nil MCP decision?"
+  (not (null (permission-check-context-mcp-decision context))))
+
+(defun %permission-context-mcp-decision-value (context)
+  "Return the MCP decision value from context."
+  (permission-check-context-mcp-decision context))
+
+(defun %permission-context-mode-default-value (context)
+  "Return the mode default decision for this context."
+  (%mode-default-decision (permission-check-context-mode context)
+                          (permission-check-context-tool context)
+                          (permission-check-context-normalized-path context)
+                          (permission-check-context-policy-command-text context)))
+
+(defun %always-true (_context)
+  "Predicate that always returns T. Used as catch-all in rule tables."
+  (declare (ignore _context))
+  t)
+
+(defparameter +permission-base-decision-rules+
+  '((:plan-mode-blocked  %permission-context-plan-mode-blocked-p     :deny)
+    (:rule-deny          %permission-context-rule-denies-p           :deny)
+    (:plan-mode-readonly %permission-context-plan-readonly-allows-p  :allow)
+    (:path-memory-allows %permission-check-path-memory-allowed-p     :allow)
+    (:command-allows     %permission-context-command-allows-p        :allow)
+    (:path-allows        %permission-context-path-allows-p          :allow)
+    (:mcp-decision       %permission-context-has-mcp-decision-p     %permission-context-mcp-decision-value)
+    (:mode-default       %always-true                               %permission-context-mode-default-value))
+  "Priority-ordered rule table for permission base decision.
+Each entry: (label predicate-symbol decision-or-function-symbol).
+When predicate returns non-nil, decision is either a keyword or a function called on context.")
+
+(defun %evaluate-permission-decision-rules (context rules)
+  "Evaluate RULES against CONTEXT, returning the first matching decision.
+Each rule is (label predicate decision). When predicate(context) is true:
+  - if decision is a keyword, return it directly
+  - if decision is a symbol naming a function, call it on context."
+  (loop for (label pred decision) in rules
+        when (funcall pred context)
+          return (if (keywordp decision)
+                     decision
+                     (funcall decision context))))
+
 (defun %permission-check-base-decision (context)
-  (cond
-    ((permission-check-context-plan-mode-blocked-p context) :deny)
-    ((or (eq (permission-check-context-path-decision context) :deny)
-         (eq (permission-check-context-command-decision context) :deny))
-     :deny)
-    ((%plan-mode-readonly-allowed-p (permission-check-context-tool context)) :allow)
-    ((%permission-check-path-memory-allowed-p context) :allow)
-    ((eq (permission-check-context-command-decision context) :allow) :allow)
-    ((eq (permission-check-context-path-decision context) :allow) :allow)
-    ((permission-check-context-mcp-decision context)
-     (permission-check-context-mcp-decision context))
-    (t
-     (%mode-default-decision (permission-check-context-mode context)
-                             (permission-check-context-tool context)
-                             (permission-check-context-normalized-path context)
-                             (permission-check-context-policy-command-text context)))))
+  (%evaluate-permission-decision-rules context +permission-base-decision-rules+))
 
 (defun %permission-check-apply-project-root-guard (context)
   (when (and (permission-check-context-outside-project-root-p context)

@@ -263,7 +263,10 @@
    ;; NXT-110: Cultivar and Yore adapter integration (happy-path)
    (:file "test/adapter-integration-test")
    ;; NXT-111: Status-bar regression (modes, output styles, context pressure, render-key)
-   (:file "test/status-bar-regression-test"))
+   (:file "test/status-bar-regression-test")
+   ;; FP-Refine Phase 2: dispatch and decision logic as data
+   (:file "test/argument-pattern-dispatch-test")
+   (:file "test/permission-decision-dispatch-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (unless (uiop:symbol-call :amoebum/test :run-all)

@@ -126,6 +126,46 @@
           (and (hash-table-p image-url)
                (%trimmed-non-empty-string (gethash "url" image-url)))))))
 
+;;; --- Content-Part Coercion Dispatch Tables (FP-Refine Phase 2) ---
+
+(defun %openai-coerce-text-part (hash)
+  (%openai-make-text-content-part
+   (or (%trimmed-non-empty-string (gethash "text" hash))
+       (%trimmed-non-empty-string (gethash "content" hash))
+       "")))
+
+(defun %openai-coerce-image-part (hash)
+  (let ((uri (or (%openai-image-data-uri hash)
+                 (%openai-image-url-value hash))))
+    (if uri
+        (%openai-make-image-url-content-part uri)
+        (%openai-make-text-content-part
+         (or (%trimmed-non-empty-string (gethash "text" hash))
+             "[image]")))))
+
+(defun %openai-coerce-image-url-part (hash)
+  (let ((uri (%openai-image-url-value hash)))
+    (if uri
+        (%openai-make-image-url-content-part uri)
+        (%openai-make-text-content-part
+         (or (%trimmed-non-empty-string (gethash "text" hash))
+             "[image]")))))
+
+(defparameter +openai-content-part-coercers+
+  '(("text"        . %openai-coerce-text-part)
+    ("image"       . %openai-coerce-image-part)
+    ("input_image" . %openai-coerce-image-part)
+    ("image_url"   . %openai-coerce-image-url-part))
+  "Dispatch table mapping content-part type strings to pure coercion handlers.
+Each handler: (hash-table) -> coerced hash-table.")
+
+(defun %dispatch-content-part-coercion (type table hash)
+  "Look up TYPE in dispatch TABLE and call the matched handler on HASH.
+Returns the coerced result, or NIL if no handler matches."
+  (let ((entry (assoc type table :test #'string=)))
+    (when entry
+      (funcall (cdr entry) hash))))
+
 (defun %openai-coerce-content-part (part)
   (let* ((hash (cond
                  ((content-part-p part)
@@ -138,31 +178,9 @@
          (type (and (hash-table-p hash)
                     (string-downcase (or (gethash "type" hash) "")))))
     (cond
-      ((null hash)
-       nil)
-      ((string= type "text")
-       (%openai-make-text-content-part
-        (or (%trimmed-non-empty-string (gethash "text" hash))
-            (%trimmed-non-empty-string (gethash "content" hash))
-            "")))
-      ((or (string= type "image")
-           (string= type "input_image"))
-       (let ((uri (or (%openai-image-data-uri hash)
-                      (%openai-image-url-value hash))))
-         (if uri
-             (%openai-make-image-url-content-part uri)
-             (%openai-make-text-content-part
-              (or (%trimmed-non-empty-string (gethash "text" hash))
-                  "[image]")))))
-      ((string= type "image_url")
-       (let ((uri (%openai-image-url-value hash)))
-         (if uri
-             (%openai-make-image-url-content-part uri)
-             (%openai-make-text-content-part
-              (or (%trimmed-non-empty-string (gethash "text" hash))
-                  "[image]")))))
-      (t
-       hash))))
+      ((null hash) nil)
+      (t (or (%dispatch-content-part-coercion type +openai-content-part-coercers+ hash)
+             hash)))))
 
 (defun %openai-normalize-message-content (content)
   (cond
@@ -439,59 +457,91 @@ require strict assistant→tool response adjacency."
       (typep condition 'dexador.error:http-request-gateway-timeout)
       #+sbcl (typep condition 'sb-sys:io-timeout)))
 
+;;; --- HTTP Error Dispatch Tables (FP-Refine Phase 2, Target 2) ---
+
+(defparameter +http-status-error-classes+
+  '(((401 403) . :auth)
+    ((408 504) . :timeout))
+  "Maps HTTP status code groups to error classification keywords.")
+
+(defparameter +dexador-error-type-classes+
+  '((dexador.error:http-request-unauthorized     . :auth)
+    (dexador.error:http-request-request-timeout   . :timeout)
+    (dexador.error:http-request-gateway-timeout   . :timeout))
+  "Maps dexador exception types to error classification keywords.")
+
+(defparameter +http-error-class-conditions+
+  '((:auth    . pseudopod-auth-error)
+    (:timeout . pseudopod-timeout-error)
+    (:api     . pseudopod-api-error))
+  "Maps error classification keywords to pseudopod condition types.")
+
+(defun %classify-http-status (status)
+  "Classify an HTTP status code as :auth, :timeout, or :api.
+Pure function — no side effects."
+  (if (integerp status)
+      (or (cdr (assoc-if (lambda (codes) (member status codes :test #'=))
+                          +http-status-error-classes+))
+          :api)
+      :api))
+
+(defun %classify-dexador-error (condition)
+  "Classify a dexador error condition as :auth, :timeout, or NIL.
+Pure function — no side effects."
+  (cdr (assoc-if (lambda (type) (typep condition type))
+                  +dexador-error-type-classes+)))
+
+(defun %http-error-message (class kind status body-text)
+  "Build the error message string for a given error CLASS.
+Pure function — no side effects."
+  (case class
+    (:auth    (format nil "Moonshot ~A unauthorized (status=~A): ~A" kind status body-text))
+    (:timeout (format nil "Moonshot ~A timed out (status=~A): ~A" kind status body-text))
+    (t        (format nil "Moonshot ~A failed (status=~A): ~A" kind status body-text))))
+
+(defun %http-error-initargs (class status body-text message cause)
+  "Build the initarg plist for signaling an HTTP error condition.
+Pure function — no side effects."
+  (case class
+    (:auth    (list :message message :status-code status :body body-text :cause cause))
+    (:timeout (list :message message :cause cause))
+    (t        (list :message message :status-code status :body body-text :cause cause))))
+
 (defun %signal-http-status-error (status body &key cause streamp)
   (let* ((body-text (or (%coerce-response-body body) "<no-body>"))
-         (kind (if streamp "streaming request" "request")))
-    (cond
-      ((and (integerp status)
-            (member status '(401 403) :test #'=))
-       (error 'pseudopod-auth-error
-              :message (format nil "Moonshot ~A unauthorized (status=~A): ~A"
-                               kind status body-text)
-              :status-code status
-              :body body-text
-              :cause cause))
-      ((and (integerp status)
-            (member status '(408 504) :test #'=))
-       (error 'pseudopod-timeout-error
-              :message (format nil "Moonshot ~A timed out (status=~A): ~A"
-                               kind status body-text)
-              :cause cause))
-      (t
-       (error 'pseudopod-api-error
-              :message (format nil "Moonshot ~A failed (status=~A): ~A"
-                               kind status body-text)
-              :status-code status
-              :body body-text
-              :cause cause)))))
+         (kind (if streamp "streaming request" "request"))
+         (class (%classify-http-status status))
+         (condition-type (cdr (assoc class +http-error-class-conditions+)))
+         (message (%http-error-message class kind status body-text))
+         (initargs (%http-error-initargs class status body-text message cause)))
+    (apply #'error condition-type initargs)))
 
 (defun %signal-dexador-http-error (condition &key streamp)
   (let ((status (ignore-errors (dexador.error:response-status condition)))
         (body (ignore-errors (dexador.error:response-body condition))))
-    (cond
-      ((typep condition 'dexador.error:http-request-unauthorized)
-       (error 'pseudopod-auth-error
-              :message (format nil "Moonshot ~A unauthorized (status=401)."
-                               (if streamp "streaming request" "request"))
-              :status-code 401
-              :body (%coerce-response-body body)
-              :cause condition))
-      ((or (typep condition 'dexador.error:http-request-request-timeout)
-           (typep condition 'dexador.error:http-request-gateway-timeout))
-       (error 'pseudopod-timeout-error
-              :message (format nil "Moonshot ~A timed out."
-                               (if streamp "streaming request" "request"))
-              :cause condition))
-      (status
-       (%signal-http-status-error status body :cause condition :streamp streamp))
-      (t
-       (error 'pseudopod-api-error
-              :message (format nil "Moonshot ~A failed: ~A"
-                               (if streamp "streaming request" "request")
-                               condition)
-              :status-code nil
-              :body (%coerce-response-body body)
-              :cause condition)))))
+    (let ((dex-class (%classify-dexador-error condition)))
+      (cond
+        (dex-class
+         (let* ((kind (if streamp "streaming request" "request"))
+                (body-text (or (%coerce-response-body body) "<no-body>"))
+                (condition-type (cdr (assoc dex-class +http-error-class-conditions+)))
+                (message (%http-error-message dex-class kind
+                                              (or status (case dex-class (:auth 401) (t nil)))
+                                              body-text))
+                (initargs (%http-error-initargs dex-class
+                                                (or status (case dex-class (:auth 401) (t nil)))
+                                                body-text message condition)))
+           (apply #'error condition-type initargs)))
+        (status
+         (%signal-http-status-error status body :cause condition :streamp streamp))
+        (t
+         (error 'pseudopod-api-error
+                :message (format nil "Moonshot ~A failed: ~A"
+                                 (if streamp "streaming request" "request")
+                                 condition)
+                :status-code nil
+                :body (%coerce-response-body body)
+                :cause condition))))))
 
 (defun %timeout-message (&key streamp method)
   (if streamp
