@@ -436,18 +436,56 @@ Returns two values:
    (and (anthropic-stream-block-state-p block-state)
         (anthropic-stream-block-state-type block-state))))
 
-(defun %anthropic-stream-set-block-type (block-state type)
-  (let ((normalized (%anthropic-normalize-block-type type)))
-    (when (and (anthropic-stream-block-state-p block-state) normalized)
-      (setf (anthropic-stream-block-state-type block-state) normalized)))
-  block-state)
+;;; --- Block-state transition tables (FP-Refine Phase 1, Target 3) ---
+
+(defparameter +anthropic-delta-type-to-block-type+
+  '(("text_delta"        . "text")
+    ("thinking_delta"    . "thinking")
+    ("input_json_delta"  . "tool_use"))
+  "Data table mapping SSE delta type strings to block type strings.")
 
 (defun %anthropic-stream-infer-block-type (delta-type)
-  (cond
-    ((string= delta-type "text_delta") "text")
-    ((string= delta-type "thinking_delta") "thinking")
-    ((string= delta-type "input_json_delta") "tool_use")
-    (t nil)))
+  (cdr (assoc delta-type +anthropic-delta-type-to-block-type+ :test #'string=)))
+
+(defun %update-anthropic-block-state (old-state &key type id name arguments-append)
+  "Return a new block-state with updated fields. Pure — no mutation."
+  (%make-anthropic-stream-block-state
+   :type (or type (anthropic-stream-block-state-type old-state))
+   :id (or id (anthropic-stream-block-state-id old-state))
+   :name (or name (anthropic-stream-block-state-name old-state))
+   :arguments (if arguments-append
+                  (concatenate 'string
+                    (anthropic-stream-block-state-arguments old-state)
+                    arguments-append)
+                  (anthropic-stream-block-state-arguments old-state))))
+
+(defun %anthropic-block-handle-text-delta (state block-state delta)
+  "Handle text_delta: emit text to snapshot callback. Returns new block-state."
+  (declare (ignore block-state))
+  (%anthropic-stream-emit-text state
+                               (and (hash-table-p delta) (gethash "text" delta)))
+  nil)
+
+(defun %anthropic-block-handle-thinking-delta (state block-state delta)
+  "Handle thinking_delta: emit thinking text to snapshot. Returns new block-state."
+  (declare (ignore block-state))
+  (%anthropic-stream-emit-thinking state
+                                   (and (hash-table-p delta) (gethash "text" delta)))
+  nil)
+
+(defun %anthropic-block-handle-tool-use-delta (state block-state delta)
+  "Handle input_json_delta: accumulate arguments. Returns new block-state or NIL."
+  (declare (ignore state))
+  (let ((partial-json (and (hash-table-p delta) (gethash "partial_json" delta))))
+    (when (stringp partial-json)
+      (%update-anthropic-block-state block-state :arguments-append partial-json))))
+
+(defparameter +anthropic-block-delta-handlers+
+  '(("text"     "text_delta"        . %anthropic-block-handle-text-delta)
+    ("thinking" "thinking_delta"    . %anthropic-block-handle-thinking-delta)
+    ("tool_use" "input_json_delta"  . %anthropic-block-handle-tool-use-delta))
+  "Dispatch table: (block-type delta-type . handler-fn).
+Each handler receives (state block-state delta) and returns a new block-state or NIL.")
 
 (defun %anthropic-stream-extract-usage (payload)
   (let ((payload-usage (and (hash-table-p payload) (gethash "usage" payload)))
@@ -508,11 +546,16 @@ Returns two values:
          (block-id (and (hash-table-p content-block) (gethash "id" content-block)))
          (name (and (hash-table-p content-block) (gethash "name" content-block))))
     (when (integerp index)
-      (let ((block-state (%anthropic-stream-ensure-block-state state index)))
-        (%anthropic-stream-set-block-type block-state block-type)
-        (when (string= (or (%anthropic-stream-block-type block-state) "") "tool_use")
-          (setf (anthropic-stream-block-state-id block-state) (or block-id "")
-                (anthropic-stream-block-state-name block-state) (or name "")))))))
+      (let* ((old-block (%anthropic-stream-ensure-block-state state index))
+             (new-block (if (string= (or block-type "") "tool_use")
+                            (%update-anthropic-block-state old-block
+                              :type block-type
+                              :id (or block-id "")
+                              :name (or name ""))
+                            (%update-anthropic-block-state old-block
+                              :type block-type))))
+        (setf (gethash index (anthropic-stream-state-block-states state))
+              new-block)))))
 
 (defun %handle-content-block-delta (state payload)
   (let* ((index (%anthropic-parse-int (and (hash-table-p payload) (gethash "index" payload))))
@@ -523,26 +566,20 @@ Returns two values:
                       (and (hash-table-p delta) (gethash "type" delta))))
          (block-type (or (%anthropic-stream-block-type block-state)
                          (%anthropic-stream-infer-block-type (or delta-type "")))))
-    (when (and (anthropic-stream-block-state-p block-state) block-type)
-      (%anthropic-stream-set-block-type block-state block-type))
-    (cond
-      ((and (string= (or block-type "") "text")
-            (string= (or delta-type "") "text_delta"))
-       (%anthropic-stream-emit-text state
-                                    (and (hash-table-p delta) (gethash "text" delta))))
-      ((and (string= (or block-type "") "thinking")
-            (string= (or delta-type "") "thinking_delta"))
-       (%anthropic-stream-emit-thinking state
-                                        (and (hash-table-p delta) (gethash "text" delta))))
-      ((and (string= (or block-type "") "tool_use")
-            (string= (or delta-type "") "input_json_delta")
-            (anthropic-stream-block-state-p block-state))
-       (let ((partial-json (and (hash-table-p delta) (gethash "partial_json" delta))))
-         (when (stringp partial-json)
-           (setf (anthropic-stream-block-state-arguments block-state)
-                 (concatenate 'string
-                              (anthropic-stream-block-state-arguments block-state)
-                              partial-json))))))))
+    (when (and (anthropic-stream-block-state-p block-state) block-type
+               (not (equal block-type (%anthropic-stream-block-type block-state))))
+      (setf (gethash index (anthropic-stream-state-block-states state))
+            (%update-anthropic-block-state block-state :type block-type))
+      (setf block-state (gethash index (anthropic-stream-state-block-states state))))
+    (let ((entry (find-if (lambda (e)
+                            (and (string= (first e) (or block-type ""))
+                                 (string= (second e) (or delta-type ""))))
+                          +anthropic-block-delta-handlers+)))
+      (when (and entry (anthropic-stream-block-state-p block-state))
+        (let ((new-block (funcall (cddr entry) state block-state delta)))
+          (when new-block
+            (setf (gethash index (anthropic-stream-state-block-states state))
+                  new-block)))))))
 
 (defun %handle-content-block-stop (state payload)
   (let ((index (%anthropic-parse-int (and (hash-table-p payload) (gethash "index" payload)))))

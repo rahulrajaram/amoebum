@@ -155,6 +155,135 @@
       value
       +stream-budget-warning-threshold-percent+))
 
+;;; --- Token-stream transition table (FP-Refine Phase 1, Target 2) ---
+
+(defun %ts-transition-start (stream-state &key target-message-index
+                                               budget-warning-threshold-percent
+                                               budget-abort-threshold-percent)
+  "Pure transition: compute slot updates for start event. No mutation."
+  (declare (ignore stream-state))
+  (list :status :running
+        :started-ms (%token-stream-now-ms)
+        :ended-ms 0
+        :token-count 0
+        :chunk-count 0
+        :target-message-index target-message-index
+        :cancel-requested-p nil
+        :error-message nil
+        :budget-warning-threshold-percent
+        (%token-stream-normalize-threshold-percent budget-warning-threshold-percent)
+        :budget-abort-threshold-percent
+        (%token-stream-normalize-threshold-percent budget-abort-threshold-percent)
+        :budget-warning-emitted-p nil
+        :aborted-p nil
+        :abort-reason nil
+        :stream-turn-snapshot nil
+        :worker-thread nil))
+
+(defun %ts-transition-complete (stream-state)
+  "Pure transition: compute slot updates for complete event."
+  (declare (ignore stream-state))
+  (list :status :completed
+        :ended-ms (%token-stream-now-ms)))
+
+(defun %ts-transition-cancelled (stream-state)
+  "Pure transition: compute slot updates for cancelled event."
+  (declare (ignore stream-state))
+  (list :status :cancelled
+        :ended-ms (%token-stream-now-ms)))
+
+(defun %ts-transition-failed (stream-state &key error-message)
+  "Pure transition: compute slot updates for failed event."
+  (declare (ignore stream-state))
+  (list :status :failed
+        :ended-ms (%token-stream-now-ms)
+        :error-message error-message))
+
+(defun %ts-transition-timeout (stream-state &key elapsed)
+  "Pure transition: compute slot updates for timeout event."
+  (declare (ignore stream-state))
+  (list :status :error
+        :ended-ms (%token-stream-now-ms)
+        :error-message (format nil "Stream timed out after ~D ms" elapsed)))
+
+(defun %ts-transition-force-reset (stream-state &key elapsed)
+  "Pure transition: compute slot updates for force-reset event."
+  (declare (ignore stream-state))
+  (list :status :idle
+        :ended-ms (%token-stream-now-ms)
+        :error-message (format nil "Stream force-reset after being stuck for ~D ms" elapsed)
+        :cancel-requested-p nil
+        :aborted-p nil
+        :worker-thread nil))
+
+(defparameter +token-stream-transitions+
+  '(;; Normal lifecycle
+    ((:idle :start)        . (:running   %ts-transition-start))
+    ((:running :complete)  . (:completed %ts-transition-complete))
+    ((:running :cancelled) . (:cancelled %ts-transition-cancelled))
+    ((:running :failed)    . (:failed    %ts-transition-failed))
+    ((:running :timeout)   . (:error     %ts-transition-timeout))
+    ((:running :force-reset) . (:idle    %ts-transition-force-reset))
+    ;; Start from terminal states (implicit reset)
+    ((:completed :start)   . (:running   %ts-transition-start))
+    ((:cancelled :start)   . (:running   %ts-transition-start))
+    ((:failed :start)      . (:running   %ts-transition-start))
+    ((:error :start)       . (:running   %ts-transition-start)))
+  "Declarative token-stream state machine: ((from-status event) . (to-status handler-fn)).")
+
+(defun %compute-token-stream-transition (stream-state event &rest args)
+  "Look up (status, event) in transition table, call handler, return slot update plist.
+Pure computation — no mutation."
+  (let* ((status (%with-token-stream-lock (stream-state)
+                   (token-stream-state-status stream-state)))
+         (key (list status event))
+         (entry (assoc key +token-stream-transitions+ :test #'equal)))
+    (unless entry
+      (error "Invalid token-stream transition from ~S on event ~S." status event))
+    (apply (symbol-function (second (cdr entry))) stream-state args)))
+
+(defun %apply-token-stream-updates!-unlocked (stream-state updates)
+  "Apply slot update plist to stream-state. Caller must hold the lock."
+  (loop for (key value) on updates by #'cddr
+        do (case key
+             (:status (setf (token-stream-state-status stream-state) value))
+             (:started-ms (setf (token-stream-state-started-ms stream-state) value))
+             (:ended-ms (setf (token-stream-state-ended-ms stream-state) value))
+             (:token-count (setf (token-stream-state-token-count stream-state) value))
+             (:chunk-count (setf (token-stream-state-chunk-count stream-state) value))
+             (:target-message-index
+              (setf (token-stream-state-target-message-index stream-state) value))
+             (:cancel-requested-p
+              (setf (token-stream-state-cancel-requested-p stream-state) value))
+             (:error-message
+              (setf (token-stream-state-error-message stream-state) value))
+             (:budget-warning-threshold-percent
+              (setf (token-stream-state-budget-warning-threshold-percent stream-state) value))
+             (:budget-abort-threshold-percent
+              (setf (token-stream-state-budget-abort-threshold-percent stream-state) value))
+             (:budget-warning-emitted-p
+              (setf (token-stream-state-budget-warning-emitted-p stream-state) value))
+             (:aborted-p (setf (token-stream-state-aborted-p stream-state) value))
+             (:abort-reason (setf (token-stream-state-abort-reason stream-state) value))
+             (:stream-turn-snapshot
+              (setf (token-stream-state-stream-turn-snapshot stream-state) value))
+             (:worker-thread
+              (setf (token-stream-state-worker-thread stream-state) value))
+             (otherwise nil)))
+  stream-state)
+
+(defun %apply-token-stream-updates! (stream-state updates)
+  "Apply slot update plist to stream-state under lock. Single mutation point."
+  (%with-token-stream-lock (stream-state)
+    (%apply-token-stream-updates!-unlocked stream-state updates))
+  stream-state)
+
+(defun %token-stream-valid-transition-p (from-status event)
+  "Return T if (FROM-STATUS EVENT) is a valid transition."
+  (not (null (assoc (list from-status event) +token-stream-transitions+ :test #'equal))))
+
+;;; --- End transition table ---
+
 (defun %token-stream-reset! (stream-state)
   (%with-token-stream-lock (stream-state)
     (setf (token-stream-state-status stream-state) :idle
@@ -184,18 +313,15 @@ Also checks for 'stuck' streams that have been running too long without progress
   (and (typep stream-state 'token-stream-state)
        (%with-token-stream-lock (stream-state)
          (when (eq (token-stream-state-status stream-state) :running)
-           ;; I369: Check if stream is stuck (running too long without progress)
            (let* ((now (ptui.util.time:monotonic-ms))
                   (started (token-stream-state-started-ms stream-state))
                   (elapsed (- now started)))
              (if (> elapsed +stream-stuck-timeout-ms+)
-                 ;; Stream has been running too long - force it to error state
                  (progn
-                   (setf (token-stream-state-status stream-state) :error
-                         (token-stream-state-error-message stream-state)
-                         (format nil "Stream timed out after ~D ms" elapsed)
-                         (token-stream-state-ended-ms stream-state) now)
-                   nil)  ; Not active anymore
+                   (%apply-token-stream-updates!-unlocked
+                    stream-state
+                    (%ts-transition-timeout stream-state :elapsed elapsed))
+                   nil)
                  t))))))
 
 (defun token-stream-cancel-requested-p (stream-state)
@@ -217,14 +343,9 @@ Returns T if reset was performed, NIL otherwise."
              (started (token-stream-state-started-ms stream-state))
              (elapsed (if (> now started) (- now started) 0)))
         (when (> elapsed +stream-stuck-timeout-ms+)
-          ;; Force reset the stuck stream
-          (setf (token-stream-state-status stream-state) :idle
-                (token-stream-state-error-message stream-state)
-                (format nil "Stream force-reset after being stuck for ~D ms" elapsed)
-                (token-stream-state-ended-ms stream-state) now
-                (token-stream-state-cancel-requested-p stream-state) nil
-                (token-stream-state-aborted-p stream-state) nil
-                (token-stream-state-worker-thread stream-state) nil)
+          (%apply-token-stream-updates!-unlocked
+           stream-state
+           (%ts-transition-force-reset stream-state :elapsed elapsed))
           (ignore-errors
             (ptui.runtime.queue:queue-pop-all (token-stream-state-events stream-state)))
           t)))))
@@ -461,21 +582,15 @@ Returns T if reset was performed, NIL otherwise."
   (check-type stream-state token-stream-state)
   (check-type worker-fn function)
   (%token-stream-reset! stream-state)
-  (%with-token-stream-lock (stream-state)
-    (setf (token-stream-state-status stream-state) :running
-          (token-stream-state-started-ms stream-state) (%token-stream-now-ms)
-          (token-stream-state-budget-warning-threshold-percent stream-state)
-          (%token-stream-normalize-threshold-percent
-           (or budget-warning-threshold-percent
-               (token-stream-state-budget-warning-threshold-percent stream-state)))
-          (token-stream-state-budget-abort-threshold-percent stream-state)
-          (%token-stream-normalize-threshold-percent
-           (or budget-abort-threshold-percent
-               (token-stream-state-budget-abort-threshold-percent stream-state)))
-          (token-stream-state-budget-warning-emitted-p stream-state) nil
-          (token-stream-state-aborted-p stream-state) nil
-          (token-stream-state-abort-reason stream-state) nil
-          (token-stream-state-target-message-index stream-state) target-message-index))
+  (let ((updates (%ts-transition-start stream-state
+                   :target-message-index target-message-index
+                   :budget-warning-threshold-percent
+                   (or budget-warning-threshold-percent
+                       +stream-budget-warning-threshold-percent+)
+                   :budget-abort-threshold-percent
+                   (or budget-abort-threshold-percent
+                       +stream-budget-abort-threshold-percent+))))
+    (%apply-token-stream-updates! stream-state updates))
   #+sb-thread
   (let ((thread
           (sb-thread:make-thread
@@ -495,30 +610,21 @@ Returns T if reset was performed, NIL otherwise."
     (dolist (event events)
       (let ((kind (or (getf event :type) (getf event :kind))))
         (case kind
-          (:text-delta
-           (%with-token-stream-lock (stream-state)
-             (incf (token-stream-state-token-count stream-state)
-                   (or (getf event :token-count) 0))
-             (incf (token-stream-state-chunk-count stream-state))))
-          (:chunk
+          ((:text-delta :chunk)
            (%with-token-stream-lock (stream-state)
              (incf (token-stream-state-token-count stream-state)
                    (or (getf event :token-count) 0))
              (incf (token-stream-state-chunk-count stream-state))))
           (:complete
-           (%with-token-stream-lock (stream-state)
-             (setf (token-stream-state-status stream-state) :completed
-                   (token-stream-state-ended-ms stream-state) (%token-stream-now-ms))))
+           (%apply-token-stream-updates!
+            stream-state (%ts-transition-complete stream-state)))
           (:cancelled
-           (%with-token-stream-lock (stream-state)
-             (setf (token-stream-state-status stream-state) :cancelled
-                   (token-stream-state-ended-ms stream-state) (%token-stream-now-ms))))
+           (%apply-token-stream-updates!
+            stream-state (%ts-transition-cancelled stream-state)))
           (:failed
-           (%with-token-stream-lock (stream-state)
-             (setf (token-stream-state-status stream-state) :failed
-                   (token-stream-state-ended-ms stream-state) (%token-stream-now-ms)
-                   (token-stream-state-error-message stream-state)
-                   (getf event :error-message))))))
+           (%apply-token-stream-updates!
+            stream-state (%ts-transition-failed stream-state
+                           :error-message (getf event :error-message))))))
       (when on-event
         (funcall on-event event)))
     count))

@@ -45,6 +45,7 @@
     (:file "test/provider-test")
     (:file "test/openai-compat-test")
     (:file "test/anthropic-streaming-test")
+    (:file "test/anthropic-block-state-test")
 	    (:file "test/openai-streaming-test")
 	    (:file "test/stream-turn-test")
 	    (:file "test/streaming-step-test")

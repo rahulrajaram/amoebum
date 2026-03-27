@@ -672,11 +672,11 @@
 
 (defun reset-plan-execution-state (&optional (state (current-plan-execution-state)))
   (check-type state plan-execution-state)
+  (let ((transition (%dispatch-plan-execution-transition state :reset)))
+    (%apply-plan-execution-transition! state transition))
+  ;; Also clear fields not covered by the transition table state-updates
   (setf (plan-execution-state-run-id state) nil
-        (plan-execution-state-status state) :idle
         (plan-execution-state-created-at state) nil
-        (plan-execution-state-started-at state) nil
-        (plan-execution-state-finished-at state) nil
         (plan-execution-state-source-plan-exited-at state) nil
         (plan-execution-state-source-plan-exit-reason state) nil
         (plan-execution-state-steps state) '()
@@ -685,9 +685,6 @@
         (plan-execution-state-pending-step-indexes state) '()
         (plan-execution-state-completed-step-indexes state) '()
         (plan-execution-state-continuity-output state) '()
-        (plan-execution-state-current-step-index state) nil
-        (plan-execution-state-failure-reason state) nil
-        (plan-execution-state-abort-reason state) nil
         (plan-execution-state-rollback-baseline-stash state) nil
         (plan-execution-state-rollback-baseline-directory state) nil
         (plan-execution-state-rollback-attempted-p state) nil
@@ -701,44 +698,9 @@
                                     run-id)
   (check-type plan-state plan-mode-state)
   (check-type state plan-execution-state)
-  (let* ((steps (copy-list (or (plan-mode-state-steps plan-state) '())))
-         (ordered-indexes (%plan-step-order steps))
-         (approved-step-indexes (%approved-step-indexes-for-execution plan-state
-                                                                      ordered-indexes)))
-    (unless ordered-indexes
-      (error "No plan steps are available for execution."))
-    (unless approved-step-indexes
-      (error "No approved plan steps are available for execution."))
-    (setf (plan-execution-state-run-id state) (or run-id (%next-plan-execution-run-id))
-          (plan-execution-state-status state) :ready
-          (plan-execution-state-created-at state) (get-universal-time)
-          (plan-execution-state-started-at state) nil
-          (plan-execution-state-finished-at state) nil
-          (plan-execution-state-source-plan-exited-at state) (plan-mode-state-exited-at plan-state)
-          (plan-execution-state-source-plan-exit-reason state)
-          (plan-mode-state-last-exit-reason plan-state)
-          (plan-execution-state-steps state)
-          (loop for step in steps
-                collect (%plan-step->execution-step
-                         step
-                         (member (plan-step-index step)
-                                 approved-step-indexes
-                                 :test #'=)))
-          (plan-execution-state-ordered-step-indexes state) ordered-indexes
-          (plan-execution-state-approved-step-indexes state) (copy-list approved-step-indexes)
-          (plan-execution-state-pending-step-indexes state) (copy-list approved-step-indexes)
-          (plan-execution-state-completed-step-indexes state) '()
-          (plan-execution-state-continuity-output state) '()
-          (plan-execution-state-current-step-index state) nil
-          (plan-execution-state-failure-reason state) nil
-          (plan-execution-state-abort-reason state) nil
-          (plan-execution-state-rollback-baseline-stash state) nil
-          (plan-execution-state-rollback-baseline-directory state) nil
-          (plan-execution-state-rollback-attempted-p state) nil
-          (plan-execution-state-rollback-succeeded-p state) nil
-          (plan-execution-state-rollback-notes state) nil)
-    (%publish-plan-step-status-snapshot state)
-    (prime-plan-execution-continuity state)
+  (let ((transition (%dispatch-plan-execution-transition state :initialize
+                      :plan-state plan-state :run-id run-id)))
+    (%apply-plan-execution-transition! state transition)
     state))
 
 (defun plan-execution-ready-p (&optional (state (current-plan-execution-state)))
@@ -816,62 +778,29 @@
 
 (defun start-plan-execution (&optional (state (current-plan-execution-state)))
   (check-type state plan-execution-state)
-  (let ((status (%normalize-plan-execution-status (plan-execution-state-status state))))
-    (unless (member status '(:ready :paused) :test #'eq)
-      (error "Plan execution cannot start from status ~S." status))
-    (when (null (plan-execution-state-started-at state))
-      (setf (plan-execution-state-started-at state) (get-universal-time)))
-    (setf (plan-execution-state-status state) :running
-          (plan-execution-state-finished-at state) nil)
-    (plan-execution-append-output
-     "LIVE> Execution run started."
-     :phase :execution
-     :style :meta
-     :state state)
-    (%append-plan-execution-progress-output state)
+  (let ((transition (%dispatch-plan-execution-transition state :start)))
+    (%apply-plan-execution-transition! state transition)
     state))
 
 (defun pause-plan-execution (&optional (state (current-plan-execution-state)))
   (check-type state plan-execution-state)
-  (unless (eq :running (%normalize-plan-execution-status (plan-execution-state-status state)))
-    (error "Plan execution can only be paused while running."))
-  (setf (plan-execution-state-status state) :paused)
-  (plan-execution-append-output
-   "LIVE> Execution paused."
-   :phase :execution
-   :style :warning
-   :state state)
-  state)
+  (let ((transition (%dispatch-plan-execution-transition state :pause)))
+    (%apply-plan-execution-transition! state transition)
+    state))
 
 (defun resume-plan-execution (&optional (state (current-plan-execution-state)))
   (check-type state plan-execution-state)
-  (unless (eq :paused (%normalize-plan-execution-status (plan-execution-state-status state)))
-    (error "Plan execution can only be resumed from paused state."))
-  (plan-execution-append-output
-   "LIVE> Execution resumed."
-   :phase :execution
-   :style :meta
-   :state state)
-  (start-plan-execution state))
+  (let ((transition (%dispatch-plan-execution-transition state :resume)))
+    (%apply-plan-execution-transition! state transition)
+    state))
 
 (defun abort-plan-execution (&key
                                (state (current-plan-execution-state))
                                reason)
   (check-type state plan-execution-state)
-  (when (%plan-execution-terminal-status-p (plan-execution-state-status state))
-    (error "Plan execution is already terminal (~S)."
-           (plan-execution-state-status state)))
-  (setf (plan-execution-state-status state) :aborted
-        (plan-execution-state-abort-reason state) reason
-        (plan-execution-state-finished-at state) (get-universal-time))
-  (plan-execution-append-output
-   (format nil "LIVE> Execution aborted (~A)."
-           (%safe-plan-execution-string reason "unspecified"))
-   :phase :execution
-   :severity :warning
-   :style :warning
-   :state state)
-  state)
+  (let ((transition (%dispatch-plan-execution-transition state :abort :reason reason)))
+    (%apply-plan-execution-transition! state transition)
+    state))
 
 (defun plan-execution-next-step-index (&optional (state (current-plan-execution-state)))
   (check-type state plan-execution-state)
@@ -955,6 +884,46 @@
          (%publish-plan-step-status-event state step :status (getf effect :status)))))
     (:progress-output
      (%append-plan-execution-progress-output state))
+    (:initialize
+     ;; Apply the bulk initialization from %pe-transition-initialize
+     (let* ((run-id (getf effect :run-id))
+            (ps (getf effect :plan-state))
+            (steps (getf effect :steps))
+            (ordered-indexes (getf effect :ordered-indexes))
+            (approved-step-indexes (getf effect :approved-step-indexes)))
+       (setf (plan-execution-state-run-id state) run-id
+             (plan-execution-state-created-at state) (get-universal-time)
+             (plan-execution-state-started-at state) nil
+             (plan-execution-state-finished-at state) nil
+             (plan-execution-state-source-plan-exited-at state) (plan-mode-state-exited-at ps)
+             (plan-execution-state-source-plan-exit-reason state)
+             (plan-mode-state-last-exit-reason ps)
+             (plan-execution-state-steps state)
+             (loop for step in steps
+                   collect (%plan-step->execution-step
+                            step
+                            (member (plan-step-index step)
+                                    approved-step-indexes
+                                    :test #'=)))
+             (plan-execution-state-ordered-step-indexes state) ordered-indexes
+             (plan-execution-state-approved-step-indexes state) (copy-list approved-step-indexes)
+             (plan-execution-state-pending-step-indexes state) (copy-list approved-step-indexes)
+             (plan-execution-state-completed-step-indexes state) '()
+             (plan-execution-state-continuity-output state) '()
+             (plan-execution-state-current-step-index state) nil
+             (plan-execution-state-failure-reason state) nil
+             (plan-execution-state-abort-reason state) nil
+             (plan-execution-state-rollback-baseline-stash state) nil
+             (plan-execution-state-rollback-baseline-directory state) nil
+             (plan-execution-state-rollback-attempted-p state) nil
+             (plan-execution-state-rollback-succeeded-p state) nil
+             (plan-execution-state-rollback-notes state) nil)
+       (%publish-plan-step-status-snapshot state)
+       (prime-plan-execution-continuity state)))
+    (:delegate-start
+     ;; Resume delegates to start — apply start transition
+     (let ((transition (%dispatch-plan-execution-transition state :start)))
+       (%apply-plan-execution-transition! state transition)))
     (otherwise nil))
   state)
 
@@ -1126,6 +1095,129 @@
                         :decision-context context-plist)
             :timestamp ts)))))
 
+;;; --- Complete transition table (FP-Refine Phase 1, Target 1) ---
+
+(defun %pe-transition-reset (state &key &allow-other-keys)
+  "Pure transition: reset all slots to idle defaults."
+  (declare (ignore state))
+  (make-plan-execution-transition
+   :state-updates (list :status :idle
+                        :started-at nil
+                        :finished-at nil
+                        :current-step-index nil
+                        :failure-reason nil
+                        :abort-reason nil)))
+
+(defun %pe-transition-initialize (state &key plan-state run-id &allow-other-keys)
+  "Pure transition: initialize from idle to ready with plan steps."
+  (let* ((ps (or plan-state (current-plan-mode-state)))
+         (steps (copy-list (or (plan-mode-state-steps ps) '())))
+         (ordered-indexes (%plan-step-order steps))
+         (approved-step-indexes (%approved-step-indexes-for-execution ps ordered-indexes)))
+    (unless ordered-indexes
+      (error "No plan steps are available for execution."))
+    (unless approved-step-indexes
+      (error "No approved plan steps are available for execution."))
+    (make-plan-execution-transition
+     :state-updates (list :status :ready)
+     :effects (list (list :kind :initialize
+                          :run-id (or run-id (%next-plan-execution-run-id))
+                          :plan-state ps
+                          :steps steps
+                          :ordered-indexes ordered-indexes
+                          :approved-step-indexes approved-step-indexes)))))
+
+(defun %pe-transition-start (state &key &allow-other-keys)
+  "Pure transition: move to running, set started-at if first start."
+  (make-plan-execution-transition
+   :state-updates (append (list :status :running
+                                :finished-at nil)
+                          (unless (plan-execution-state-started-at state)
+                            (list :started-at (get-universal-time))))
+   :effects (list (%make-plan-execution-output-effect
+                   "LIVE> Execution run started."
+                   :phase :execution
+                   :style :meta)
+                  (%make-plan-execution-progress-effect))))
+
+(defun %pe-transition-pause (state &key &allow-other-keys)
+  "Pure transition: move to paused."
+  (declare (ignore state))
+  (make-plan-execution-transition
+   :state-updates (list :status :paused)
+   :effects (list (%make-plan-execution-output-effect
+                   "LIVE> Execution paused."
+                   :phase :execution
+                   :style :warning))))
+
+(defun %pe-transition-resume (state &key &allow-other-keys)
+  "Pure transition: resume delegates to start."
+  (declare (ignore state))
+  (make-plan-execution-transition
+   :state-updates nil
+   :effects (list (%make-plan-execution-output-effect
+                   "LIVE> Execution resumed."
+                   :phase :execution
+                   :style :meta)
+                  (list :kind :delegate-start))))
+
+(defun %pe-transition-abort (state &key reason &allow-other-keys)
+  "Pure transition: move to aborted."
+  (declare (ignore state))
+  (make-plan-execution-transition
+   :state-updates (list :status :aborted
+                        :abort-reason reason
+                        :finished-at (get-universal-time))
+   :effects (list (%make-plan-execution-output-effect
+                   (format nil "LIVE> Execution aborted (~A)."
+                           (%safe-plan-execution-string reason "unspecified"))
+                   :phase :execution
+                   :severity :warning
+                   :style :warning))))
+
+(defparameter +plan-execution-transition-table+
+  '(;; Initialization
+    ((:idle :initialize)       . %pe-transition-initialize)
+    ;; Execution control
+    ((:ready :start)           . %pe-transition-start)
+    ((:paused :start)          . %pe-transition-start)
+    ((:running :pause)         . %pe-transition-pause)
+    ((:paused :resume)         . %pe-transition-resume)
+    ;; Step lifecycle (existing handlers)
+    ((:running :step-running)  . %plan-execution-transition-step-running)
+    ((:running :step-success)  . %plan-execution-transition-step-success)
+    ((:running :step-failure)  . %plan-execution-transition-step-failure)
+    ;; Abort (from any non-terminal)
+    ((:idle :abort)            . %pe-transition-abort)
+    ((:ready :abort)           . %pe-transition-abort)
+    ((:running :abort)         . %pe-transition-abort)
+    ((:paused :abort)          . %pe-transition-abort)
+    ;; Reset (from any)
+    ((:idle :reset)            . %pe-transition-reset)
+    ((:ready :reset)           . %pe-transition-reset)
+    ((:running :reset)         . %pe-transition-reset)
+    ((:paused :reset)          . %pe-transition-reset)
+    ((:completed :reset)       . %pe-transition-reset)
+    ((:failed :reset)          . %pe-transition-reset)
+    ((:aborted :reset)         . %pe-transition-reset))
+  "Declarative plan-execution state machine: ((from-status event) . handler-fn-name).")
+
+(defun %dispatch-plan-execution-transition (state event &rest args)
+  "Look up (status, event) in transition table, call handler, return transition."
+  (check-type state plan-execution-state)
+  (let* ((status (plan-execution-state-status state))
+         (key (list status event))
+         (entry (assoc key +plan-execution-transition-table+ :test #'equal)))
+    (unless entry
+      (error 'simple-error
+             :format-control "Invalid plan-execution transition from ~S on event ~S."
+             :format-arguments (list status event)))
+    (apply (symbol-function (cdr entry)) state args)))
+
+(defun %plan-execution-valid-transition-p (from-status event)
+  "Return T if (FROM-STATUS EVENT) is a valid transition."
+  (not (null (assoc (list from-status event) +plan-execution-transition-table+ :test #'equal))))
+
 (defparameter *plan-execution-transition-handlers*
   (list (cons :step-running #'%plan-execution-transition-step-running)
         (cons :step-success #'%plan-execution-transition-step-success)
@@ -1176,11 +1268,18 @@
   transition)
 
 (defun %evaluate-plan-execution-transition (state event &rest args &key &allow-other-keys)
+  "Evaluate a plan-execution transition. Dispatches through the transition table
+for events registered there, falls back to *plan-execution-transition-handlers*."
   (check-type state plan-execution-state)
-  (let ((handler (cdr (assoc event *plan-execution-transition-handlers* :test #'eq))))
-    (unless handler
-      (error "Unknown plan execution transition event ~S." event))
-    (apply handler state args)))
+  (let* ((status (plan-execution-state-status state))
+         (table-entry (assoc (list status event) +plan-execution-transition-table+ :test #'equal)))
+    (if table-entry
+        (apply (symbol-function (cdr table-entry)) state args)
+        ;; Fallback for backward compat with any external handler registrations
+        (let ((handler (cdr (assoc event *plan-execution-transition-handlers* :test #'eq))))
+          (unless handler
+            (error "Unknown plan execution transition event ~S." event))
+          (apply handler state args)))))
 
 (defun execute-next-approved-plan-step (executor &key (state (current-plan-execution-state)))
   (check-type state plan-execution-state)

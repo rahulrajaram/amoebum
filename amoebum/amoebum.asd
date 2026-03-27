@@ -230,6 +230,8 @@
    (:file "test/extension-cli-test")
    (:file "test/model-routing-test")
    (:file "test/streaming-step-test")
+   (:file "test/token-stream-transition-table-test")
+   (:file "test/plan-execution-transition-table-test")
    (:file "test/budgeting-restart-test")
    (:file "test/codebase-index-test")
    (:file "test/persistence-test")
