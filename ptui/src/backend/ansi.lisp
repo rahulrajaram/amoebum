@@ -35,17 +35,22 @@
                              (ptui.core.color:color->sgr bg :mode mode :fg-or-bg :bg)))))
     (%make-escape "~{~A~^;~}m" codes)))
 
+;;; --- Control-op escape table (DRY source for both %emit-control-op and backend-commit) ---
+
+(defparameter +ansi-control-escapes+
+  `((:clear-screen . ,(%make-escape "2J"))
+    (:clear-eol    . ,(%make-escape "K"))
+    (:hide-cursor  . ,(%make-escape "?25l"))
+    (:show-cursor  . ,(%make-escape "?25h"))
+    (:enter-alt    . ,(%make-escape "?1049h"))
+    (:exit-alt     . ,(%make-escape "?1049l"))))
+
+(defun %control-escape (kind)
+  (or (cdr (assoc kind +ansi-control-escapes+ :test #'eq))
+      (error "Unknown control op ~S." kind)))
+
 (defun %emit-control-op (backend kind)
-  (let ((stdout (backend-stdout backend)))
-    (write-string
-     (ecase kind
-       (:clear-screen (%make-escape "2J"))
-       (:clear-eol (%make-escape "K"))
-       (:hide-cursor (%make-escape "?25l"))
-       (:show-cursor (%make-escape "?25h"))
-       (:enter-alt (%make-escape "?1049h"))
-       (:exit-alt (%make-escape "?1049l")))
-     stdout)))
+  (write-string (%control-escape kind) (backend-stdout backend)))
 
 (defun make-ansi-backend (&key caps (stdout *standard-output*))
   (make-instance 'ansi-backend
@@ -118,6 +123,58 @@
   (declare (ignore backend))
   (ptui.term.tty:tty-get-size))
 
+;;; --- Draw-op handler functions ---
+
+(defun %ansi-emit-move (op emit mode)
+  (declare (ignore mode))
+  (funcall emit (%make-escape "~D;~DH"
+                              (1+ (ptui.render.diff::draw-op-row op))
+                              (1+ (ptui.render.diff::draw-op-col op)))))
+
+(defun %ansi-emit-style (op emit mode)
+  (funcall emit (%style->escape mode
+                                (ptui.render.diff::draw-op-fg op)
+                                (ptui.render.diff::draw-op-bg op)
+                                (ptui.render.diff::draw-op-attrs op))))
+
+(defun %ansi-emit-write (op emit mode)
+  (declare (ignore mode))
+  (funcall emit (ptui.render.diff::draw-op-text op)))
+
+(defun %ansi-emit-paint (op emit mode)
+  (funcall emit (%make-escape "~D;~DH"
+                              (1+ (ptui.render.diff::draw-op-row op))
+                              (1+ (ptui.render.diff::draw-op-col op))))
+  (funcall emit (%style->escape mode
+                                (ptui.render.diff::draw-op-fg op)
+                                (ptui.render.diff::draw-op-bg op)
+                                (ptui.render.diff::draw-op-attrs op)))
+  (funcall emit (ptui.render.diff::draw-op-text op)))
+
+(defun %ansi-emit-full-redraw (op emit mode)
+  (funcall emit (%control-escape :clear-screen))
+  (%ansi-emit-paint op emit mode))
+
+(defun %ansi-emit-control (op emit mode)
+  (declare (ignore mode))
+  (funcall emit (%control-escape (ptui.render.diff::draw-op-kind op))))
+
+;;; --- Draw-op dispatch table ---
+
+(defparameter +ansi-draw-op-handlers+
+  '((:move         . %ansi-emit-move)
+    (:style        . %ansi-emit-style)
+    (:write        . %ansi-emit-write)
+    (:cell         . %ansi-emit-paint)
+    (:text         . %ansi-emit-paint)
+    (:full-redraw  . %ansi-emit-full-redraw)
+    (:clear-screen . %ansi-emit-control)
+    (:clear-eol    . %ansi-emit-control)
+    (:hide-cursor  . %ansi-emit-control)
+    (:show-cursor  . %ansi-emit-control)
+    (:enter-alt    . %ansi-emit-control)
+    (:exit-alt     . %ansi-emit-control)))
+
 (defmethod ptui.backend.protocol:backend-commit ((backend ansi-backend) draw-ops)
   (let ((stdout (backend-stdout backend))
         (mode (backend-color-mode backend))
@@ -125,42 +182,11 @@
     (flet ((emit (string)
              (write-string string stdout)
              (incf bytes (length string))))
-      (flet ((emit-paint-op (op)
-               (emit (%make-escape "~D;~DH"
-                                   (1+ (ptui.render.diff::draw-op-row op))
-                                   (1+ (ptui.render.diff::draw-op-col op))))
-               (emit (%style->escape mode
-                                     (ptui.render.diff::draw-op-fg op)
-                                     (ptui.render.diff::draw-op-bg op)
-                                     (ptui.render.diff::draw-op-attrs op)))
-               (emit (ptui.render.diff::draw-op-text op))))
-        (dolist (op draw-ops)
-          (case (ptui.render.diff::draw-op-kind op)
-            (:move
-             (emit (%make-escape "~D;~DH"
-                                 (1+ (ptui.render.diff::draw-op-row op))
-                                 (1+ (ptui.render.diff::draw-op-col op)))))
-            (:style
-             (emit (%style->escape mode
-                                   (ptui.render.diff::draw-op-fg op)
-                                   (ptui.render.diff::draw-op-bg op)
-                                   (ptui.render.diff::draw-op-attrs op))))
-            (:write
-             (emit (ptui.render.diff::draw-op-text op)))
-            ((:cell :text)
-             (emit-paint-op op))
-            (:full-redraw
-             (emit (%make-escape "2J"))
-             (emit-paint-op op))
-            ((:clear-screen :clear-eol :hide-cursor :show-cursor :enter-alt :exit-alt)
-             (let* ((kind (ptui.render.diff::draw-op-kind op))
-                    (esc (ecase kind
-                           (:clear-screen (%make-escape "2J"))
-                           (:clear-eol (%make-escape "K"))
-                           (:hide-cursor (%make-escape "?25l"))
-                           (:show-cursor (%make-escape "?25h"))
-                           (:enter-alt (%make-escape "?1049h"))
-                           (:exit-alt (%make-escape "?1049l")))))
-               (emit esc))))))
-      (finish-output stdout)
-      bytes)))
+      (dolist (op draw-ops)
+        (let* ((kind (ptui.render.diff::draw-op-kind op))
+               (handler (cdr (assoc kind +ansi-draw-op-handlers+ :test #'eq))))
+          (if handler
+              (funcall handler op #'emit mode)
+              (error "Unknown draw-op kind ~S." kind)))))
+    (finish-output stdout)
+    bytes))

@@ -9,12 +9,14 @@
 (cffi:defcfun ("ptui_signals_read" %ptui-signals-read) :int
   (signo :pointer))
 
+(defparameter +signo-keyword-map+
+  '((2  . :int)
+    (15 . :term)
+    (28 . :winch)))
+
 (defun %signo->keyword (signo)
-  (case signo
-    (2 :int)
-    (15 :term)
-    (28 :winch)
-    (otherwise (intern (format nil "SIG-~D" signo) :keyword))))
+  (or (cdr (assoc signo +signo-keyword-map+ :test #'=))
+      (intern (format nil "SIG-~D" signo) :keyword)))
 
 (defun signals-init ()
   (ptui.term.tty::%ensure-native-loaded)

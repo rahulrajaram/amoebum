@@ -176,33 +176,63 @@
   (multiple-value-bind (rows cols) (charms/ll:get-maxyx charms/ll:*stdscr*)
     (ptui.core.types:make-size (max 0 cols) (max 0 rows))))
 
+;;; --- ncurses draw-op handler functions ---
+
+(defun %ncurses-emit-move (backend op)
+  (declare (ignore backend))
+  (charms/ll:move (ptui.render.diff::draw-op-row op)
+                  (ptui.render.diff::draw-op-col op)))
+
+(defun %ncurses-emit-style (backend op)
+  (%apply-style backend
+                (ptui.render.diff::draw-op-fg op)
+                (ptui.render.diff::draw-op-bg op)
+                (ptui.render.diff::draw-op-attrs op)))
+
+(defun %ncurses-emit-write (backend op)
+  (declare (ignore backend))
+  (charms/ll:addstr (ptui.render.diff::draw-op-text op)))
+
+(defun %ncurses-emit-clear-eol (backend op)
+  (declare (ignore backend op))
+  (charms/ll:clrtoeol))
+
+(defun %ncurses-emit-clear-screen (backend op)
+  (declare (ignore backend op))
+  (charms/ll:clear))
+
+(defun %ncurses-emit-hide-cursor (backend op)
+  (declare (ignore backend op))
+  (ignore-errors (charms/ll:curs-set 0)))
+
+(defun %ncurses-emit-show-cursor (backend op)
+  (declare (ignore backend op))
+  (ignore-errors (charms/ll:curs-set 1)))
+
+(defun %ncurses-emit-noop (backend op)
+  (declare (ignore backend op))
+  nil)
+
+;;; --- ncurses draw-op dispatch table ---
+
+(defparameter +ncurses-draw-op-handlers+
+  '((:move         . %ncurses-emit-move)
+    (:style        . %ncurses-emit-style)
+    (:write        . %ncurses-emit-write)
+    (:clear-eol    . %ncurses-emit-clear-eol)
+    (:clear-screen . %ncurses-emit-clear-screen)
+    (:hide-cursor  . %ncurses-emit-hide-cursor)
+    (:show-cursor  . %ncurses-emit-show-cursor)
+    (:enter-alt    . %ncurses-emit-noop)
+    (:exit-alt     . %ncurses-emit-noop)))
+
 (defmethod ptui.backend.protocol:backend-commit ((backend ncurses-backend) draw-ops)
   (let ((count 0))
     (dolist (op draw-ops)
       (incf count)
-      (case (ptui.render.diff::draw-op-kind op)
-        (:move
-         (charms/ll:move (ptui.render.diff::draw-op-row op)
-                         (ptui.render.diff::draw-op-col op)))
-        (:style
-         (%apply-style backend
-                       (ptui.render.diff::draw-op-fg op)
-                       (ptui.render.diff::draw-op-bg op)
-                       (ptui.render.diff::draw-op-attrs op)))
-        (:write
-         (charms/ll:addstr (ptui.render.diff::draw-op-text op)))
-        (:clear-eol
-         (charms/ll:clrtoeol))
-        (:clear-screen
-         (charms/ll:clear))
-        (:hide-cursor
-         (ignore-errors (charms/ll:curs-set 0)))
-        (:show-cursor
-         (ignore-errors (charms/ll:curs-set 1)))
-        ((:enter-alt :exit-alt)
-         ;; No-op: curses owns the screen state.
-         nil)
-        (otherwise
-         nil)))
+      (let* ((kind (ptui.render.diff::draw-op-kind op))
+             (handler (cdr (assoc kind +ncurses-draw-op-handlers+ :test #'eq))))
+        (when handler
+          (funcall handler backend op))))
     (charms/ll:refresh)
     count))
