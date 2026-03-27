@@ -8,6 +8,69 @@ This repo contains an experimental Common Lisp terminal UI kernel ("PTUI") being
 
 Licensing: see `LICENSE`.
 
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                     AMOEBUM (app)                        │
+│  chat UI · commands · skills · tools · permissions       │
+│  plan-mode · agents · notifications · checkpoint         │
+│  MCP server · LSP client · extensions · profiler         │
+├──────────────┬───────────────────┬───────────────────────┤
+│  PSEUDOPOD   │    SW4RM-SDK      │   PTUI/panel          │
+│  (LLM client)│  (agent coord)    │   PTUI/components     │
+│              │                   │   PTUI/views          │
+│  providers:  │  local-router     │                       │
+│   anthropic  │  local-registry   │   defpanel macro      │
+│   kimi       │  workflow-engine  │   streaming-widget    │
+│   openai-    │  budget tracker   │   prompt-box          │
+│   compat     │  HITL gate        │   fuzzy-picker        │
+│              │  git-worktree     │   plan-presentation   │
+│  router      │  voting/consensus │                       │
+│  stream-turn │  envelope (3-ID)  │                       │
+│  SSE parser  │  state-machine    │                       │
+│  tooling:    │  secrets          │                       │
+│   file-read  │  audit trail      │                       │
+│   run-cmd    │  persistence      │                       │
+│   web-fetch  │                   │                       │
+│   search     │                   │                       │
+├──────────────┴───────────────────┴───────────────────────┤
+│                   PTUI (UI framework)                    │
+│  app shell ── defapp macro, lifecycle                    │
+│  hooks: use-state, use-effect, use-memo                  │
+│  widgets: Text, Box, Stack, Scroll, defwidget            │
+│  ui runtime: reconciliation, focus, virtual tree         │
+│  layout: constraints solver, layout protocol             │
+│  engine loop: event bus, scheduler, queue                │
+│  render: cell buffer, frame diff                         │
+│  text: grapheme clusters, wcwidth, line wrap             │
+│  backend: ANSI escape codes (or ncurses)                 │
+│  core: types (Cell, Attrs, Rect), color, theme           │
+│  term: TTY raw mode, VT100 input parser, signals         │
+│  caps: terminal capability detection                     │
+├──────────────────────────────────────────────────────────┤
+│               Quicklisp / ASDF libraries                 │
+│  dexador  jonathan  usocket  babel  bordeaux-threads     │
+│  cl-ppcre  cl-yaml  ironclad  alexandria  local-time     │
+├──────────────────────────────────────────────────────────┤
+│                    CFFI ←→ ptui_native.so                │
+│  ptui_tty_enable_raw/restore  ptui_tty_get_winsz        │
+│  ptui_fd_set_nonblocking/read  ptui_signals_*            │
+├──────────────────────────────────────────────────────────┤
+│              SBCL runtime / UIOP                         │
+├──────────────────────────────────────────────────────────┤
+│                 POSIX / Linux kernel                     │
+│  termios  ioctl  fcntl  signal  fork/exec  pipes         │
+└──────────────────────────────────────────────────────────┘
+```
+
+Four ASDF systems compose bottom-up:
+
+1. **PTUI** — terminal UI framework. Text rendering pipeline is 100% pure Lisp. Only FFI: a thin C shim (`ptui/native/ptui_native.c`) for raw TTY mode and signals via CFFI.
+2. **Pseudopod** — multi-provider LLM client (Anthropic, Kimi, OpenAI-compatible). Streaming SSE, tool registry, cost-based routing.
+3. **SW4RM-SDK** — local-mode agent coordination. Message routing, budget tracking, DAG workflows, multi-agent voting. No gRPC (deliberate fork from sigagent).
+4. **Amoebum** — the application. Wires chat UI, tool execution, permissions, planning, agents, and extensions together.
+
 ## PTUI
 
 See `ptui/README.md` for system/module layout and how to load/run.
