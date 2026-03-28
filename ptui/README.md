@@ -25,7 +25,7 @@ Defined in `ptui/ptui.asd`:
 | `ptui/backend` | Backend protocol + ANSI backend (ncurses optional) | none |
 | `ptui/engine` | Engine loop (`ptui.engine.loop:run`) | none |
 | `ptui` | Umbrella system (full kernel) | `cffi`, `bordeaux-threads` |
-| `ptui/examples` | Example app(s) | `cffi`, `bordeaux-threads` |
+| `ptui/examples` | Example demos and app(s) | `cffi`, `bordeaux-threads` |
 | `ptui/standalone` | Monolithic kernel system (single system, same code) | `cffi`, `bordeaux-threads` |
 | `ptui/components-standalone` | Components layer on top of `ptui/standalone` | `cffi`, `bordeaux-threads` |
 | `ptui/examples-standalone` | Example app(s) against `ptui/standalone` | `cffi`, `bordeaux-threads` |
@@ -77,18 +77,25 @@ PTUI uses a local Quicklisp install under `ptui/.tools/` via:
 
 ## Smoke: Load Every System Independently
 
-This is the main modularity check:
+This is the main modularity check. It loads the modular and standalone example systems, so it catches both the themed demos and the low-level basics examples:
 
 ```bash
 ./ptui/bin/check-systems.sh
 ```
 
-## Build + Run The Example TUI
+## Build + Run The Example TUIs
 
 ```bash
 ./ptui/bin/build.sh
 PTUI_EXIT_AFTER_MS=5000 ./ptui/dist/metrics-dashboard
+PTUI_EXIT_AFTER_MS=5000 ./ptui/dist/atop-dashboard
 ```
+
+Minimal kernel demos (loaded via `ptui/examples` and `ptui/examples-standalone`):
+
+- `ptui.examples.buffer-basics:main` for direct cell-buffer drawing, fill-rect, and border primitives
+- `ptui.examples.text-layout-basics:main` for width-safe text wrapping into a bordered region
+- `ptui.examples.event-handling-basics:main` for a tiny event loop with `:up`, `:down`, `r`, and default quit handling
 
 Additional themed examples (loaded via `ptui/examples`):
 
@@ -96,7 +103,29 @@ Additional themed examples (loaded via `ptui/examples`):
 - `ptui.examples.release-tracker:run-release-tracker`
 - `ptui.examples.focus-console:run-focus-console`
 
-Example invocation:
+Minimal example invocations:
+
+```bash
+sbcl --load ptui/.tools/quicklisp/setup.lisp \
+  --eval '(pushnew (truename "./ptui/") asdf:*central-registry*)' \
+  --eval '(asdf:load-system :ptui/examples)' \
+  --eval '(ptui.examples.buffer-basics:main)' \
+  --quit
+
+sbcl --load ptui/.tools/quicklisp/setup.lisp \
+  --eval '(pushnew (truename "./ptui/") asdf:*central-registry*)' \
+  --eval '(asdf:load-system :ptui/examples)' \
+  --eval '(ptui.examples.text-layout-basics:main)' \
+  --quit
+
+sbcl --load ptui/.tools/quicklisp/setup.lisp \
+  --eval '(pushnew (truename "./ptui/") asdf:*central-registry*)' \
+  --eval '(asdf:load-system :ptui/examples)' \
+  --eval '(ptui.examples.event-handling-basics:main)' \
+  --quit
+```
+
+Themed example invocation:
 
 ```bash
 sbcl --load ptui/.tools/quicklisp/setup.lisp \
@@ -213,9 +242,18 @@ Useful after modifying `*.asd` files or adding a new sub-system:
 ./ptui/bin/check-systems.sh
 ```
 
+### Smoke-test the minimal example entry points
+
+Useful after changing `ptui/examples/*.lisp` or the example system wiring:
+
+```bash
+./ptui/bin/smoke-examples.sh
+```
+
 ### Run kernel unit tests
 
 ```bash
+make test-ptui
 ./ptui/bin/test.sh
 ```
 

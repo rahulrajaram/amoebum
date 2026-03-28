@@ -4,11 +4,12 @@
 # Runs through the required verification steps before tagging a PTUI release:
 #   1. Build the binary
 #   2. Run ASDF system smoke tests (check-systems)
-#   3. Run kernel unit tests (test.sh)
-#   4. Run the compliance gate (compliance-gate.sh)
-#   5. Run the TUI performance regression test (if tui-perf-test.sh exists)
-#   6. Verify required documentation files are present
-#   7. Print a summary with PASS/FAIL per step
+#   3. Run minimal example smoke tests (smoke-examples.sh)
+#   4. Run kernel unit tests (test.sh)
+#   5. Run the compliance gate (compliance-gate.sh)
+#   6. Run the TUI performance regression test (if tui-perf-test.sh exists)
+#   7. Verify required documentation files are present
+#   8. Print a summary with PASS/FAIL per step
 #
 # Usage:
 #   ./ptui/bin/release-checklist.sh
@@ -116,10 +117,23 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 4: Kernel unit tests (test.sh)
+# Step 4: Minimal example smoke tests (smoke-examples.sh)
 # ---------------------------------------------------------------------------
 
-header "Step 4: Kernel unit tests (test.sh)"
+header "Step 4: Minimal example smoke tests (smoke-examples.sh)"
+if (cd "${PTUI_DIR}" && ./bin/smoke-examples.sh); then
+    ok "Minimal examples smoke passed"
+    record "Minimal example smoke (smoke-examples.sh)" "PASS"
+else
+    fail "Minimal examples smoke failed"
+    record "Minimal example smoke (smoke-examples.sh)" "FAIL"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 5: Kernel unit tests (test.sh)
+# ---------------------------------------------------------------------------
+
+header "Step 5: Kernel unit tests (test.sh)"
 if (cd "${PTUI_DIR}" && ./bin/test.sh); then
     ok "Kernel unit tests passed"
     record "Kernel unit tests (test.sh)" "PASS"
@@ -129,10 +143,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 5: Compliance gate
+# Step 6: Compliance gate
 # ---------------------------------------------------------------------------
 
-header "Step 5: Compliance gate (compliance-gate.sh)"
+header "Step 6: Compliance gate (compliance-gate.sh)"
 if (cd "${PTUI_DIR}" && ./bin/compliance-gate.sh); then
     ok "Compliance gate passed"
     record "Compliance gate (compliance-gate.sh)" "PASS"
@@ -142,10 +156,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 6: TUI performance regression test
+# Step 7: TUI performance regression test
 # ---------------------------------------------------------------------------
 
-header "Step 6: TUI performance regression test"
+header "Step 7: TUI performance regression test"
 PERF_SCRIPT="${REPO_DIR}/bin/tui-perf-test.sh"
 if "${SKIP_PERF}"; then
     skip "Skipped (--skip-perf)"
@@ -168,10 +182,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 7: Required documentation check
+# Step 8: Required documentation check
 # ---------------------------------------------------------------------------
 
-header "Step 7: Required documentation"
+header "Step 8: Required documentation"
 
 REQUIRED_DOCS=(
     "README.md"
@@ -180,6 +194,8 @@ REQUIRED_DOCS=(
     "docs/defpanel-guide.md"
     "docs/kernel-vs-app.md"
     "docs/benchmark-story.md"
+    "docs/kernel-audit.md"
+    "docs/packet-manual-test-playbook.md"
     "docs/tui-taxonomy.md"
     "docs/positioning.md"
 )

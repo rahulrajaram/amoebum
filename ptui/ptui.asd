@@ -308,7 +308,10 @@
   :depends-on ("ptui" "ptui/components")
   :serial t
   :components
-  ((:file "examples/metrics-dashboard")
+  ((:file "examples/buffer-basics")
+   (:file "examples/text-layout-basics")
+   (:file "examples/event-handling-basics")
+   (:file "examples/metrics-dashboard")
    (:file "examples/atop-dashboard")
    (:file "examples/panel-demo")
    (:file "examples/ops-wallboard")
@@ -322,7 +325,10 @@
   :depends-on ("ptui/components-standalone")
   :serial t
   :components
-  ((:file "examples/metrics-dashboard")
+  ((:file "examples/buffer-basics")
+   (:file "examples/text-layout-basics")
+   (:file "examples/event-handling-basics")
+   (:file "examples/metrics-dashboard")
    (:file "examples/atop-dashboard")
    (:file "examples/panel-demo")))
 
@@ -358,8 +364,13 @@
    (:file "test/event-routing-test")
    (:file "test/constraints-test")
    (:file "test/views-test")
+   (:file "test/core-contract-test")
+   (:file "test/util-contract-test")
+   (:file "test/lower-runtime-contract-test")
    (:file "test/render-test")
+   (:file "test/render-contract-test")
    (:file "test/text-test")
+   (:file "test/text-contract-test")
    (:file "test/scroll-util-test")
    (:file "test/backend-test")
    (:file "test/input-test")

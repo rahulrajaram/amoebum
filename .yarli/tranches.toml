@@ -621,37 +621,37 @@ group = "next-todos"
 [[tranches]]
 key = "NXT-096"
 summary = "Capture reproducible screenshots for `metrics-dashboard`, `ops-wallboard`, and `release-tracker`."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-097"
 summary = "Write `ptui/docs/benchmark-story.md` with commands, artifacts, and reproducible performance claims."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-098"
 summary = "Add a kernel-vs-app diagram under `ptui/docs/` and link it from `ptui/README.md`."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-099"
 summary = "Expand `ptui/README.md` with standalone packaging, example workflows, and release commands."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-100"
 summary = "Add a PTUI release checklist script covering build, smoke, compliance, and perf evidence."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-101"
 summary = "Re-run `make build`, `make test-amoebum`, and `bin/tui-perf-test.sh --prompts 3` after each tranche."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
@@ -717,7 +717,7 @@ group = "next-todos"
 [[tranches]]
 key = "NXT-112"
 summary = "Run `make build`, `make test-amoebum`, and `bin/tui-perf-test.sh --prompts 3`; archive artifacts and compare deltas."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
@@ -928,4 +928,76 @@ group = "next-todos"
 key = "NXT-147"
 summary = "Select the next scoped tranche wave and launch yarli run --fresh-from-tranches from a green baseline."
 status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-148"
+summary = "Push 16 squashed commits to origin/master"
+status = "incomplete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-149"
+summary = "FP-refine streaming-protocol: stream-event reducer + provider normalizers (pseudopod)"
+status = "incomplete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-150"
+summary = "FP-refine swarm-state: layered domain packages + transition kernels (sw4rm-sdk)"
+status = "incomplete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-151"
+summary = "FP-refine amoebum-chat-stream: chat-turn-snapshot + stream reducers"
+status = "incomplete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-152"
+summary = "FP-refine amoebum-policy-kernels: rule tables + replayable reducers"
+status = "incomplete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-153"
+summary = "FP-refine ptui-runtime: loop-snapshot + runtime-snapshot reducers"
+status = "incomplete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-154"
+summary = "Watch/Nudge consumer: polling daemon reading registrations, firing events"
+status = "incomplete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-155"
+summary = "PTUI layout system: cross-axis sizing, reflow, and theme evaluation iteration"
+status = "incomplete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-156"
+summary = "Add `ptui/test/util-contract-test.lisp` covering `util/log.lisp`, `util/time.lisp`, and engine debug-stat logging."
+status = "incomplete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-157"
+summary = "Add `ptui/test/lower-runtime-contract-test.lisp` for `caps`, `signals`, `event-bus`, and `backend/protocol` behavior."
+status = "incomplete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-158"
+summary = "Add minimal PTUI examples for buffer rendering, text layout, and event handling in `ptui/examples/`."
+status = "incomplete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-159"
+summary = "Audit `ptui/README.md` and `ptui/docs/` against current architecture, examples, and 36-suite test commands."
+status = "incomplete"
 group = "next-todos"

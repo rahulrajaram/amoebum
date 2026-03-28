@@ -19,6 +19,7 @@ Run this once before fixture checks:
 
 ```bash
 ./ptui/bin/check-systems.sh
+./ptui/bin/smoke-examples.sh
 ./ptui/bin/build.sh
 ```
 
@@ -33,6 +34,7 @@ Run this once before fixture checks:
 Use this as a release gate during packet-schema and translator implementation.
 
 1. Baseline smoke still passes:
+   - `./ptui/bin/smoke-examples.sh`
    - `PTUI_EXIT_AFTER_MS=500 ./ptui/dist/metrics-dashboard`
 2. G1 loads/runs cleanly:
    - Command exits `0` with no `definition-loader-error`.

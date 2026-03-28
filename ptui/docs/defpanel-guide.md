@@ -12,6 +12,8 @@ This tutorial is for `defpanel` consumers and uses concrete snippets from:
 
 For `:context` and composition (`embed-panel`, `panel-slot`), current canonical examples live in `ptui/test/panel-test.lisp`.
 
+For lower-level PTUI demos that do not use `defpanel`, see `ptui/examples/buffer-basics.lisp`, `ptui/examples/text-layout-basics.lisp`, and `ptui/examples/event-handling-basics.lisp`.
+
 ## 1) Quick Start (counter-panel from panel-demo.lisp)
 
 Start with the minimal end-to-end example in `ptui/examples/panel-demo.lisp`:

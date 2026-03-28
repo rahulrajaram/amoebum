@@ -7,6 +7,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 print_commands() {
   cat <<'EOF'
 ./ptui/bin/check-systems.sh
+./ptui/bin/smoke-examples.sh
 ./ptui/bin/test.sh
 ./ptui/bin/build.sh
 PTUI_EXIT_AFTER_MS=500 ./ptui/dist/metrics-dashboard
