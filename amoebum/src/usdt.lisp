@@ -522,8 +522,9 @@
      events)))
 
 (defun usdt-disabled-overhead-percent (&key (iterations 120000)
-                                          (operations-per-iteration 64)
-                                          (probe-every 256))
+                                          (operations-per-iteration 256)
+                                          (probe-every 256)
+                                          (rounds 5))
   (let ((saved-enabled *usdt-probes-enabled-p*))
     (unwind-protect
         (progn
@@ -535,6 +536,7 @@
                      (let ((start (get-internal-run-time))
                            (acc 0)
                            (sink 0))
+                       (declare (ignorable sink))
                        (dotimes (idx n)
                          (dotimes (step operations-per-iteration)
                            (setf acc (logand #xfffffff
@@ -544,10 +546,30 @@
                          (when (or (<= probe-every 1)
                                    (zerop (mod idx probe-every)))
                            (funcall probe-fn "bench" nil)))
-                        (setf sink acc)
-                        (- (get-internal-run-time) start))))
-            (let* ((baseline (timed-workload iterations #'%noop-probe))
-                   (instrumented (timed-workload iterations #'usdt-probe-tool-enter))
-                   (delta (max 0 (- instrumented baseline))))
-              (* 100.0d0 (/ delta (max 1 baseline))))))
+                       (setf sink acc)
+                       (- (get-internal-run-time) start)))
+                   (round-overhead-percent (baseline instrumented)
+                     (let ((delta (max 0 (- instrumented baseline))))
+                       (* 100.0d0 (/ delta (max 1 baseline))))))
+            ;; Warm up both branches once so the disabled-probe benchmark is less
+            ;; sensitive to first-call effects and transient scheduler noise.
+            (timed-workload (max 1024 (truncate iterations 16)) #'%noop-probe)
+            (timed-workload (max 1024 (truncate iterations 16)) #'usdt-probe-tool-enter)
+            (let ((samples '()))
+              (dotimes (round (max 1 rounds))
+                (let* ((instrument-first-p (oddp round))
+                       (first-run (timed-workload
+                                   iterations
+                                   (if instrument-first-p
+                                       #'usdt-probe-tool-enter
+                                       #'%noop-probe)))
+                       (second-run (timed-workload
+                                    iterations
+                                    (if instrument-first-p
+                                        #'%noop-probe
+                                        #'usdt-probe-tool-enter)))
+                       (baseline (if instrument-first-p second-run first-run))
+                       (instrumented (if instrument-first-p first-run second-run)))
+                  (push (round-overhead-percent baseline instrumented) samples)))
+              (reduce #'min samples))))
       (setf *usdt-probes-enabled-p* saved-enabled))))

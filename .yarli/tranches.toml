@@ -981,23 +981,83 @@ group = "next-todos"
 [[tranches]]
 key = "NXT-156"
 summary = "Add `ptui/test/util-contract-test.lisp` covering `util/log.lisp`, `util/time.lisp`, and engine debug-stat logging."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-157"
 summary = "Add `ptui/test/lower-runtime-contract-test.lisp` for `caps`, `signals`, `event-bus`, and `backend/protocol` behavior."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-158"
 summary = "Add minimal PTUI examples for buffer rendering, text layout, and event handling in `ptui/examples/`."
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-159"
-summary = "Audit `ptui/README.md` and `ptui/docs/` against current architecture, examples, and 36-suite test commands."
-status = "incomplete"
+summary = "Audit `ptui/README.md` and selected PTUI docs against current architecture, examples, and verification commands."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-160"
+summary = "Sync `PROMPT.md` current focus and verification notes for completed `NXT-156` through `NXT-159`."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-161"
+summary = "Add `ptui/bin/smoke-examples.sh` covering `buffer-basics`, `text-layout-basics`, and `event-handling-basics`."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-162"
+summary = "Wire `ptui/bin/smoke-examples.sh` into `ptui/bin/release-checklist.sh` and `bin/yarli-run-verification.sh`."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-163"
+summary = "Audit `ptui/docs/kernel-audit.md` and `packet-manual-test-playbook.md` for post-`NXT-159` example and verification parity."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-164"
+summary = "Commit the PTUI hardening batch after reviewing staged `NXT-156` through `NXT-159` files and verification notes."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-165"
+summary = "Trace `I23-I82-SUBSYSTEM-SMOKES-PASS` and capture the exact failing subsystem smoke command from `make test-amoebum`."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-166"
+summary = "Fix the failing Amoebum subsystem smoke and rerun `make test-amoebum` until `tmp/amoebum-test-failures.log` is empty."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-167"
+summary = "Re-run `./ptui/bin/release-checklist.sh --skip-perf` and confirm all non-perf steps pass."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-168"
+summary = "Decide whether to keep `.yarli/tranches.toml` local-only or commit completed `NXT-160` through `NXT-164` statuses."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-169"
+summary = "Resume `NXT-146` by squashing the March 25 Yarli tranche stack into human-readable commits."
+status = "complete"
 group = "next-todos"

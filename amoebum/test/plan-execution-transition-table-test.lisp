@@ -171,6 +171,22 @@
                        :reason "emergency")))
     (is (eq :aborted (getf (amoebum::plan-execution-transition-state-updates transition) :status)))))
 
+(test initialize-after-terminal-state-revalidates-approved-steps
+  (let* ((state (amoebum::%make-plan-execution-state :status :failed))
+         (step (amoebum::make-plan-step :index 1
+                                        :description "Re-run the approved step"))
+         (plan-state (amoebum::%make-plan-mode-state :steps (list step)
+                                                     :approved-step-indexes '(1))))
+    (let ((execution-state (amoebum::initialize-plan-execution
+                            :plan-state plan-state
+                            :state state
+                            :run-id "smoke-reinit")))
+      (is (eq :ready (amoebum::plan-execution-state-status execution-state)))
+      (is (equal '(1) (amoebum::plan-execution-state-approved-step-indexes execution-state))))
+    (setf (amoebum::plan-mode-state-approved-step-indexes plan-state) '())
+    (signals error
+      (amoebum::initialize-plan-execution :plan-state plan-state :state state))))
+
 ;;; --- Full lifecycle: reset → ready → running → paused → running → completed ---
 
 (test pe-full-lifecycle-via-transitions

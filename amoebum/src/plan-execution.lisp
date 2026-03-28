@@ -698,6 +698,9 @@
                                     run-id)
   (check-type plan-state plan-mode-state)
   (check-type state plan-execution-state)
+  (when (%plan-execution-terminal-status-p
+         (plan-execution-state-status state))
+    (reset-plan-execution-state state))
   (let ((transition (%dispatch-plan-execution-transition state :initialize
                       :plan-state plan-state :run-id run-id)))
     (%apply-plan-execution-transition! state transition)
