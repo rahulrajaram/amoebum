@@ -1,0 +1,14 @@
+FOCUS CONSOLE :: quiet-room | break window
+elapsed: 17 min
+   Draft rollout memo
+>> Review benchmark deltas
+   Trim cold-start latency budget
+   Prepare release notes
+
+
+
+
+
+
+
+tasks:4       keys: up/down, enter    mode:break

@@ -7,9 +7,13 @@
 #   3. Run minimal example smoke tests (smoke-examples.sh)
 #   4. Run kernel unit tests (test.sh)
 #   5. Run the compliance gate (compliance-gate.sh)
-#   6. Run the TUI performance regression test (if tui-perf-test.sh exists)
-#   7. Verify required documentation files are present
-#   8. Print a summary with PASS/FAIL per step
+#   6. Run tmux layout regression baselines
+#   7. Run tmux behavior regression baselines
+#   8. Run tmux ANSI/SGR regression assertions
+#   9. Run screenshot-backed visual baselines
+#   10. Run the TUI performance regression test (if tui-perf-test.sh exists)
+#   11. Verify required documentation files are present
+#   12. Print a summary with PASS/FAIL per step
 #
 # Usage:
 #   ./ptui/bin/release-checklist.sh
@@ -156,10 +160,62 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 7: TUI performance regression test
+# Step 7: tmux layout regression
 # ---------------------------------------------------------------------------
 
-header "Step 7: TUI performance regression test"
+header "Step 7: tmux layout regression (tmux-layout-regression.sh)"
+if (cd "${PTUI_DIR}" && ./bin/tmux-layout-regression.sh); then
+    ok "tmux layout regression passed"
+    record "tmux layout regression (tmux-layout-regression.sh)" "PASS"
+else
+    fail "tmux layout regression failed"
+    record "tmux layout regression (tmux-layout-regression.sh)" "FAIL"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 8: tmux behavior regression
+# ---------------------------------------------------------------------------
+
+header "Step 8: tmux behavior regression (tmux-behavior-regression.sh)"
+if (cd "${PTUI_DIR}" && ./bin/tmux-behavior-regression.sh); then
+    ok "tmux behavior regression passed"
+    record "tmux behavior regression (tmux-behavior-regression.sh)" "PASS"
+else
+    fail "tmux behavior regression failed"
+    record "tmux behavior regression (tmux-behavior-regression.sh)" "FAIL"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 9: tmux ANSI/SGR regression
+# ---------------------------------------------------------------------------
+
+header "Step 9: tmux ANSI/SGR regression (tmux-ansi-regression.sh)"
+if (cd "${PTUI_DIR}" && ./bin/tmux-ansi-regression.sh); then
+    ok "tmux ANSI/SGR regression passed"
+    record "tmux ANSI/SGR regression (tmux-ansi-regression.sh)" "PASS"
+else
+    fail "tmux ANSI/SGR regression failed"
+    record "tmux ANSI/SGR regression (tmux-ansi-regression.sh)" "FAIL"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 10: screenshot-backed visual baselines
+# ---------------------------------------------------------------------------
+
+header "Step 10: screenshot-backed visual baselines (capture-screenshots.sh)"
+if (cd "${PTUI_DIR}" && ./bin/capture-screenshots.sh); then
+    ok "Screenshot-backed visual baselines passed"
+    record "Screenshot-backed visual baselines (capture-screenshots.sh)" "PASS"
+else
+    fail "Screenshot-backed visual baselines failed"
+    record "Screenshot-backed visual baselines (capture-screenshots.sh)" "FAIL"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 11: TUI performance regression test
+# ---------------------------------------------------------------------------
+
+header "Step 11: TUI performance regression test"
 PERF_SCRIPT="${REPO_DIR}/bin/tui-perf-test.sh"
 if "${SKIP_PERF}"; then
     skip "Skipped (--skip-perf)"
@@ -182,10 +238,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 8: Required documentation check
+# Step 12: Required documentation check
 # ---------------------------------------------------------------------------
 
-header "Step 8: Required documentation"
+header "Step 12: Required documentation"
 
 REQUIRED_DOCS=(
     "README.md"
@@ -193,6 +249,7 @@ REQUIRED_DOCS=(
     "docs/text-layout-api.md"
     "docs/defpanel-guide.md"
     "docs/kernel-vs-app.md"
+    "docs/testing-strategy.md"
     "docs/benchmark-story.md"
     "docs/kernel-audit.md"
     "docs/packet-manual-test-playbook.md"

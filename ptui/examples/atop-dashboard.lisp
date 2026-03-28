@@ -1,6 +1,7 @@
 (defpackage :ptui.examples.atop-dashboard
   (:use :cl)
   (:export #:main
+           #:run-behavior-demo
            #:collect-host-snapshot
            #:build-atop-model
            #:make-atop-dashboard-state))
@@ -1236,6 +1237,57 @@
         (when (eql key :enter)
           (%toggle-process-detail dashboard-state))))
     dashboard-state))
+
+(defun %make-behavior-demo-state ()
+  (make-atop-dashboard-state
+   :snapshot (make-host-snapshot :timestamp-ms 4000)
+   :model (make-atop-model
+           :cpu (make-cpu-model :usage-pct 61.0 :user-pct 41.0
+                                :system-pct 20.0 :idle-pct 39.0)
+           :memory (make-memory-model :total-kb 12288 :used-kb 8192
+                                      :available-kb 4096 :used-pct 66.7
+                                      :swap-total-kb 4096 :swap-used-kb 1024)
+           :filesystem (make-filesystem-model :mount-count 4 :rw-mount-count 3
+                                              :root-device "/dev/nvme0n1p2"
+                                              :root-fstype "ext4")
+           :disk (make-disk-model :read-iops 42.0 :write-iops 17.0
+                                  :read-kib-s 160.0 :write-kib-s 48.0
+                                  :busy-pct 23.0 :rotational-devices 0
+                                  :ssd-devices 2)
+           :network (make-network-model :rx-kib-s 18.0 :tx-kib-s 11.0
+                                        :rx-pps 120.0 :tx-pps 88.0
+                                        :iface-count 2 :fastest-link-mbps 1000)
+           :tcpip (make-tcpip-model :tcp-retrans-pct 2.5 :tcp-in-segs 3200
+                                    :tcp-out-segs 2700 :tcp-active-opens 21
+                                    :tcp-passive-opens 9 :tcp-curr-estab 37
+                                    :ip-in-receives 12000 :ip-in-delivers 11940
+                                    :ip-out-requests 11810)
+           :processes (list
+                       (make-process-model :pid 7 :user "root" :state "S"
+                                           :cpu-pct 4.0 :mem-pct 0.5 :rss-kb 256
+                                           :command "systemd")
+                       (make-process-model :pid 42 :user "alice" :state "R"
+                                           :cpu-pct 31.0 :mem-pct 11.5 :rss-kb 8192
+                                           :command "python pipeline.py")
+                       (make-process-model :pid 88 :user "postgres" :state "S"
+                                           :cpu-pct 12.0 :mem-pct 8.0 :rss-kb 4096
+                                           :command "postgres writer")))
+   :status-line "fixture ready"
+   :refresh-ms 1500
+   :last-refresh-ms 4000
+   :collect-fn (lambda ()
+                 (error "behavior demo fixture should not refresh live data"))
+   :model-fn (lambda (previous current)
+               (declare (ignore previous current))
+               (error "behavior demo fixture should not rebuild live data"))
+   :now-ms-fn (lambda () 4000)))
+
+(defun run-behavior-demo ()
+  (ptui.engine.loop:run #'%render-atop-dashboard
+                        :backend :auto
+                        :fps 20
+                        :initial-state (%make-behavior-demo-state)
+                        :on-event #'%on-atop-event))
 
 (defun main (&rest argv)
   (declare (ignore argv))

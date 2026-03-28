@@ -1091,3 +1091,33 @@ key = "NXT-174"
 summary = "Historical Yarli launch follow-up superseded by the user-directed workflow: Yarli remains the durable queue while Codex executes confirmed tranches directly."
 status = "complete"
 group = "next-todos"
+
+[[tranches]]
+key = "NXT-175"
+summary = "Add a PTUI tmux layout-matrix harness with deterministic examples, wide/narrow baselines, and live-resize regression coverage."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-176"
+summary = "Add PTUI behavior scripting for focus, filters, help/detail overlays, and resize-stable keyboard flows."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-177"
+summary = "Add raw ANSI/SGR capture utilities and theme assertions so PTUI color and emphasis regressions fail outside plain-text tmux checks."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-178"
+summary = "Add screenshot-backed PTUI visual baselines for canonical layouts/themes and make capture-screenshots produce real artifacts."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-179"
+summary = "Wire the new PTUI layout, behavior, ANSI, and visual harnesses into release verification and docs."
+status = "complete"
+group = "next-todos"

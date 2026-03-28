@@ -263,14 +263,26 @@ make test-ptui
 ./ptui/bin/compliance-gate.sh
 ```
 
-### Capture reproducible demo screenshots
+### Run PTUI terminal regression harnesses
 
 ```bash
-# Text-only snapshots (always works, no display required)
-./ptui/bin/capture-screenshots.sh --all --text-only
+./ptui/bin/tmux-layout-regression.sh
+./ptui/bin/tmux-behavior-regression.sh
+./ptui/bin/tmux-ansi-regression.sh
+./ptui/bin/capture-screenshots.sh
+```
 
-# Full-color screenshots (requires a terminal emulator or Xvfb — see script for options)
-./ptui/bin/capture-screenshots.sh --all
+Each harness uses tracked references under `ptui/test/snapshots/` and should be
+run one at a time when working with tmux-backed PTUI demos.
+
+### Update screenshot-backed visual baselines
+
+```bash
+# Refresh one canonical case
+./ptui/bin/capture-screenshots.sh --update --demo metrics-dashboard
+
+# Re-check all tracked visual references
+./ptui/bin/capture-screenshots.sh
 ```
 
 ### Run the performance regression test
@@ -295,5 +307,5 @@ instructions.
 ./ptui/bin/release-checklist.sh
 ```
 
-This runs build, tests, performance smoke, and required-docs checks in sequence and
-prints a summary.
+This runs build, tests, tmux layout/behavior/ANSI/visual regressions,
+performance smoke, and required-docs checks in sequence and prints a summary.
