@@ -932,38 +932,38 @@ group = "next-todos"
 
 [[tranches]]
 key = "NXT-148"
-summary = "Push 16 squashed commits to origin/master"
-status = "incomplete"
+summary = "Historical publish tranche superseded by the user-directed no-push workflow; origin/master updates now wait for explicit approval."
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-149"
 summary = "FP-refine streaming-protocol: stream-event reducer + provider normalizers (pseudopod)"
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-150"
-summary = "FP-refine swarm-state: layered domain packages + transition kernels (sw4rm-sdk)"
-status = "incomplete"
+summary = "Historical fp-refine tranche superseded by completed `I373`; SW4RM boundary and transition cleanup already landed."
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-151"
-summary = "FP-refine amoebum-chat-stream: chat-turn-snapshot + stream reducers"
-status = "incomplete"
+summary = "Historical fp-refine tranche superseded by completed `I371`; chat-turn snapshot and stream reducers already landed."
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-152"
-summary = "FP-refine amoebum-policy-kernels: rule tables + replayable reducers"
-status = "incomplete"
+summary = "Historical fp-refine tranche superseded by completed `I372`; policy tables and replayable reducers already landed."
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
 key = "NXT-153"
-summary = "FP-refine ptui-runtime: loop-snapshot + runtime-snapshot reducers"
-status = "incomplete"
+summary = "Historical fp-refine tranche superseded by completed `I374`; PTUI runtime and declarative IR cleanup already landed."
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
@@ -975,7 +975,7 @@ group = "next-todos"
 [[tranches]]
 key = "NXT-155"
 summary = "PTUI layout system: cross-axis sizing, reflow, and theme evaluation iteration"
-status = "incomplete"
+status = "complete"
 group = "next-todos"
 
 [[tranches]]
@@ -1059,5 +1059,35 @@ group = "next-todos"
 [[tranches]]
 key = "NXT-169"
 summary = "Resume `NXT-146` by squashing the March 25 Yarli tranche stack into human-readable commits."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-170"
+summary = "Historical publish follow-up superseded by the user-directed no-push workflow; review can continue locally until explicit publish approval."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-171"
+summary = "Start NXT-149 in pseudopod: extract stream-event reducer and provider normalizers."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-172"
+summary = "Add focused tests for NXT-149 in pseudopod/test and rerun make test-amoebum."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-173"
+summary = "Re-rank NXT-150 through NXT-155 against VISION.md and sync IMPLEMENTATION_PLAN.md."
+status = "complete"
+group = "next-todos"
+
+[[tranches]]
+key = "NXT-174"
+summary = "Historical Yarli launch follow-up superseded by the user-directed workflow: Yarli remains the durable queue while Codex executes confirmed tranches directly."
 status = "complete"
 group = "next-todos"

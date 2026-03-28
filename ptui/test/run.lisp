@@ -790,6 +790,63 @@
     (assert-true (= (ptui.layout:layout-size-height box-size) 6)
                  "box height should include padding + border")))
 
+(deftest widgets-wrapped-text-measure-respects-available-width
+  (let* ((text (ptui.widgets.core:make-text-widget "abcdef" :wrap t))
+         (intrinsic (ptui.widgets.core:widget-measure text))
+         (wrapped (ptui.widgets.core:widget-measure text 3 nil)))
+    (assert-true (= (ptui.layout:layout-size-width intrinsic) 6)
+                 "intrinsic width should stay unwrapped without an available width")
+    (assert-true (= (ptui.layout:layout-size-height intrinsic) 1)
+                 "intrinsic wrapped text height should default to one line")
+    (assert-true (= (ptui.layout:layout-size-width wrapped) 3)
+                 "wrapped width should clamp to the available width")
+    (assert-true (= (ptui.layout:layout-size-height wrapped) 2)
+                 "wrapped height should count wrapped lines")))
+
+(deftest widgets-stack-column-wrap-reflows-following-child
+  (let* ((wrapped (ptui.widgets.core:make-text-widget "abcdef" :wrap t))
+         (footer (ptui.widgets.core:make-text-widget "Z"))
+         (stack (ptui.widgets.core:make-stack-widget (list wrapped footer)
+                                                     :direction :column))
+         (size (ptui.widgets.core:widget-measure stack 3 nil))
+         (buf (ptui.render.buffer:make-buffer 3 4)))
+    (assert-true (= (ptui.layout:layout-size-width size) 3)
+                 "column stack width should honor wrapped child width")
+    (assert-true (= (ptui.layout:layout-size-height size) 3)
+                 "column stack height should include wrapped text height plus footer")
+    (ptui.ui.app::%paint-element stack buf 0 0 3 4)
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 0 0)) "a")
+                 "expected wrapped first line to start at row 0")
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 0 1)) "d")
+                 "expected wrapped second line to start at row 1")
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 0 2)) "Z")
+                 "expected following child to reflow below wrapped text")))
+
+(deftest constraint-layout-wraps-guttered-text-within-allocation
+  (let* ((history (ptui.widgets.core:make-text-widget "abcdef" :id :history :wrap t))
+         (status (ptui.widgets.core:make-text-widget "ok" :id :status))
+         (layout (make-ui-node
+                  :constraint-layout
+                  :props (list :direction :column
+                               :constraints (list (ptui.layout.constraints:fixed :history 2)
+                                                  (ptui.layout.constraints:fixed :status 1))
+                               :gutters (list (cons :history 1)))
+                  :children (list history status)))
+         (buf (ptui.render.buffer:make-buffer 4 3)))
+    (ptui.ui.app::%paint-element layout buf 0 0 4 3)
+    (assert-true (member (ptui.core.types:cell-glyph (buffer-cell-at buf 0 0))
+                         '("" " ")
+                         :test #'string=)
+                 "expected gutter column to stay empty before the wrapped region")
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 1 0)) "a")
+                 "expected guttered wrapped text to start one column in")
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 1 1)) "d")
+                 "expected wrapped second line to stay inside the allocated region")
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 0 2)) "o")
+                 "expected following region to keep its own origin after wrapped content")
+    (assert-true (<= (buffer-max-content-width buf) 4)
+                 "expected wrapped constraint layout to stay within allocation width")))
+
 (deftest widgets-input-scroll-and-event-dispatch
   (let* ((captured '())
          (input (ptui.widgets.core:make-input-widget
