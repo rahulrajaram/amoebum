@@ -83,6 +83,11 @@
   session-path)
 
 (defparameter +conversation-default-fork-name+ "main")
+(defparameter *session-persistence-enabled* t
+  "When NIL, skip conversation/checkpoint persistence for transient sessions.")
+
+(defun session-persistence-enabled-p ()
+  *session-persistence-enabled*)
 
 (defun %conversation-whitespace-char-p (char)
   (member char '(#\Space #\Tab #\Newline #\Return) :test #'char=))
@@ -404,13 +409,15 @@
          (resolved-forks (%conversation-normalize-forks forks
                                                         resolved-active-fork
                                                         resolved-entries))
-         (session-path (conversation-session-path resolved-session-id
-                                                 :project-root root)))
-    (ensure-directories-exist session-path)
-    (ensure-directories-exist
-     (conversation-fork-path resolved-session-id
-                             resolved-active-fork
-                             :project-root root))
+         (session-path (and (session-persistence-enabled-p)
+                            (conversation-session-path resolved-session-id
+                                                       :project-root root))))
+    (when session-path
+      (ensure-directories-exist session-path)
+      (ensure-directories-exist
+       (conversation-fork-path resolved-session-id
+                               resolved-active-fork
+                               :project-root root)))
     (%make-conversation-state
      :session-id resolved-session-id
      :state (%conversation-normalize-state state)
@@ -501,6 +508,8 @@
                             (save-manifest-p t)
                             (save-fork-file-p t))
   (check-type conversation conversation-state)
+  (unless (session-persistence-enabled-p)
+    (return-from conversation-save nil))
   (let* ((root (%conversation-normalize-project-root
                 (conversation-state-project-root conversation)))
          (session-id (or (conversation-state-session-id conversation)

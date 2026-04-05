@@ -922,6 +922,8 @@ Each entry that fails to start is logged but does not abort the restore."
                                 project-root
                                 snapshot-id
                                 (timestamp (get-universal-time)))
+  (unless (session-persistence-enabled-p)
+    (return-from save-session-snapshot nil))
   (let* ((resolved-project-root (%checkpoint-project-root :project-root project-root))
          (resolved-conversation
            (%ensure-conversation-for-checkpoint conversation resolved-project-root))
@@ -1001,6 +1003,8 @@ Each entry that fails to start is logged but does not abort the restore."
                              (trigger :manual)
                              (auto-p nil)
                              (timestamp (get-universal-time)))
+  (unless (session-persistence-enabled-p)
+    (return-from checkpoint-session nil))
   (let* ((resolved-config (or config (current-config)))
          (resolved-project-root (%checkpoint-project-root
                                  :project-root project-root

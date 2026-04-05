@@ -158,8 +158,6 @@
       :deps (chat-state))
     (budget-warning (%emit-stream-budget-warning-if-needed chat-state)
       :deps (chat-state))
-    (context-usage (%sync-chat-context-usage! chat-state)
-      :deps (chat-state))
     (idle-hooks (%run-chat-idle-hooks-if-needed)
       :deps ())
     (auto-checkpoint
@@ -190,15 +188,14 @@
         :when (%chat-panel-layout-visible-p :plan plan-active-p)
         plan-widget)
       (history :flex (%chat-panel-flex-weight :history 1)
-        (let* ((message-lines (%message-line-entries chat-state
-                                                     (chat-ui-state-messages chat-state)
-                                                     inner-width))
-               ;; Each entry = 1 line of height, so total lines = entry count.
-               ;; This avoids creating widgets + stack + widget-measure (all O(n)).
-               (history-total-lines (length message-lines))
-               (scrollback (chat-ui-state-message-scrollback-lines chat-state)))
-          (multiple-value-bind (history-offset new-scrollback max-scrollback)
-              (%compute-scroll-offset history-total-lines history-viewport-height scrollback)
+        (let ((scrollback (chat-ui-state-message-scrollback-lines chat-state)))
+          (multiple-value-bind (visible-entries history-total-lines history-offset
+                                new-scrollback max-scrollback)
+              (%message-line-window chat-state
+                                    (chat-ui-state-messages chat-state)
+                                    inner-width
+                                    history-viewport-height
+                                    scrollback)
             (when (and (amoebum::%scroll-debug-enabled-p)
                        (not (zerop scrollback)))
               (amoebum::%scroll-debug-log
@@ -215,11 +212,9 @@
             ;; Virtual scroll: only create widgets for the visible window.
             ;; Use spacers above/below to preserve total height for scroll bar.
             (let* ((vis-start (max 0 history-offset))
-                   (vis-end (min history-total-lines (+ vis-start history-viewport-height)))
-                   (visible-entries (nthcdr vis-start message-lines))
+                   (vis-end (+ vis-start (length visible-entries)))
                    (visible-widgets
                      (loop for entry in visible-entries
-                           for i from vis-start below vis-end
                            collect (%chat-text-widget
                                     (getf entry :text)
                                     (getf entry :id)

@@ -150,6 +150,7 @@ Use the installed wrapper when you want the packaged runtime outside the repo:
 
 1. `./install.sh`
 2. `~/.local/bin/amoebum`
+3. `make install-wrapper-validate` to rerun the clean-`HOME` packaged-wrapper regression
 
 This path launches the installed image directly, keeps logging under
 `~/.amoebum/runtime/`, supports `--help` and `--version` directly in the

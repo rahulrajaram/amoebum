@@ -71,6 +71,33 @@
       (let ((buffer (%safe-render-chat-ui state :cols 84 :rows 20)))
         (%assert-scroll-snapshot buffer "scroll-history-at-top")))))
 
+(test scroll-history-window-matches-full-entry-slice
+  "Visible history window should match the equivalent slice of the full entry list."
+  (let* ((messages (%make-long-conversation))
+         (state (%scroll-test-chat-state :messages messages))
+         (chat-state (amoebum::ensure-chat-ui-state state))
+         (width 84)
+         (viewport-height 8)
+         (scrollback 5)
+         (full-lines (amoebum::%message-line-entries
+                      chat-state
+                      (amoebum::chat-ui-state-messages chat-state)
+                      width)))
+    (multiple-value-bind (visible-lines total-lines offset new-scrollback max-scrollback)
+        (amoebum::%message-line-window
+         chat-state
+         (amoebum::chat-ui-state-messages chat-state)
+         width
+         viewport-height
+         scrollback)
+      (declare (ignore new-scrollback max-scrollback))
+      (is (= total-lines (length full-lines)))
+      (is (<= (length visible-lines) viewport-height))
+      (is (equal visible-lines
+                 (subseq full-lines
+                         offset
+                         (min total-lines (+ offset viewport-height))))))))
+
 ;;; --- Prompt Box Scroll Tests ---
 
 (test scroll-prompt-box-long-input

@@ -28,11 +28,12 @@ NUM_PROMPTS=5
 WATCH=false
 REPORT=false
 PROMPT_KEYWORD="long"          # triggers %demo-response-long (20 sections)
-STARTUP_WAIT=4                 # seconds to wait for TUI init
+STARTUP_TIMEOUT=20             # seconds to wait for TUI init
 PROMPT_TIMEOUT=30              # seconds to wait for each prompt to finish
 SAMPLE_INTERVAL=0.5            # seconds between /proc samples during streaming
 FAULT_GROWTH_THRESHOLD=3.0     # fail if minor faults/sec grow by more than this factor
 RSS_GROWTH_THRESHOLD_KB=102400 # fail if RSS grows by more than 100MB total
+STEADY_STATE_TRIM_SAMPLES=4    # trim prompt-edge bursts (4 samples ~= 2 seconds)
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -65,15 +66,99 @@ capture_pane() {
     tmux capture-pane -t "$SESSION" -p -S -200
 }
 
+capture_status_line() {
+    tmux capture-pane -t "$SESSION" -p | tail -1
+}
+
+now_ms() {
+    date +%s%3N
+}
+
+status_is_stream_running() {
+    local status="$1"
+    printf '%s\n' "$status" | grep -qiF "stream " \
+        && ! printf '%s\n' "$status" | grep -qiF "stream idle" \
+        && ! printf '%s\n' "$status" | grep -qiF "stream done" \
+        && ! printf '%s\n' "$status" | grep -qiF "stream cancelled" \
+        && ! printf '%s\n' "$status" | grep -qiF "stream failed"
+}
+
+status_is_stream_done() {
+    local status="$1"
+    printf '%s\n' "$status" | grep -qiF "stream done"
+}
+
+seconds_between_ms() {
+    local start_ms="$1" end_ms="$2"
+    if [ -z "$start_ms" ] || [ -z "$end_ms" ]; then
+        printf 'n/a'
+    else
+        printf '%s' "$(echo "scale=2; ($end_ms - $start_ms) / 1000" | bc -l)"
+    fi
+}
+
 wait_for_text() {
-    local needle="$1" timeout="${2:-8}" elapsed=0
-    while [ "$elapsed" -lt "$timeout" ]; do
+    local needle="$1" timeout="${2:-8}"
+    local deadline_ms=$(( $(now_ms) + timeout * 1000 ))
+    while [ "$(now_ms)" -lt "$deadline_ms" ]; do
+        if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+            return 1
+        fi
         if capture_pane | grep -qiF "$needle"; then
             return 0
         fi
         sleep 0.5
-        elapsed=$((elapsed + 1))
     done
+    return 1
+}
+
+wait_for_startup() {
+    wait_for_text "Type below and press Enter to start" "$STARTUP_TIMEOUT" \
+        || wait_for_text "Type below and press Enter." "$STARTUP_TIMEOUT"
+}
+
+wait_for_prompt_cycle() {
+    local timeout="$1"
+    local deadline_ms=$(( $(now_ms) + timeout * 1000 ))
+    local started=false
+    PROMPT_STREAM_STARTED_MS=""
+    PROMPT_SECTION20_MS=""
+    PROMPT_COMPLETED_MS=""
+    PROMPT_COMPLETION_KIND="timeout"
+    PROMPT_LAST_STATUS=""
+
+    while [ "$(now_ms)" -lt "$deadline_ms" ]; do
+        local pane status now
+        pane="$(capture_pane)"
+        status="$(capture_status_line || true)"
+        now="$(now_ms)"
+        PROMPT_LAST_STATUS="$status"
+
+        if ! $started && status_is_stream_running "$status"; then
+            started=true
+            PROMPT_STREAM_STARTED_MS="$now"
+        fi
+
+        if $started && [ -z "$PROMPT_SECTION20_MS" ]; then
+            local section20_count
+            section20_count="$(printf '%s\n' "$pane" | grep -cF "Section 20" || true)"
+            if [ "${section20_count:-0}" -gt "${PROMPT_SECTION20_BASE_COUNT:-0}" ]; then
+                PROMPT_SECTION20_MS="$now"
+            fi
+        fi
+
+        if $started && status_is_stream_done "$status"; then
+            PROMPT_COMPLETED_MS="$now"
+            PROMPT_COMPLETION_KIND="stream-done"
+            return 0
+        fi
+
+        sleep 0.5
+    done
+
+    if [ -z "$PROMPT_STREAM_STARTED_MS" ]; then
+        PROMPT_COMPLETION_KIND="no-stream-start"
+    fi
     return 1
 }
 
@@ -120,31 +205,38 @@ sample_proc() {
 # Collect /proc samples during a streaming response
 collect_samples() {
     local pid="$1" duration="$2" outfile="$3"
-    local elapsed=0
     > "$outfile"
-    while (( $(echo "$elapsed < $duration" | bc -l) )); do
+    local deadline_ms=$(( $(now_ms) + duration * 1000 ))
+    while [ "$(now_ms)" -lt "$deadline_ms" ]; do
         local ts
         ts="$(date +%s.%N)"
         echo "$ts $(sample_proc "$pid")" >> "$outfile"
         sleep "$SAMPLE_INTERVAL"
-        elapsed="$(echo "$elapsed + $SAMPLE_INTERVAL" | bc -l)"
     done
 }
 
 # Compute minor fault rate (faults/sec) from sample file
 compute_fault_rate() {
-    local sample_file="$1"
+    local sample_file="$1" trim_samples="${2:-0}"
     local lines
     lines="$(wc -l < "$sample_file")"
     if [ "$lines" -lt 2 ]; then
         echo "0"
         return
     fi
-    local first_ts first_flt last_ts last_flt
-    first_ts="$(head -1 "$sample_file" | awk '{print $1}')"
-    first_flt="$(head -1 "$sample_file" | sed 's/.*minflt=//' | awk '{print $1}')"
-    last_ts="$(tail -1 "$sample_file" | awk '{print $1}')"
-    last_flt="$(tail -1 "$sample_file" | sed 's/.*minflt=//' | awk '{print $1}')"
+    local first_line_no=1 last_line_no="$lines"
+    if [ "$trim_samples" -gt 0 ] && [ "$lines" -gt $((trim_samples * 2 + 1)) ]; then
+        first_line_no=$((trim_samples + 1))
+        last_line_no=$((lines - trim_samples))
+    fi
+
+    local first_line last_line first_ts first_flt last_ts last_flt
+    first_line="$(sed -n "${first_line_no}p" "$sample_file")"
+    last_line="$(sed -n "${last_line_no}p" "$sample_file")"
+    first_ts="$(printf '%s\n' "$first_line" | awk '{print $1}')"
+    first_flt="$(printf '%s\n' "$first_line" | sed 's/.*minflt=//' | awk '{print $1}')"
+    last_ts="$(printf '%s\n' "$last_line" | awk '{print $1}')"
+    last_flt="$(printf '%s\n' "$last_line" | sed 's/.*minflt=//' | awk '{print $1}')"
 
     local dt dflt
     dt="$(echo "$last_ts - $first_ts" | bc -l)"
@@ -183,7 +275,7 @@ echo ""
 # ============================================================
 
 tmux new-session -d -s "$SESSION" -x 120 -y 40 "$BINARY --demo"
-sleep "$STARTUP_WAIT"
+wait_for_startup || die "amoebum did not reach the interactive prompt"
 watch_pause
 
 PID="$(find_amoebum_pid)"
@@ -199,9 +291,14 @@ INITIAL_RSS="$(echo "$INITIAL_SAMPLE" | sed 's/.*rss_kb=//' | awk '{print $1}')"
 
 PASSED=0
 FAILED=0
-FAULT_RATES=()
+FAULT_RATES_FULL=()
+FAULT_RATES_STEADY=()
 PEAK_RSS_VALUES=()
 SAMPLE_COUNTS=()
+PROMPT_ELAPSED_SECONDS=()
+STREAM_START_SECONDS=()
+SECTION20_SECONDS=()
+COMPLETION_KINDS=()
 MIN_SAMPLES_FOR_RATE=10   # ignore prompts with fewer samples (noisy short windows)
 
 # ============================================================
@@ -218,17 +315,18 @@ for i in $(seq 1 "$NUM_PROMPTS"); do
     PRE_FAULTS="$(echo "$PRE" | sed 's/.*minflt=//' | awk '{print $1}')"
 
     # Send the prompt
+    PROMPT_SECTION20_BASE_COUNT="$(capture_pane | grep -cF "Section 20" || true)"
+    PROMPT_SENT_MS="$(now_ms)"
     tmux send-keys -t "$SESSION" "$PROMPT_KEYWORD" Enter
 
     # Collect /proc samples while the response streams
     collect_samples "$PID" "$PROMPT_TIMEOUT" "$SAMPLE_FILE" &
     SAMPLER_PID=$!
 
-    # Wait for the response to finish (look for "Section 20" from the long response)
-    if wait_for_text "Section 20" "$PROMPT_TIMEOUT"; then
-        echo "  Response completed"
+    if wait_for_prompt_cycle "$PROMPT_TIMEOUT"; then
+        echo "  Response completed via status bar"
     else
-        echo "  WARNING: Response may not have completed within ${PROMPT_TIMEOUT}s"
+        echo "  WARNING: Response did not complete within ${PROMPT_TIMEOUT}s"
     fi
 
     # Give a moment for rendering to settle
@@ -239,17 +337,28 @@ for i in $(seq 1 "$NUM_PROMPTS"); do
     wait "$SAMPLER_PID" 2>/dev/null || true
 
     # Compute metrics
-    RATE="$(compute_fault_rate "$SAMPLE_FILE")"
+    FULL_RATE="$(compute_fault_rate "$SAMPLE_FILE" 0)"
+    STEADY_RATE="$(compute_fault_rate "$SAMPLE_FILE" "$STEADY_STATE_TRIM_SAMPLES")"
     PRSS="$(peak_rss "$SAMPLE_FILE")"
     SAMPLE_COUNT="$(wc -l < "$SAMPLE_FILE")"
-    FAULT_RATES+=("$RATE")
+    ELAPSED_S="$(seconds_between_ms "$PROMPT_SENT_MS" "$PROMPT_COMPLETED_MS")"
+    START_S="$(seconds_between_ms "$PROMPT_SENT_MS" "$PROMPT_STREAM_STARTED_MS")"
+    SECTION20_S="$(seconds_between_ms "$PROMPT_SENT_MS" "$PROMPT_SECTION20_MS")"
+    FAULT_RATES_FULL+=("$FULL_RATE")
+    FAULT_RATES_STEADY+=("$STEADY_RATE")
     PEAK_RSS_VALUES+=("$PRSS")
     SAMPLE_COUNTS+=("$SAMPLE_COUNT")
+    PROMPT_ELAPSED_SECONDS+=("$ELAPSED_S")
+    STREAM_START_SECONDS+=("$START_S")
+    SECTION20_SECONDS+=("$SECTION20_S")
+    COMPLETION_KINDS+=("$PROMPT_COMPLETION_KIND")
 
     POST="$(sample_proc "$PID")"
-    echo "  Fault rate: ~${RATE} minflt/sec"
+    echo "  Fault rate: full ~${FULL_RATE} minflt/sec | steady ~${STEADY_RATE} minflt/sec"
     echo "  Peak RSS:   ${PRSS} kB"
+    echo "  Stream start: ${START_S}s | Section 20: ${SECTION20_S}s | Completion: ${ELAPSED_S}s (${PROMPT_COMPLETION_KIND})"
     echo "  Post:       $POST"
+    echo "  Status:     ${PROMPT_LAST_STATUS}"
 
     if $REPORT; then
         echo "  Samples:    $SAMPLE_FILE ($(wc -l < "$SAMPLE_FILE") points)"
@@ -267,14 +376,34 @@ echo "=== Performance Analysis ==="
 echo ""
 
 # Print summary table
-printf "%-10s %-18s %-15s %-10s\n" "Prompt" "MinFlt/sec" "Peak RSS (kB)" "Samples"
-printf "%-10s %-18s %-15s %-10s\n" "------" "----------" "-------------" "-------"
+printf "%-8s %-12s %-12s %-12s %-14s %-15s %-8s\n" \
+    "Prompt" "Start(s)" "Section20(s)" "Done(s)" "Completion" "Peak RSS (kB)" "Samples"
+printf "%-8s %-12s %-12s %-12s %-14s %-15s %-8s\n" \
+    "------" "--------" "------------" "-------" "----------" "-------------" "-------"
 for i in $(seq 0 $((NUM_PROMPTS - 1))); do
-    printf "%-10s %-18s %-15s %-10s\n" "$((i + 1))" "${FAULT_RATES[$i]}" "${PEAK_RSS_VALUES[$i]}" "${SAMPLE_COUNTS[$i]}"
+    printf "%-8s %-12s %-12s %-12s %-14s %-15s %-8s\n" \
+        "$((i + 1))" \
+        "${STREAM_START_SECONDS[$i]}" \
+        "${SECTION20_SECONDS[$i]}" \
+        "${PROMPT_ELAPSED_SECONDS[$i]}" \
+        "${COMPLETION_KINDS[$i]}" \
+        "${PEAK_RSS_VALUES[$i]}" \
+        "${SAMPLE_COUNTS[$i]}"
 done
 echo ""
 
-# Check 1: Fault rate growth (using only prompts with sufficient samples)
+echo "Minor fault rates:"
+printf "%-8s %-18s %-18s\n" "Prompt" "Full" "Steady"
+printf "%-8s %-18s %-18s\n" "------" "----------" "----------"
+for i in $(seq 0 $((NUM_PROMPTS - 1))); do
+    printf "%-8s %-18s %-18s\n" \
+        "$((i + 1))" \
+        "${FAULT_RATES_FULL[$i]}" \
+        "${FAULT_RATES_STEADY[$i]}"
+done
+echo ""
+
+# Check 1: Steady-state fault rate growth (using only prompts with sufficient samples)
 # Short-window measurements are noisy — a GC burst in 4 samples produces
 # wildly inflated rates that don't reflect sustained performance.
 FIRST_RATE=""
@@ -284,23 +413,23 @@ LAST_IDX=""
 for i in $(seq 0 $((NUM_PROMPTS - 1))); do
     if [ "${SAMPLE_COUNTS[$i]}" -ge "$MIN_SAMPLES_FOR_RATE" ] 2>/dev/null; then
         if [ -z "$FIRST_RATE" ]; then
-            FIRST_RATE="${FAULT_RATES[$i]}"
+            FIRST_RATE="${FAULT_RATES_STEADY[$i]}"
             FIRST_IDX=$((i + 1))
         fi
-        LAST_RATE="${FAULT_RATES[$i]}"
+        LAST_RATE="${FAULT_RATES_STEADY[$i]}"
         LAST_IDX=$((i + 1))
     fi
 done
 
 if [ -n "$FIRST_RATE" ] && [ "$FIRST_RATE" -gt 0 ] 2>/dev/null; then
     GROWTH="$(echo "scale=2; $LAST_RATE / $FIRST_RATE" | bc -l)"
-    echo "Fault rate growth: ${GROWTH}x (prompt $FIRST_IDX → prompt $LAST_IDX, >=${MIN_SAMPLES_FOR_RATE} samples only)"
+    echo "Steady-state fault rate growth: ${GROWTH}x (prompt $FIRST_IDX → prompt $LAST_IDX, >=${MIN_SAMPLES_FOR_RATE} samples only, trimmed ±${STEADY_STATE_TRIM_SAMPLES} samples)"
 
     if (( $(echo "$GROWTH > $FAULT_GROWTH_THRESHOLD" | bc -l) )); then
-        echo "  FAIL: Fault rate grew ${GROWTH}x (threshold: ${FAULT_GROWTH_THRESHOLD}x)"
+        echo "  FAIL: Steady-state fault rate grew ${GROWTH}x (threshold: ${FAULT_GROWTH_THRESHOLD}x)"
         FAILED=$((FAILED + 1))
     else
-        echo "  PASS: Fault rate growth within threshold"
+        echo "  PASS: Steady-state fault rate growth within threshold"
         PASSED=$((PASSED + 1))
     fi
 else
@@ -350,10 +479,29 @@ cat > "$ARTIFACT_DIR/verdict.json" <<VERDICT
   "last_fault_rate": ${LAST_RATE:-0},
   "last_fault_prompt": ${LAST_IDX:-0},
   "fault_growth_factor": ${GROWTH:-0},
+  "steady_state_trim_samples": $STEADY_STATE_TRIM_SAMPLES,
   "min_samples_threshold": $MIN_SAMPLES_FOR_RATE,
   "passed": $PASSED,
   "failed": $FAILED,
-  "verdict": "$([ "$FAILED" -eq 0 ] && echo "PASS" || echo "FAIL")"
+  "verdict": "$([ "$FAILED" -eq 0 ] && echo "PASS" || echo "FAIL")",
+  "prompt_metrics": [
+$(for i in $(seq 0 $((NUM_PROMPTS - 1))); do
+    comma=","
+    if [ "$i" -eq $((NUM_PROMPTS - 1)) ]; then
+        comma=""
+    fi
+    printf '    {"prompt": %s, "start_s": "%s", "section20_s": "%s", "done_s": "%s", "completion": "%s", "sample_count": %s, "fault_rate_full": %s, "fault_rate_steady": %s}%s\n' \
+        "$((i + 1))" \
+        "${STREAM_START_SECONDS[$i]}" \
+        "${SECTION20_SECONDS[$i]}" \
+        "${PROMPT_ELAPSED_SECONDS[$i]}" \
+        "${COMPLETION_KINDS[$i]}" \
+        "${SAMPLE_COUNTS[$i]}" \
+        "${FAULT_RATES_FULL[$i]}" \
+        "${FAULT_RATES_STEADY[$i]}" \
+        "$comma"
+done)
+  ]
 }
 VERDICT
 

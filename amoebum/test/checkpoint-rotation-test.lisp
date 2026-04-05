@@ -76,6 +76,34 @@
             amoebum::*event-bus* old-bus)
       (%delete-directory-tree-safe tmp-dir))))
 
+(test session-persistence-disabled-skips-conversation-and-checkpoint-writes
+  "Transient sessions should not write conversation manifests or checkpoints."
+  (let* ((old-override amoebum::*checkpoint-directory-override*)
+         (old-bus amoebum::*event-bus*)
+         (old-persistence amoebum::*session-persistence-enabled*)
+         (tmp-dir (%make-temp-directory "amoebum-persistence-disabled"))
+         (bus (amoebum:make-event-bus))
+         (conversation nil))
+    (unwind-protect
+         (progn
+           (setf amoebum::*checkpoint-directory-override* tmp-dir
+                 amoebum::*event-bus* bus
+                 amoebum::*session-persistence-enabled* nil)
+           (setf conversation
+                 (amoebum.sessions:make-conversation-state :project-root tmp-dir))
+           (is (null (amoebum.sessions:conversation-save conversation)))
+           (is (null (amoebum.sessions:checkpoint-session
+                      :conversation conversation
+                      :project-root tmp-dir
+                      :event-bus bus
+                      :trigger :manual)))
+           (is (null (amoebum.sessions:conversation-state-session-path conversation)))
+           (is (null (probe-file (merge-pathnames #P".amoebum/checkpoints/" tmp-dir)))))
+      (setf amoebum::*checkpoint-directory-override* old-override
+            amoebum::*event-bus* old-bus
+            amoebum::*session-persistence-enabled* old-persistence)
+      (%delete-directory-tree-safe tmp-dir))))
+
 (test list-session-checkpoints-with-limit
   "list-session-checkpoints should respect limit."
   (let* ((old-override amoebum::*checkpoint-directory-override*)

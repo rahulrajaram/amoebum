@@ -6,12 +6,20 @@
 (defparameter *demo-chunk-delay-seconds* 0.02
   "Delay in seconds between emitting chunks in demo mode.")
 
+(defun %demo-whitespace-chunk-p (chunk)
+  (or (null chunk)
+      (zerop (length chunk))
+      (every (lambda (char)
+               (member char '(#\Space #\Tab #\Newline #\Return) :test #'char=))
+             chunk)))
+
 (defun %demo-emit-text (stream-state text)
-  "Emit TEXT as individual word-chunks with realistic streaming delays."
-  (let ((words (cl-ppcre:split "( )" text :with-registers-p t)))
-    (dolist (word words)
-      (token-stream-emit-chunk stream-state word)
-      (sleep *demo-chunk-delay-seconds*))))
+  "Emit TEXT as word/whitespace chunks while delaying only on content words."
+  (let ((chunks (cl-ppcre:all-matches-as-strings "\\S+|\\s+" text)))
+    (dolist (chunk chunks)
+      (token-stream-emit-chunk stream-state chunk)
+      (unless (%demo-whitespace-chunk-p chunk)
+        (sleep *demo-chunk-delay-seconds*)))))
 
 (defun %demo-response-default ()
   "A multi-paragraph markdown response exercising various formatting."

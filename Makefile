@@ -1,4 +1,4 @@
-.PHONY: build test test-ptui test-amoebum yarli-bootstrap-validate check check-parens check-dist-ignore prepare-quicklisp-compat clean
+.PHONY: build test test-ptui test-amoebum yarli-bootstrap-validate install-wrapper-validate check check-parens check-dist-ignore prepare-quicklisp-compat clean
 
 REPO_ROOT := $(CURDIR)
 QUICKLISP_SETUP ?= $(HOME)/quicklisp/setup.lisp
@@ -61,6 +61,9 @@ yarli-bootstrap-validate:
 	cd "$(REPO_ROOT)" && \
 	  bash ./bin/yarli-bootstrap-local-state.sh && \
 	  yarli plan validate
+
+install-wrapper-validate:
+	bash ./bin/install-wrapper-regression.sh
 
 check-parens:
 	bash ./bin/check-parens.sh
