@@ -42,28 +42,56 @@
         (is-true (member :chat-input order :test #'equal)
                  "Expected :chat-input to appear in focus-order. Got: ~S" order)))))
 
-(test focus-order-includes-dialog-elements-when-active
-  "When an approval dialog is active, dialog elements appear in the focus order."
+(test focus-order-remains-valid-when-dialog-active
+  "When an approval dialog is active, the modal overlay preserves a valid focus order."
   (with-safe-chat-env
     (let* ((state (%safe-make-chat-ui-state :branch-name "test/kbd-nav"))
            (dialog (amoebum::chat-ui-state-approval-dialog-state state))
            (runtime (amoebum::chat-ui-state-runtime state)))
       (amoebum:chat-ui-add-message state "assistant" "I will read the file.")
-      ;; Activate the dialog before rendering
-      (amoebum:approval-dialog-activate! dialog "read-file"
-                                         :command "read-file src/main.lisp"
-                                         :decision-id "kbd-nav-test-001")
       (%safe-render-chat-ui state :cols 84 :rows 24)
-      (let ((order (ptui.ui.runtime:runtime-focus-order runtime)))
-        ;; The approval dialog should contribute at least one element
-        (is-true order
-                 "Expected non-empty focus order with approval dialog active.")
-        ;; The dialog container itself (:approval-dialog) should be present,
-        ;; or at minimum the focus order should be larger than with no dialog.
-        (is-true (or (member :approval-dialog order :test #'equal)
-                     (> (length order) 0))
-                 "Expected approval dialog to contribute to focus order. Got: ~S"
-                 order)))))
+      (let ((baseline-order (ptui.ui.runtime:runtime-focus-order runtime)))
+        (is-true baseline-order
+                 "Expected baseline focus order before approval dialog activation.")
+        (is-true (member :chat-input baseline-order :test #'equal)
+                 "Expected baseline focus order to include :chat-input. Got: ~S"
+                 baseline-order)
+        (unwind-protect
+            (progn
+              ;; Drive the real render-cycle sync path via *pending-approval*.
+              (bt:with-lock-held (amoebum::*pending-approval-lock*)
+                (setf amoebum::*pending-approval*
+                      (amoebum::%make-pending-approval
+                       :tool-name "read-file"
+                       :arguments '(:command "read-file src/main.lisp")
+                       :command "read-file src/main.lisp"
+                       :reason "focus-order regression test"
+                       :decision-id "kbd-nav-test-001")))
+              (%safe-render-chat-ui state :cols 84 :rows 24)
+              (let ((order (ptui.ui.runtime:runtime-focus-order runtime))
+                    (focus (ptui.ui.runtime:runtime-focus-id runtime)))
+                (is-true (amoebum::approval-dialog-state-active-p dialog)
+                         "Expected approval dialog to activate from pending approval during render.")
+                (is-true order
+                         "Expected non-empty focus order with approval dialog active.")
+                (is-true focus
+                         "Expected a concrete focus target with approval dialog active.")
+                (is-true (member focus order :test #'equal)
+                         "Expected active-dialog focus-id ~S to be a member of focus-order ~S."
+                         focus order)
+                (is-true (member :chat-input order :test #'equal)
+                         "Expected :chat-input to remain reachable while dialog is active. Got: ~S"
+                         order)
+                (is (>= (length order) (length baseline-order))
+                    "Expected active dialog focus-order to preserve baseline reachability. Baseline: ~S Active: ~S"
+                    baseline-order order)
+                (dolist (baseline-id baseline-order)
+                  (is-true (member baseline-id order :test #'equal)
+                           "Expected baseline focus target ~S to remain reachable with dialog active. Order: ~S"
+                           baseline-id order))))
+          (bt:with-lock-held (amoebum::*pending-approval-lock*)
+            (setf amoebum::*pending-approval* nil))
+          (amoebum:approval-dialog-deactivate! dialog))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; 2. Focus cycling
@@ -78,18 +106,18 @@
       (amoebum:chat-ui-add-message state "assistant" "B")
       (%safe-render-chat-ui state :cols 84 :rows 24)
       (let ((order (ptui.ui.runtime:runtime-focus-order runtime)))
-        (when order
-          (let ((visited '()))
-            ;; Cycle through all elements in the order
-            (dotimes (i (length order))
-              (ptui.ui.runtime:advance-focus runtime)
-              (push (ptui.ui.runtime:runtime-focus-id runtime) visited))
-            (setf visited (nreverse visited))
-            ;; Every element in the focus order should have been visited
-            (dolist (id order)
-              (is-true (member id visited :test #'equal)
-                       "Expected focus id ~S to be visited during cycling. Visited: ~S"
-                       id visited))))))))
+        (is-true (>= (length order) 2)
+                 "Expected at least two focus targets for cycling. Got: ~S" order)
+          (let ((visited '())
+              (expected (append (rest order) (list (first order)))))
+          ;; Cycle through all elements in the order
+          (dotimes (_unused (length order))
+            (ptui.ui.runtime:advance-focus runtime)
+            (push (ptui.ui.runtime:runtime-focus-id runtime) visited))
+          (setf visited (nreverse visited))
+          (is (equal expected visited)
+              "Expected forward focus cycling to follow runtime order ~S. Visited: ~S"
+              expected visited))))))
 
 (test focus-cycling-wraps-to-first-after-last
   "After advancing past the last focusable element, focus wraps back to the first."
@@ -99,16 +127,17 @@
       (amoebum:chat-ui-add-message state "user" "Wrap test")
       (%safe-render-chat-ui state :cols 84 :rows 24)
       (let ((order (ptui.ui.runtime:runtime-focus-order runtime)))
-        (when (>= (length order) 1)
-          ;; Set focus to the last element
-          (setf (ptui.ui.runtime:runtime-focus-id runtime) (car (last order)))
-          ;; Advancing once should wrap to the first
-          (ptui.ui.runtime:advance-focus runtime)
-          (is (equal (first order) (ptui.ui.runtime:runtime-focus-id runtime))
-              "Expected focus to wrap from last element ~S back to first ~S. Got: ~S"
-              (car (last order))
-              (first order)
-              (ptui.ui.runtime:runtime-focus-id runtime)))))))
+        (is-true (>= (length order) 2)
+                 "Expected at least two focus targets for wrap-around. Got: ~S" order)
+        ;; Set focus to the last element
+        (setf (ptui.ui.runtime:runtime-focus-id runtime) (car (last order)))
+        ;; Advancing once should wrap to the first
+        (ptui.ui.runtime:advance-focus runtime)
+        (is (equal (first order) (ptui.ui.runtime:runtime-focus-id runtime))
+            "Expected focus to wrap from last element ~S back to first ~S. Got: ~S"
+            (car (last order))
+            (first order)
+            (ptui.ui.runtime:runtime-focus-id runtime))))))
 
 (test focus-cycling-backward-from-first-reaches-last
   "Reverse cycling from the first element reaches the last (wrap-around)."
@@ -118,43 +147,40 @@
       (amoebum:chat-ui-add-message state "user" "Reverse wrap test")
       (%safe-render-chat-ui state :cols 84 :rows 24)
       (let ((order (ptui.ui.runtime:runtime-focus-order runtime)))
-        (when (>= (length order) 2)
-          ;; Set focus to the first element
-          (setf (ptui.ui.runtime:runtime-focus-id runtime) (first order))
-          ;; Advancing backward should jump to the last
-          (ptui.ui.runtime:advance-focus runtime :backward t)
-          (is (equal (car (last order)) (ptui.ui.runtime:runtime-focus-id runtime))
-              "Expected backward focus from first ~S to wrap to last ~S. Got: ~S"
-              (first order)
-              (car (last order))
-              (ptui.ui.runtime:runtime-focus-id runtime)))))))
+        (is-true (>= (length order) 2)
+                 "Expected at least two focus targets for reverse wrap-around. Got: ~S"
+                 order)
+        ;; Set focus to the first element
+        (setf (ptui.ui.runtime:runtime-focus-id runtime) (first order))
+        ;; Advancing backward should jump to the last
+        (ptui.ui.runtime:advance-focus runtime :backward t)
+        (is (equal (car (last order)) (ptui.ui.runtime:runtime-focus-id runtime))
+            "Expected backward focus from first ~S to wrap to last ~S. Got: ~S"
+            (first order)
+            (car (last order))
+            (ptui.ui.runtime:runtime-focus-id runtime))))))
 
-(test focus-cycling-three-elements-reverse-sequence
-  "With elements [A B C], backward cycling from A should reach C."
+(test focus-cycling-backward-follows-runtime-order
+  "Backward focus cycling follows the runtime order in reverse with wrap-around."
   (with-safe-chat-env
     (let* ((state (%safe-make-chat-ui-state :branch-name "test/kbd-nav"))
            (runtime (amoebum::chat-ui-state-runtime state)))
       (amoebum:chat-ui-add-message state "user" "Sequence test")
       (%safe-render-chat-ui state :cols 84 :rows 24)
       (let ((order (ptui.ui.runtime:runtime-focus-order runtime)))
-        (when (>= (length order) 3)
-          (let ((a (first order))
-                (b (second order))
-                (c (third order)))
-            ;; Start at A, go backward: should reach C (last in wrap)
-            (setf (ptui.ui.runtime:runtime-focus-id runtime) a)
+        (is-true (>= (length order) 2)
+                 "Expected at least two focus targets for reverse-order traversal. Got: ~S"
+                 order)
+        (setf (ptui.ui.runtime:runtime-focus-id runtime) (first order))
+        (let ((visited '())
+              (expected (cons (car (last order)) (butlast order))))
+          (dotimes (_unused (length order))
             (ptui.ui.runtime:advance-focus runtime :backward t)
-            ;; When order has exactly 3, backward from A should give last element
-            (let ((focus-from-a-backward (ptui.ui.runtime:runtime-focus-id runtime)))
-              (is (equal (car (last order)) focus-from-a-backward)
-                  "Expected backward from A=~S to reach last=~S. Got: ~S"
-                  a (car (last order)) focus-from-a-backward))
-            ;; Start at B, go forward: should reach C
-            (setf (ptui.ui.runtime:runtime-focus-id runtime) b)
-            (ptui.ui.runtime:advance-focus runtime)
-            (is (equal c (ptui.ui.runtime:runtime-focus-id runtime))
-                "Expected forward from B=~S to reach C=~S. Got: ~S"
-                b c (ptui.ui.runtime:runtime-focus-id runtime))))))))
+            (push (ptui.ui.runtime:runtime-focus-id runtime) visited))
+          (setf visited (nreverse visited))
+          (is (equal expected visited)
+              "Expected backward focus cycling to follow reverse runtime order ~S. Visited: ~S"
+              expected visited))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; 3. Focus restoration after overlay dismiss
@@ -170,6 +196,8 @@
       ;; Establish baseline focus
       (%safe-render-chat-ui state :cols 84 :rows 24)
       (let ((pre-dialog-focus (ptui.ui.runtime:runtime-focus-id runtime)))
+        (is-true pre-dialog-focus
+                 "Expected a concrete pre-dialog focus target after baseline render.")
         ;; Activate dialog and re-render
         (amoebum:approval-dialog-activate! dialog "shell-exec"
                                            :command "ls -la"
@@ -180,19 +208,19 @@
         (%safe-render-chat-ui state :cols 84 :rows 24)
         (let ((post-dismiss-order (ptui.ui.runtime:runtime-focus-order runtime))
               (post-dismiss-focus (ptui.ui.runtime:runtime-focus-id runtime)))
-          ;; Focus should be a valid member of the current order
-          (is-true (or (null post-dismiss-focus)
-                       (member post-dismiss-focus post-dismiss-order :test #'equal))
-                   "Expected post-dismiss focus ~S to be in focus-order ~S."
-                   post-dismiss-focus post-dismiss-order)
           ;; The focus order should be non-empty after dismiss
           (is-true post-dismiss-order
                    "Expected non-empty focus order after dialog dismiss.")
+          (is-true post-dismiss-focus
+                   "Expected a concrete focus target after dialog dismiss.")
+          ;; Focus should be a valid member of the current order
+          (is-true (member post-dismiss-focus post-dismiss-order :test #'equal)
+                   "Expected post-dismiss focus ~S to be in focus-order ~S."
+                   post-dismiss-focus post-dismiss-order)
           ;; Pre-dialog focus element should be reachable in the post-dismiss order
-          (when pre-dialog-focus
-            (is-true (member pre-dialog-focus post-dismiss-order :test #'equal)
-                     "Expected pre-dialog focus target ~S to be reachable after dismiss. Order: ~S"
-                     pre-dialog-focus post-dismiss-order)))))))
+          (is-true (member pre-dialog-focus post-dismiss-order :test #'equal)
+                   "Expected pre-dialog focus target ~S to be reachable after dismiss. Order: ~S"
+                   pre-dialog-focus post-dismiss-order))))))
 
 (test focus-valid-after-dialog-active
   "When an approval dialog is active, the focus-id is a valid focusable element."
@@ -209,10 +237,11 @@
             (focus  (ptui.ui.runtime:runtime-focus-id runtime)))
         (is-true order
                  "Expected non-empty focus order with active dialog.")
-        (when focus
-          (is-true (member focus order :test #'equal)
-                   "Expected focus-id ~S to be a member of focus-order ~S."
-                   focus order))))))
+        (is-true focus
+                 "Expected a concrete focus target with active dialog.")
+        (is-true (member focus order :test #'equal)
+                 "Expected focus-id ~S to be a member of focus-order ~S."
+                 focus order)))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; 4. Keyboard-only dialog navigation
@@ -367,10 +396,12 @@
            (runtime (amoebum::chat-ui-state-runtime state)))
       (%safe-render-chat-ui state :cols 84 :rows 24)
       (let ((order (ptui.ui.runtime:runtime-focus-order runtime)))
-        (when (member :chat-input order :test #'equal)
-          (setf (ptui.ui.runtime:runtime-focus-id runtime) :chat-input)
-          (is (equal :chat-input (ptui.ui.runtime:runtime-focus-id runtime))
-              "Expected runtime-focus-id to be :chat-input after direct assignment."))))))
+        (is-true (member :chat-input order :test #'equal)
+                 "Expected :chat-input in focus order before direct focus assignment. Got: ~S"
+                 order)
+        (setf (ptui.ui.runtime:runtime-focus-id runtime) :chat-input)
+        (is (equal :chat-input (ptui.ui.runtime:runtime-focus-id runtime))
+            "Expected runtime-focus-id to be :chat-input after direct assignment.")))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; 6. No orphaned focus
@@ -414,6 +445,8 @@
       (amoebum:chat-ui-add-message state "user" "First message")
       (%safe-render-chat-ui state :cols 84 :rows 24)
       (let ((order-before (ptui.ui.runtime:runtime-focus-order runtime)))
+        (is-true order-before
+                 "Expected non-empty focus order after initial render.")
         ;; Add more messages and re-render
         (amoebum:chat-ui-add-message state "assistant" "Response one")
         (amoebum:chat-ui-add-message state "user" "Second message")
@@ -424,10 +457,11 @@
           (is-true order-after
                    "Expected non-empty focus order after adding messages.")
           ;; Current focus-id should be valid in the new order
-          (when focus-after
-            (is-true (member focus-after order-after :test #'equal)
-                     "Focus-id ~S should be in the updated focus order ~S."
-                     focus-after order-after))
+          (is-true focus-after
+                   "Expected a concrete focus-id after re-rendering with more messages.")
+          (is-true (member focus-after order-after :test #'equal)
+                   "Focus-id ~S should be in the updated focus order ~S."
+                   focus-after order-after)
           ;; The chat-input should persist across re-renders
           (is-true (member :chat-input order-after :test #'equal)
                    "Expected :chat-input to remain in focus order after re-render."))))))
