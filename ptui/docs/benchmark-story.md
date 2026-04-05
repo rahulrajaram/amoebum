@@ -39,6 +39,26 @@ The 1.08x figure means fault rate is essentially flat regardless of conversation
 length — i.e. each additional prompt costs approximately the same allocation as the
 first.
 
+## Current 2026-04-05 Validation Snapshot
+
+Fresh validation on April 5, 2026 drifted materially from the historical
+post-fix baseline above:
+
+| Run | Fault growth | RSS delta | Verdict |
+|---|---|---|---|
+| `./bin/tui-perf-test.sh --prompts 3` | 6.40x | 19,196 kB | FAIL |
+| `./bin/tui-perf-test.sh` (default 5 prompts) | 6.31x (prompt 1 → prompt 3, >=10 samples only) | 13,240 kB | FAIL |
+
+Both runs kept RSS within the documented threshold and the TUI remained
+responsive, but prompts 1 and 2 in both runs hit the 30 second completion
+warning. Treat the `1.08x` table above as historical baseline, not current
+truth, until the new drift is investigated.
+
+Local evidence:
+
+1. `.yarli/evidence/INXT-207-tui-perf-3.log`
+2. `.yarli/evidence/INXT-208-tui-perf-default.log`
+
 ## Running the Test
 
 The perf test lives in `bin/tui-perf-test.sh` at the **repo root** (not inside

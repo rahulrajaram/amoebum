@@ -36,34 +36,33 @@ log_success() {
 }
 
 show_help() {
-    cat << EOF
-Amoebum Self-Check - Validate source integrity before loading
-
-USAGE:
-    amoebum-self-check [OPTIONS]
-
-OPTIONS:
-    -h, --help          Show this help message
-    -v, --verbose       Verbose output
-    --strict            Fail on warnings too
-    --fix               Attempt auto-fix where possible
-
-DESCRIPTION:
-    This tool validates amoebum's Lisp source files for:
-    - Unbalanced parentheses, brackets, braces
-    - Unclosed strings
-    - Missing critical function definitions
-    - Syntax errors that compile silently
-
-    Run this BEFORE compiling or loading amoebum to catch
-    issues like the March 23, 2025 yaml-theme-loader bug.
-
-EXAMPLES:
-    amoebum-self-check              # Quick validation
-    amoebum-self-check -v           # Detailed output
-    amoebum-self-check --strict     # Fail on any issue
-
-EOF
+    printf '%s\n' \
+        'Amoebum Self-Check - Validate source integrity before loading' \
+        '' \
+        'USAGE:' \
+        '    amoebum-self-check [OPTIONS]' \
+        '' \
+        'OPTIONS:' \
+        '    -h, --help          Show this help message' \
+        '    -v, --verbose       Verbose output' \
+        '    --strict            Fail on warnings too' \
+        '    --fix               Attempt auto-fix where possible' \
+        '' \
+        'DESCRIPTION:' \
+        '    This tool validates amoebum'\''s Lisp source files for:' \
+        '    - Unbalanced parentheses, brackets, braces' \
+        '    - Unclosed strings' \
+        '    - Missing critical function definitions' \
+        '    - Syntax errors that compile silently' \
+        '' \
+        '    It also checks the repo wrapper prerequisites that must exist' \
+        '    before the local Yarli entrypoint can run safely.' \
+        '' \
+        'EXAMPLES:' \
+        '    amoebum-self-check              # Quick validation' \
+        '    amoebum-self-check -v           # Detailed output' \
+        '    amoebum-self-check --strict     # Fail on any issue' \
+        ''
 }
 
 count_char() {
@@ -139,6 +138,28 @@ check_critical_functions() {
     fi
 }
 
+check_repo_runtime_prereqs() {
+    log_info "Checking repo runtime prerequisites..."
+
+    if command -v yarli >/dev/null 2>&1; then
+        log_success "yarli command found"
+    else
+        log_error "yarli command NOT FOUND on PATH"
+    fi
+
+    if [[ -f "$PROJECT_ROOT/yarli.toml" ]]; then
+        log_success "yarli.toml found"
+    else
+        log_error "yarli.toml not found"
+    fi
+
+    if [[ -f "$PROJECT_ROOT/bin/yarli-bootstrap-local-state.sh" ]]; then
+        log_success "bin/yarli-bootstrap-local-state.sh found"
+    else
+        log_error "bin/yarli-bootstrap-local-state.sh not found"
+    fi
+}
+
 main() {
     local verbose=false
     local strict=false
@@ -200,7 +221,9 @@ main() {
     
     echo ""
     check_critical_functions || true
-    
+    echo ""
+    check_repo_runtime_prereqs || true
+
     # Summary
     echo ""
     echo "========================================"

@@ -1,4 +1,4 @@
-.PHONY: build test test-ptui test-amoebum check check-parens check-dist-ignore prepare-quicklisp-compat clean
+.PHONY: build test test-ptui test-amoebum yarli-bootstrap-validate check check-parens check-dist-ignore prepare-quicklisp-compat clean
 
 REPO_ROOT := $(CURDIR)
 QUICKLISP_SETUP ?= $(HOME)/quicklisp/setup.lisp
@@ -54,8 +54,13 @@ test-amoebum: prepare-quicklisp-compat
                        (asdf:load-asd (truename \"$(REPO_ROOT)/pseudopod/pseudopod.asd\")) \
                        (asdf:load-asd (truename \"$(REPO_ROOT)/sw4rm-sdk/sw4rm-sdk.asd\")) \
                        (asdf:load-asd (truename \"$(REPO_ROOT)/ptui/ptui.asd\")) \
-                       (asdf:load-asd (truename \"$(REPO_ROOT)/amoebum/amoebum.asd\")) \
-                       (asdf:test-system :amoebum/test)))"
+	                       (asdf:load-asd (truename \"$(REPO_ROOT)/amoebum/amoebum.asd\")) \
+	                       (asdf:test-system :amoebum/test)))"
+
+yarli-bootstrap-validate:
+	cd "$(REPO_ROOT)" && \
+	  bash ./bin/yarli-bootstrap-local-state.sh && \
+	  yarli plan validate
 
 check-parens:
 	bash ./bin/check-parens.sh

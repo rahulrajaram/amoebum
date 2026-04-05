@@ -275,6 +275,23 @@ make test-ptui
 Each harness uses tracked references under `ptui/test/snapshots/` and should be
 run one at a time when working with tmux-backed PTUI demos.
 
+### PTUI regression harness prerequisites
+
+Required for the tmux-backed PTUI verification stack:
+
+1. `tmux`
+2. `sbcl`
+3. `python3`
+4. `diff`, `cmp`, and `rg`
+5. A login shell with those tools on `PATH`
+
+Recommended for richer screenshot diffs:
+
+1. ImageMagick `compare` for PNG diff artifacts
+
+`./bin/yarli-run-verification.sh` executes through the active login shell, so keep
+shell-provided toolchains available there.
+
 ### Update screenshot-backed visual baselines
 
 ```bash
@@ -284,6 +301,10 @@ run one at a time when working with tmux-backed PTUI demos.
 # Re-check all tracked visual references
 ./ptui/bin/capture-screenshots.sh
 ```
+
+Tracked reference artifacts live under `ptui/test/snapshots/visual/`.
+Current captures and diffs are written under `tmp/ptui-visual/<timestamp>/current/`
+and `tmp/ptui-visual/<timestamp>/diffs/`.
 
 ### Run the performance regression test
 
@@ -309,3 +330,5 @@ instructions.
 
 This runs build, tests, tmux layout/behavior/ANSI/visual regressions,
 performance smoke, and required-docs checks in sequence and prints a summary.
+The release docs/perf baseline for that checklist live in
+`ptui/docs/benchmark-story.md`.

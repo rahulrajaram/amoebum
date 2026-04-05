@@ -41,6 +41,8 @@
 (defun %parse-cli-options (argv)
   (let ((json-mode-p nil)
         (demo-mode-p nil)
+        (help-mode-p nil)
+        (version-mode-p nil)
         (command nil)
         (prompt nil)
         (resume nil)
@@ -49,6 +51,11 @@
     (loop for index from 0 below (length argv) do
       (let ((argument (or (nth index argv) "")))
         (cond
+          ((or (string= argument "--help")
+               (string= argument "-h"))
+           (setf help-mode-p t))
+          ((string= argument "--version")
+           (setf version-mode-p t))
           ((or (string= argument "--json")
                (string= argument "--non-interactive"))
            (setf json-mode-p t))
@@ -97,11 +104,47 @@
            (push (%trim-cli-arg (subseq argument (length "--image="))) image-paths)))))
     (list :json-mode-p json-mode-p
           :demo-mode-p demo-mode-p
+          :help-mode-p help-mode-p
+          :version-mode-p version-mode-p
           :command command
           :prompt prompt
           :resume resume
           :session-id session-id
           :image-paths (nreverse image-paths))))
+
+(defun %amoebum-version ()
+  (or (ignore-errors
+        (let ((system (asdf:find-system :amoebum nil)))
+          (and system (asdf:component-version system))))
+      "0.1.0"))
+
+(defun %print-cli-help ()
+  (dolist (line `("Usage:"
+                  "  amoebum"
+                  "  amoebum --demo"
+                  "  amoebum --json --prompt <text> [--image <path> ...]"
+                  "  amoebum --json --command </slash-command>"
+                  "  amoebum [--resume [latest|<session-id>]]"
+                  "  amoebum [--session-id <session-id>]"
+                  "  amoebum --help"
+                  "  amoebum --version"
+                  ""
+                  "Modes:"
+                  "  default      Launch the interactive TUI."
+                  "  --demo       Launch the interactive demo without provider credentials."
+                  "  --json       Run the machine-readable JSON CLI contract."
+                  ""
+                  "Notes:"
+                  "  Repo wrapper: ./bin/amoebum bootstraps local Yarli state first."
+                  "  Installed wrapper: amoebum runs repo-independently from the packaged image."))
+    (format t "~A~%" line))
+  (finish-output)
+  t)
+
+(defun %print-cli-version ()
+  (format t "amoebum ~A~%" (%amoebum-version))
+  (finish-output)
+  t)
 
 (defun %resolve-cli-conversation (&key session-id resume)
   (let ((trimmed-session-id (%trim-cli-arg session-id))
@@ -455,10 +498,15 @@ die without triggering GC on every frame."
 
 (defun main (&rest argv)
   (activate-amoebum-readtable)
-  (%configure-gc-tuning)
   (let ((effective-argv (or argv
                             #+sbcl (rest sb-ext:*posix-argv*)
                             #-sbcl nil)))
+    (let ((options (%parse-cli-options effective-argv)))
+      (when (getf options :help-mode-p)
+        (return-from main (%print-cli-help)))
+      (when (getf options :version-mode-p)
+        (return-from main (%print-cli-version))))
+    (%configure-gc-tuning)
     (reload-config :cli-arguments effective-argv)
     ;; Load YAML theme if not already loaded by config system
     ;; The bundled Tokyo Night theme is the default, but can be overridden via:
@@ -500,6 +548,8 @@ die without triggering GC on every frame."
     (enable-tts-post-receive-hook)
     (let* ((options (%parse-cli-options effective-argv))
            (mode (cond
+                   ((getf options :help-mode-p) :help)
+                   ((getf options :version-mode-p) :version)
                    ((getf options :json-mode-p) :json)
                    ((getf options :demo-mode-p) :demo)
                    (t :interactive)))

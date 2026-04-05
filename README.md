@@ -74,6 +74,7 @@ Four ASDF systems compose bottom-up:
 ## PTUI
 
 See `ptui/README.md` for system/module layout and how to load/run.
+Kernel/application boundary diagram: `ptui/docs/kernel-vs-app.md`.
 
 ## Installation
 
@@ -105,6 +106,11 @@ You can override install location with `INSTALL_PREFIX`, for example:
 
 1. `INSTALL_PREFIX=/usr/local/bin ./install.sh`
 
+The installed `amoebum` wrapper is intentionally repo-independent. It launches
+the installed SBCL image, supports `--help`/`--version` fast exits, and writes
+runtime logs under `~/.amoebum/runtime/`; it does not bootstrap repo-local
+`.yarli/` state.
+
 ## Quick Start
 
 From repo root:
@@ -120,23 +126,55 @@ Use the single entrypoint from repo root:
 
 Behavior:
 
-1. Runs `./bin/yarli-sanitize-continuation.sh`
-2. Runs `yarli run --stream`
-3. Rejects any subcommands/arguments
+1. Runs `./bin/yarli-bootstrap-local-state.sh`
+2. Runs `./bin/yarli-sanitize-continuation.sh`
+3. Runs `yarli run --stream`
+4. Rejects any subcommands/arguments
+
+`./bin/amoebum --help` is also a lightweight local-state smoke path: it
+bootstraps `.yarli/tranches.toml` when missing, prints usage, and exits before
+invoking `yarli run`.
+
+### Repo Wrapper vs Installed Wrapper
+
+Use the repo wrapper when you are working inside this checkout:
+
+1. `./bin/amoebum`
+2. `./bin/amoebum --help`
+3. `./bin/yarli-bootstrap-local-state.sh`
+
+This path assumes repo-local files such as `yarli.toml`, `PROMPT.md`,
+`IMPLEMENTATION_PLAN.md`, and `.yarli/`.
+
+Use the installed wrapper when you want the packaged runtime outside the repo:
+
+1. `./install.sh`
+2. `~/.local/bin/amoebum`
+
+This path launches the installed image directly, keeps logging under
+`~/.amoebum/runtime/`, supports `--help` and `--version` directly in the
+packaged binary, and does not depend on repo-local Yarli bootstrap state.
 
 ## Yarli Usage
 
 Run from repo root:
 
-1. `./bin/yarli-sanitize-continuation.sh`
-2. `yarli run --stream`
-3. If stream rendering is unavailable, Yarli falls back to headless mode and should continue emitting structured stderr progress.
+1. `./bin/yarli-bootstrap-local-state.sh`
+2. `./bin/yarli-sanitize-continuation.sh`
+3. `yarli run --stream`
+4. If stream rendering is unavailable, Yarli falls back to headless mode and should continue emitting structured stderr progress.
 
 Authority model:
 
 1. `yarli.toml` is the execution authority for Yarli runtime behavior.
 2. `PROMPT.md` is intent-only (objective/context), not an operator runbook.
 3. `IMPLEMENTATION_PLAN.md` is tranche scope/state authority.
+
+Local state model:
+
+1. `.yarli/` is ignored by git and treated as machine-local operator state.
+2. Bootstrap it with `./bin/yarli-bootstrap-local-state.sh` when missing.
+3. See `docs/yarli-local-state.md` for the tracked-versus-local ownership rules.
 
 Run and task triage:
 
@@ -166,6 +204,8 @@ Post-run memory sync:
 4. `make check-dist-ignore` verifies `dist/` is ignored and still gitignored.
 5. `make check` runs `make check-dist-ignore`, then `make test`, then `make build`.
 6. `make build` uses `bin/build-binary.sh` and resolves `QUICKLISP_SETUP` with fallback.
+7. `make yarli-bootstrap-validate` recreates local `.yarli/tranches.toml` when needed and validates it with Yarli.
+8. `./bin/yarli-local-state-regression.sh` exercises the missing-tranches bootstrap and repo-wrapper help-path smoke cases.
 
 Guard script:
 
