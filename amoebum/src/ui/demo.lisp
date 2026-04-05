@@ -221,6 +221,23 @@ I'll proceed without reading that file.")))))))
       (format nil "~%Second tool ~A. Done!"
               (if (eq (pending-approval-decision pa2) :allow) "approved" "denied")))))
 
+(defun %demo-response-scale (&key (sections 200))
+  "A very large response for scale/stress testing."
+  (with-output-to-string (out)
+    (format out "# Scale Test Response (~D sections)~%~%" sections)
+    (dotimes (i sections)
+      (format out "## Section ~D~%~%" (1+ i))
+      (format out "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ~
+Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. ~
+Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris ~
+nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in ~
+reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla ~
+pariatur.~%~%")
+      (format out "- Item A in section ~D~%" (1+ i))
+      (format out "- Item B in section ~D~%" (1+ i))
+      (format out "- Item C in section ~D~%" (1+ i))
+      (format out "- Item D in section ~D~%~%" (1+ i)))))
+
 (defun %demo-detect-response-type (prompt)
   "Return a keyword indicating which demo response to generate based on PROMPT."
   (let ((lower (string-downcase (or prompt ""))))
@@ -230,6 +247,7 @@ I'll proceed without reading that file.")))))))
       ((search "stress"  lower) :stress)
       ((search "tool"    lower) :tool)
       ((search "error"   lower) :error)
+      ((search "scale"   lower) :scale)
       ((search "long"    lower) :long)
       ((search "code"    lower) :code)
       (t                        :default))))
@@ -256,6 +274,8 @@ a canned response type, then streams chunks with small delays."
        (%demo-emit-stress-tool-calls stream-state))
       (:tool
        (%demo-emit-tool-call stream-state))
+      (:scale
+       (%demo-emit-text stream-state (%demo-response-scale)))
       (:long
        (%demo-emit-text stream-state (%demo-response-long)))
       (:code

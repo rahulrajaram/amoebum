@@ -15,6 +15,7 @@
 #   ./bin/tui-perf-test.sh --prompts 10   # send 10 long prompts
 #   ./bin/tui-perf-test.sh --watch        # pause for manual tmux attach
 #   ./bin/tui-perf-test.sh --report       # print detailed /proc snapshots
+#   ./bin/tui-perf-test.sh --scale        # append one 200-section scale prompt after normal prompts
 
 set -euo pipefail
 
@@ -27,9 +28,12 @@ ARTIFACT_DIR="$REPO_ROOT/tmp/perf-test-$$"
 NUM_PROMPTS=5
 WATCH=false
 REPORT=false
+SCALE_MODE=0
 PROMPT_KEYWORD="long"          # triggers %demo-response-long (20 sections)
+SCALE_PROMPT_KEYWORD="scale"   # triggers %demo-response-scale (200 sections)
 STARTUP_TIMEOUT=20             # seconds to wait for TUI init
 PROMPT_TIMEOUT=30              # seconds to wait for each prompt to finish
+SCALE_PROMPT_TIMEOUT=120       # seconds to wait for the 200-section scale prompt
 SAMPLE_INTERVAL=0.5            # seconds between /proc samples during streaming
 FAULT_GROWTH_THRESHOLD=3.0     # fail if minor faults/sec grow by more than this factor
 RSS_GROWTH_THRESHOLD_KB=102400 # fail if RSS grows by more than 100MB total
@@ -40,6 +44,7 @@ while [ $# -gt 0 ]; do
         --prompts) NUM_PROMPTS="$2"; shift 2 ;;
         --watch)   WATCH=true; shift ;;
         --report)  REPORT=true; shift ;;
+        --scale)   SCALE_MODE=1; shift ;;
         *)         shift ;;
     esac
 done
@@ -464,6 +469,54 @@ else
     FAILED=$((FAILED + 1))
 fi
 
+# ============================================================
+# Optional scale prompt (--scale flag)
+# ============================================================
+
+SCALE_FAULT_RATE_FULL=""
+SCALE_FAULT_RATE_STEADY=""
+SCALE_PEAK_RSS=""
+SCALE_ELAPSED=""
+SCALE_COMPLETION_KIND="skipped"
+
+if [ "$SCALE_MODE" -eq 1 ]; then
+    echo ""
+    echo "=== Scale Prompt (200 sections) ==="
+    SCALE_SAMPLE_FILE="$ARTIFACT_DIR/samples-scale.txt"
+
+    PROMPT_SECTION20_BASE_COUNT="$(capture_pane | grep -cF "Section 20" || true)"
+    SCALE_SENT_MS="$(now_ms)"
+    tmux send-keys -t "$SESSION" "$SCALE_PROMPT_KEYWORD" Enter
+
+    collect_samples "$PID" "$SCALE_PROMPT_TIMEOUT" "$SCALE_SAMPLE_FILE" &
+    SCALE_SAMPLER_PID=$!
+
+    if wait_for_prompt_cycle "$SCALE_PROMPT_TIMEOUT"; then
+        echo "  Scale response completed via status bar"
+        SCALE_COMPLETION_KIND="$PROMPT_COMPLETION_KIND"
+    else
+        echo "  WARNING: Scale response did not complete within ${SCALE_PROMPT_TIMEOUT}s"
+        SCALE_COMPLETION_KIND="timeout"
+    fi
+
+    sleep 2
+    kill "$SCALE_SAMPLER_PID" 2>/dev/null || true
+    wait "$SCALE_SAMPLER_PID" 2>/dev/null || true
+
+    SCALE_FAULT_RATE_FULL="$(compute_fault_rate "$SCALE_SAMPLE_FILE" 0)"
+    SCALE_FAULT_RATE_STEADY="$(compute_fault_rate "$SCALE_SAMPLE_FILE" "$STEADY_STATE_TRIM_SAMPLES")"
+    SCALE_PEAK_RSS="$(peak_rss "$SCALE_SAMPLE_FILE")"
+    SCALE_ELAPSED="$(seconds_between_ms "$SCALE_SENT_MS" "$PROMPT_COMPLETED_MS")"
+
+    echo "  Fault rate: full ~${SCALE_FAULT_RATE_FULL} minflt/sec | steady ~${SCALE_FAULT_RATE_STEADY} minflt/sec"
+    echo "  Peak RSS:   ${SCALE_PEAK_RSS} kB"
+    echo "  Elapsed:    ${SCALE_ELAPSED}s (${SCALE_COMPLETION_KIND})"
+    if $REPORT; then
+        echo "  Samples:    $SCALE_SAMPLE_FILE ($(wc -l < "$SCALE_SAMPLE_FILE") points)"
+    fi
+    watch_pause
+fi
+
 # Save summary
 cat > "$ARTIFACT_DIR/verdict.json" <<VERDICT
 {
@@ -481,6 +534,12 @@ cat > "$ARTIFACT_DIR/verdict.json" <<VERDICT
   "fault_growth_factor": ${GROWTH:-0},
   "steady_state_trim_samples": $STEADY_STATE_TRIM_SAMPLES,
   "min_samples_threshold": $MIN_SAMPLES_FOR_RATE,
+  "scale_mode": $SCALE_MODE,
+  "scale_fault_rate_full": "${SCALE_FAULT_RATE_FULL:-0}",
+  "scale_fault_rate_steady": "${SCALE_FAULT_RATE_STEADY:-0}",
+  "scale_peak_rss_kb": "${SCALE_PEAK_RSS:-0}",
+  "scale_elapsed_s": "${SCALE_ELAPSED:-n/a}",
+  "scale_completion": "$SCALE_COMPLETION_KIND",
   "passed": $PASSED,
   "failed": $FAILED,
   "verdict": "$([ "$FAILED" -eq 0 ] && echo "PASS" || echo "FAIL")",

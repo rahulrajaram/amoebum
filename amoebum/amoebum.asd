@@ -266,7 +266,11 @@
    (:file "test/status-bar-regression-test")
    ;; FP-Refine Phase 2: dispatch and decision logic as data
    (:file "test/argument-pattern-dispatch-test")
-   (:file "test/permission-decision-dispatch-test"))
+   (:file "test/permission-decision-dispatch-test")
+   ;; NXT-232: Keyboard accessibility / focus navigation tests
+   (:file "test/keyboard-nav-test")
+   ;; NXT-233: TUI scale / stress tests
+   (:file "test/scroll-scale-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (unless (uiop:symbol-call :amoebum/test :run-all)
