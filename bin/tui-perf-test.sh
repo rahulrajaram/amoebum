@@ -16,6 +16,7 @@
 #   ./bin/tui-perf-test.sh --watch        # pause for manual tmux attach
 #   ./bin/tui-perf-test.sh --report       # print detailed /proc snapshots
 #   ./bin/tui-perf-test.sh --scale        # append one 200-section scale prompt after normal prompts
+#   ./bin/tui-perf-test.sh --self-test    # run deterministic verdict-contract checks
 
 set -euo pipefail
 
@@ -29,6 +30,7 @@ NUM_PROMPTS=5
 WATCH=false
 REPORT=false
 SCALE_MODE=0
+SELF_TEST=false
 PROMPT_KEYWORD="long"          # triggers %demo-response-long (20 sections)
 SCALE_PROMPT_KEYWORD="scale"   # triggers %demo-response-scale (200 sections)
 STARTUP_TIMEOUT=20             # seconds to wait for TUI init
@@ -45,6 +47,7 @@ while [ $# -gt 0 ]; do
         --watch)   WATCH=true; shift ;;
         --report)  REPORT=true; shift ;;
         --scale)   SCALE_MODE=1; shift ;;
+        --self-test) SELF_TEST=true; shift ;;
         *)         shift ;;
     esac
 done
@@ -55,6 +58,143 @@ cleanup() {
 trap cleanup EXIT
 
 die() { echo "FATAL: $1" >&2; exit 1; }
+
+need_command() {
+    local name="$1"
+    command -v "$name" >/dev/null 2>&1 || die "Required command not found: $name"
+}
+
+json_bool() {
+    if [ "$1" = "true" ]; then
+        printf 'true'
+    else
+        printf 'false'
+    fi
+}
+
+scale_timeout_non_blocking_p() {
+    [ "$SCALE_MODE" -eq 1 ] && [ "$SCALE_COMPLETION_KIND" = "timeout" ]
+}
+
+scale_timeout_note() {
+    if scale_timeout_non_blocking_p; then
+        printf '%s' "optional 200-section scale prompt hit the harness timeout and remains non-blocking because the primary perf verdict was already computed from the required prompt set"
+    else
+        printf '%s' ""
+    fi
+}
+
+write_verdict_json() {
+    local verdict_path="$1"
+    local scale_timeout_non_blocking="false"
+    if scale_timeout_non_blocking_p; then
+        scale_timeout_non_blocking="true"
+    fi
+    local scale_note
+    scale_note="$(scale_timeout_note)"
+
+    cat > "$verdict_path" <<VERDICT
+{
+  "test": "tui-perf-regression",
+  "prompts": $NUM_PROMPTS,
+  "prompt_keyword": "$PROMPT_KEYWORD",
+  "pid": $PID,
+  "initial_rss_kb": $INITIAL_RSS,
+  "final_peak_rss_kb": $FINAL_RSS,
+  "rss_delta_kb": $RSS_DELTA,
+  "first_fault_rate": ${FIRST_RATE:-0},
+  "first_fault_prompt": ${FIRST_IDX:-0},
+  "last_fault_rate": ${LAST_RATE:-0},
+  "last_fault_prompt": ${LAST_IDX:-0},
+  "fault_growth_factor": ${GROWTH:-0},
+  "steady_state_trim_samples": $STEADY_STATE_TRIM_SAMPLES,
+  "min_samples_threshold": $MIN_SAMPLES_FOR_RATE,
+  "scale_mode": $SCALE_MODE,
+  "scale_timeout_seconds": $SCALE_PROMPT_TIMEOUT,
+  "scale_fault_rate_full": "${SCALE_FAULT_RATE_FULL:-0}",
+  "scale_fault_rate_steady": "${SCALE_FAULT_RATE_STEADY:-0}",
+  "scale_peak_rss_kb": "${SCALE_PEAK_RSS:-0}",
+  "scale_elapsed_s": "${SCALE_ELAPSED:-n/a}",
+  "scale_completion": "$SCALE_COMPLETION_KIND",
+  "scale_timeout_non_blocking": $(json_bool "$scale_timeout_non_blocking"),
+  "scale_note": "$scale_note",
+  "passed": $PASSED,
+  "failed": $FAILED,
+  "verdict": "$([ "$FAILED" -eq 0 ] && echo "PASS" || echo "FAIL")",
+  "prompt_metrics": [
+$(for i in $(seq 0 $((NUM_PROMPTS - 1))); do
+    comma=","
+    if [ "$i" -eq $((NUM_PROMPTS - 1)) ]; then
+        comma=""
+    fi
+    printf '    {"prompt": %s, "start_s": "%s", "section20_s": "%s", "done_s": "%s", "completion": "%s", "sample_count": %s, "fault_rate_full": %s, "fault_rate_steady": %s}%s\n' \
+        "$((i + 1))" \
+        "${STREAM_START_SECONDS[$i]}" \
+        "${SECTION20_SECONDS[$i]}" \
+        "${PROMPT_ELAPSED_SECONDS[$i]}" \
+        "${COMPLETION_KINDS[$i]}" \
+        "${SAMPLE_COUNTS[$i]}" \
+        "${FAULT_RATES_FULL[$i]}" \
+        "${FAULT_RATES_STEADY[$i]}" \
+        "$comma"
+done)
+  ]
+}
+VERDICT
+}
+
+run_self_test() {
+    need_command jq
+    local tmp_dir verdict_file
+    tmp_dir="$(mktemp -d "${REPO_ROOT}/tmp/tui-perf-self-test-XXXXXX")"
+    verdict_file="${tmp_dir}/verdict.json"
+
+    NUM_PROMPTS=2
+    PROMPT_KEYWORD="long"
+    PID=4242
+    INITIAL_RSS=1000
+    FINAL_RSS=1300
+    RSS_DELTA=300
+    FIRST_RATE=10
+    FIRST_IDX=1
+    LAST_RATE=12
+    LAST_IDX=2
+    GROWTH=1.20
+    MIN_SAMPLES_FOR_RATE=2
+    STREAM_START_SECONDS=("0.10" "0.20")
+    SECTION20_SECONDS=("0.80" "0.95")
+    PROMPT_ELAPSED_SECONDS=("1.20" "1.35")
+    COMPLETION_KINDS=("stream-done" "stream-done")
+    SAMPLE_COUNTS=(8 9)
+    FAULT_RATES_FULL=(14 16)
+    FAULT_RATES_STEADY=(10 12)
+    PASSED=3
+    FAILED=0
+
+    SCALE_MODE=1
+    SCALE_COMPLETION_KIND="timeout"
+    SCALE_FAULT_RATE_FULL="22"
+    SCALE_FAULT_RATE_STEADY="18"
+    SCALE_PEAK_RSS="1500"
+    SCALE_ELAPSED="n/a"
+    write_verdict_json "$verdict_file"
+    jq -e '.verdict == "PASS" and .scale_completion == "timeout" and .scale_timeout_non_blocking == true' \
+        "$verdict_file" >/dev/null
+    jq -e '.scale_note | contains("non-blocking")' "$verdict_file" >/dev/null
+
+    SCALE_COMPLETION_KIND="stream-done"
+    write_verdict_json "$verdict_file"
+    jq -e '.scale_completion == "stream-done" and .scale_timeout_non_blocking == false and .scale_note == ""' \
+        "$verdict_file" >/dev/null
+
+    printf '%s\n' "TUI_PERF_SELF_TEST_OK"
+    rm -rf "$tmp_dir"
+    exit 0
+}
+
+if $SELF_TEST; then
+    run_self_test
+fi
 
 watch_pause() {
     if $WATCH; then
@@ -511,6 +651,9 @@ if [ "$SCALE_MODE" -eq 1 ]; then
     echo "  Fault rate: full ~${SCALE_FAULT_RATE_FULL} minflt/sec | steady ~${SCALE_FAULT_RATE_STEADY} minflt/sec"
     echo "  Peak RSS:   ${SCALE_PEAK_RSS} kB"
     echo "  Elapsed:    ${SCALE_ELAPSED}s (${SCALE_COMPLETION_KIND})"
+    if scale_timeout_non_blocking_p; then
+        echo "  NOTE: Optional scale prompt hit ${SCALE_PROMPT_TIMEOUT}s and is recorded as a non-blocking harness limit"
+    fi
     if $REPORT; then
         echo "  Samples:    $SCALE_SAMPLE_FILE ($(wc -l < "$SCALE_SAMPLE_FILE") points)"
     fi
@@ -518,51 +661,7 @@ if [ "$SCALE_MODE" -eq 1 ]; then
 fi
 
 # Save summary
-cat > "$ARTIFACT_DIR/verdict.json" <<VERDICT
-{
-  "test": "tui-perf-regression",
-  "prompts": $NUM_PROMPTS,
-  "prompt_keyword": "$PROMPT_KEYWORD",
-  "pid": $PID,
-  "initial_rss_kb": $INITIAL_RSS,
-  "final_peak_rss_kb": $FINAL_RSS,
-  "rss_delta_kb": $RSS_DELTA,
-  "first_fault_rate": ${FIRST_RATE:-0},
-  "first_fault_prompt": ${FIRST_IDX:-0},
-  "last_fault_rate": ${LAST_RATE:-0},
-  "last_fault_prompt": ${LAST_IDX:-0},
-  "fault_growth_factor": ${GROWTH:-0},
-  "steady_state_trim_samples": $STEADY_STATE_TRIM_SAMPLES,
-  "min_samples_threshold": $MIN_SAMPLES_FOR_RATE,
-  "scale_mode": $SCALE_MODE,
-  "scale_fault_rate_full": "${SCALE_FAULT_RATE_FULL:-0}",
-  "scale_fault_rate_steady": "${SCALE_FAULT_RATE_STEADY:-0}",
-  "scale_peak_rss_kb": "${SCALE_PEAK_RSS:-0}",
-  "scale_elapsed_s": "${SCALE_ELAPSED:-n/a}",
-  "scale_completion": "$SCALE_COMPLETION_KIND",
-  "passed": $PASSED,
-  "failed": $FAILED,
-  "verdict": "$([ "$FAILED" -eq 0 ] && echo "PASS" || echo "FAIL")",
-  "prompt_metrics": [
-$(for i in $(seq 0 $((NUM_PROMPTS - 1))); do
-    comma=","
-    if [ "$i" -eq $((NUM_PROMPTS - 1)) ]; then
-        comma=""
-    fi
-    printf '    {"prompt": %s, "start_s": "%s", "section20_s": "%s", "done_s": "%s", "completion": "%s", "sample_count": %s, "fault_rate_full": %s, "fault_rate_steady": %s}%s\n' \
-        "$((i + 1))" \
-        "${STREAM_START_SECONDS[$i]}" \
-        "${SECTION20_SECONDS[$i]}" \
-        "${PROMPT_ELAPSED_SECONDS[$i]}" \
-        "${COMPLETION_KINDS[$i]}" \
-        "${SAMPLE_COUNTS[$i]}" \
-        "${FAULT_RATES_FULL[$i]}" \
-        "${FAULT_RATES_STEADY[$i]}" \
-        "$comma"
-done)
-  ]
-}
-VERDICT
+write_verdict_json "$ARTIFACT_DIR/verdict.json"
 
 echo ""
 echo "Verdict: $ARTIFACT_DIR/verdict.json"
@@ -573,6 +672,9 @@ echo "Verdict: $ARTIFACT_DIR/verdict.json"
 echo ""
 TOTAL=$((PASSED + FAILED))
 echo "TUI_PERF_TEST passed=$PASSED failed=$FAILED total=$TOTAL"
+if scale_timeout_non_blocking_p; then
+    echo "TUI_PERF_TEST_NOTE scale_timeout=non-blocking timeout_s=$SCALE_PROMPT_TIMEOUT"
+fi
 
 if [ "$FAILED" -gt 0 ]; then
     exit 1
