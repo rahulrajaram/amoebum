@@ -196,3 +196,47 @@ Each assistant message is ASSISTANT-LENGTH characters."
       (is (>= (length lines-narrow) (length lines-wide))
           "Narrow terminal (~D lines) should have >= lines than wide (~D lines)"
           (length lines-narrow) (length lines-wide)))))
+
+(test scroll-scale-demo-mode-renders-only-recent-messages
+  "Demo mode should render only the recent transcript slice so perf runs stay steady."
+  (with-safe-chat-env
+    (let* ((messages (%make-scale-conversation :pairs 5))
+           (state (%scale-test-chat-state :messages messages))
+           (chat-state (amoebum::ensure-chat-ui-state state))
+           (total-messages (length (amoebum::chat-ui-state-messages chat-state)))
+           (expected-start (- total-messages amoebum::+demo-max-ui-render-messages+)))
+      (setf (amoebum::chat-ui-state-demo-mode-p chat-state) t)
+      (let* ((entries (amoebum::%message-line-entries
+                       chat-state
+                       (amoebum::chat-ui-state-messages chat-state)
+                       84))
+             (first-entry (find-if (lambda (entry)
+                                     (let ((id (getf entry :id)))
+                                       (and (consp id)
+                                            (eq (first id) :chat-message))))
+                                   entries)))
+        (is (find :chat-skipped-messages-indicator entries :key (lambda (entry) (getf entry :id)))
+            "Demo mode should emit the skipped-history indicator once the transcript exceeds the render cap")
+        (is (equal (getf first-entry :id)
+                   (list :chat-message expected-start 0))
+            "Expected demo mode to start rendering at message index ~D, got ~S"
+            expected-start
+            (and first-entry (getf first-entry :id)))))))
+
+(test scroll-scale-demo-mode-trims-old-transcript-state
+  "Demo mode should trim older transcript state before synthetic perf turns accumulate."
+  (with-safe-chat-env
+    (let* ((messages (%make-scale-conversation :pairs 5))
+           (state (%scale-test-chat-state :messages messages))
+           (chat-state (amoebum::ensure-chat-ui-state state)))
+      (setf (amoebum::chat-ui-state-demo-mode-p chat-state) t)
+      (amoebum::%maybe-trim-demo-transcript! chat-state)
+      (let ((remaining (amoebum::chat-ui-state-messages chat-state)))
+        (is (= (length remaining) amoebum::+demo-max-ui-render-messages+)
+            "Expected demo transcript trim to keep ~D messages, got ~D"
+            amoebum::+demo-max-ui-render-messages+
+            (length remaining))
+        (is (search "User message number 4"
+                    (amoebum::%message-content->text (first remaining)))
+            "Expected trimmed demo transcript to start at the recent prompt pair, got ~S"
+            (and remaining (amoebum::%message-content->text (first remaining))))))))

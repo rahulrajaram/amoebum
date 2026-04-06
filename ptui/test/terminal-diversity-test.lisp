@@ -17,6 +17,22 @@
   (lambda (name)
     (cdr (assoc name terms :test #'string=))))
 
+(defmacro with-temp-functions (bindings &body body)
+  (let ((saved-fns
+          (loop for binding in bindings
+                collect (gensym "ORIGINAL-FN-"))))
+    `(let ,(loop for (name fn) in bindings
+                 for saved in saved-fns
+                 collect `(,saved (symbol-function ',name)))
+       (unwind-protect
+            (progn
+              ,@(loop for (name fn) in bindings
+                      collect `(setf (symbol-function ',name) ,fn))
+              ,@body)
+         ,@(loop for (name fn) in bindings
+                 for saved in saved-fns
+                 collect `(setf (symbol-function ',name) ,saved))))))
+
 ;;; -----------------------------------------------------------------------
 ;;; 1. Standard xterm profiles
 ;;; -----------------------------------------------------------------------
@@ -218,6 +234,66 @@
 ;;; -----------------------------------------------------------------------
 ;;; 6. color->sgr output across modes
 ;;; -----------------------------------------------------------------------
+
+(test ptui-backend-auto-prefers-ansi-for-truecolor-terminals
+  "AUTO backend keeps ANSI on truecolor terminals even if ncurses is present."
+  (with-temp-functions
+      ((ptui.term.caps:probe-terminal-caps
+         (lambda ()
+           (ptui.term.caps::make-terminal-caps
+            :term "xterm-256color"
+            :truecolorp t
+            :256colorp t
+            :mousep t
+            :alt-screenp t)))
+       (ptui.engine.loop::%ncurses-backend-available-p
+         (lambda ()
+           t)))
+    (is (eq :ansi (ptui.engine.loop::%resolve-backend-keyword :auto)))))
+
+(test ptui-backend-auto-selects-ncurses-when-truecolor-is-unavailable
+  "AUTO backend selects ncurses in non-truecolor environments when available."
+  (with-temp-functions
+      ((ptui.term.caps:probe-terminal-caps
+         (lambda ()
+           (ptui.term.caps::make-terminal-caps
+            :term "xterm-256color"
+            :truecolorp nil
+            :256colorp t
+            :mousep t
+            :alt-screenp t)))
+       (ptui.engine.loop::%ncurses-backend-available-p
+         (lambda ()
+           t)))
+    (is (eq :ncurses (ptui.engine.loop::%resolve-backend-keyword :auto)))))
+
+(test ptui-backend-auto-falls-back-to-ansi-without-ncurses
+  "AUTO backend falls back to ANSI when truecolor is unavailable and ncurses is absent."
+  (with-temp-functions
+      ((ptui.term.caps:probe-terminal-caps
+         (lambda ()
+           (ptui.term.caps::make-terminal-caps
+            :term "xterm-256color"
+            :truecolorp nil
+            :256colorp t
+            :mousep t
+            :alt-screenp t)))
+       (ptui.engine.loop::%ncurses-backend-available-p
+         (lambda ()
+           nil)))
+    (is (eq :ansi (ptui.engine.loop::%resolve-backend-keyword :auto)))))
+
+(test ptui-backend-explicit-keywords-bypass-auto-resolution
+  "Explicit backend keywords should pass through unchanged."
+  (with-temp-functions
+      ((ptui.term.caps:probe-terminal-caps
+         (lambda ()
+           (error "probe-terminal-caps should not run for explicit backends")))
+       (ptui.engine.loop::%ncurses-backend-available-p
+         (lambda ()
+           (error "ncurses availability should not be consulted for explicit backends"))))
+    (is (eq :ansi (ptui.engine.loop::%resolve-backend-keyword :ansi)))
+    (is (eq :ncurses (ptui.engine.loop::%resolve-backend-keyword :ncurses)))))
 
 (test ptui-sgr-pure-red-truecolor
   "Pure red (255,0,0) in truecolor mode -> 38;2;255;0;0"

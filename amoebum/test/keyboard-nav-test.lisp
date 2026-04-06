@@ -479,3 +479,76 @@
                      (and order (member focus order :test #'equal)))
                  "Expected focus-id to be NIL or valid before first render. Got: ~S"
                  focus)))))
+
+(test approval-dialog-over-history-search-preserves-picker-session
+  "An approval dialog layered over history search should leave the picker session intact until the picker itself is dismissed."
+  (with-safe-chat-env
+    (let* ((state (%safe-make-chat-ui-state :branch-name "test/kbd-nav"))
+           (runtime (amoebum::chat-ui-state-runtime state))
+           (dialog (amoebum::chat-ui-state-approval-dialog-state state))
+           (picker (amoebum::%ensure-chat-fuzzy-picker-state state)))
+      (amoebum:chat-ui-add-message state "user" "first search candidate")
+      (amoebum:chat-ui-add-message state "assistant" "second search candidate")
+      (amoebum:chat-ui-add-message state "user" "third search candidate")
+      (amoebum:chat-ui-set-input state "draft follow-up")
+      (%safe-render-chat-ui state :cols 84 :rows 24)
+      (amoebum::%chat-activate-history-search! state)
+      (setf (amoebum::fuzzy-picker-state-selected-index picker) 1)
+      (%safe-render-chat-ui state :cols 84 :rows 24)
+      (let ((original-input (amoebum::chat-ui-state-history-search-original-input state)))
+        (is-true (amoebum::chat-ui-state-history-search-active-p state)
+                 "Expected history search to be active before approval overlay.")
+        (is-true (amoebum::fuzzy-picker-state-active-p picker)
+                 "Expected picker to be active before approval overlay.")
+        (unwind-protect
+            (progn
+              (bt:with-lock-held (amoebum::*pending-approval-lock*)
+                (setf amoebum::*pending-approval*
+                      (amoebum::%make-pending-approval
+                       :tool-name "search-project"
+                       :arguments '(:query "focus")
+                       :command "search-project focus"
+                       :reason "nested overlay regression"
+                       :decision-id "kbd-nav-nested-001")))
+              (%safe-render-chat-ui state :cols 84 :rows 24)
+              (is-true (amoebum::approval-dialog-state-active-p dialog)
+                       "Expected approval dialog to activate over history search.")
+              (is-true (amoebum::fuzzy-picker-state-active-p picker)
+                       "Expected history-search picker to remain active under the approval dialog.")
+              (is (eql 1 (amoebum::fuzzy-picker-state-selected-index picker))
+                  "Expected picker selection to remain unchanged under approval overlay.")
+              (is-true (amoebum:approval-dialog-handle-key! dialog :right)
+                       "Expected approval dialog to consume top-overlay navigation.")
+              (is (eq :deny (amoebum::approval-dialog-state-selected-option dialog))
+                  "Expected approval dialog navigation to advance its own selection.")
+              (is (eql 1 (amoebum::fuzzy-picker-state-selected-index picker))
+                  "Expected picker selection to remain unchanged while approval dialog handles input.")
+              (bt:with-lock-held (amoebum::*pending-approval-lock*)
+                (setf amoebum::*pending-approval* nil))
+              (amoebum:approval-dialog-deactivate! dialog)
+              (%safe-render-chat-ui state :cols 84 :rows 24)
+              (is-true (amoebum::chat-ui-state-history-search-active-p state)
+                       "Expected history search to remain active after approval dialog dismiss.")
+              (is-true (amoebum::fuzzy-picker-state-active-p picker)
+                       "Expected picker to remain active after approval dialog dismiss.")
+              (is (string= original-input
+                           (amoebum::chat-ui-state-history-search-original-input state))
+                  "Expected the pre-search input text to survive the nested overlay round-trip.")
+              (amoebum::%chat-deactivate-history-search! state :restore-input-p t)
+              (%safe-render-chat-ui state :cols 84 :rows 24)
+              (let ((order (ptui.ui.runtime:runtime-focus-order runtime))
+                    (focus (ptui.ui.runtime:runtime-focus-id runtime)))
+                (is-false (amoebum::chat-ui-state-history-search-active-p state))
+                (is-false (amoebum::fuzzy-picker-state-active-p picker))
+                (is (string= "draft follow-up"
+                             (amoebum::chat-ui-state-input-text state)))
+                (is-true (member :chat-input order :test #'equal)
+                         "Expected :chat-input in focus order after nested overlays unwind. Got: ~S"
+                         order)
+                (is (equal :chat-input focus)
+                    "Expected focus to restore to :chat-input after nested overlays unwind. Got: ~S"
+                    focus))))
+          (bt:with-lock-held (amoebum::*pending-approval-lock*)
+            (setf amoebum::*pending-approval* nil))
+          (amoebum:approval-dialog-deactivate! dialog)
+          (amoebum::%chat-deactivate-history-search! state :restore-input-p t)))))

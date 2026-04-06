@@ -286,3 +286,52 @@
     (is (eq snapshot (amoebum::token-stream-state-stream-turn-snapshot state)))
     (amoebum::%token-stream-reset! state)
     (is (null (amoebum::token-stream-state-stream-turn-snapshot state)))))
+
+(test stream-cancel-recovery-restores-input-focus-and-status
+  "Cancelling a live stream should return control to the chat input and publish a cancelled status."
+  (let ((*default-pathname-defaults*
+          (pathname "/home/rahul/Documents/amoebum/"))
+        (amoebum::*current-config* nil))
+    (let* ((state (%safe-make-chat-ui-state :branch-name "test/stream-cancel"))
+           (runtime (amoebum::chat-ui-state-runtime state))
+           (stream-state (amoebum::chat-ui-state-stream-state state))
+           (status-state (amoebum::chat-ui-state-status-bar-state state)))
+      (amoebum:chat-ui-add-message state "user" "cancel this stream")
+      (amoebum:chat-ui-add-message state "assistant" "" :partial t)
+      (amoebum::%apply-token-stream-updates!
+       stream-state
+       (list :status :running
+             :started-ms (ptui.util.time:monotonic-ms)
+             :ended-ms 0
+             :token-count 0
+             :chunk-count 0
+             :target-message-index 1
+             :cancel-requested-p nil
+             :error-message nil
+             :budget-warning-emitted-p nil
+             :aborted-p nil
+             :abort-reason nil))
+      (amoebum:token-stream-emit-chunk stream-state "partial answer")
+      (amoebum:token-stream-request-cancel stream-state)
+      (amoebum:token-stream-mark-cancelled stream-state)
+      (amoebum::%drain-stream-events state)
+      (amoebum::%publish-status-bar-stream-summary-if-needed state)
+      (is-false (amoebum:token-stream-active-p stream-state))
+      (is (eq :cancelled
+              (getf (amoebum:token-stream-progress-summary stream-state) :status)))
+      (is-true (amoebum::chat-panel-handle-input-key state :text "x" 48)
+               "Expected text input handling to resume after stream cancellation.")
+      (is (string= "x" (amoebum::chat-ui-state-input-text state)))
+      (%safe-render-chat-ui state :cols 84 :rows 24)
+      (let ((order (ptui.ui.runtime:runtime-focus-order runtime))
+            (focus (ptui.ui.runtime:runtime-focus-id runtime))
+            (status-line (amoebum.ui:status-bar-line status-state)))
+        (is-true (member :chat-input order :test #'equal)
+                 "Expected :chat-input in focus order after stream cancellation. Got: ~S"
+                 order)
+        (is (equal :chat-input focus)
+            "Expected focus to stabilize on :chat-input after cancellation. Got: ~S"
+            focus)
+        (is (search "stream cancelled" status-line :test #'char-equal)
+            "Expected cancelled status-bar summary after cancellation. Got: ~S"
+            status-line)))))

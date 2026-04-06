@@ -12,6 +12,10 @@
 (defparameter +chat-plan-presentation-output-viewport-height+ 4)
 (defparameter +chat-plan-command-preview-max-lines+ 8)
 (defparameter +chat-plan-rationale-snippet-chars+ 160)
+(defparameter +demo-max-ui-render-messages+ 4
+  "Maximum number of transcript messages rendered in demo mode.
+Keeps the perf harness focused on steady-state rendering instead of
+replaying an ever-growing synthetic transcript.")
 (defparameter +chat-plan-command-heads+
   '("git" "make" "timeout" "sbcl" "bash" "sh" "zsh"
     "python" "python3" "pytest" "uv" "go" "cargo"
@@ -77,6 +81,7 @@
                       (stream-completion-pending-p nil)
                       (stream-status-publish-key nil)
                       (frame-count 0)
+                      (demo-mode-p nil)
                       (agentic-iteration-count 0)
                       (max-agentic-iterations-override nil)
                       (plan-selected-step-index nil)
@@ -122,6 +127,7 @@
   (stream-completion-pending-p nil)
   (stream-status-publish-key nil)
   (frame-count 0 :type fixnum)
+  (demo-mode-p nil :type boolean)
   (agentic-iteration-count 0 :type fixnum)
   (max-agentic-iterations-override nil :type (or null fixnum))
   plan-selected-step-index
@@ -249,6 +255,7 @@ Uses the per-conversation override if set, otherwise the global default."
     (setf (fuzzy-picker-state-context-label picker) "@ file/dir"
           (fuzzy-picker-state-empty-message picker) "  [none] no matching files")
     (fuzzy-picker-deactivate! picker)
+    (%prefer-chat-input-focus! chat-state)
     t))
 
 (defun %chat-sync-fuzzy-picker! (chat-state &key (step-p t))
@@ -608,6 +615,8 @@ This is a safety net to prevent the UI from becoming unresponsive."
                    'pseudopod:stream-turn-snapshot)
       (setf (chat-ui-state-stream-turn-snapshot chat-state)
             (pseudopod:make-stream-turn-snapshot)))
+    (unless (typep (chat-ui-state-demo-mode-p chat-state) 'boolean)
+      (setf (chat-ui-state-demo-mode-p chat-state) nil))
     (setf (chat-ui-state-status-bar-state chat-state)
           (ensure-status-bar-state
            (chat-ui-state-status-bar-state chat-state)
@@ -1544,10 +1553,20 @@ launched binary."
   (declare (ignore event conversation))
   (setf (chat-ui-state-stream-completion-pending-p chat-state) t))
 
+(defun %prefer-chat-input-focus! (chat-state)
+  (let ((runtime (and chat-state
+                      (chat-ui-state-runtime chat-state))))
+    (when runtime
+      ;; Preserve the operator's ability to resume typing after overlays or
+      ;; stream interruptions unwind on the next render pass.
+      (setf (ptui.ui.runtime:runtime-focus-id runtime) :chat-input)))
+  chat-state)
+
 (defun %handle-stream-cancelled-event (chat-state event conversation)
   (declare (ignore event))
   (%finalize-streaming-assistant-message chat-state :partialp t)
   (%clear-stream-tool-tracking! chat-state)
+  (%prefer-chat-input-focus! chat-state)
   (conversation-transition! conversation :idle))
 
 (defun %handle-stream-failed-event (chat-state event conversation)
@@ -1895,6 +1914,8 @@ Returns a list of strings, one per display line."
             (conversation-state-update-entry (%ensure-chat-conversation-state chat-state)
                                              target-index
                                              updated-message)))))
+    (unless partialp
+      (%maybe-trim-demo-transcript! chat-state :target-index target-index))
     (setf (chat-ui-state-stream-response-chunks chat-state) '())
     (setf (chat-ui-state-stream-scroll-follow-p chat-state) t)))
 
@@ -2149,6 +2170,9 @@ Like %start-streaming-assistant-response but without adding a new user message."
     (return-from %start-agent-continuation-stream nil))
   (let ((runner (chat-ui-state-stream-runner chat-state)))
     (when (functionp runner)
+      (%maybe-trim-demo-transcript!
+       chat-state
+       :keep-last-messages (max 1 (1- (%chat-ui-render-message-limit chat-state))))
       (let* ((history (copy-list (chat-ui-state-messages chat-state)))
              (target-index (length history))
              (stream-state (chat-ui-state-stream-state chat-state))
@@ -2412,41 +2436,45 @@ Falls back to the global *toolset* when stream-tools is nil."
              (not (token-stream-active-p (chat-ui-state-stream-state chat-state))))
     (let ((runner (chat-ui-state-stream-runner chat-state)))
       (if (functionp runner)
-          (let* ((prompt (%message-content->text user-message))
-                 (history
-                   (remove-if
-                    (lambda (message)
-                      (and (pseudopod:message-p message)
-                           (string-equal (or (pseudopod:message-role message) "")
-                                         "assistant")
-                           (%blank-string-p (%message-content->text message))))
-                    (copy-list (chat-ui-state-messages chat-state))))
-                 (target-index (length history))
-                 (stream-state (chat-ui-state-stream-state chat-state))
-                 (system-prompt (%resolve-chat-system-prompt chat-state)))
-            (setf (chat-ui-state-stream-system-prompt chat-state) system-prompt)
-            (setf (chat-ui-state-stream-scroll-follow-p chat-state) t)
-            (streaming-markdown-renderer-reset
-             (chat-ui-state-stream-markdown-renderer chat-state))
-            (setf (chat-ui-state-stream-response-chunks chat-state) '())
-            (conversation-transition! (%ensure-chat-conversation-state chat-state)
-                                      :streaming)
-            (chat-ui-add-message chat-state "assistant" "" :partial t)
-            (%clear-stream-tool-tracking! chat-state)
-            (token-stream-start
-             stream-state
-             (lambda (active-stream-state)
-               (let ((*stream-chunk-hook-callback* (%make-stream-chunk-hook-callback)))
-                 (funcall runner
-                          active-stream-state
-                          prompt
-                          history
-                          :system-prompt system-prompt
-                          :client (chat-ui-state-stream-client chat-state)
-                          :tools (%resolve-chat-tools chat-state))))
-             :target-message-index target-index
-             :budget-abort-threshold-percent
-             (%stream-budget-abort-threshold-percent chat-state)))
+          (progn
+            (%maybe-trim-demo-transcript!
+             chat-state
+             :keep-last-messages (max 1 (1- (%chat-ui-render-message-limit chat-state))))
+            (let* ((prompt (%message-content->text user-message))
+                   (history
+                     (remove-if
+                      (lambda (message)
+                        (and (pseudopod:message-p message)
+                             (string-equal (or (pseudopod:message-role message) "")
+                                           "assistant")
+                             (%blank-string-p (%message-content->text message))))
+                      (copy-list (chat-ui-state-messages chat-state))))
+                   (target-index (length history))
+                   (stream-state (chat-ui-state-stream-state chat-state))
+                   (system-prompt (%resolve-chat-system-prompt chat-state)))
+              (setf (chat-ui-state-stream-system-prompt chat-state) system-prompt)
+              (setf (chat-ui-state-stream-scroll-follow-p chat-state) t)
+              (streaming-markdown-renderer-reset
+               (chat-ui-state-stream-markdown-renderer chat-state))
+              (setf (chat-ui-state-stream-response-chunks chat-state) '())
+              (conversation-transition! (%ensure-chat-conversation-state chat-state)
+                                        :streaming)
+              (chat-ui-add-message chat-state "assistant" "" :partial t)
+              (%clear-stream-tool-tracking! chat-state)
+              (token-stream-start
+               stream-state
+               (lambda (active-stream-state)
+                 (let ((*stream-chunk-hook-callback* (%make-stream-chunk-hook-callback)))
+                   (funcall runner
+                            active-stream-state
+                            prompt
+                            history
+                            :system-prompt system-prompt
+                            :client (chat-ui-state-stream-client chat-state)
+                            :tools (%resolve-chat-tools chat-state))))
+               :target-message-index target-index
+               :budget-abort-threshold-percent
+               (%stream-budget-abort-threshold-percent chat-state))))
           (%start-step-loop-assistant-response chat-state)))))
 
 (defun %styled-segments->text (segments)
@@ -2734,6 +2762,40 @@ Displays a truecolor gradient ASCII art logo for amoebum with color fills."
    Older messages are skipped to maintain performance.
    The full history is still kept for LLM context.")
 
+(defun %chat-ui-render-message-limit (chat-state)
+  (if (chat-ui-state-demo-mode-p chat-state)
+      +demo-max-ui-render-messages+
+      +max-ui-render-messages+))
+
+(defun %maybe-trim-demo-transcript! (chat-state &key keep-last-messages target-index)
+  (let* ((message-limit (or keep-last-messages
+                            (%chat-ui-render-message-limit chat-state)))
+         (messages (chat-ui-state-messages chat-state))
+         (total-messages (length messages)))
+    (when (and (chat-ui-state-demo-mode-p chat-state)
+               (> total-messages message-limit))
+      (let* ((keep-count (max 1 message-limit))
+             (trim-count (- total-messages keep-count))
+             (trimmed-messages (copy-list (nthcdr trim-count messages)))
+             (conversation (chat-ui-state-conversation chat-state))
+             (shifted-target-index
+               (and (integerp target-index)
+                    (max 0 (- target-index trim-count)))))
+        (setf (chat-ui-state-messages chat-state) trimmed-messages
+              (chat-ui-state-message-scrollback-lines chat-state) 0
+              (chat-ui-state-max-message-scrollback-lines chat-state) 0)
+        (when (typep conversation 'conversation-state)
+          (setf (conversation-state-entries conversation)
+                (copy-list (nthcdr trim-count
+                                   (conversation-state-entries conversation)))))
+        (%invalidate-styled-lines-cache)
+        (%sync-chat-context-usage! chat-state :allow-auto-compress-p nil)
+        (when shifted-target-index
+          (setf (token-stream-state-target-message-index
+                 (chat-ui-state-stream-state chat-state))
+                shifted-target-index))
+        shifted-target-index))))
+
 (defun %message-line-entries-for-one (chat-state message index safe-width is-last-p)
   "Generate line entries for a single message in display order."
   (declare (ignore is-last-p))
@@ -2831,15 +2893,16 @@ Displays a truecolor gradient ASCII art logo for amoebum with color fills."
 
 (defun %message-entry-blocks (chat-state messages width)
   (let* ((safe-width (max 1 (1- width)))
-         (start-index (max 0 (- (length messages) +max-ui-render-messages+)))
+         (message-limit (%chat-ui-render-message-limit chat-state))
+         (start-index (max 0 (- (length messages) message-limit)))
          (total-messages (length messages))
          (blocks '())
          (total-lines 0))
     (flet ((push-block (block)
              (push block blocks)
              (incf total-lines (%message-entry-block-count block))))
-      (when (> total-messages +max-ui-render-messages+)
-        (let* ((skipped (- total-messages +max-ui-render-messages+))
+      (when (> total-messages message-limit)
+        (let* ((skipped (- total-messages message-limit))
                (entries (list (list :id :chat-skipped-messages-indicator
                                     :text (format nil " ... (~D older messages not shown) ..." skipped)
                                     :role :system)))
@@ -4492,6 +4555,7 @@ or before runtime routing has a focused target."
                 initial-state
                 (if demo
                     (make-chat-ui-state :stream-runner #'demo-stream-runner
+                                        :demo-mode-p t
                                         :stream-client nil)
                     (chat-ui-restore-latest-session (make-chat-ui-state))))))
       (checkpoint-mark-activity)

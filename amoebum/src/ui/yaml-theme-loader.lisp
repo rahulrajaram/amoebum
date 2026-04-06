@@ -95,18 +95,7 @@ Supports:
 (defun %yaml-theme-color-to-rgb-form (color-value palette-entries)
   "Convert a color value (name string or RGB string) to an (rgb r g b) form.
 Uses PALETTE-ENTRIES (alist of name -> (r g b)) for name resolution."
-  (let ((rgb
-          (cond
-            ((null color-value) nil)
-            ((and (stringp color-value)
-                  (or (char= (char color-value 0) #\#)
-                      (every (lambda (c) (digit-char-p c 16)) color-value)))
-             ;; Direct hex or RGB specification
-             (%yaml-theme-parse-color color-value))
-            ((stringp color-value)
-             ;; Palette name lookup
-             (cdr (assoc color-value palette-entries :test #'string-equal)))
-            (t nil))))
+  (let ((rgb (%yaml-theme-resolve-color-rgb color-value palette-entries)))
     (when rgb
       `(rgb ,(first rgb) ,(second rgb) ,(third rgb)))))
 
@@ -136,6 +125,62 @@ Uses PALETTE-ENTRIES (alist of name -> (r g b)) for name resolution."
     (when (hash-table-p ht)
       (maphash (lambda (k v) (push (cons k v) alist)) ht))
     (nreverse alist)))
+
+(defun %yaml-theme-resolve-color-rgb (color-value palette-entries)
+  "Resolve COLOR-VALUE to an RGB triple or NIL."
+  (cond
+    ((null color-value) nil)
+    ((stringp color-value)
+     (or (%yaml-theme-parse-color color-value)
+         (cdr (assoc color-value palette-entries :test #'string-equal))))
+    (t nil)))
+
+(defun %yaml-theme-map-like-p (value)
+  (or (hash-table-p value)
+      (listp value)))
+
+(defun %yaml-theme-validate-palette-entry! (name color-value)
+  "Signal an error when COLOR-VALUE is not a valid palette color."
+  (let* ((text (if (stringp color-value)
+                   color-value
+                   (princ-to-string color-value)))
+         (rgb (%yaml-theme-parse-color text)))
+    (unless rgb
+      (error "Invalid palette color ~S for entry ~A."
+             color-value
+             (princ-to-string name)))
+    rgb))
+
+(defun %yaml-theme-validate-role-entry! (role-name role-def palette-entries)
+  "Signal an error when ROLE-DEF contains unresolved color references."
+  (unless (%yaml-theme-map-like-p role-def)
+    (error "Invalid role definition for ~A: expected a mapping, got ~S."
+           (princ-to-string role-name)
+           role-def))
+  (dolist (field '("fg" "bg"))
+    (let ((color-value (%yaml-theme-lookup-any role-def field)))
+      (when (and color-value
+                 (null (%yaml-theme-resolve-color-rgb color-value palette-entries)))
+        (error "Unknown role color reference ~S for role ~A field ~A."
+               color-value
+               (princ-to-string role-name)
+               field)))))
+
+(defun %yaml-theme-validate! (yaml-data)
+  "Signal an error when YAML theme data contains invalid palette or role entries."
+  (let* ((palette-section (%yaml-theme-lookup-any yaml-data "palette"))
+         (roles-section (%yaml-theme-lookup-any yaml-data "roles"))
+         (palette-entries '()))
+    (when palette-section
+      (dolist (pair (%yaml-theme-hash-table->alist palette-section))
+        (push (cons (car pair)
+                    (%yaml-theme-validate-palette-entry! (car pair) (cdr pair)))
+              palette-entries)))
+    (setf palette-entries (nreverse palette-entries))
+    (when roles-section
+      (dolist (pair (%yaml-theme-hash-table->alist roles-section))
+        (%yaml-theme-validate-role-entry! (car pair) (cdr pair) palette-entries)))
+    t))
 
 ;;; ----------------------------------------------------------------------------
 ;;; Palette Translation
@@ -248,6 +293,7 @@ ROLE-ENTRY is (role-name fg-rgb bg-rgb attrs-plist)."
 (defun %yaml-theme-apply (yaml-data &key source-path)
   "Apply YAML theme data to amoebum's active theme.
 Creates and registers a new PTUI theme based on the YAML specification."
+  (%yaml-theme-validate! yaml-data)
   (let* ((metadata (%yaml-theme-parse-metadata yaml-data))
          (palette-entries (%yaml-theme-parse-palette yaml-data))
          (role-entries (%yaml-theme-parse-roles yaml-data palette-entries))
@@ -383,6 +429,16 @@ Returns (values success-p theme-name-or-error)."
           (if (fboundp '%yaml-theme-apply-with-layout)
               (%yaml-theme-apply-with-layout yaml-data :source-path theme-path)
               (%yaml-theme-apply yaml-data :source-path theme-path)))
+      (yaml.error:yaml-error (e)
+        (log-runtime-condition e
+                               :kind "yaml-theme-load-failed"
+                               :source :yaml-theme-loader
+                               :message "Failed to load YAML theme."
+                               :details (list :path theme-path
+                                              :error (princ-to-string e))
+                               :path (runtime-log-path)
+                               :include-backtrace-p nil)
+        (values nil (princ-to-string e)))
       (error (e)
         (log-runtime-condition e
                                :kind "yaml-theme-load-failed"

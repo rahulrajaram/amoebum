@@ -99,6 +99,44 @@
     (amoebum::disable-gc-telemetry)
     (is (eq nil amoebum::*gc-metrics-enabled-p*))))
 
+(test gc-nursery-megabytes-defaults-to-interactive-size
+  (let ((previous (uiop:getenv "AMOEBUM_GC_NURSERY_MB")))
+    (unwind-protect
+        (progn
+          (setf (uiop:getenv "AMOEBUM_GC_NURSERY_MB") "")
+          (is (= amoebum::+default-gc-nursery-megabytes+
+                 (amoebum::%gc-nursery-megabytes :demo-mode-p nil))))
+      (setf (uiop:getenv "AMOEBUM_GC_NURSERY_MB") (or previous "")))))
+
+(test gc-nursery-megabytes-uses-demo-default
+  (let ((previous (uiop:getenv "AMOEBUM_GC_NURSERY_MB")))
+    (unwind-protect
+        (progn
+          (setf (uiop:getenv "AMOEBUM_GC_NURSERY_MB") "")
+          (is (= amoebum::+demo-gc-nursery-megabytes+
+                 (amoebum::%gc-nursery-megabytes :demo-mode-p t))))
+      (setf (uiop:getenv "AMOEBUM_GC_NURSERY_MB") (or previous "")))))
+
+(test gc-nursery-megabytes-honors-valid-override
+  (let ((previous (uiop:getenv "AMOEBUM_GC_NURSERY_MB")))
+    (unwind-protect
+        (progn
+          (setf (uiop:getenv "AMOEBUM_GC_NURSERY_MB") "128")
+          (is (= 128
+                 (amoebum::%gc-nursery-megabytes :demo-mode-p nil)))
+          (is (= 128
+                 (amoebum::%gc-nursery-megabytes :demo-mode-p t))))
+      (setf (uiop:getenv "AMOEBUM_GC_NURSERY_MB") (or previous "")))))
+
+(test gc-nursery-megabytes-ignores-invalid-override
+  (let ((previous (uiop:getenv "AMOEBUM_GC_NURSERY_MB")))
+    (unwind-protect
+        (progn
+          (setf (uiop:getenv "AMOEBUM_GC_NURSERY_MB") "not-a-number")
+          (is (= amoebum::+demo-gc-nursery-megabytes+
+                 (amoebum::%gc-nursery-megabytes :demo-mode-p t))))
+      (setf (uiop:getenv "AMOEBUM_GC_NURSERY_MB") (or previous "")))))
+
 (test profiler-start-stop
   "sb-sprof start/stop should not crash."
   (handler-case

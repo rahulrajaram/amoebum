@@ -251,6 +251,7 @@
    (:file "test/agent-tools-test")
    ;; YAML theme tests
    (:file "test/yaml-theme-smoke-test")
+   (:file "test/yaml-theme-validation-test")
    ;; NXT-092/NXT-093: IDE context ingestion and prompt wiring
    (:file "test/ide-context-test")
    ;; NXT-094/NXT-095: IDE context integration tests and observability events
