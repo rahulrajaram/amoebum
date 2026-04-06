@@ -48,15 +48,44 @@
                 :height (max 0 height))
    :children '()))
 
+(defun %normalize-box-padding (padding)
+  "Normalize a box padding spec to a 4-tuple (top right bottom left) of non-negative integers.
+Accepts: integer (uniform), (vert horiz) list/vector, (top right bottom left) list/vector,
+or nil (treated as 0)."
+  (labels ((clamp (n) (max 0 (if (integerp n) n (round (or n 0))))))
+    (cond
+      ((null padding) (list 0 0 0 0))
+      ((integerp padding)
+       (let ((v (clamp padding))) (list v v v v)))
+      ((realp padding)
+       (let ((v (clamp padding))) (list v v v v)))
+      ((and (listp padding) (= (length padding) 2))
+       (let ((v (clamp (first padding))) (h (clamp (second padding))))
+         (list v h v h)))
+      ((and (listp padding) (= (length padding) 4))
+       (mapcar #'clamp padding))
+      ((and (vectorp padding) (= (length padding) 2))
+       (let ((v (clamp (aref padding 0))) (h (clamp (aref padding 1))))
+         (list v h v h)))
+      ((and (vectorp padding) (= (length padding) 4))
+       (list (clamp (aref padding 0)) (clamp (aref padding 1))
+             (clamp (aref padding 2)) (clamp (aref padding 3))))
+      (t (list 0 0 0 0)))))
+
 (defun make-box-widget (child &key id key (padding 0) (borderp nil) border fg bg attrs)
   "Create a box container element with optional padding and style.
 Accepted BORDER values are :rounded, :single, :double, :none, and nil/false.
-For compatibility, BORDERP continues to request default :rounded border when BORDER is NIL."
+For compatibility, BORDERP continues to request default :rounded border when BORDER is NIL.
+PADDING may be an integer (uniform), a 2-element list (vert horiz), or a
+4-element list (top right bottom left)."
   (let* ((border-value (cond
                          ((or (not (null borderp)) (and border (not (eq border :none))))
                           (or border :rounded))
                          (t nil)))
-         (props (list :padding (max 0 padding)
+         (insets (%normalize-box-padding padding))
+         (scalar-padding (if (integerp padding) (max 0 padding) (reduce #'max insets)))
+         (props (list :padding scalar-padding
+                      :padding-insets insets
                       :border border-value
                       :borderp (and border-value (not (eq border-value :none)))
                       :fg fg
@@ -176,23 +205,29 @@ SCROLL-BAR when non-nil enables a visible scrollbar on the right edge."
          (%layout-size (max min-width text-width) 1)))
       (:box
        (let* ((child (first (ptui.ui.elements:ui-element-children element)))
-              (padding (%prop element :padding 0))
+              (insets (or (%prop element :padding-insets nil)
+                          (%normalize-box-padding (%prop element :padding 0))))
+              (pad-top (first insets))
+              (pad-right (second insets))
+              (pad-bottom (third insets))
+              (pad-left (fourth insets))
               (border (%prop element :border nil))
               (border-style (if border (or border :rounded) nil))
               (borderp (and border-style
                             (not (eq border-style :none))
                             t))
               (border-extra (if borderp 2 0))
-              (pad-extra (* 2 padding))
+              (pad-extra-x (+ pad-left pad-right))
+              (pad-extra-y (+ pad-top pad-bottom))
               (inner-width (and (integerp available-width)
-                                (max 0 (- available-width pad-extra border-extra))))
+                                (max 0 (- available-width pad-extra-x border-extra))))
               (inner-height (and (integerp available-height)
-                                 (max 0 (- available-height pad-extra border-extra))))
+                                 (max 0 (- available-height pad-extra-y border-extra))))
               (child-size (if child
                               (widget-measure child inner-width inner-height)
                               (%layout-size 0 0))))
-         (%layout-size (+ (ptui.layout:layout-size-width child-size) pad-extra border-extra)
-                       (+ (ptui.layout:layout-size-height child-size) pad-extra border-extra))))
+         (%layout-size (+ (ptui.layout:layout-size-width child-size) pad-extra-x border-extra)
+                       (+ (ptui.layout:layout-size-height child-size) pad-extra-y border-extra))))
       (:stack
        (%stack-measure element available-width available-height))
       (:scroll

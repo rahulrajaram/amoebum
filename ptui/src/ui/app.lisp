@@ -305,11 +305,12 @@ Returns a space cell with that background, or NIL."
      :style style-cell
      :border-style (%normalize-box-border-style border))))
 
-(defun %paint-box-child (child buffer x y draw-width draw-height inset)
-  (let* ((inner-x (+ x inset))
-         (inner-y (+ y inset))
-         (inner-width (max 0 (- draw-width (* 2 inset))))
-         (inner-height (max 0 (- draw-height (* 2 inset)))))
+(defun %paint-box-child (child buffer x y draw-width draw-height
+                         inset-top inset-right inset-bottom inset-left)
+  (let* ((inner-x (+ x inset-left))
+         (inner-y (+ y inset-top))
+         (inner-width (max 0 (- draw-width inset-left inset-right)))
+         (inner-height (max 0 (- draw-height inset-top inset-bottom))))
     (ptui.render.buffer:with-clip
         (buffer (ptui.core.types:make-rect inner-x inner-y inner-width inner-height))
       (%paint-element child
@@ -321,18 +322,30 @@ Returns a space cell with that background, or NIL."
 
 (defun %paint-box-element (element buffer x y max-cols max-rows)
   (let* ((props (ptui.ui.elements:ui-element-props element))
-         (padding (max 0 (or (getf props :padding) 0)))
+         (insets (or (getf props :padding-insets)
+                     (let ((p (max 0 (or (getf props :padding) 0))))
+                       (list p p p p))))
+         (pad-top (first insets))
+         (pad-right (second insets))
+         (pad-bottom (third insets))
+         (pad-left (fourth insets))
          (border (getf props :border nil))
          (borderp (and border (not (eq border :none))))
          (border-width (if borderp 1 0))
-         (inset (+ padding border-width))
+         (inset-top (+ pad-top border-width))
+         (inset-right (+ pad-right border-width))
+         (inset-bottom (+ pad-bottom border-width))
+         (inset-left (+ pad-left border-width))
          (child (first (ptui.ui.elements:ui-element-children element))))
     (multiple-value-bind (draw-x draw-width draw-height)
         (%box-draw-dimensions element x y max-cols max-rows)
       (when (and borderp (> draw-width 1) (> draw-height 1))
         (%paint-box-border buffer props border draw-x y draw-width draw-height))
-      (when (and child (> draw-width (* 2 inset)) (> draw-height (* 2 inset)))
-        (%paint-box-child child buffer draw-x y draw-width draw-height inset)))))
+      (when (and child
+                 (> draw-width (+ inset-left inset-right))
+                 (> draw-height (+ inset-top inset-bottom)))
+        (%paint-box-child child buffer draw-x y draw-width draw-height
+                          inset-top inset-right inset-bottom inset-left)))))
 
 (defun %prompt-border-style (props)
   (if (eq (getf props :border-style :rounded) :square)
