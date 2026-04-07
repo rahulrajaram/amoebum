@@ -10,7 +10,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ERRORS=0
 
 collect_lisp_files() {
-    find "${REPO_ROOT}" -name '*.lisp' -not -path '*/.tools/*' -not -path '*/quicklisp/*'
+    find "${REPO_ROOT}" -type f -name '*.lisp' -not -path '*/.tools/*' -not -path '*/quicklisp/*'
 }
 
 skip_raw_delimiter_checks() {
@@ -231,6 +231,8 @@ echo ""
 # Check 2: Bracket/Brace balance
 echo "Checking bracket/brace balance..."
 for file in "${LISP_FILES[@]}"; do
+    [[ -f "$file" ]] || continue
+
     if skip_raw_delimiter_checks "$file"; then
         continue
     fi
@@ -261,6 +263,8 @@ echo ""
 # Check 3: String quote balance (basic)
 echo "Checking string quote balance..."
 for file in "${LISP_FILES[@]}"; do
+    [[ -f "$file" ]] || continue
+
     if skip_raw_delimiter_checks "$file"; then
         continue
     fi
