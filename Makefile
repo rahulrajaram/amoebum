@@ -39,6 +39,7 @@ test-ptui: prepare-quicklisp-compat
                        (load \"$(QUICKLISP_SETUP_RESOLVED)\") \
                        (setf asdf:*compile-file-warnings-behaviour* :ignore) \
                        (asdf:load-asd (truename \"$(REPO_ROOT)/ptui/ptui.asd\")) \
+                       (asdf:load-asd (truename \"$(REPO_ROOT)/ptui/ptui-preview.asd\")) \
                        (asdf:load-system :ptui/tests) \
                        (asdf:test-system :ptui/tests)))"
 
