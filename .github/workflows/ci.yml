@@ -28,6 +28,7 @@ jobs:
         run: |
           ./ptui/bin/ensure-quicklisp.sh
           ./ptui/bin/check-systems.sh
+          ./bin/tui-perf-test.sh --self-test
           ./ptui/bin/test.sh
           ./ptui/bin/build.sh
           ./ptui/bin/compliance-gate.sh
