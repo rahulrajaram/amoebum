@@ -58,6 +58,7 @@
 (test test-backend-event-injection
   (ptui.test-support.harness:with-test-terminal
       (:cols 20 :rows 5 :backend-var backend :buffer-var buffer)
+    (declare (ignore buffer))
     (is (null (ptui.backend.protocol:backend-poll-events backend)))
     (ptui.backend.test:test-backend-inject-events
      backend
