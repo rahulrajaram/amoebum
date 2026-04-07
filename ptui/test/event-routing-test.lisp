@@ -140,5 +140,19 @@
     (let ((result (funcall handler (%make-key-event :backspace) nil)))
       (is (eq result :fallback)))))
 
+(test use-event-map-binds-text-character
+  (let* ((seen nil)
+         (handler (ptui.ui.hooks:use-event-map test-text-map
+                    ((:text ch)
+                     (setf seen ch)
+                     :text-handled)
+                    (:any :fallback))))
+    (is (eq (funcall handler (%make-key-event :text :text "a") nil)
+            :text-handled))
+    (is (characterp seen))
+    (is (char= seen #\a))
+    (is (eq (funcall handler (%make-key-event :enter) nil)
+            :fallback))))
+
 (defun run-all ()
   (run! 'event-routing-suite))

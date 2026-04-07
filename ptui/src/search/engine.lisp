@@ -395,10 +395,6 @@
         (cancel-fn (search-content-options-cancel-fn options)))
     (when (and limit (< limit 0))
       (error "LIMIT must be non-negative, got ~S." limit))
-    (when (< before-context 0)
-      (error "BEFORE-CONTEXT must be non-negative, got ~S." before-context))
-    (when (< after-context 0)
-      (error "AFTER-CONTEXT must be non-negative, got ~S." after-context))
     (when on-match
       (check-type on-match function))
     (when on-progress

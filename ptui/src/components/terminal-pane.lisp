@@ -268,7 +268,7 @@
 
 (defun %plain-line-segments (line)
   (if (zerop (length line))
-      '()
+      nil
       (list (list line (style->cell (make-ansi-style))))))
 
 (defun %trim-lines+segments+metadata (lines line-segments line-metadata max-lines)
@@ -286,7 +286,7 @@
              (cond
                ((and (listp entry) entry) entry)
                (t (%plain-line-segments line))))
-           (or line-segments '())
+           line-segments
            lines)))
     (if (< (length normalized) (length lines))
         (nconc normalized
@@ -295,7 +295,7 @@
         normalized)))
 
 (defun %normalize-metadata-list (line-metadata lines)
-  (let ((incoming (copy-list (or line-metadata '()))))
+  (let ((incoming (copy-list line-metadata)))
     (loop repeat (length lines)
           for metadata = (if incoming (pop incoming) nil)
           collect (if (and (listp metadata) metadata)
@@ -322,8 +322,8 @@ Primary constructor — prefer this over raw struct access."
   (check-type max-lines (integer 1 *))
   (check-type scroll-offset (integer 0 *))
   (check-type empty-message string)
-  (let* ((normalized-lines (mapcar #'%normalize-line-text (or lines '())))
-         (normalized-segments (%normalize-segments-list '() normalized-lines))
+  (let* ((normalized-lines (mapcar #'%normalize-line-text lines))
+         (normalized-segments (%normalize-segments-list nil normalized-lines))
          (normalized-metadata (%normalize-metadata-list line-metadata normalized-lines)))
     (multiple-value-bind (trimmed-lines trimmed-segments trimmed-metadata)
         (%trim-lines+segments+metadata normalized-lines
@@ -347,13 +347,13 @@ Primary constructor — prefer this over raw struct access."
                                  :lock-indicator-p (not (null lock-indicator-p))
                                  :search-query ""
                                  :search-case-insensitive t
-                                 :search-results '()
+                                 :search-results nil
                                  :search-selected-index -1
                                  :last-copy ""
                                  :empty-message empty-message
                                  :stdin-capture-policy (%normalize-stdin-capture-policy
                                                         stdin-capture-policy)
-                                 :stdin-events '()))))
+                                 :stdin-events nil))))
 
 (defun terminal-pane-supported-contexts ()
   (copy-list (mapcar #'car +terminal-pane-context-defaults+)))
@@ -498,7 +498,7 @@ Primary constructor — prefer this over raw struct access."
 
 (defun %display-lines (state &key (include-pending t))
   (check-type state terminal-pane-state)
-  (let ((lines (copy-list (or (terminal-pane-state-lines state) '())))
+  (let ((lines (copy-list (terminal-pane-state-lines state)))
         (pending (terminal-pane-state-pending-output state)))
     (if (and include-pending
              (stringp pending)
@@ -508,7 +508,7 @@ Primary constructor — prefer this over raw struct access."
 
 (defun %display-line-segments (state &key (include-pending t))
   (check-type state terminal-pane-state)
-  (let ((segments (copy-list (or (terminal-pane-state-line-segments state) '())))
+  (let ((segments (copy-list (terminal-pane-state-line-segments state)))
         (pending (terminal-pane-state-pending-segments state)))
     (if (and include-pending
              (listp pending)
@@ -518,7 +518,7 @@ Primary constructor — prefer this over raw struct access."
 
 (defun %display-line-metadata (state &key (include-pending t))
   (check-type state terminal-pane-state)
-  (let ((metadata (copy-list (or (terminal-pane-state-line-metadata state) '())))
+  (let ((metadata (copy-list (terminal-pane-state-line-metadata state)))
         (pending (terminal-pane-state-pending-line-metadata state)))
     (if (and include-pending
              (> (length (terminal-pane-state-pending-output state)) 0))
@@ -705,7 +705,7 @@ Primary constructor — prefer this over raw struct access."
     (multiple-value-bind (start end)
         (%visible-window-range state viewport-height :include-pending include-pending)
       (if (>= start end)
-          '()
+          nil
           (subseq lines start end)))))
 
 (defun terminal-pane-visible-line-metadata (state &key (viewport-height 12) (include-pending t))
@@ -716,7 +716,7 @@ Primary constructor — prefer this over raw struct access."
     (multiple-value-bind (start end)
         (%visible-window-range state viewport-height :include-pending include-pending)
       (if (>= start end)
-          '()
+          nil
           (subseq metadata start end)))))
 
 (defun terminal-pane-visible-styled-lines (state &key (viewport-height 12) (include-pending t))
@@ -727,7 +727,7 @@ Primary constructor — prefer this over raw struct access."
     (multiple-value-bind (start end)
         (%visible-window-range state viewport-height :include-pending include-pending)
       (if (>= start end)
-          '()
+          nil
           (subseq segments start end)))))
 
 (defun terminal-pane-scroll (state delta &key (viewport-height 12))

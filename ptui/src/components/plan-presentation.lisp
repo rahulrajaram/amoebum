@@ -56,7 +56,7 @@
 
 (defun %normalize-path-list (values)
   (remove nil
-          (loop for value in (or values '())
+          (loop for value in values
                 for text = (typecase value
                              (pathname (namestring value))
                              (string value)
@@ -85,7 +85,7 @@
         value)))
 
 (defun %normalize-steps (steps)
-  (loop for step in (or steps '())
+  (loop for step in steps
         for raw-index = (if (typep step 'plan-presentation-step)
                             (plan-presentation-step-index step)
                             (getf step :index))
@@ -160,7 +160,7 @@
 
 (defun %resolve-selected-step-index (steps selected-step-index)
   (let ((indexes
-          (loop for step in (or steps '())
+          (loop for step in steps
                 for index = (plan-presentation-step-index step)
                 when (integerp index)
                   collect index)))
@@ -176,14 +176,14 @@
 (defun %find-selected-step (steps selected-step-index)
   (when (integerp selected-step-index)
     (find selected-step-index
-          (or steps '())
+          steps
           :key #'plan-presentation-step-index
           :test #'=)))
 
 (defun %steps-panel (steps selected-step-index)
   (%make-section-widget
    "Plan Steps"
-   (loop for step in (or steps '())
+   (loop for step in steps
          for step-index = (plan-presentation-step-index step)
          for selected-p = (and (integerp selected-step-index)
                                (integerp step-index)
@@ -198,7 +198,7 @@
 
 (defun %normalize-recovery-actions (recovery-actions)
   (remove nil
-          (loop for action in (or recovery-actions '())
+          (loop for action in recovery-actions
                 for text = (string-trim '(#\Space #\Tab #\Newline #\Return)
                                         (%safe-string action ""))
                 when (plusp (length text))
@@ -211,7 +211,7 @@
            :severity :info
            :style :plain
            :step-index nil
-           :recovery-actions '()))
+           :recovery-actions nil))
     ((and (listp entry)
           (or (getf entry :text)
               (getf entry :line)))
@@ -229,12 +229,12 @@
            :severity :info
            :style :plain
            :step-index nil
-           :recovery-actions '()))))
+           :recovery-actions nil))))
 
 (defun %normalize-output-line-entries (output-lines output-line-entries)
   (let ((raw-entries (if output-line-entries
                          output-line-entries
-                         (or output-lines '()))))
+                         output-lines)))
     (loop for entry in raw-entries
           for normalized = (%normalize-output-line-entry entry)
           when (plusp (length (getf normalized :text "")))
@@ -253,8 +253,7 @@
                                                    :style (or (getf entry :style) :plain)
                                                    :step-index (getf entry :step-index)
                                                    :recovery-actions (copy-list
-                                                                      (or (getf entry :recovery-actions)
-                                                                          '()))))
+                                                                      (getf entry :recovery-actions))))
                 :empty-message output-empty-message
                 :stdin-capture-policy output-stdin-capture-policy)))
     (ptui.components.terminal-pane:make-terminal-pane-widget
@@ -289,7 +288,7 @@
                                 :assistant)))))))
 
 (defun %latest-failure-entry (entries)
-  (loop for entry in (reverse (or entries '()))
+  (loop for entry in (reverse entries)
         for severity = (getf entry :severity :info)
         for step-index = (getf entry :step-index)
         when (and (member severity '(:error :critical) :test #'eq)
@@ -328,7 +327,7 @@
     (%failure-drilldown-lines steps entries)
     (when context-lines
       (cons (cons "Summary:" :system)
-            (loop for line in (or context-lines '())
+            (loop for line in context-lines
                   collect (cons (%safe-string line "") :meta)))))
    :id :plan-presentation-context
    :empty-message context-empty-message))

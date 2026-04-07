@@ -500,7 +500,7 @@
                (let ((key (directory-key directory)))
                  (unless (gethash key visited)
                    (setf (gethash key visited) t)
-                   (dolist (file (or (ignore-errors (uiop:directory-files directory)) '()))
+                   (dolist (file (ignore-errors (uiop:directory-files directory)))
                      (when (cancelled-p)
                        (setf canceled-p t)
                        (return-from visit-directory nil))
@@ -524,7 +524,7 @@
                                    (when on-match
                                      (funcall on-match entry))
                                    (maybe-prune-results)))))))))
-                   (dolist (subdir (or (ignore-errors (uiop:subdirectories directory)) '()))
+                   (dolist (subdir (ignore-errors (uiop:subdirectories directory)))
                      (when (cancelled-p)
                        (setf canceled-p t)
                        (return-from visit-directory nil))

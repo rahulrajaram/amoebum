@@ -600,7 +600,7 @@
                 (process-model-pid rhs))))))))
 
 (defun %sort-process-models (processes sort-key)
-  (stable-sort (copy-list (or processes '()))
+  (stable-sort (copy-list processes)
                (lambda (lhs rhs)
                  (%process-sort-before-p lhs rhs sort-key))))
 
