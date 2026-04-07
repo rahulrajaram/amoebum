@@ -70,6 +70,14 @@
            (json-text (string-trim '(#\Space #\Tab #\Newline #\Return) stdout)))
       (values ok (%i337-parse-json json-text)))))
 
+(defun %i337-capture-main-output (&rest args)
+  (let ((ok nil))
+    (values
+     (with-output-to-string (stream)
+       (let ((*standard-output* stream))
+         (setf ok (apply #'amoebum::main args))))
+     ok)))
+
 (test json-cli-contract-prompt-success-shape
   (with-i337-project-root (project-root)
     (let ((image-path (merge-pathnames #P"fixtures/sample.png" project-root)))
@@ -121,3 +129,17 @@
           (is (string= (gethash "status" result) "failed"))
           (is-true (search "does not exist" error-text :test #'char-equal))
           (is-true (%i337-find-event events "progress" "failed")))))))
+
+(test cli-help-fast-exit-prints-usage
+  (multiple-value-bind (output ok)
+      (%i337-capture-main-output "--help")
+    (is-true ok "Expected --help to return success.")
+    (is-true (search "Usage:" output :test #'char-equal))
+    (is-true (search "amoebum --version" output :test #'char-equal))
+    (is-false (search "Type below and press Enter" output :test #'char-equal))))
+
+(test cli-version-fast-exit-prints-version
+  (multiple-value-bind (output ok)
+      (%i337-capture-main-output "--version")
+    (is-true ok "Expected --version to return success.")
+    (is-true (search "amoebum 0.1.0" output :test #'char-equal))))

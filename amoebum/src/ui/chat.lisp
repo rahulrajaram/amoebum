@@ -12,6 +12,10 @@
 (defparameter +chat-plan-presentation-output-viewport-height+ 4)
 (defparameter +chat-plan-command-preview-max-lines+ 8)
 (defparameter +chat-plan-rationale-snippet-chars+ 160)
+(defparameter +demo-max-ui-render-messages+ 4
+  "Maximum number of transcript messages rendered in demo mode.
+Keeps the perf harness focused on steady-state rendering instead of
+replaying an ever-growing synthetic transcript.")
 (defparameter +chat-plan-command-heads+
   '("git" "make" "timeout" "sbcl" "bash" "sh" "zsh"
     "python" "python3" "pytest" "uv" "go" "cargo"
@@ -30,6 +34,9 @@
   "Last idle-seconds value reported to :on-idle hooks.")
 (defvar *chat-ui-state* nil
   "Current chat UI state for hook warning capture.")
+(defvar *%styled-lines-cache*)
+(defvar *%render-cache-owner* nil
+  "Chat state instance that currently owns the shared render caches.")
 
 (defun %make-chat-stream-tool-call-table ()
   (make-hash-table :test #'equal))
@@ -55,6 +62,7 @@
                       (stream-tools nil)
                       (stream-scroll-follow-p t)
                       (stream-markdown-renderer (make-streaming-markdown-renderer))
+                      (stream-response-chunks '())
                       (status-bar-state (make-status-bar-state))
                       (provider-dashboard-visible-p nil)
                       (conversation nil)
@@ -73,6 +81,7 @@
                       (stream-completion-pending-p nil)
                       (stream-status-publish-key nil)
                       (frame-count 0)
+                      (demo-mode-p nil)
                       (agentic-iteration-count 0)
                       (max-agentic-iterations-override nil)
                       (plan-selected-step-index nil)
@@ -98,6 +107,7 @@
   (stream-scroll-follow-p t :type boolean)
   (stream-markdown-renderer (make-streaming-markdown-renderer)
                             :type streaming-markdown-renderer)
+  (stream-response-chunks '() :type list)
   (status-bar-state (make-status-bar-state) :type status-bar-state)
   (provider-dashboard-visible-p nil :type boolean)
   (conversation nil)
@@ -117,6 +127,7 @@
   (stream-completion-pending-p nil)
   (stream-status-publish-key nil)
   (frame-count 0 :type fixnum)
+  (demo-mode-p nil :type boolean)
   (agentic-iteration-count 0 :type fixnum)
   (max-agentic-iterations-override nil :type (or null fixnum))
   plan-selected-step-index
@@ -244,6 +255,7 @@ Uses the per-conversation override if set, otherwise the global default."
     (setf (fuzzy-picker-state-context-label picker) "@ file/dir"
           (fuzzy-picker-state-empty-message picker) "  [none] no matching files")
     (fuzzy-picker-deactivate! picker)
+    (%prefer-chat-input-focus! chat-state)
     t))
 
 (defun %chat-sync-fuzzy-picker! (chat-state &key (step-p t))
@@ -440,6 +452,7 @@ Uses the per-conversation override if set, otherwise the global default."
                          :trigger trigger)))
       (setf (chat-ui-state-messages chat-state) next-messages
             (chat-ui-state-message-scrollback-lines chat-state) 0)
+      (%invalidate-styled-lines-cache)
       (%sync-chat-context-usage! chat-state :allow-auto-compress-p nil)
       (publish (%context-event-bus chat-state)
                (make-context-compressed-event
@@ -478,6 +491,53 @@ Uses the per-conversation override if set, otherwise the global default."
           (setf used (getf compression :after-tokens)))))
     used))
 
+(defun %sync-chat-context-usage-append! (chat-state new-message
+                                          &key (allow-auto-compress-p t))
+  (let* ((config (%chat-config))
+         (model (%chat-model-name chat-state config))
+         (limit (%chat-context-window-limit model config))
+         (old-used (or (chat-ui-state-context-used-tokens chat-state) 0))
+         (used (+ old-used (count-tokens new-message :model model)))
+         (status-state (chat-ui-state-status-bar-state chat-state)))
+    (setf (chat-ui-state-context-used-tokens chat-state) used
+          (chat-ui-state-context-window-limit chat-state) limit)
+    (when (typep status-state 'status-bar-state)
+      (setf (status-bar-state-model-name status-state) model
+            (status-bar-state-context-used-tokens status-state) used
+            (status-bar-state-context-max-tokens status-state) limit))
+    (when (and allow-auto-compress-p
+               (context-compression-required-p used limit)
+               (>= (- (length (chat-ui-state-messages chat-state))
+                      (%keep-last-message-count +context-compression-default-keep-last-turns+))
+                   +context-compression-min-summarized-messages+))
+      (return-from %sync-chat-context-usage-append!
+        (%sync-chat-context-usage! chat-state :allow-auto-compress-p t)))
+    used))
+
+(defun %sync-chat-context-usage-replacement! (chat-state old-message new-message
+                                               &key (allow-auto-compress-p t))
+  (let* ((config (%chat-config))
+         (model (%chat-model-name chat-state config))
+         (limit (%chat-context-window-limit model config))
+         (old-used (or (chat-ui-state-context-used-tokens chat-state) 0))
+         (used (+ (max 0 (- old-used (count-tokens old-message :model model)))
+                  (count-tokens new-message :model model)))
+         (status-state (chat-ui-state-status-bar-state chat-state)))
+    (setf (chat-ui-state-context-used-tokens chat-state) used
+          (chat-ui-state-context-window-limit chat-state) limit)
+    (when (typep status-state 'status-bar-state)
+      (setf (status-bar-state-model-name status-state) model
+            (status-bar-state-context-used-tokens status-state) used
+            (status-bar-state-context-max-tokens status-state) limit))
+    (when (and allow-auto-compress-p
+               (context-compression-required-p used limit)
+               (>= (- (length (chat-ui-state-messages chat-state))
+                      (%keep-last-message-count +context-compression-default-keep-last-turns+))
+                   +context-compression-min-summarized-messages+))
+      (return-from %sync-chat-context-usage-replacement!
+        (%sync-chat-context-usage! chat-state :allow-auto-compress-p t)))
+    used))
+
 (defun %sync-all-state! (chat-state)
   "Single sync point: calls each state-sync function exactly once in the
 correct order.  Replaces the previous scattered sync calls in
@@ -489,7 +549,6 @@ render-chat-ui-buffer, handle-chat-ui-event, and defpanel effects."
   (%drain-stream-events chat-state)
   (%sync-pending-approval-dialog! chat-state)
   (%publish-status-bar-stream-summary-if-needed chat-state)
-  (%sync-chat-context-usage! chat-state)
   (%emit-stream-budget-warning-if-needed chat-state)
   (%chat-sync-fuzzy-picker! chat-state)
   (%run-chat-idle-hooks-if-needed))
@@ -514,6 +573,9 @@ This is a safety net to prevent the UI from becoming unresponsive."
           (if (and state (typep state 'chat-ui-state))
               state
               (make-chat-ui-state :runtime (ptui.ui.runtime:make-runtime)))))
+    (unless (eq chat-state *%render-cache-owner*)
+      (setf *%render-cache-owner* chat-state)
+      (%invalidate-styled-lines-cache))
     (when (null (chat-ui-state-runtime chat-state))
       (setf (chat-ui-state-runtime chat-state) (ptui.ui.runtime:make-runtime)))
     (unless (typep (chat-ui-state-stream-state chat-state) 'token-stream-state)
@@ -531,6 +593,8 @@ This is a safety net to prevent the UI from becoming unresponsive."
                    'streaming-markdown-renderer)
       (setf (chat-ui-state-stream-markdown-renderer chat-state)
             (make-streaming-markdown-renderer)))
+    (unless (listp (chat-ui-state-stream-response-chunks chat-state))
+      (setf (chat-ui-state-stream-response-chunks chat-state) '()))
     (unless (typep (chat-ui-state-history-search-active-p chat-state) 'boolean)
       (setf (chat-ui-state-history-search-active-p chat-state) nil))
     (unless (stringp (chat-ui-state-history-search-original-input chat-state))
@@ -551,6 +615,8 @@ This is a safety net to prevent the UI from becoming unresponsive."
                    'pseudopod:stream-turn-snapshot)
       (setf (chat-ui-state-stream-turn-snapshot chat-state)
             (pseudopod:make-stream-turn-snapshot)))
+    (unless (typep (chat-ui-state-demo-mode-p chat-state) 'boolean)
+      (setf (chat-ui-state-demo-mode-p chat-state) nil))
     (setf (chat-ui-state-status-bar-state chat-state)
           (ensure-status-bar-state
            (chat-ui-state-status-bar-state chat-state)
@@ -573,6 +639,7 @@ This is a safety net to prevent the UI from becoming unresponsive."
             (chat-ui-state-messages chat-state) (conversation-state-messages restored)
             (chat-ui-state-message-scrollback-lines chat-state) 0
             (chat-ui-state-max-message-scrollback-lines chat-state) 0)
+      (%invalidate-styled-lines-cache)
       (%sync-chat-context-usage! chat-state :allow-auto-compress-p nil))
     chat-state))
 
@@ -598,7 +665,6 @@ This is a safety net to prevent the UI from becoming unresponsive."
 (defun chat-ui-append-message (state message)
   (check-type message pseudopod:message)
   (let ((chat-state (ensure-chat-ui-state state)))
-    (%invalidate-styled-lines-cache)
     (conversation-state-add-message (%ensure-chat-conversation-state chat-state)
                                     message
                                     :save-p t)
@@ -611,7 +677,7 @@ This is a safety net to prevent the UI from becoming unresponsive."
     (when (or (zerop (chat-ui-state-message-scrollback-lines chat-state))
               (chat-ui-state-stream-scroll-follow-p chat-state))
       (setf (chat-ui-state-message-scrollback-lines chat-state) 0))
-    (%sync-chat-context-usage! chat-state)
+    (%sync-chat-context-usage-append! chat-state message)
     message))
 
 (defun chat-ui-add-message (state role content &key name tool-calls partial)
@@ -1147,54 +1213,54 @@ launched binary."
 
 (defun %maybe-finalize-streaming-assistant-on-complete (chat-state)
   (let* ((conversation (%ensure-chat-conversation-state chat-state))
-         (assistant-response (%stream-target-assistant-response chat-state))
          (tool-call-entries (%collect-stream-tool-calls chat-state))
          (malformed-names (%collect-malformed-tool-calls chat-state)))
     (setf (chat-ui-state-stream-completion-pending-p chat-state) nil)
     (when tool-call-entries
       (%set-assistant-message-tool-calls! chat-state tool-call-entries))
     (%finalize-streaming-assistant-message chat-state :partialp nil)
-    (when (and assistant-response
-               (plan-mode-active-p))
-      (ignore-errors
-        (capture-plan-steps-from-response
-         (%message-content->text assistant-response)
-         :state (current-plan-mode-state))))
-    (cond
-      ;; Malformed tool calls (missing tool_call_id) — ask LLM to retry
-      ((and malformed-names
-            (< (chat-ui-state-agentic-iteration-count chat-state)
-               (%chat-effective-max-iterations chat-state)))
-       ;; Append results for any valid tool calls that did execute
-       (when tool-call-entries
-         (%append-tool-result-messages! chat-state tool-call-entries))
-       (chat-ui-add-message chat-state "user"
-                            (%malformed-tool-call-retry-message malformed-names))
-       (%clear-stream-tool-tracking! chat-state)
-       (incf (chat-ui-state-agentic-iteration-count chat-state))
-       (%start-agent-continuation-stream chat-state))
-      ;; Normal tool call continuation
-      ((and tool-call-entries
-            (< (chat-ui-state-agentic-iteration-count chat-state)
-               (%chat-effective-max-iterations chat-state)))
-       (%append-tool-result-messages! chat-state tool-call-entries)
-       (%clear-stream-tool-tracking! chat-state)
-       (incf (chat-ui-state-agentic-iteration-count chat-state))
-       (%start-agent-continuation-stream chat-state))
-      ;; Max iterations reached
-      (tool-call-entries
-       (%append-tool-result-messages! chat-state tool-call-entries)
-       (%clear-stream-tool-tracking! chat-state)
-       (chat-ui-add-message chat-state "assistant"
-                            "[Agentic loop stopped: max iterations reached]")
-       (conversation-transition! conversation :idle)
-       (%checkpoint-after-turn chat-state conversation))
-      ;; Normal text-only response
-      (t
-       (%clear-stream-tool-tracking! chat-state)
-       (%emit-post-receive-hook assistant-response)
-       (conversation-transition! conversation :idle)
-       (%checkpoint-after-turn chat-state conversation)))))
+    (let ((assistant-response (%stream-target-assistant-response chat-state)))
+      (when (and assistant-response
+                 (plan-mode-active-p))
+        (ignore-errors
+          (capture-plan-steps-from-response
+           (%message-content->text assistant-response)
+           :state (current-plan-mode-state))))
+      (cond
+        ;; Malformed tool calls (missing tool_call_id) — ask LLM to retry
+        ((and malformed-names
+              (< (chat-ui-state-agentic-iteration-count chat-state)
+                 (%chat-effective-max-iterations chat-state)))
+         ;; Append results for any valid tool calls that did execute
+         (when tool-call-entries
+           (%append-tool-result-messages! chat-state tool-call-entries))
+         (chat-ui-add-message chat-state "user"
+                              (%malformed-tool-call-retry-message malformed-names))
+         (%clear-stream-tool-tracking! chat-state)
+         (incf (chat-ui-state-agentic-iteration-count chat-state))
+         (%start-agent-continuation-stream chat-state))
+        ;; Normal tool call continuation
+        ((and tool-call-entries
+              (< (chat-ui-state-agentic-iteration-count chat-state)
+                 (%chat-effective-max-iterations chat-state)))
+         (%append-tool-result-messages! chat-state tool-call-entries)
+         (%clear-stream-tool-tracking! chat-state)
+         (incf (chat-ui-state-agentic-iteration-count chat-state))
+         (%start-agent-continuation-stream chat-state))
+        ;; Max iterations reached
+        (tool-call-entries
+         (%append-tool-result-messages! chat-state tool-call-entries)
+         (%clear-stream-tool-tracking! chat-state)
+         (chat-ui-add-message chat-state "assistant"
+                              "[Agentic loop stopped: max iterations reached]")
+         (conversation-transition! conversation :idle)
+         (%checkpoint-after-turn chat-state conversation))
+        ;; Normal text-only response
+        (t
+         (%clear-stream-tool-tracking! chat-state)
+         (%emit-post-receive-hook assistant-response)
+         (conversation-transition! conversation :idle)
+         (%checkpoint-after-turn chat-state conversation))))))
 
 (defun %checkpoint-after-turn (chat-state conversation)
   "Fire an auto-checkpoint after a completed agent interaction turn."
@@ -1487,10 +1553,20 @@ launched binary."
   (declare (ignore event conversation))
   (setf (chat-ui-state-stream-completion-pending-p chat-state) t))
 
+(defun %prefer-chat-input-focus! (chat-state)
+  (let ((runtime (and chat-state
+                      (chat-ui-state-runtime chat-state))))
+    (when runtime
+      ;; Preserve the operator's ability to resume typing after overlays or
+      ;; stream interruptions unwind on the next render pass.
+      (setf (ptui.ui.runtime:runtime-focus-id runtime) :chat-input)))
+  chat-state)
+
 (defun %handle-stream-cancelled-event (chat-state event conversation)
   (declare (ignore event))
   (%finalize-streaming-assistant-message chat-state :partialp t)
   (%clear-stream-tool-tracking! chat-state)
+  (%prefer-chat-input-focus! chat-state)
   (conversation-transition! conversation :idle))
 
 (defun %handle-stream-failed-event (chat-state event conversation)
@@ -1746,6 +1822,29 @@ Returns a list of strings, one per display line."
                           :key (lambda (entry) (princ-to-string (getf entry :id)))))
     (nreverse entries)))
 
+(defun %stream-response-text (chat-state)
+  (let ((chunks (chat-ui-state-stream-response-chunks chat-state)))
+    (if (null chunks)
+        ""
+        (with-output-to-string (out)
+          (dolist (chunk (nreverse (copy-list chunks)))
+            (when (stringp chunk)
+              (write-string chunk out)))))))
+
+(defun %prime-finalized-streaming-assistant-cache! (chat-state target-index)
+  (let* ((renderer (chat-ui-state-stream-markdown-renderer chat-state))
+         (content-width (and (typep renderer 'streaming-markdown-renderer)
+                             (streaming-markdown-renderer-width renderer))))
+    (when (and (integerp target-index)
+               (integerp content-width)
+               (> content-width 0))
+      (setf (gethash (cons target-index content-width)
+                     *%styled-lines-cache*)
+            (streaming-markdown-renderer-render-lines renderer
+                                                      content-width
+                                                      :partialp nil
+                                                      :cursor-visible-p nil)))))
+
 (defun %set-streaming-assistant-message (chat-state target-index text &key partialp)
   (let ((messages (chat-ui-state-messages chat-state)))
     (when (and (integerp target-index)
@@ -1761,11 +1860,20 @@ Returns a list of strings, one per display line."
         (when existing-tool-calls
           (setf (pseudopod:message-tool-calls assistant-message)
                 existing-tool-calls))
-        (%replace-message-at-index! messages target-index assistant-message))
+        (%replace-message-at-index! messages target-index assistant-message)
+        (%sync-chat-context-usage-replacement! chat-state existing assistant-message))
       (when (chat-ui-state-stream-scroll-follow-p chat-state)
         (setf (chat-ui-state-message-scrollback-lines chat-state) 0))
-      (%sync-chat-context-usage! chat-state)
       t)))
+
+(defun %materialize-streaming-assistant-message! (chat-state &key partialp)
+  (let* ((stream-state (chat-ui-state-stream-state chat-state))
+         (target-index (token-stream-state-target-message-index stream-state)))
+    (when (integerp target-index)
+      (%set-streaming-assistant-message chat-state
+                                        target-index
+                                        (%stream-response-text chat-state)
+                                        :partialp partialp))))
 
 (defun %append-streaming-assistant-chunk (chat-state chunk)
   (let* ((stream-state (chat-ui-state-stream-state chat-state))
@@ -1774,13 +1882,15 @@ Returns a list of strings, one per display line."
     (when (and (integerp target-index)
                (>= target-index 0)
                (< target-index (length messages)))
-      (let* ((message (nth target-index messages))
-             (current-text (%message-content->text message))
-             (next-text (concatenate 'string current-text (or chunk ""))))
+      (when (and (stringp chunk)
+                 (plusp (length chunk)))
+        (push chunk (chat-ui-state-stream-response-chunks chat-state)))
+      (when (chat-ui-state-stream-scroll-follow-p chat-state)
+        (setf (chat-ui-state-message-scrollback-lines chat-state) 0))
+      (when (stringp chunk)
         (streaming-markdown-renderer-append-chunk
          (chat-ui-state-stream-markdown-renderer chat-state)
-         chunk)
-        (%set-streaming-assistant-message chat-state target-index next-text :partialp t)))))
+         chunk)))))
 
 (defun %finalize-streaming-assistant-message (chat-state &key partialp)
   (let* ((stream-state (chat-ui-state-stream-state chat-state))
@@ -1789,9 +1899,10 @@ Returns a list of strings, one per display line."
     (when (and (integerp target-index)
                (>= target-index 0)
                (< target-index (length messages)))
-      (let* ((message (nth target-index messages))
-             (text (%message-content->text message)))
+      (let ((text (%stream-response-text chat-state)))
         (%set-streaming-assistant-message chat-state target-index text :partialp partialp)
+        (unless partialp
+          (%prime-finalized-streaming-assistant-cache! chat-state target-index))
         (when (not partialp)
           (%record-chat-stream-event! chat-state '(:kind :answer-finalized)))
         (let* ((updated-messages (chat-ui-state-messages chat-state))
@@ -1803,6 +1914,9 @@ Returns a list of strings, one per display line."
             (conversation-state-update-entry (%ensure-chat-conversation-state chat-state)
                                              target-index
                                              updated-message)))))
+    (unless partialp
+      (%maybe-trim-demo-transcript! chat-state :target-index target-index))
+    (setf (chat-ui-state-stream-response-chunks chat-state) '())
     (setf (chat-ui-state-stream-scroll-follow-p chat-state) t)))
 
 (defun %stream-target-assistant-response (chat-state)
@@ -1904,7 +2018,8 @@ Returns a list of strings, one per display line."
                                  "Budget exhausted. Returning a bounded partial result.")))
          (%append-streaming-assistant-chunk
           chat-state
-          (format nil "~%[budget exhausted] ~A~%" partial-output)))
+          (format nil "~%[budget exhausted] ~A~%" partial-output))
+         (%materialize-streaming-assistant-message! chat-state :partialp t))
        (token-stream-abort stream-state :budget-exhausted)
        t)
       (:abort-task
@@ -1912,7 +2027,8 @@ Returns a list of strings, one per display line."
                          "Budget exhausted; task aborted.")))
          (%append-streaming-assistant-chunk
           chat-state
-          (format nil "~%[budget exhausted] ~A~%" reason)))
+          (format nil "~%[budget exhausted] ~A~%" reason))
+         (%materialize-streaming-assistant-message! chat-state :partialp t))
        (token-stream-abort stream-state :budget-exhausted)
        t)
       (otherwise
@@ -2054,6 +2170,9 @@ Like %start-streaming-assistant-response but without adding a new user message."
     (return-from %start-agent-continuation-stream nil))
   (let ((runner (chat-ui-state-stream-runner chat-state)))
     (when (functionp runner)
+      (%maybe-trim-demo-transcript!
+       chat-state
+       :keep-last-messages (max 1 (1- (%chat-ui-render-message-limit chat-state))))
       (let* ((history (copy-list (chat-ui-state-messages chat-state)))
              (target-index (length history))
              (stream-state (chat-ui-state-stream-state chat-state))
@@ -2061,6 +2180,7 @@ Like %start-streaming-assistant-response but without adding a new user message."
         (setf (chat-ui-state-stream-scroll-follow-p chat-state) t)
         (streaming-markdown-renderer-reset
          (chat-ui-state-stream-markdown-renderer chat-state))
+        (setf (chat-ui-state-stream-response-chunks chat-state) '())
         (conversation-transition! (%ensure-chat-conversation-state chat-state)
                                   :streaming)
         (chat-ui-add-message chat-state "assistant" "" :partial t)
@@ -2316,40 +2436,45 @@ Falls back to the global *toolset* when stream-tools is nil."
              (not (token-stream-active-p (chat-ui-state-stream-state chat-state))))
     (let ((runner (chat-ui-state-stream-runner chat-state)))
       (if (functionp runner)
-          (let* ((prompt (%message-content->text user-message))
-                 (history
-                   (remove-if
-                    (lambda (message)
-                      (and (pseudopod:message-p message)
-                           (string-equal (or (pseudopod:message-role message) "")
-                                         "assistant")
-                           (%blank-string-p (%message-content->text message))))
-                    (copy-list (chat-ui-state-messages chat-state))))
-                 (target-index (length history))
-                 (stream-state (chat-ui-state-stream-state chat-state))
-                 (system-prompt (%resolve-chat-system-prompt chat-state)))
-            (setf (chat-ui-state-stream-system-prompt chat-state) system-prompt)
-            (setf (chat-ui-state-stream-scroll-follow-p chat-state) t)
-            (streaming-markdown-renderer-reset
-             (chat-ui-state-stream-markdown-renderer chat-state))
-            (conversation-transition! (%ensure-chat-conversation-state chat-state)
-                                      :streaming)
-            (chat-ui-add-message chat-state "assistant" "" :partial t)
-            (%clear-stream-tool-tracking! chat-state)
-            (token-stream-start
-             stream-state
-             (lambda (active-stream-state)
-               (let ((*stream-chunk-hook-callback* (%make-stream-chunk-hook-callback)))
-                 (funcall runner
-                          active-stream-state
-                          prompt
-                          history
-                          :system-prompt system-prompt
-                          :client (chat-ui-state-stream-client chat-state)
-                          :tools (%resolve-chat-tools chat-state))))
-             :target-message-index target-index
-             :budget-abort-threshold-percent
-             (%stream-budget-abort-threshold-percent chat-state)))
+          (progn
+            (%maybe-trim-demo-transcript!
+             chat-state
+             :keep-last-messages (max 1 (1- (%chat-ui-render-message-limit chat-state))))
+            (let* ((prompt (%message-content->text user-message))
+                   (history
+                     (remove-if
+                      (lambda (message)
+                        (and (pseudopod:message-p message)
+                             (string-equal (or (pseudopod:message-role message) "")
+                                           "assistant")
+                             (%blank-string-p (%message-content->text message))))
+                      (copy-list (chat-ui-state-messages chat-state))))
+                   (target-index (length history))
+                   (stream-state (chat-ui-state-stream-state chat-state))
+                   (system-prompt (%resolve-chat-system-prompt chat-state)))
+              (setf (chat-ui-state-stream-system-prompt chat-state) system-prompt)
+              (setf (chat-ui-state-stream-scroll-follow-p chat-state) t)
+              (streaming-markdown-renderer-reset
+               (chat-ui-state-stream-markdown-renderer chat-state))
+              (setf (chat-ui-state-stream-response-chunks chat-state) '())
+              (conversation-transition! (%ensure-chat-conversation-state chat-state)
+                                        :streaming)
+              (chat-ui-add-message chat-state "assistant" "" :partial t)
+              (%clear-stream-tool-tracking! chat-state)
+              (token-stream-start
+               stream-state
+               (lambda (active-stream-state)
+                 (let ((*stream-chunk-hook-callback* (%make-stream-chunk-hook-callback)))
+                   (funcall runner
+                            active-stream-state
+                            prompt
+                            history
+                            :system-prompt system-prompt
+                            :client (chat-ui-state-stream-client chat-state)
+                            :tools (%resolve-chat-tools chat-state))))
+               :target-message-index target-index
+               :budget-abort-threshold-percent
+               (%stream-budget-abort-threshold-percent chat-state))))
           (%start-step-loop-assistant-response chat-state)))))
 
 (defun %styled-segments->text (segments)
@@ -2422,6 +2547,15 @@ Key: (message-content-hash . width), Value: wrapped-lines list.")
 
 (defun %invalidate-message-entry-cache ()
   (clrhash *%message-entry-cache*))
+
+(defun %make-message-entry-block (entries)
+  (cons (length entries) entries))
+
+(defun %message-entry-block-count (block)
+  (car block))
+
+(defun %message-entry-block-entries (block)
+  (cdr block))
 
 (defun %assistant-message-styled-lines (chat-state message message-index content-width)
   (let* ((stream-state (chat-ui-state-stream-state chat-state))
@@ -2628,9 +2762,43 @@ Displays a truecolor gradient ASCII art logo for amoebum with color fills."
    Older messages are skipped to maintain performance.
    The full history is still kept for LLM context.")
 
+(defun %chat-ui-render-message-limit (chat-state)
+  (if (chat-ui-state-demo-mode-p chat-state)
+      +demo-max-ui-render-messages+
+      +max-ui-render-messages+))
+
+(defun %maybe-trim-demo-transcript! (chat-state &key keep-last-messages target-index)
+  (let* ((message-limit (or keep-last-messages
+                            (%chat-ui-render-message-limit chat-state)))
+         (messages (chat-ui-state-messages chat-state))
+         (total-messages (length messages)))
+    (when (and (chat-ui-state-demo-mode-p chat-state)
+               (> total-messages message-limit))
+      (let* ((keep-count (max 1 message-limit))
+             (trim-count (- total-messages keep-count))
+             (trimmed-messages (copy-list (nthcdr trim-count messages)))
+             (conversation (chat-ui-state-conversation chat-state))
+             (shifted-target-index
+               (and (integerp target-index)
+                    (max 0 (- target-index trim-count)))))
+        (setf (chat-ui-state-messages chat-state) trimmed-messages
+              (chat-ui-state-message-scrollback-lines chat-state) 0
+              (chat-ui-state-max-message-scrollback-lines chat-state) 0)
+        (when (typep conversation 'conversation-state)
+          (setf (conversation-state-entries conversation)
+                (copy-list (nthcdr trim-count
+                                   (conversation-state-entries conversation)))))
+        (%invalidate-styled-lines-cache)
+        (%sync-chat-context-usage! chat-state :allow-auto-compress-p nil)
+        (when shifted-target-index
+          (setf (token-stream-state-target-message-index
+                 (chat-ui-state-stream-state chat-state))
+                shifted-target-index))
+        shifted-target-index))))
+
 (defun %message-line-entries-for-one (chat-state message index safe-width is-last-p)
-  "Generate line entries for a single message.  Returns a list of entries (in
-reverse order, caller will nreverse the combined result)."
+  "Generate line entries for a single message in display order."
+  (declare (ignore is-last-p))
   (let ((entries '()))
     (let* ((role (%normalize-chat-role (pseudopod:message-role message)))
            (role-key (intern (string-upcase role) :keyword))
@@ -2692,12 +2860,7 @@ reverse order, caller will nreverse the combined result)."
                                    :role role-key
                                    :styled-segments segments)
                              entries)))))
-      (unless is-last-p
-        (push (list :id (list :chat-gap index)
-                    :text ""
-                    :role :meta)
-              entries)))
-    entries))
+    (nreverse entries))))
 
 (defun %message-entry-cacheable-p (chat-state message)
   "A message is cacheable if it is NOT the active streaming target."
@@ -2707,57 +2870,126 @@ reverse order, caller will nreverse the combined result)."
 
 (defun %get-cached-message-entries (index width)
   (when (boundp '*%message-entry-cache*)
-    (gethash (cons index width) *%message-entry-cache*)))
+    (gethash (cons index width)
+             *%message-entry-cache*)))
 
-(defun %set-cached-message-entries (index width entries)
+(defun %set-cached-message-entries (index width block)
   (when (boundp '*%message-entry-cache*)
-    (setf (gethash (cons index width) *%message-entry-cache*) entries)))
+    (setf (gethash (cons index width)
+                   *%message-entry-cache*)
+          block)))
+
+(defun %message-gap-block (index)
+  (%make-message-entry-block
+   (list (list :id (list :chat-gap index)
+               :text ""
+               :role :meta))))
+
+(defun %message-preview-entry (preview)
+  (let ((entry (copy-list preview)))
+    (setf (getf entry :text)
+          (%with-left-gutter (getf preview :text "")))
+    entry))
+
+(defun %message-entry-blocks (chat-state messages width)
+  (let* ((safe-width (max 1 (1- width)))
+         (message-limit (%chat-ui-render-message-limit chat-state))
+         (start-index (max 0 (- (length messages) message-limit)))
+         (total-messages (length messages))
+         (blocks '())
+         (total-lines 0))
+    (flet ((push-block (block)
+             (push block blocks)
+             (incf total-lines (%message-entry-block-count block))))
+      (when (> total-messages message-limit)
+        (let* ((skipped (- total-messages message-limit))
+               (entries (list (list :id :chat-skipped-messages-indicator
+                                    :text (format nil " ... (~D older messages not shown) ..." skipped)
+                                    :role :system)))
+               (block (%make-message-entry-block entries)))
+          (push-block block)))
+      (loop for index from start-index below total-messages
+            for message in (nthcdr start-index messages)
+            do
+               (let* ((is-last-p (= index (1- total-messages)))
+                      (cacheable (%message-entry-cacheable-p chat-state message))
+                      (cached-block (and cacheable
+                                         (%get-cached-message-entries
+                                          index
+                                          safe-width)))
+                      (msg-block
+                        (or cached-block
+                            (let* ((fresh-entries (%message-line-entries-for-one
+                                                   chat-state message index safe-width is-last-p))
+                                   (fresh-block (%make-message-entry-block fresh-entries)))
+                              (when cacheable
+                                (%set-cached-message-entries
+                                 index
+                                 safe-width
+                                 fresh-block))
+                              fresh-block))))
+                 (push-block msg-block)
+                 (unless is-last-p
+                   (push-block (%message-gap-block index)))))
+      (let ((preview-lines (%stream-tool-call-preview-lines chat-state safe-width)))
+        (when preview-lines
+          (when (> total-lines 0)
+            (let ((gap-block (%make-message-entry-block
+                              (list (list :id :chat-stream-tool-gap :text "" :role :meta)))))
+              (push-block gap-block)))
+          (let* ((preview-entries (mapcar #'%message-preview-entry preview-lines))
+                 (preview-block (%make-message-entry-block preview-entries)))
+            (push-block preview-block))))
+      (unless blocks
+        (let* ((welcome-entries (%welcome-screen-entries safe-width))
+               (welcome-block (%make-message-entry-block welcome-entries)))
+          (push-block welcome-block)))
+      (values (nreverse blocks) total-lines))))
+
+(defun %entry-list-slice (entries start count)
+  (let ((tail (nthcdr start entries))
+        (slice '()))
+    (loop repeat count
+          while tail
+          do (push (car tail) slice)
+             (setf tail (cdr tail)))
+    (nreverse slice)))
+
+(defun %message-line-window (chat-state messages width viewport-height scrollback-lines)
+  (multiple-value-bind (blocks total-lines)
+      (%message-entry-blocks chat-state messages width)
+    (multiple-value-bind (offset new-scrollback max-scrollback)
+        (%compute-scroll-offset total-lines viewport-height scrollback-lines)
+      (let ((window-end (+ offset viewport-height))
+            (cursor 0)
+            (visible '()))
+        (dolist (block blocks)
+          (let* ((block-count (%message-entry-block-count block))
+                 (block-end (+ cursor block-count))
+                 (slice-start (max offset cursor))
+                 (slice-end (min window-end block-end)))
+            (when (< slice-start slice-end)
+              (setf visible
+                    (nconc visible
+                           (%entry-list-slice (%message-entry-block-entries block)
+                                              (- slice-start cursor)
+                                              (- slice-end slice-start)))))
+            (setf cursor block-end)
+            (when (>= cursor window-end)
+              (return))))
+        (values visible total-lines offset new-scrollback max-scrollback)))))
 
 (defun %message-line-entries (chat-state messages width)
-  (let ((entries '())
-        (safe-width (max 1 (1- width)))
-        ;; Only render the last N messages for UI performance
-        (start-index (max 0 (- (length messages) +max-ui-render-messages+)))
-        (rendered-count 0)
-        (total (length messages)))
-    (loop for index from start-index below total
-          for message = (nth index messages)
-          do
-             (incf rendered-count)
-             (when (> rendered-count +max-ui-render-messages+)
-               (loop-finish))
-             (let* ((is-last-p (= index (1- total)))
-                    (cacheable (%message-entry-cacheable-p chat-state message))
-                    (cached (and cacheable (%get-cached-message-entries index safe-width)))
-                    (msg-entries (or cached
-                                    (let ((fresh (%message-line-entries-for-one
-                                                  chat-state message index safe-width is-last-p)))
-                                      (when cacheable
-                                        (%set-cached-message-entries index safe-width fresh))
-                                      fresh))))
-               ;; Prepend msg-entries onto entries.  msg-entries is in reverse
-               ;; order (push-built) and the combined result is nreversed at
-               ;; the end.  Use append to avoid mutating cached lists — copies
-               ;; the msg-entries spine but reuses entries as-is.
-               (setf entries (append msg-entries entries))))
-    ;; Add indicator if we skipped older messages
-    (when (> (length messages) +max-ui-render-messages+)
-      (let ((skipped (- (length messages) +max-ui-render-messages+)))
-        (push (list :id :chat-skipped-messages-indicator
-                    :text (format nil " ... (~D older messages not shown) ..." skipped)
-                    :role :system)
-              entries)))
-    (let ((preview-lines (%stream-tool-call-preview-lines chat-state safe-width)))
-      (when (and entries preview-lines)
-        (push (list :id :chat-stream-tool-gap :text "" :role :meta) entries))
-      (dolist (preview preview-lines)
-        (let ((entry (copy-list preview)))
-          (setf (getf entry :text)
-                (%with-left-gutter (getf preview :text "")))
-          (push entry entries))))
-    (if entries
-        (nreverse entries)
-        (%welcome-screen-entries safe-width))))
+  (multiple-value-bind (blocks total-lines)
+      (%message-entry-blocks chat-state messages width)
+    (declare (ignore total-lines))
+    (let ((entries '()))
+      (dolist (block blocks entries)
+        (setf entries
+              (nconc entries
+                     (%entry-list-slice (%message-entry-block-entries block)
+                                        0
+                                        (%message-entry-block-count block))))))))
 
 (defun %chat-text-widget (text id role &key styled-segments)
   (ptui.ui.elements:make-element
@@ -3622,7 +3854,8 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
      (setf (chat-ui-state-messages chat-state)
            (conversation-state-messages conversation)
            (chat-ui-state-message-scrollback-lines chat-state) 0
-           (chat-ui-state-max-message-scrollback-lines chat-state) 0))
+           (chat-ui-state-max-message-scrollback-lines chat-state) 0)
+     (%invalidate-styled-lines-cache))
     (:compact-chat
      (let ((compression
              (%compress-chat-history!
@@ -4315,83 +4548,86 @@ or before runtime routing has a focused target."
             outcome)))
 
 (defun run-chat-ui (&key (backend :auto) (fps 20) initial-state demo)
-  (let ((resolved-state
-          (if initial-state
-              initial-state
-              (if demo
-                  (make-chat-ui-state :stream-runner #'demo-stream-runner
-                                      :stream-client nil)
-                  (chat-ui-restore-latest-session (make-chat-ui-state))))))
-    (checkpoint-mark-activity)
-    (%chat-mark-activity)
-    (load-user-extensions)
-    (setf *approval-ui-active-p* t)
-    (let ((chat-state nil)
-          (log-stream nil)
-          (heap-monitor-stop-p nil)
-          (heap-monitor-thread nil))
-      (unwind-protect
-          (progn
-            ;; Redirect ptui log output to a file so it doesn't corrupt the TUI
-            (let ((log-path (merge-pathnames "runtime/ptui.log"
-                                             (ensure-directories-exist
-                                              (merge-pathnames ".amoebum/"
-                                                               (user-homedir-pathname))))))
-              (ignore-errors
-                (ensure-directories-exist log-path)
-                (setf log-stream (open log-path
-                                       :direction :output
-                                       :if-exists :append
-                                       :if-does-not-exist :create))
-                (setf ptui.util.log:*log-output* log-stream)))
-            ;; Start periodic heap monitor (every 30s → runtime.log)
-            (enable-gc-telemetry)
-            (setf heap-monitor-thread
-                  (bt:make-thread
-                   (lambda ()
-                     (loop until heap-monitor-stop-p
-                           do (ignore-errors
-                                (let ((mem (memory-statistics)))
-                                  (log-runtime-event
-                                   :level :info
-                                   :kind "heap-snapshot"
-                                   :source :profiler
-                                   :message "Periodic heap snapshot."
-                                   :details
-                                   (list :dynamic-usage-mb
-                                         (round (getf mem :dynamic-usage-mb) 0.1)
-                                         :gc-run-time-s
-                                         (getf mem :gc-run-time)
-                                         :message-count
-                                         (if chat-state
-                                             (length (chat-ui-state-messages chat-state))
-                                             0)))))
-                              (%chat-sleep-until-stop
-                               (lambda ()
-                                 heap-monitor-stop-p)
-                               :seconds +heap-monitor-snapshot-interval-seconds+
-                               :poll-seconds +heap-monitor-stop-poll-seconds+)))
-                   :name "heap-monitor"))
-            (setf chat-state (ensure-chat-ui-state resolved-state))
-            (ptui.engine.loop:run #'render-chat-ui-buffer
-                                  :backend backend
-                                  :fps fps
-                                  :initial-state chat-state
-                                  :event-bus (current-event-bus)
-                                  :on-event #'handle-chat-ui-event))
-        (setf heap-monitor-stop-p t)
-        (when heap-monitor-thread
-          (ignore-errors (bt:join-thread heap-monitor-thread)))
-        (disable-gc-telemetry)
-        (setf *approval-ui-active-p* nil)
-        (setf ptui.util.log:*log-output* nil)
-        (when log-stream
-          (ignore-errors (close log-stream)))
-        ;; Checkpoint session on exit so next launch can restore full state.
-        (when (and chat-state (not demo))
-          (ignore-errors
-            (let ((conversation (chat-ui-state-conversation chat-state)))
-              (when conversation
-                (checkpoint-session :conversation conversation
-                                    :trigger :exit
-                                    :auto-p t)))))))))
+  (let ((*session-persistence-enabled* (and *session-persistence-enabled*
+                                            (not demo))))
+    (let ((resolved-state
+            (if initial-state
+                initial-state
+                (if demo
+                    (make-chat-ui-state :stream-runner #'demo-stream-runner
+                                        :demo-mode-p t
+                                        :stream-client nil)
+                    (chat-ui-restore-latest-session (make-chat-ui-state))))))
+      (checkpoint-mark-activity)
+      (%chat-mark-activity)
+      (load-user-extensions)
+      (setf *approval-ui-active-p* t)
+      (let ((chat-state nil)
+            (log-stream nil)
+            (heap-monitor-stop-p nil)
+            (heap-monitor-thread nil))
+        (unwind-protect
+            (progn
+              ;; Redirect ptui log output to a file so it doesn't corrupt the TUI
+              (let ((log-path (merge-pathnames "runtime/ptui.log"
+                                               (ensure-directories-exist
+                                                (merge-pathnames ".amoebum/"
+                                                                 (user-homedir-pathname))))))
+                (ignore-errors
+                  (ensure-directories-exist log-path)
+                  (setf log-stream (open log-path
+                                         :direction :output
+                                         :if-exists :append
+                                         :if-does-not-exist :create))
+                  (setf ptui.util.log:*log-output* log-stream)))
+              ;; Start periodic heap monitor (every 30s → runtime.log)
+              (enable-gc-telemetry)
+              (setf heap-monitor-thread
+                    (bt:make-thread
+                     (lambda ()
+                       (loop until heap-monitor-stop-p
+                             do (ignore-errors
+                                  (let ((mem (memory-statistics)))
+                                    (log-runtime-event
+                                     :level :info
+                                     :kind "heap-snapshot"
+                                     :source :profiler
+                                     :message "Periodic heap snapshot."
+                                     :details
+                                     (list :dynamic-usage-mb
+                                           (round (getf mem :dynamic-usage-mb) 0.1)
+                                           :gc-run-time-s
+                                           (getf mem :gc-run-time)
+                                           :message-count
+                                           (if chat-state
+                                               (length (chat-ui-state-messages chat-state))
+                                               0)))))
+                                (%chat-sleep-until-stop
+                                 (lambda ()
+                                   heap-monitor-stop-p)
+                                 :seconds +heap-monitor-snapshot-interval-seconds+
+                                 :poll-seconds +heap-monitor-stop-poll-seconds+)))
+                     :name "heap-monitor"))
+              (setf chat-state (ensure-chat-ui-state resolved-state))
+              (ptui.engine.loop:run #'render-chat-ui-buffer
+                                    :backend backend
+                                    :fps fps
+                                    :initial-state chat-state
+                                    :event-bus (current-event-bus)
+                                    :on-event #'handle-chat-ui-event))
+          (setf heap-monitor-stop-p t)
+          (when heap-monitor-thread
+            (ignore-errors (bt:join-thread heap-monitor-thread)))
+          (disable-gc-telemetry)
+          (setf *approval-ui-active-p* nil)
+          (setf ptui.util.log:*log-output* nil)
+          (when log-stream
+            (ignore-errors (close log-stream)))
+          ;; Checkpoint session on exit so next launch can restore full state.
+          (when (and chat-state (not demo))
+            (ignore-errors
+              (let ((conversation (chat-ui-state-conversation chat-state)))
+                (when conversation
+                  (checkpoint-session :conversation conversation
+                                      :trigger :exit
+                                      :auto-p t))))))))))

@@ -228,7 +228,7 @@ SCROLL-OFFSET controls the history panel's vertical scroll position."
                 (padding (%yaml-inset-to-padding (%yaml-lookup-any child-node "padding")))
                 (gutter (%yaml-gutter-value (%yaml-lookup-any child-node "gutter"))))
             (push constraint constraints)
-            (let* ((inner-widget
+            (let* ((raw-inner-widget
                      (if sub-children
                          ;; Recursive: this child has its own children
                          (translate-yaml-layout child-node
@@ -241,50 +241,56 @@ SCROLL-OFFSET controls the history panel's vertical scroll position."
                                               palette-entries role-entries
                                               :status-hints status-hints
                                               :scroll-offset scroll-offset)))
-                   ;; Apply gutter as left-padding on the inner widget
-                   (padded-widget
-                     (if (or (> gutter 0)
-                             (some #'plusp padding))
-                         (let ((effective-padding
-                                 (list (first padding)
-                                       (second padding)
-                                       (third padding)
-                                       (+ (fourth padding) gutter))))
-                           ;; Wrap in a constraint-layout to apply padding
-                           inner-widget)
-                         inner-widget))
-                   ;; Apply border
+                   ;; Apply cross-axis width constraint when specified.
+                   ;; (Leaf only — recursive children manage their own constraints.)
+                   (cross-width (and (null sub-children)
+                                     (%yaml-cross-axis-width child-node direction)))
+                   (inner-widget
+                     (if cross-width
+                         (%wrap-with-cross-axis-width raw-inner-widget
+                                                      cross-width
+                                                      name-sym)
+                         raw-inner-widget))
+                   ;; Apply gutter and padding via a box wrapper. Gutter adds
+                   ;; to the left padding; the 4-tuple is (top right bottom left).
+                   (effective-padding
+                     (when (or (> gutter 0) (some #'plusp padding))
+                       (list (first padding)
+                             (second padding)
+                             (third padding)
+                             (+ (fourth padding) gutter))))
+                   ;; Fold border + padding into a single box wrapper when either
+                   ;; is set, otherwise re-tag the inner widget with the node id.
                    (final-widget
-                     (if border
-                         (ptui.widgets.core:make-box-widget
-                          padded-widget
-                          :id name-sym
-                          :border border)
-                         (ptui.ui.elements:make-element
-                          (ptui.ui.elements:ui-element-type padded-widget)
-                          :id name-sym
-                          :key (ptui.ui.elements:ui-element-key padded-widget)
-                          :props (ptui.ui.elements:ui-element-props padded-widget)
-                          :children (ptui.ui.elements:ui-element-children padded-widget)))))
+                     (cond
+                       ((or border effective-padding)
+                        (ptui.widgets.core:make-box-widget
+                         inner-widget
+                         :id name-sym
+                         :border border
+                         :padding (or effective-padding 0)))
+                       (t
+                        (ptui.ui.elements:make-element
+                         (ptui.ui.elements:ui-element-type inner-widget)
+                         :id name-sym
+                         :key (ptui.ui.elements:ui-element-key inner-widget)
+                         :props (ptui.ui.elements:ui-element-props inner-widget)
+                         :children (ptui.ui.elements:ui-element-children inner-widget))))))
               (push final-widget widget-children))))))
-    ;; Build the constraint-layout element
-    (let* ((gutters-alist
-             (loop for child-node in children
-                   for name-str = (%yaml-lookup-any child-node "name")
-                   for gutter = (%yaml-gutter-value (%yaml-lookup-any child-node "gutter"))
-                   when (and name-str (> gutter 0))
-                     collect (cons (%intern-name name-str) gutter)))
-           (layout-padding (%yaml-inset-to-padding (%yaml-lookup-any layout-node "padding"))))
-      (ptui.ui.elements:make-element
-       :constraint-layout
-       :props (append
-               (list :direction direction
-                     :constraints (nreverse constraints))
-               (when (some #'plusp layout-padding)
-                 (list :padding layout-padding))
-               (when gutters-alist
-                 (list :gutters gutters-alist)))
-       :children (nreverse widget-children)))))
+    ;; Build the constraint-layout element. Layout-level padding is handled
+    ;; by wrapping the whole thing in a box with padding below.
+    (let* ((layout-padding (%yaml-inset-to-padding (%yaml-lookup-any layout-node "padding")))
+           (constraint-node
+             (ptui.ui.elements:make-element
+              :constraint-layout
+              :props (list :direction direction
+                           :constraints (nreverse constraints))
+              :children (nreverse widget-children))))
+      (if (some #'plusp layout-padding)
+          (ptui.widgets.core:make-box-widget
+           constraint-node
+           :padding layout-padding)
+          constraint-node))))
 
 ;;; --- Palette translation ---
 

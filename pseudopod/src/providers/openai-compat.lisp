@@ -452,7 +452,7 @@ BACKEND can be one of: :openai, :openrouter, :together, :vllm, :ollama."
 	                   (when (hash-table-p tool-call)
 	                     (stream-turn-apply-event! snapshot
 	                                               (list :type :tool-call-delta
-	                                                     :index (%parse-stream-tool-call-index
+	                                                     :index (%stream-turn-parse-index
 	                                                             (gethash "index" tool-call))
 	                                                     :tool-call (hash-to-tool-call tool-call)
 	                                                     :tool-call-id (gethash "id" tool-call)

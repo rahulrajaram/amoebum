@@ -675,15 +675,6 @@ Pure function — no side effects."
       (%signal-http-status-error status body :streamp nil))
     (%parse-model-list (%parse-json-response body))))
 
-(defun %token-count-integer (value)
-  (cond
-    ((integerp value) value)
-    ((and (stringp value)
-          (plusp (length value))
-          (every #'digit-char-p value))
-     (parse-integer value))
-    (t nil)))
-
 (defun %token-count-from-hash (hash)
   (or (%token-count-integer (gethash "total_tokens" hash))
       (%token-count-integer (gethash "input_tokens" hash))
@@ -886,15 +877,6 @@ Returns two values: token-count integer and parsed response hash-table."
      (concatenate 'string current chunk))
     (t chunk)))
 
-(defun %parse-stream-tool-call-index (value)
-  (cond
-    ((integerp value) value)
-    ((and (stringp value)
-          (plusp (length value))
-          (every #'digit-char-p value))
-     (parse-integer value))
-    (t nil)))
-
 (defun %ensure-stream-tool-call-partial (partials index)
   (or (gethash index partials)
       (let ((entry (make-hash-table :test #'equal))
@@ -909,15 +891,19 @@ Returns two values: token-count integer and parsed response hash-table."
 
 (defun %merge-stream-tool-call-delta (partials raw-tool-call)
   (when (hash-table-p raw-tool-call)
-    (let* ((index (%parse-stream-tool-call-index (gethash "index" raw-tool-call)))
+    (let* ((index (%stream-turn-parse-index (gethash "index" raw-tool-call)))
            (entry (and index (%ensure-stream-tool-call-partial partials index))))
       (when entry
-        (let ((id (gethash "id" raw-tool-call))
-              (type (gethash "type" raw-tool-call))
-              (name (gethash "name" raw-tool-call))
-              (arguments (gethash "arguments" raw-tool-call))
-              (function-delta (and (hash-table-p (gethash "function" raw-tool-call))
-                                   (gethash "function" raw-tool-call)))
+        (let* ((id (gethash "id" raw-tool-call))
+               (type (gethash "type" raw-tool-call))
+               (function-delta (and (hash-table-p (gethash "function" raw-tool-call))
+                                    (gethash "function" raw-tool-call)))
+               (name (if function-delta
+                         nil
+                         (gethash "name" raw-tool-call)))
+               (arguments (if function-delta
+                              nil
+                              (gethash "arguments" raw-tool-call)))
               (function-body (or (and (hash-table-p (gethash "function" entry))
                                       (gethash "function" entry))
                                  (let ((fresh (make-hash-table :test #'equal)))
@@ -946,67 +932,6 @@ Returns two values: token-count integer and parsed response hash-table."
                       (%merge-stream-string (gethash "arguments" function-body)
                                             delta-arguments)))))
           (values entry index))))))
-
-(defun %stream-tool-call-name (entry)
-  (let ((function-body (and (hash-table-p entry)
-                            (gethash "function" entry))))
-    (and (hash-table-p function-body)
-         (%non-empty-string-p (gethash "name" function-body))
-         (gethash "name" function-body))))
-
-(defun %stream-tool-call-arguments (entry)
-  (let ((function-body (and (hash-table-p entry)
-                            (gethash "function" entry))))
-    (and (hash-table-p function-body)
-         (%non-empty-string-p (gethash "arguments" function-body))
-         (gethash "arguments" function-body))))
-
-(defun %stream-tool-call-arguments-complete-p (arguments)
-  (let ((trimmed (and (stringp arguments)
-                      (string-trim '(#\Space #\Tab #\Newline #\Return) arguments))))
-    (when (%non-empty-string-p trimmed)
-      (handler-case
-          (hash-table-p (jonathan:parse trimmed :as :hash-table))
-        (error ()
-          nil)))))
-
-(defun %make-stream-text-delta-chunk (text)
-  (list :type :text-delta
-        :text (or text "")))
-
-(defun %make-stream-tool-call-delta-chunk (index entry)
-  (let* ((name (%stream-tool-call-name entry))
-         (arguments (%stream-tool-call-arguments entry))
-         (tool-call (hash-to-tool-call entry)))
-    (list :type :tool-call-delta
-          :index index
-          :name name
-          :arguments arguments
-          :arguments-complete-p (%stream-tool-call-arguments-complete-p arguments)
-          :tool-call tool-call)))
-
-(defun %copy-hash-table-shallow (table)
-  (let ((copy (make-hash-table :test #'equal)))
-    (when (hash-table-p table)
-      (maphash (lambda (key value)
-                 (setf (gethash key copy) value))
-               table))
-    copy))
-
-(defun %make-stream-usage-delta-chunk (usage)
-  (let* ((usage-copy (%copy-hash-table-shallow usage))
-         (prompt-tokens (or (%token-count-integer (gethash "prompt_tokens" usage-copy))
-                            (%token-count-integer (gethash "input_tokens" usage-copy))))
-         (completion-tokens (or (%token-count-integer (gethash "completion_tokens" usage-copy))
-                                (%token-count-integer (gethash "output_tokens" usage-copy))))
-         (total-tokens (or (%token-count-integer (gethash "total_tokens" usage-copy))
-                           (and prompt-tokens completion-tokens
-                                (+ prompt-tokens completion-tokens)))))
-    (list :type :usage-delta
-          :usage usage-copy
-          :prompt-tokens prompt-tokens
-          :completion-tokens completion-tokens
-          :total-tokens total-tokens)))
 
 (defun %ensure-stream-tool-call-state (tool-call-states index)
   (or (gethash index tool-call-states)
@@ -1216,15 +1141,22 @@ Returns two values: token-count integer and parsed response hash-table."
 
 (defun %dispatch-sse-tool-calls (state value)
   (dolist (tool-call (%sequence->list value))
-    (multiple-value-bind (entry index)
-        (%merge-stream-tool-call-delta (sse-parse-state-tool-call-partials state)
-                                       tool-call)
-      (when (and (hash-table-p entry)
-                 (integerp index))
-        (let ((snapshot (sse-parse-state-snapshot state)))
-          (when snapshot
-            (stream-turn-apply-event! snapshot
-                                      (%make-stream-tool-call-delta-chunk index entry))))
+    (let ((delta-index (and (hash-table-p tool-call)
+                            (%stream-turn-parse-index (gethash "index" tool-call)))))
+      (multiple-value-bind (entry index)
+          (%merge-stream-tool-call-delta (sse-parse-state-tool-call-partials state)
+                                         tool-call)
+        (when (and (hash-table-p entry)
+                   (integerp index))
+          (let ((snapshot (sse-parse-state-snapshot state)))
+            (when (and snapshot
+                       (integerp delta-index))
+              ;; The reducer wants the raw provider delta so it can merge partials
+              ;; itself; callbacks still receive the cumulative merged chunk below.
+              (stream-turn-apply-event! snapshot
+                                        (%make-stream-tool-call-delta-chunk
+                                         delta-index
+                                         tool-call))))
         (%emit-stream-tool-call-delta
          index
          entry
@@ -1232,7 +1164,7 @@ Returns two values: token-count integer and parsed response hash-table."
          (sse-parse-state-on-chunk state)
          (sse-parse-state-on-tool-call-delta state)
          (sse-parse-state-on-tool-call-started state)
-         (sse-parse-state-on-tool-call-argument-complete state))))))
+         (sse-parse-state-on-tool-call-argument-complete state)))))))
 
 (defparameter *sse-delta-dispatchers*
   '(("role" . %dispatch-sse-role)

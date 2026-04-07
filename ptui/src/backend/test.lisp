@@ -37,21 +37,34 @@
   (ptui.core.types:make-size (test-backend-cols backend)
                               (test-backend-rows backend)))
 
+;;; --- Test-backend draw-op handler functions ---
+
+(defun %test-op-draw-text (buf op)
+  (destructuring-bind (_ x y styled-text &rest keys) op
+    (declare (ignore _))
+    (apply #'ptui.render.buffer:buffer-draw-text buf x y styled-text keys)))
+
+(defun %test-op-fill-rect (buf op)
+  (destructuring-bind (_ rect cell) op
+    (declare (ignore _))
+    (ptui.render.buffer:buffer-fill-rect buf rect cell)))
+
+(defun %test-op-clear (buf op)
+  (declare (ignore op))
+  (ptui.render.buffer:buffer-clear buf))
+
+(defparameter +test-backend-draw-op-handlers+
+  '((:draw-text . %test-op-draw-text)
+    (:fill-rect . %test-op-fill-rect)
+    (:clear     . %test-op-clear)))
+
 (defmethod ptui.backend.protocol:backend-commit ((backend test-backend) draw-ops)
   (let ((buf (test-backend-buffer backend)))
     (dolist (op draw-ops)
       (when (listp op)
-        (case (first op)
-          (:draw-text
-           (destructuring-bind (_ x y styled-text &rest keys) op
-             (declare (ignore _))
-             (apply #'ptui.render.buffer:buffer-draw-text buf x y styled-text keys)))
-          (:fill-rect
-           (destructuring-bind (_ rect cell) op
-             (declare (ignore _))
-             (ptui.render.buffer:buffer-fill-rect buf rect cell)))
-          (:clear
-           (ptui.render.buffer:buffer-clear buf)))))
+        (let ((handler (cdr (assoc (first op) +test-backend-draw-op-handlers+ :test #'eq))))
+          (when handler
+            (funcall handler buf op)))))
     (length draw-ops)))
 
 (defun test-backend-inject-events (backend events)

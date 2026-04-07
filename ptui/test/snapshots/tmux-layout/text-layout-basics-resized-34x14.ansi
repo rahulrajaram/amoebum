@@ -1,0 +1,14 @@
+
+ ╭──────────────────────────────╮
+ │ [1m[38;2;140;220;170mPTUI text layout basics[0m[39m[49m      │
+ │                              │
+ │ PTUI text layout keeps       │
+ │ grapheme clusters intact     │
+ │ while wrapping descriptive   │
+ │ text into narrow terminal    │
+ │ regions.                     │
+ │                              │
+ │                              │
+ │                              │
+ ╰──────────────────────────────╯
+

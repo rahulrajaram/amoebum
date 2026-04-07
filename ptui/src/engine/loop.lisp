@@ -333,56 +333,103 @@ instead of calling MAKE-BUFFER.  Set by the engine loop before calling RENDER-FN
    :needs-redraw-p (not (null (loop-runtime-needs-redraw runtime)))
    :metrics-poll-due-p (not (null (loop-runtime-metrics-poll-due-p runtime)))))
 
+;;; --- Loop-step transition rules as data ---
+
+(defun %snapshot-not-quit-requested-p (snapshot)
+  (not (loop-step-snapshot-quit-requested-p snapshot)))
+
+;; Tier 1: early-exit rules (first match wins, sets continue-p to nil, no effects)
+(defparameter +loop-step-exit-rules+
+  '((:exit-deadline  loop-step-snapshot-exit-deadline-reached-p)))
+
+;; Tier 2: accumulation rules (all matching rules contribute)
+;; Each entry: (label predicate flag-updates effects)
+(defparameter +loop-step-accumulation-rules+
+  '((:run-scheduler %snapshot-not-quit-requested-p
+     ()
+     (:run-scheduler))
+    (:render        loop-step-snapshot-needs-redraw-p
+     ((:needs-redraw . nil))
+     (:render))
+    (:log-metrics   loop-step-snapshot-metrics-poll-due-p
+     ((:metrics-poll-due-p . nil))
+     (:log-metrics))))
+
+;; Terminal rule: quit → stop, else → sleep
+(defparameter +loop-step-terminal-rule+
+  '(:quit-or-sleep loop-step-snapshot-quit-requested-p))
+
 (defun %evaluate-loop-step-transition (snapshot)
-  (let ((effects '())
-        (flag-updates '())
-        (continue-p t))
-    (cond
-      ((loop-step-snapshot-exit-deadline-reached-p snapshot)
-       (setf continue-p nil))
-      (t
-       (unless (loop-step-snapshot-quit-requested-p snapshot)
-         (push (make-loop-step-effect :run-scheduler) effects))
-       (when (loop-step-snapshot-needs-redraw-p snapshot)
-         (push (cons :needs-redraw nil) flag-updates)
-         (push (make-loop-step-effect :render) effects))
-       (when (loop-step-snapshot-metrics-poll-due-p snapshot)
-         (push (cons :metrics-poll-due-p nil) flag-updates)
-         (push (make-loop-step-effect :log-metrics) effects))
-       (if (loop-step-snapshot-quit-requested-p snapshot)
-           (setf continue-p nil)
-           (push (make-loop-step-effect :sleep) effects))))
-    (make-loop-step-transition
-     :continue-p continue-p
-     :flag-updates (nreverse flag-updates)
-     :effects (nreverse effects))))
+  ;; Tier 1: early exits
+  (dolist (rule +loop-step-exit-rules+)
+    (when (funcall (second rule) snapshot)
+      (return-from %evaluate-loop-step-transition
+        (make-loop-step-transition :continue-p nil))))
+  ;; Tier 2: accumulate effects
+  (let ((effects '()) (flag-updates '()))
+    (dolist (rule +loop-step-accumulation-rules+)
+      (when (funcall (second rule) snapshot)
+        (setf flag-updates (nconc flag-updates (copy-list (third rule))))
+        (dolist (eff (fourth rule))
+          (push (make-loop-step-effect eff) effects))))
+    ;; Terminal: quit or sleep
+    (let ((quit-p (funcall (second +loop-step-terminal-rule+) snapshot)))
+      (unless quit-p
+        (push (make-loop-step-effect :sleep) effects))
+      (make-loop-step-transition
+       :continue-p (not quit-p)
+       :flag-updates flag-updates
+       :effects (nreverse effects)))))
+
+;;; --- Loop-step flag-update dispatch table ---
+
+(defun %loop-set-needs-redraw! (runtime value)
+  (setf (loop-runtime-needs-redraw runtime) value))
+
+(defun %loop-set-metrics-poll-due-p! (runtime value)
+  (setf (loop-runtime-metrics-poll-due-p runtime) value))
+
+(defparameter +loop-step-flag-setters+
+  '((:needs-redraw     . %loop-set-needs-redraw!)
+    (:metrics-poll-due-p . %loop-set-metrics-poll-due-p!)))
 
 (defun %apply-loop-step-flag-updates! (runtime flag-updates)
   (dolist (update flag-updates)
-    (case (car update)
-      (:needs-redraw
-       (setf (loop-runtime-needs-redraw runtime) (cdr update)))
-      (:metrics-poll-due-p
-       (setf (loop-runtime-metrics-poll-due-p runtime) (cdr update)))
-      (otherwise
-       (error "Unknown loop step flag update ~S." update))))
+    (let ((setter (cdr (assoc (car update) +loop-step-flag-setters+ :test #'eq))))
+      (if setter
+          (funcall setter runtime (cdr update))
+          (error "Unknown loop step flag update ~S." update))))
   runtime)
 
+;;; --- Loop-step effect dispatch table ---
+
+(defun %loop-effect-run-scheduler! (runtime)
+  (ptui.runtime.scheduler:scheduler-run-due (loop-runtime-scheduler runtime)))
+
+(defun %loop-effect-render! (runtime)
+  (%render-runtime-frame runtime)
+  ;; A frame rendered in this transition satisfies any redraw request the
+  ;; scheduler may have re-armed while we were assembling effects.
+  (setf (loop-runtime-needs-redraw runtime) nil))
+
+(defun %loop-effect-log-metrics! (runtime)
+  (%log-runtime-metrics runtime))
+
+(defun %loop-effect-sleep! (runtime)
+  (%sleep-until-next-runtime-tick runtime))
+
+(defparameter +loop-step-effect-handlers+
+  '((:run-scheduler . %loop-effect-run-scheduler!)
+    (:render        . %loop-effect-render!)
+    (:log-metrics   . %loop-effect-log-metrics!)
+    (:sleep         . %loop-effect-sleep!)))
+
 (defun %apply-loop-step-effect! (runtime effect)
-  (case (loop-step-effect-kind effect)
-    (:run-scheduler
-     (ptui.runtime.scheduler:scheduler-run-due (loop-runtime-scheduler runtime)))
-    (:render
-     (%render-runtime-frame runtime)
-     ;; A frame rendered in this transition satisfies any redraw request the
-     ;; scheduler may have re-armed while we were assembling effects.
-     (setf (loop-runtime-needs-redraw runtime) nil))
-    (:log-metrics
-     (%log-runtime-metrics runtime))
-    (:sleep
-     (%sleep-until-next-runtime-tick runtime))
-    (otherwise
-     (error "Unknown loop step effect kind ~S." (loop-step-effect-kind effect))))
+  (let* ((kind (loop-step-effect-kind effect))
+         (handler (cdr (assoc kind +loop-step-effect-handlers+ :test #'eq))))
+    (if handler
+        (funcall handler runtime)
+        (error "Unknown loop step effect kind ~S." kind)))
   runtime)
 
 (defun %apply-loop-step-transition! (runtime transition)

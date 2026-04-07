@@ -103,6 +103,33 @@
     (is (string= "lookup" (or (getf normalized :name) "")))
     (is (string= "tool failed" (or (getf normalized :error-message) "")))))
 
+(test provider-normalizers-build-tool-call-and-usage-events
+  (let* ((raw-tool-call (make-hash-table :test #'equal))
+         (function-body (make-hash-table :test #'equal))
+         (usage (make-hash-table :test #'equal)))
+    (setf (gethash "index" raw-tool-call) "0"
+          (gethash "id" raw-tool-call) "tool-1"
+          (gethash "type" raw-tool-call) "function"
+          (gethash "name" function-body) "lookup"
+          (gethash "arguments" function-body) "{\"query\":\"lisp\"}"
+          (gethash "function" raw-tool-call) function-body
+          (gethash "input_tokens" usage) 12
+          (gethash "output_tokens" usage) 7)
+    (let ((tool-event (pseudopod::%make-stream-tool-call-delta-chunk
+                       (pseudopod::%stream-turn-parse-index (gethash "index" raw-tool-call))
+                       raw-tool-call))
+          (usage-event (pseudopod::%make-stream-usage-delta-chunk usage)))
+      (is (eq :tool-call-delta (getf tool-event :type)))
+      (is (= 0 (getf tool-event :index)))
+      (is (string= "lookup" (or (getf tool-event :name) "")))
+      (is (string= "{\"query\":\"lisp\"}" (or (getf tool-event :arguments) "")))
+      (is-true (getf tool-event :arguments-complete-p))
+      (is (eq :usage-delta (getf usage-event :type)))
+      (is (= 12 (getf usage-event :prompt-tokens)))
+      (is (= 7 (getf usage-event :completion-tokens)))
+      (is (= 19 (getf usage-event :total-tokens)))
+      (is (not (eq usage (getf usage-event :usage)))))))
+
 (test compute-stream-turn-snapshot-delta-captures-appended-content
   (let ((snapshot (pseudopod:make-stream-turn-snapshot)))
     (pseudopod:stream-turn-apply-event! snapshot '(:type :text-delta :text "Hello"))

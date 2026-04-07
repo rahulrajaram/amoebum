@@ -308,10 +308,29 @@ NEXT must return two values: DOCUMENT and DONE-P."
     (search-widget-rerun state))
   state)
 
+;;; --- Search-widget mode dispatch tables ---
+
+(defparameter +search-mode-results-accessor+
+  '((:files   . search-widget-state-file-results)
+    (:content . search-widget-state-content-results)))
+
+(defparameter +search-mode-result-formatter+
+  '((:files   . %format-file-result)
+    (:content . %format-content-result)))
+
+(defparameter +search-mode-rerun-handler+
+  '((:files   . %run-file-search!)
+    (:content . %run-content-search!)))
+
+(defun %lookup-mode-entry (table mode label)
+  (or (cdr (assoc mode table :test #'eq))
+      (error "Unknown search-widget mode ~S in ~A." mode label)))
+
 (defun search-widget-results (state)
-  (ecase (search-widget-state-mode state)
-    (:files (search-widget-state-file-results state))
-    (:content (search-widget-state-content-results state))))
+  (funcall (%lookup-mode-entry +search-mode-results-accessor+
+                               (search-widget-state-mode state)
+                               "+search-mode-results-accessor+")
+           state))
 
 (defun search-widget-visible-results (state)
   (check-type state search-widget-state)
@@ -372,9 +391,10 @@ NEXT must return two values: DOCUMENT and DONE-P."
 
 (defun search-widget-rerun (state)
   (check-type state search-widget-state)
-  (ecase (search-widget-state-mode state)
-    (:files (%run-file-search! state))
-    (:content (%run-content-search! state))))
+  (funcall (%lookup-mode-entry +search-mode-rerun-handler+
+                               (search-widget-state-mode state)
+                               "+search-mode-rerun-handler+")
+           state))
 
 (defun search-widget-start-content-search-stream (state pattern stream
                                                   &key
@@ -606,6 +626,17 @@ Use SEARCH-WIDGET-STEP to advance search and SEARCH-WIDGET-CANCEL to interrupt."
       (t
        (list :action :ignored :state state)))))
 
+(defparameter +search-status-labels+
+  '((:ready      . "ready")
+    (:empty      . "empty")
+    (:done       . "done")
+    (:cancelled  . "cancelled")
+    (:idle       . "idle")))
+
+(defun %search-status-label (status)
+  (or (cdr (assoc status +search-status-labels+ :test #'eq))
+      (string-downcase (symbol-name status))))
+
 (defun %status-line (state)
   (let* ((status (search-widget-state-status state))
          (result-count (%results-count state))
@@ -618,25 +649,25 @@ Use SEARCH-WIDGET-STEP to advance search and SEARCH-WIDGET-CANCEL to interrupt."
                 scanned-count
                 (max scanned-count total-count))
         (format nil "~A (~D result~:P)"
-                (case status
-                  (:ready "ready")
-                  (:empty "empty")
-                  (:done "done")
-                  (:cancelled "cancelled")
-                  (t "idle"))
+                (%search-status-label status)
                 result-count))))
 
+(defun %format-file-result (result)
+  (format nil "~A"
+          (ptui.search.engine:search-file-match-path result)))
+
+(defun %format-content-result (result)
+  (format nil "~A:~D:~D ~A"
+          (ptui.search.engine:search-content-match-path result)
+          (ptui.search.engine:search-content-match-line result)
+          (ptui.search.engine:search-content-match-column result)
+          (ptui.search.engine:search-content-match-text result)))
+
 (defun %result->text (state result)
-  (ecase (search-widget-state-mode state)
-    (:files
-     (format nil "~A"
-             (ptui.search.engine:search-file-match-path result)))
-    (:content
-     (format nil "~A:~D:~D ~A"
-             (ptui.search.engine:search-content-match-path result)
-             (ptui.search.engine:search-content-match-line result)
-             (ptui.search.engine:search-content-match-column result)
-             (ptui.search.engine:search-content-match-text result)))))
+  (funcall (%lookup-mode-entry +search-mode-result-formatter+
+                               (search-widget-state-mode state)
+                               "+search-mode-result-formatter+")
+           result))
 
 (defun %visible-window (state)
   (visible-window (search-widget-results state)

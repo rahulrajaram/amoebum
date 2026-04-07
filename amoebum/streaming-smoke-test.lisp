@@ -474,14 +474,20 @@
                 (assert-true (= (length warning-payloads) 1)
                              "Expected exactly one stream budget warning event, got ~D."
                              (length warning-payloads))
-                (let ((payload (first warning-payloads)))
+                (let* ((payload (first warning-payloads))
+                       (expected-threshold
+                         (funcall config-value-fn
+                                  :stream-budget-abort-threshold-percent
+                                  (funcall current-config-fn))))
                   (assert-true (>= (funcall stream-budget-warning-payload-usage-percent-fn payload)
-                                   90)
-                               "Expected warning usage percent >= 90, got ~S."
+                                   expected-threshold)
+                               "Expected warning usage percent >= ~S, got ~S."
+                               expected-threshold
                                (funcall stream-budget-warning-payload-usage-percent-fn payload))
                   (assert-true (= (funcall stream-budget-warning-payload-threshold-percent-fn payload)
-                                  90)
-                               "Expected warning threshold percent 90, got ~S."
+                                  expected-threshold)
+                               "Expected warning threshold percent ~S, got ~S."
+                               expected-threshold
                                (funcall stream-budget-warning-payload-threshold-percent-fn payload)))))
           (funcall setconfig-fn :context-window-limit original-context-limit)))
 

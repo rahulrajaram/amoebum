@@ -1,0 +1,24 @@
+ NOC WALLBOARD   incidents: 3  deploy: rolling  ▁▂▃▄▅▆▇█▇▆▅▄▃▂
+ LIVE INCIDENT TICKER :: redis-cluster replica lag recovering 
+>   OK   api-gateway        p95: 24ms err:0.1% ▁▂▃▃▄▅▄
+   WARN  payments-core      p95:172ms err:2.3% ▂▃▄▅▆▅▄
+    OK   postgres-primary   p95: 41ms err:0.0% ▁▁▂▂▃▂▂
+   WARN  redis-cluster      p95: 88ms err:1.1% ▁▂▃▄▅▄▃
+    OK   node-exporter      p95: 16ms err:0.0% ▁▁▁▂▂▂▁
+   CRIT  ingress-edge       p95:310ms err:6.7% ▃▄▅▆▇█▇
+    OK   search-service     p95: 57ms err:0.2% ▁▂▂▃▄▃▂
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ filter:ALL  services: 7  selected: 0   keys: up/down filter, left/right tier  

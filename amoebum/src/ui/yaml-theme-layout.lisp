@@ -22,15 +22,7 @@
 Returns a yaml-layout struct or NIL if no layout section."
   (let ((layout-section (%yaml-theme-lookup-any yaml-data "layout")))
     (when layout-section
-      (handler-case
-          (parse-yaml-layout layout-section)
-        (error (e)
-          (log-runtime-event :level :warn
-                             :kind "yaml-layout-parse-failed"
-                             :source :yaml-theme-loader
-                             :message "Failed to parse layout section."
-                             :details (list :error (princ-to-string e)))
-          nil)))))
+      (parse-yaml-layout layout-section))))
 
 (defun %yaml-theme-parse-behavior (yaml-data)
   "Extract behavior configuration from YAML data.
@@ -89,6 +81,7 @@ Returns a plist of behavior settings or NIL if no behavior section."
 (defun %yaml-theme-apply-with-layout (yaml-data &key source-path)
   "Apply YAML theme data including layout and behavior sections.
 Returns (values success-p theme-name palette-entries role-entries layout behavior)."
+  (%yaml-theme-validate! yaml-data)
   (let* ((metadata (%yaml-theme-parse-metadata yaml-data))
          (palette-entries (%yaml-theme-parse-palette yaml-data))
          (role-entries (%yaml-theme-parse-roles yaml-data palette-entries))
@@ -108,12 +101,7 @@ Returns (values success-p theme-name palette-entries role-entries layout behavio
       (multiple-value-bind (valid-p error-msg)
           (yaml-layout-validate layout)
         (unless valid-p
-          (log-runtime-event :level :warn
-                             :kind "yaml-layout-invalid"
-                             :source :yaml-theme-loader
-                             :message error-msg
-                             :details (list :source source-path))
-          (setf layout nil))))
+          (error "Invalid YAML layout: ~A" error-msg))))
     
     ;; Build role definitions for define-theme
     (let ((role-defs (mapcar #'%yaml-theme-role-definition-form role-entries))

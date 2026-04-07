@@ -1,8 +1,15 @@
 (defpackage :ptui.examples.ops-wallboard
   (:use :cl)
-  (:export #:run-ops-wallboard))
+  (:export #:run-ops-wallboard
+           #:run-visual-demo))
 
 (in-package :ptui.examples.ops-wallboard)
+
+(defparameter *visual-demo-tick* nil)
+
+(defun %wallboard-tick ()
+  (or *visual-demo-tick*
+      (get-universal-time)))
 
 (defun %style (&key fg bg boldp dimp)
   (ptui.core.types:make-cell
@@ -60,7 +67,7 @@
 
 (defun %render-service-item (row index selectedp)
   (declare (ignore index))
-  (let* ((pulsep (oddp (get-universal-time)))
+  (let* ((pulsep (oddp (%wallboard-tick)))
          (name (getf row :name))
          (p95-ms (getf row :p95-ms))
          (error-rate (getf row :error-rate))
@@ -104,7 +111,7 @@
                    (ptui.core.color:make-color-rgb 244 63 94)
                    (ptui.core.color:make-color-rgb 239 68 68)
                    (ptui.core.color:make-color-rgb 249 115 22)))
-         (offset (mod (get-universal-time) (length palette))))
+         (offset (mod (%wallboard-tick) (length palette))))
     (loop for ch in chars
           for i from 0
           collect (list ch
@@ -112,7 +119,7 @@
                                 :boldp t)))))
 
 (defun %ticker-line (messages)
-  (let* ((tick (get-universal-time))
+  (let* ((tick (%wallboard-tick))
          (idx (mod tick (length messages)))
          (pulsep (oddp tick))
          (base-style (%style :fg (ptui.core.color:make-color-rgb 254 243 199)
@@ -226,3 +233,7 @@
 
 (defun run-ops-wallboard ()
   (run-ops-wallboard-app))
+
+(defun run-visual-demo ()
+  (let ((*visual-demo-tick* 424242))
+    (run-ops-wallboard-app)))

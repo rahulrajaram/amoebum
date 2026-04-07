@@ -39,6 +39,29 @@ The 1.08x figure means fault rate is essentially flat regardless of conversation
 length — i.e. each additional prompt costs approximately the same allocation as the
 first.
 
+## Current 2026-04-05 Validation Snapshot
+
+The first April 5, 2026 reruns drifted materially from the historical post-fix
+baseline above, but the perf recovery wave repaired the regression. The current
+green numbers are:
+
+| Run | Fault growth | RSS delta | Verdict |
+|---|---|---|---|
+| `./bin/tui-perf-test.sh --prompts 3 --report` | 2.44x (prompt 1 → prompt 3, >=10 samples only, trimmed ±4 samples) | 39,092 kB | PASS |
+| `./bin/tui-perf-test.sh --report` (default 5 prompts) | 2.15x (prompt 1 → prompt 5, >=10 samples only, trimmed ±4 samples) | 44,696 kB | PASS |
+
+Both repaired runs stayed under the `3.0x` steady-state fault-growth gate,
+completed each prompt via the status-bar completion signal in about `23.6s`,
+and kept RSS within the documented threshold. Treat the earlier `6.40x` and
+`6.31x` measurements as regression evidence only, not the current truth.
+
+Local evidence:
+
+1. `.yarli/evidence/INXT-207-tui-perf-3.log` (initial failing regression run)
+2. `.yarli/evidence/INXT-208-tui-perf-default.log` (initial failing regression run)
+3. `.yarli/evidence/INXT-222-tui-perf-3-repaired.log`
+4. `.yarli/evidence/INXT-223-tui-perf-default-repaired.log`
+
 ## Running the Test
 
 The perf test lives in `bin/tui-perf-test.sh` at the **repo root** (not inside

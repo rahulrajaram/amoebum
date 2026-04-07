@@ -1,0 +1,18 @@
+ NOC WALLBOARD   incidents: 3  deploy: rolling  ▁▂▃▄▅▆▇█▇▆▅▄▃▂
+ LIVE INCIDENT TICKER :: <dynamic> 
+    OK   node-exporter      p95: 16ms err:0.0% ▁▁▁▂▂▂▁
+>  CRIT  ingress-edge       p95:310ms err:6.7% ▃▄▅▆▇█▇
+
+
+
+
+
+
+
+
+
+
+
+
+
+ filter:INFRA  services: 2  selected: 1   keys: up/down filter, left/r

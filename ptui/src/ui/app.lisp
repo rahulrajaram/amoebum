@@ -181,6 +181,18 @@ PAINT-FN signature: (element buffer x y width height)."
     (ptui.render.buffer:buffer-draw-text
      buffer x y payload :max-width (- max-cols x))))
 
+(defun %text-visible-lines (element max-cols x)
+  (let* ((props (ptui.ui.elements:ui-element-props element))
+         (text (or (getf props :text) ""))
+         (wrapp (getf props :wrap))
+         (available-width (max 0 (- max-cols x))))
+    (cond
+      ((<= available-width 0) '())
+      ((not wrapp) (list text))
+      (t
+       (or (ptui.text.layout:wrap-by-width text (max 1 available-width))
+           (list ""))))))
+
 (defun %extract-fill-cell (styled-segments)
   "Extract a background-fill cell from the last styled segment that has a bg color.
 Returns a space cell with that background, or NIL."
@@ -201,7 +213,6 @@ Returns a space cell with that background, or NIL."
 (defun %paint-text-element (element buffer x y max-cols max-rows)
   (let* ((props (ptui.ui.elements:ui-element-props element))
          (styled-segments (getf props :styled-segments))
-         (text (or (getf props :text) ""))
          (fill-cell (when styled-segments
                       (%extract-fill-cell styled-segments))))
     ;; Fill allocated width with background before drawing text
@@ -217,7 +228,10 @@ Returns a space cell with that background, or NIL."
            buffer x y styled-segments
            #'identity  ; segments already normalized to (text cell) by chat.lisp
            :max-width (- max-cols x))
-          (%paint-visible-text buffer x y max-cols max-rows (or styled-segments text))))))
+          (loop for line in (%text-visible-lines element max-cols x)
+                for row from 0
+                while (< (+ y row) max-rows)
+                do (%paint-visible-text buffer x (+ y row) max-cols max-rows line))))))
 
 (defun %paint-input-element (element buffer x y max-cols max-rows)
   (%paint-visible-text buffer
@@ -242,13 +256,27 @@ Returns a space cell with that background, or NIL."
          (offset-y y))
     (dolist (child (ptui.ui.elements:ui-element-children element))
       (when (< offset-y max-rows)
-        (%paint-element child buffer offset-x offset-y max-cols max-rows)
-        (multiple-value-setq (offset-x offset-y)
-          (%advance-stack-offsets direction
-                                  (ptui.widgets.core:widget-measure child)
-                                  gap
-                                  offset-x
-                                  offset-y))))))
+        (let* ((child-available-width (max 0 (- max-cols offset-x)))
+               (child-available-height (max 0 (- max-rows offset-y)))
+               (child-size (ptui.widgets.core:widget-measure
+                            child
+                            child-available-width
+                            child-available-height))
+               (clip-width (case direction
+                             (:row (ptui.layout:layout-size-width child-size))
+                             (otherwise child-available-width)))
+               (clip-height (case direction
+                              (:row child-available-height)
+                              (otherwise (ptui.layout:layout-size-height child-size)))))
+          (ptui.render.buffer:with-clip
+              (buffer (ptui.core.types:make-rect offset-x offset-y clip-width clip-height))
+            (%paint-element child buffer offset-x offset-y max-cols max-rows))
+          (multiple-value-setq (offset-x offset-y)
+            (%advance-stack-offsets direction
+                                    child-size
+                                    gap
+                                    offset-x
+                                    offset-y)))))))
 
 (defun %box-draw-dimensions (element x y max-cols max-rows)
   (let* ((available-width (max 0 (- max-cols x)))
@@ -257,7 +285,7 @@ Returns a space cell with that background, or NIL."
                             available-width))
          (clamped-width (max 0 (min available-width desired-width)))
          (draw-x (+ x (max 0 (floor (- available-width clamped-width) 2))))
-         (measured (ptui.widgets.core:widget-measure element)))
+         (measured (ptui.widgets.core:widget-measure element clamped-width available-height)))
     (values draw-x
             clamped-width
             (max 0 (min available-height
@@ -277,11 +305,12 @@ Returns a space cell with that background, or NIL."
      :style style-cell
      :border-style (%normalize-box-border-style border))))
 
-(defun %paint-box-child (child buffer x y draw-width draw-height inset)
-  (let* ((inner-x (+ x inset))
-         (inner-y (+ y inset))
-         (inner-width (max 0 (- draw-width (* 2 inset))))
-         (inner-height (max 0 (- draw-height (* 2 inset)))))
+(defun %paint-box-child (child buffer x y draw-width draw-height
+                         inset-top inset-right inset-bottom inset-left)
+  (let* ((inner-x (+ x inset-left))
+         (inner-y (+ y inset-top))
+         (inner-width (max 0 (- draw-width inset-left inset-right)))
+         (inner-height (max 0 (- draw-height inset-top inset-bottom))))
     (ptui.render.buffer:with-clip
         (buffer (ptui.core.types:make-rect inner-x inner-y inner-width inner-height))
       (%paint-element child
@@ -293,18 +322,30 @@ Returns a space cell with that background, or NIL."
 
 (defun %paint-box-element (element buffer x y max-cols max-rows)
   (let* ((props (ptui.ui.elements:ui-element-props element))
-         (padding (max 0 (or (getf props :padding) 0)))
+         (insets (or (getf props :padding-insets)
+                     (let ((p (max 0 (or (getf props :padding) 0))))
+                       (list p p p p))))
+         (pad-top (first insets))
+         (pad-right (second insets))
+         (pad-bottom (third insets))
+         (pad-left (fourth insets))
          (border (getf props :border nil))
          (borderp (and border (not (eq border :none))))
          (border-width (if borderp 1 0))
-         (inset (+ padding border-width))
+         (inset-top (+ pad-top border-width))
+         (inset-right (+ pad-right border-width))
+         (inset-bottom (+ pad-bottom border-width))
+         (inset-left (+ pad-left border-width))
          (child (first (ptui.ui.elements:ui-element-children element))))
     (multiple-value-bind (draw-x draw-width draw-height)
         (%box-draw-dimensions element x y max-cols max-rows)
       (when (and borderp (> draw-width 1) (> draw-height 1))
         (%paint-box-border buffer props border draw-x y draw-width draw-height))
-      (when (and child (> draw-width (* 2 inset)) (> draw-height (* 2 inset)))
-        (%paint-box-child child buffer draw-x y draw-width draw-height inset)))))
+      (when (and child
+                 (> draw-width (+ inset-left inset-right))
+                 (> draw-height (+ inset-top inset-bottom)))
+        (%paint-box-child child buffer draw-x y draw-width draw-height
+                          inset-top inset-right inset-bottom inset-left)))))
 
 (defun %prompt-border-style (props)
   (if (eq (getf props :border-style :rounded) :square)
@@ -320,7 +361,7 @@ Returns a space cell with that background, or NIL."
          (draw-x x)
          (measured-height
            (ptui.layout:layout-size-height
-            (ptui.widgets.core:widget-measure element)))
+            (ptui.widgets.core:widget-measure element clamped-width available-height)))
          (draw-height (max 0 (min available-height measured-height))))
     (values draw-x clamped-width draw-height)))
 
@@ -410,9 +451,10 @@ Returns a space cell with that background, or NIL."
          (raw-offset (max 0 (or (getf props :offset) 0)))
          (scroll-bar (getf props :scroll-bar))
          (child (first (ptui.ui.elements:ui-element-children element)))
+         (content-width (max 0 (1- viewport-width)))
          (content-height (if child
                              (ptui.layout:layout-size-height
-                              (ptui.widgets.core:widget-measure child))
+                              (ptui.widgets.core:widget-measure child content-width nil))
                              0))
          ;; Clamp offset so we never scroll past the content
          (max-offset (max 0 (- content-height viewport-height)))
@@ -466,7 +508,9 @@ Returns a space cell with that background, or NIL."
         (%paint-element child buffer x offset-y max-cols max-rows)
         (incf offset-y
               (ptui.layout:layout-size-height
-               (ptui.widgets.core:widget-measure child)))))))
+               (ptui.widgets.core:widget-measure child
+                                                (max 0 (- max-cols x))
+                                                (max 0 (- max-rows offset-y)))))))))
 
 (defun %resolve-paint-handler (type)
   (or (gethash type *view-paint-registry*)
@@ -511,7 +555,7 @@ Supports :padding (container-level inset) and :gutters (per-region left inset)."
             (when (< offset-y (- max-rows pad-bottom))
               (%paint-element child buffer (+ x pad-left) offset-y
                               (+ x pad-left eff-max-cols) (- max-rows pad-bottom))
-              (let ((size (ptui.widgets.core:widget-measure child)))
+              (let ((size (ptui.widgets.core:widget-measure child eff-max-cols nil)))
                 (incf offset-y (ptui.layout:layout-size-height size))))))
         ;; Solve constraints and paint
         (let ((solved (ptui.layout.solver:solve-constraints constraints main-available))

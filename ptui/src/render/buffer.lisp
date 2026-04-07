@@ -116,30 +116,24 @@
     (loop for i from 0 below count do
       (let ((existing (svref cells i)))
         (if existing
-            (reset-cell existing)
+            (reset-cell existing fill)
             (setf (svref cells i) (clone-cell fill))))))
   nil)
 
-(defun reset-cell (cell)
-  "Reset CELL in-place to default state without allocating."
-  (setf (ptui.core.types:cell-glyph cell) " "
-        (ptui.core.types:cell-fg cell) nil
-        (ptui.core.types:cell-bg cell) nil)
-  (let ((attrs (ptui.core.types:cell-attrs cell)))
-    (setf (ptui.core.types:attrs-boldp attrs) nil
-          (ptui.core.types:attrs-italicp attrs) nil
-          (ptui.core.types:attrs-underlinep attrs) nil
-          (ptui.core.types:attrs-invertp attrs) nil
-          (ptui.core.types:attrs-dimp attrs) nil
-          (ptui.core.types:attrs-strikep attrs) nil))
-  cell)
+(defun reset-cell (cell &optional template)
+  "Reset CELL in-place from TEMPLATE, defaulting to the standard blank cell."
+  (copy-cell-into cell (or template (make-default-cell))))
 
 (defun buffer-reset (buf)
   "Reset all cells in BUF to defaults in-place. Zero allocation."
   (let* ((cells (ptui.core.types:cell-buffer-cells buf))
+         (default-cell (make-default-cell))
          (count (length cells)))
     (loop for i from 0 below count do
-      (reset-cell (svref cells i))))
+      (let ((existing (svref cells i)))
+        (if existing
+            (reset-cell existing default-cell)
+            (setf (svref cells i) (clone-cell default-cell))))))
   nil)
 
 (defun buffer-dimensions-match-p (buf cols rows)

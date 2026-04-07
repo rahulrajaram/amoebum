@@ -5,16 +5,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 usage() {
-  cat <<'EOF'
-Usage:
-  bin/amoebum
-
-Behavior:
-  1) sanitize continuation state
-  2) run `yarli run --stream`
-
-No subcommands or arguments are supported.
-EOF
+  printf '%s\n' \
+    'Usage:' \
+    '  bin/amoebum' \
+    '' \
+    'Behavior:' \
+    '  1) bootstrap local yarli state' \
+    '  2) sanitize continuation state' \
+    '  3) run `yarli run --stream`' \
+    '' \
+    'No subcommands or arguments are supported.'
 }
 
 fail() {
@@ -32,8 +32,17 @@ require_file() {
   [[ -f "${path}" ]] || fail "missing required file: ${path}"
 }
 
+bootstrap_local_state() {
+  require_file "${REPO_ROOT}/bin/yarli-bootstrap-local-state.sh"
+  (
+    cd "${REPO_ROOT}"
+    "${REPO_ROOT}/bin/yarli-bootstrap-local-state.sh"
+  )
+}
+
 main() {
   if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    bootstrap_local_state >/dev/null
     usage
     exit 0
   fi
@@ -44,6 +53,8 @@ main() {
 
   require_cmd yarli
   require_file "${REPO_ROOT}/bin/yarli-sanitize-continuation.sh"
+
+  bootstrap_local_state
 
   (
     cd "${REPO_ROOT}"

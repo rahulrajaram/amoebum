@@ -135,6 +135,11 @@
           (when value
             (return value)))))))
 
+(defparameter +event-field-accessor-names+
+  '((:type     . "EVENT-TYPE")
+    (:severity . "EVENT-SEVERITY")
+    (:source   . "EVENT-SOURCE")))
+
 (defun %event-field (event key)
   (labels ((string-key ()
              (string-downcase (symbol-name key))))
@@ -148,11 +153,10 @@
         (when (and (eq key :type)
                    (or (keywordp event) (symbolp event)))
           event)
-        (case key
-          (:type (%try-event-accessor event "EVENT-TYPE"))
-          (:severity (%try-event-accessor event "EVENT-SEVERITY"))
-          (:source (%try-event-accessor event "EVENT-SOURCE"))
-          (t nil)))))
+        (let ((accessor-name (cdr (assoc key +event-field-accessor-names+ :test #'eq))))
+          (if accessor-name
+              (%try-event-accessor event accessor-name)
+              nil)))))
 
 (defun %event-type (event)
   (let ((value (%event-field event :type)))

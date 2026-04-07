@@ -790,6 +790,98 @@
     (assert-true (= (ptui.layout:layout-size-height box-size) 6)
                  "box height should include padding + border")))
 
+(deftest widgets-box-per-side-padding-measure-and-paint
+  ;; Regression for box widgets accepting per-side padding (top right bottom left).
+  ;; Content "AB" is 2x1. With padding [1 2 3 4]: width = 2 + 2 + 4 = 8,
+  ;; height = 1 + 1 + 3 = 5. No border.
+  (let* ((text (ptui.widgets.core:make-text-widget "AB"))
+         (box-4 (ptui.widgets.core:make-box-widget
+                 text :padding (list 1 2 3 4)))
+         (size-4 (ptui.widgets.core:widget-measure box-4))
+         ;; 2-element shorthand [vert horiz]: [1 2] -> (1 2 1 2)
+         (box-2 (ptui.widgets.core:make-box-widget
+                 text :padding (list 1 2)))
+         (size-2 (ptui.widgets.core:widget-measure box-2))
+         ;; Scalar padding remains uniform
+         (box-s (ptui.widgets.core:make-box-widget text :padding 3))
+         (size-s (ptui.widgets.core:widget-measure box-s)))
+    (assert-true (= (ptui.layout:layout-size-width size-4) 8)
+                 "per-side padding: width = 2 + right(2) + left(4)")
+    (assert-true (= (ptui.layout:layout-size-height size-4) 5)
+                 "per-side padding: height = 1 + top(1) + bottom(3)")
+    (assert-true (= (ptui.layout:layout-size-width size-2) 6)
+                 "2-tuple padding: width = 2 + 2*horiz(2)")
+    (assert-true (= (ptui.layout:layout-size-height size-2) 3)
+                 "2-tuple padding: height = 1 + 2*vert(1)")
+    (assert-true (= (ptui.layout:layout-size-width size-s) 8)
+                 "scalar padding uniform width = 2 + 2*3")
+    (assert-true (= (ptui.layout:layout-size-height size-s) 7)
+                 "scalar padding uniform height = 1 + 2*3")
+    ;; Paint contract: the child text should appear at (left, top) inside the box.
+    (let ((buf (ptui.render.buffer:make-buffer 8 5)))
+      (ptui.ui.app::%paint-element box-4 buf 0 0 8 5)
+      (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 4 1)) "A")
+                   "child 'A' should land at column left(4), row top(1)")
+      (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 5 1)) "B")
+                   "child 'B' should land at column left+1, row top"))))
+
+(deftest widgets-wrapped-text-measure-respects-available-width
+  (let* ((text (ptui.widgets.core:make-text-widget "abcdef" :wrap t))
+         (intrinsic (ptui.widgets.core:widget-measure text))
+         (wrapped (ptui.widgets.core:widget-measure text 3 nil)))
+    (assert-true (= (ptui.layout:layout-size-width intrinsic) 6)
+                 "intrinsic width should stay unwrapped without an available width")
+    (assert-true (= (ptui.layout:layout-size-height intrinsic) 1)
+                 "intrinsic wrapped text height should default to one line")
+    (assert-true (= (ptui.layout:layout-size-width wrapped) 3)
+                 "wrapped width should clamp to the available width")
+    (assert-true (= (ptui.layout:layout-size-height wrapped) 2)
+                 "wrapped height should count wrapped lines")))
+
+(deftest widgets-stack-column-wrap-reflows-following-child
+  (let* ((wrapped (ptui.widgets.core:make-text-widget "abcdef" :wrap t))
+         (footer (ptui.widgets.core:make-text-widget "Z"))
+         (stack (ptui.widgets.core:make-stack-widget (list wrapped footer)
+                                                     :direction :column))
+         (size (ptui.widgets.core:widget-measure stack 3 nil))
+         (buf (ptui.render.buffer:make-buffer 3 4)))
+    (assert-true (= (ptui.layout:layout-size-width size) 3)
+                 "column stack width should honor wrapped child width")
+    (assert-true (= (ptui.layout:layout-size-height size) 3)
+                 "column stack height should include wrapped text height plus footer")
+    (ptui.ui.app::%paint-element stack buf 0 0 3 4)
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 0 0)) "a")
+                 "expected wrapped first line to start at row 0")
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 0 1)) "d")
+                 "expected wrapped second line to start at row 1")
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 0 2)) "Z")
+                 "expected following child to reflow below wrapped text")))
+
+(deftest constraint-layout-wraps-guttered-text-within-allocation
+  (let* ((history (ptui.widgets.core:make-text-widget "abcdef" :id :history :wrap t))
+         (status (ptui.widgets.core:make-text-widget "ok" :id :status))
+         (layout (make-ui-node
+                  :constraint-layout
+                  :props (list :direction :column
+                               :constraints (list (ptui.layout.constraints:fixed :history 2)
+                                                  (ptui.layout.constraints:fixed :status 1))
+                               :gutters (list (cons :history 1)))
+                  :children (list history status)))
+         (buf (ptui.render.buffer:make-buffer 4 3)))
+    (ptui.ui.app::%paint-element layout buf 0 0 4 3)
+    (assert-true (member (ptui.core.types:cell-glyph (buffer-cell-at buf 0 0))
+                         '("" " ")
+                         :test #'string=)
+                 "expected gutter column to stay empty before the wrapped region")
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 1 0)) "a")
+                 "expected guttered wrapped text to start one column in")
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 1 1)) "d")
+                 "expected wrapped second line to stay inside the allocated region")
+    (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 0 2)) "o")
+                 "expected following region to keep its own origin after wrapped content")
+    (assert-true (<= (buffer-max-content-width buf) 4)
+                 "expected wrapped constraint layout to stay within allocation width")))
+
 (deftest widgets-input-scroll-and-event-dispatch
   (let* ((captured '())
          (input (ptui.widgets.core:make-input-widget

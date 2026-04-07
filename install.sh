@@ -157,10 +157,13 @@ else
 fi
 
 # Install wrapper atomically so file replacement never leaves a partial script.
+# This installed wrapper intentionally stays repo-independent: it should keep
+# working away from the checkout and must not depend on repo-local `.yarli/`
+# bootstrap state or the repo wrapper scripts under `./bin/`.
 TMP_WRAPPER="$INSTALL_WRAPPER.tmp.$$.$RANDOM"
 cat > "$TMP_WRAPPER" <<'WRAPPER'
 #!/usr/bin/env bash
-# amoebum — wrapper that forwards args to the SBCL image
+# amoebum — installed wrapper that forwards args to the SBCL image
 SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
 if command -v readlink >/dev/null 2>&1; then
   if RESOLVED_PATH="$(readlink -f "$SCRIPT_PATH" 2>/dev/null)"; then

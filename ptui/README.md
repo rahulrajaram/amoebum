@@ -25,7 +25,7 @@ Defined in `ptui/ptui.asd`:
 | `ptui/backend` | Backend protocol + ANSI backend (ncurses optional) | none |
 | `ptui/engine` | Engine loop (`ptui.engine.loop:run`) | none |
 | `ptui` | Umbrella system (full kernel) | `cffi`, `bordeaux-threads` |
-| `ptui/examples` | Example app(s) | `cffi`, `bordeaux-threads` |
+| `ptui/examples` | Example demos and app(s) | `cffi`, `bordeaux-threads` |
 | `ptui/standalone` | Monolithic kernel system (single system, same code) | `cffi`, `bordeaux-threads` |
 | `ptui/components-standalone` | Components layer on top of `ptui/standalone` | `cffi`, `bordeaux-threads` |
 | `ptui/examples-standalone` | Example app(s) against `ptui/standalone` | `cffi`, `bordeaux-threads` |
@@ -77,18 +77,25 @@ PTUI uses a local Quicklisp install under `ptui/.tools/` via:
 
 ## Smoke: Load Every System Independently
 
-This is the main modularity check:
+This is the main modularity check. It loads the modular and standalone example systems, so it catches both the themed demos and the low-level basics examples:
 
 ```bash
 ./ptui/bin/check-systems.sh
 ```
 
-## Build + Run The Example TUI
+## Build + Run The Example TUIs
 
 ```bash
 ./ptui/bin/build.sh
 PTUI_EXIT_AFTER_MS=5000 ./ptui/dist/metrics-dashboard
+PTUI_EXIT_AFTER_MS=5000 ./ptui/dist/atop-dashboard
 ```
+
+Minimal kernel demos (loaded via `ptui/examples` and `ptui/examples-standalone`):
+
+- `ptui.examples.buffer-basics:main` for direct cell-buffer drawing, fill-rect, and border primitives
+- `ptui.examples.text-layout-basics:main` for width-safe text wrapping into a bordered region
+- `ptui.examples.event-handling-basics:main` for a tiny event loop with `:up`, `:down`, `r`, and default quit handling
 
 Additional themed examples (loaded via `ptui/examples`):
 
@@ -96,7 +103,29 @@ Additional themed examples (loaded via `ptui/examples`):
 - `ptui.examples.release-tracker:run-release-tracker`
 - `ptui.examples.focus-console:run-focus-console`
 
-Example invocation:
+Minimal example invocations:
+
+```bash
+sbcl --load ptui/.tools/quicklisp/setup.lisp \
+  --eval '(pushnew (truename "./ptui/") asdf:*central-registry*)' \
+  --eval '(asdf:load-system :ptui/examples)' \
+  --eval '(ptui.examples.buffer-basics:main)' \
+  --quit
+
+sbcl --load ptui/.tools/quicklisp/setup.lisp \
+  --eval '(pushnew (truename "./ptui/") asdf:*central-registry*)' \
+  --eval '(asdf:load-system :ptui/examples)' \
+  --eval '(ptui.examples.text-layout-basics:main)' \
+  --quit
+
+sbcl --load ptui/.tools/quicklisp/setup.lisp \
+  --eval '(pushnew (truename "./ptui/") asdf:*central-registry*)' \
+  --eval '(asdf:load-system :ptui/examples)' \
+  --eval '(ptui.examples.event-handling-basics:main)' \
+  --quit
+```
+
+Themed example invocation:
 
 ```bash
 sbcl --load ptui/.tools/quicklisp/setup.lisp \
@@ -213,9 +242,18 @@ Useful after modifying `*.asd` files or adding a new sub-system:
 ./ptui/bin/check-systems.sh
 ```
 
+### Smoke-test the minimal example entry points
+
+Useful after changing `ptui/examples/*.lisp` or the example system wiring:
+
+```bash
+./ptui/bin/smoke-examples.sh
+```
+
 ### Run kernel unit tests
 
 ```bash
+make test-ptui
 ./ptui/bin/test.sh
 ```
 
@@ -225,15 +263,48 @@ Useful after modifying `*.asd` files or adding a new sub-system:
 ./ptui/bin/compliance-gate.sh
 ```
 
-### Capture reproducible demo screenshots
+### Run PTUI terminal regression harnesses
 
 ```bash
-# Text-only snapshots (always works, no display required)
-./ptui/bin/capture-screenshots.sh --all --text-only
-
-# Full-color screenshots (requires a terminal emulator or Xvfb — see script for options)
-./ptui/bin/capture-screenshots.sh --all
+./ptui/bin/tmux-layout-regression.sh
+./ptui/bin/tmux-behavior-regression.sh
+./ptui/bin/tmux-ansi-regression.sh
+./ptui/bin/capture-screenshots.sh
 ```
+
+Each harness uses tracked references under `ptui/test/snapshots/` and should be
+run one at a time when working with tmux-backed PTUI demos.
+
+### PTUI regression harness prerequisites
+
+Required for the tmux-backed PTUI verification stack:
+
+1. `tmux`
+2. `sbcl`
+3. `python3`
+4. `diff`, `cmp`, and `rg`
+5. A login shell with those tools on `PATH`
+
+Recommended for richer screenshot diffs:
+
+1. ImageMagick `compare` for PNG diff artifacts
+
+`./bin/yarli-run-verification.sh` executes through the active login shell, so keep
+shell-provided toolchains available there.
+
+### Update screenshot-backed visual baselines
+
+```bash
+# Refresh one canonical case
+./ptui/bin/capture-screenshots.sh --update --demo metrics-dashboard
+
+# Re-check all tracked visual references
+./ptui/bin/capture-screenshots.sh
+```
+
+Tracked reference artifacts live under `ptui/test/snapshots/visual/`.
+Current captures and diffs are written under `tmp/ptui-visual/<timestamp>/current/`
+and `tmp/ptui-visual/<timestamp>/diffs/`.
 
 ### Run the performance regression test
 
@@ -257,5 +328,7 @@ instructions.
 ./ptui/bin/release-checklist.sh
 ```
 
-This runs build, tests, performance smoke, and required-docs checks in sequence and
-prints a summary.
+This runs build, tests, tmux layout/behavior/ANSI/visual regressions,
+performance smoke, and required-docs checks in sequence and prints a summary.
+The release docs/perf baseline for that checklist live in
+`ptui/docs/benchmark-story.md`.

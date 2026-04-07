@@ -131,6 +131,23 @@
      (parse-integer value))
     (t nil)))
 
+(defun %copy-hash-table-shallow (table)
+  (let ((copy (make-hash-table :test #'equal)))
+    (when (hash-table-p table)
+      (maphash (lambda (key value)
+                 (setf (gethash key copy) value))
+               table))
+    copy))
+
+(defun %token-count-integer (value)
+  (cond
+    ((integerp value) value)
+    ((and (stringp value)
+          (plusp (length value))
+          (every #'digit-char-p value))
+     (parse-integer value))
+    (t nil)))
+
 (defun %stream-turn-join-fragments (fragments)
   (if (null fragments)
       ""
@@ -179,6 +196,59 @@
          (setf (gethash "arguments" function-body) arguments))
        hash))
     (t nil)))
+
+(defun %stream-tool-call-name (entry)
+  (let ((function-body (and (hash-table-p entry)
+                            (gethash "function" entry))))
+    (and (hash-table-p function-body)
+         (%non-empty-string-p (gethash "name" function-body))
+         (gethash "name" function-body))))
+
+(defun %stream-tool-call-arguments (entry)
+  (let ((function-body (and (hash-table-p entry)
+                            (gethash "function" entry))))
+    (and (hash-table-p function-body)
+         (%non-empty-string-p (gethash "arguments" function-body))
+         (gethash "arguments" function-body))))
+
+(defun %stream-tool-call-arguments-complete-p (arguments)
+  (let ((trimmed (and (stringp arguments)
+                      (string-trim '(#\Space #\Tab #\Newline #\Return) arguments))))
+    (when (%non-empty-string-p trimmed)
+      (handler-case
+          (hash-table-p (jonathan:parse trimmed :as :hash-table))
+        (error ()
+          nil)))))
+
+(defun %make-stream-text-delta-chunk (text)
+  (list :type :text-delta
+        :text (or text "")))
+
+(defun %make-stream-tool-call-delta-chunk (index entry)
+  (let* ((name (%stream-tool-call-name entry))
+         (arguments (%stream-tool-call-arguments entry))
+         (tool-call (hash-to-tool-call entry)))
+    (list :type :tool-call-delta
+          :index index
+          :name name
+          :arguments arguments
+          :arguments-complete-p (%stream-tool-call-arguments-complete-p arguments)
+          :tool-call tool-call)))
+
+(defun %make-stream-usage-delta-chunk (usage)
+  (let* ((usage-copy (%copy-hash-table-shallow usage))
+         (prompt-tokens (or (%token-count-integer (gethash "prompt_tokens" usage-copy))
+                            (%token-count-integer (gethash "input_tokens" usage-copy))))
+         (completion-tokens (or (%token-count-integer (gethash "completion_tokens" usage-copy))
+                                (%token-count-integer (gethash "output_tokens" usage-copy))))
+         (total-tokens (or (%token-count-integer (gethash "total_tokens" usage-copy))
+                           (and prompt-tokens completion-tokens
+                                (+ prompt-tokens completion-tokens)))))
+    (list :type :usage-delta
+          :usage usage-copy
+          :prompt-tokens prompt-tokens
+          :completion-tokens completion-tokens
+          :total-tokens total-tokens)))
 
 (defun %stream-turn-merge-tool-call-delta! (snapshot event)
   (let* ((raw-tool-call (%stream-turn-event->tool-call-hash event))

@@ -41,6 +41,8 @@
 (defun %parse-cli-options (argv)
   (let ((json-mode-p nil)
         (demo-mode-p nil)
+        (help-mode-p nil)
+        (version-mode-p nil)
         (command nil)
         (prompt nil)
         (resume nil)
@@ -49,6 +51,11 @@
     (loop for index from 0 below (length argv) do
       (let ((argument (or (nth index argv) "")))
         (cond
+          ((or (string= argument "--help")
+               (string= argument "-h"))
+           (setf help-mode-p t))
+          ((string= argument "--version")
+           (setf version-mode-p t))
           ((or (string= argument "--json")
                (string= argument "--non-interactive"))
            (setf json-mode-p t))
@@ -97,11 +104,67 @@
            (push (%trim-cli-arg (subseq argument (length "--image="))) image-paths)))))
     (list :json-mode-p json-mode-p
           :demo-mode-p demo-mode-p
+          :help-mode-p help-mode-p
+          :version-mode-p version-mode-p
           :command command
           :prompt prompt
           :resume resume
           :session-id session-id
           :image-paths (nreverse image-paths))))
+
+(defun %amoebum-version ()
+  (or (ignore-errors
+        (let ((system (asdf:find-system :amoebum nil)))
+          (and system (asdf:component-version system))))
+      "0.1.0"))
+
+(defun %print-cli-help ()
+  (dolist (line `("Usage:"
+                  "  amoebum"
+                  "  amoebum --demo"
+                  "  amoebum --json --prompt <text> [--image <path> ...]"
+                  "  amoebum --json --command </slash-command>"
+                  "  amoebum [--resume [latest|<session-id>]]"
+                  "  amoebum [--session-id <session-id>]"
+                  "  amoebum --help"
+                  "  amoebum --version"
+                  ""
+                  "Modes:"
+                  "  default      Launch the interactive TUI."
+                  "  --demo       Launch the interactive demo without provider credentials."
+                  "  --json       Run the machine-readable JSON CLI contract."
+                  ""
+                  "Notes:"
+                  "  Repo wrapper: ./bin/amoebum bootstraps local Yarli state first."
+                  "  Installed wrapper: amoebum runs repo-independently from the packaged image."))
+    (format t "~A~%" line))
+  (finish-output)
+  t)
+
+(defun %print-cli-version ()
+  (format t "amoebum ~A~%" (%amoebum-version))
+  (finish-output)
+  t)
+
+(defparameter +default-gc-nursery-megabytes+ 64
+  "Default SBCL nursery size for normal interactive sessions.")
+
+(defparameter +demo-gc-nursery-megabytes+ 64
+  "Default SBCL nursery size for demo-mode sessions unless overridden by env.")
+
+(defun %parse-gc-nursery-megabytes (value)
+  (let* ((trimmed (%trim-cli-arg value))
+         (parsed (and (plusp (length trimmed))
+                      (ignore-errors (parse-integer trimmed :junk-allowed nil)))))
+    (and (integerp parsed)
+         (> parsed 0)
+         parsed)))
+
+(defun %gc-nursery-megabytes (&key demo-mode-p)
+  (or (%parse-gc-nursery-megabytes (uiop:getenv "AMOEBUM_GC_NURSERY_MB"))
+      (if demo-mode-p
+          +demo-gc-nursery-megabytes+
+          +default-gc-nursery-megabytes+)))
 
 (defun %resolve-cli-conversation (&key session-id resume)
   (let ((trimmed-session-id (%trim-cli-arg session-id))
@@ -437,17 +500,16 @@
          :image-paths image-paths)
         nil))))
 
-(defun %configure-gc-tuning ()
+(defun %configure-gc-tuning (&key demo-mode-p)
   "Configure SBCL GC for lower latency and better interactive performance.
 Streaming responses generate substantial short-lived allocation (styled-line
 lists, grapheme segments, cell clones) — a larger nursery lets these objects
 die without triggering GC on every frame."
   #+sbcl
-  (progn
-    ;; 64MB nursery reduces GC frequency during streaming.  Empirical
-    ;; testing (tui-perf-test.sh, 8 prompts) showed 64MB yields ~3.2x
-    ;; fault-rate growth vs 6.1x at the default 8MB.
-    (setf (sb-ext:bytes-consed-between-gcs) (* 64 1024 1024))
+  (let ((nursery-megabytes (%gc-nursery-megabytes :demo-mode-p demo-mode-p)))
+    ;; The env override keeps perf investigations reproducible without
+    ;; hard-coding different defaults for demo and interactive runs.
+    (setf (sb-ext:bytes-consed-between-gcs) (* nursery-megabytes 1024 1024))
     ;; Trigger a GC to establish baseline with new settings
     (sb-ext:gc :full t))
   #-sbcl
@@ -455,10 +517,16 @@ die without triggering GC on every frame."
 
 (defun main (&rest argv)
   (activate-amoebum-readtable)
-  (%configure-gc-tuning)
   (let ((effective-argv (or argv
                             #+sbcl (rest sb-ext:*posix-argv*)
-                            #-sbcl nil)))
+                            #-sbcl nil))
+        (options nil))
+    (setf options (%parse-cli-options effective-argv))
+    (when (getf options :help-mode-p)
+      (return-from main (%print-cli-help)))
+    (when (getf options :version-mode-p)
+      (return-from main (%print-cli-version)))
+    (%configure-gc-tuning :demo-mode-p (getf options :demo-mode-p))
     (reload-config :cli-arguments effective-argv)
     ;; Load YAML theme if not already loaded by config system
     ;; The bundled Tokyo Night theme is the default, but can be overridden via:
@@ -498,8 +566,9 @@ die without triggering GC on every frame."
                                :message "YAML theme loading failed, using built-in Lisp theme."
                                :details (list :status yaml-status))))))
     (enable-tts-post-receive-hook)
-    (let* ((options (%parse-cli-options effective-argv))
-           (mode (cond
+    (let* ((mode (cond
+                   ((getf options :help-mode-p) :help)
+                   ((getf options :version-mode-p) :version)
                    ((getf options :json-mode-p) :json)
                    ((getf options :demo-mode-p) :demo)
                    (t :interactive)))

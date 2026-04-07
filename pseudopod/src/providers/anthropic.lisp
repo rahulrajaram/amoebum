@@ -525,6 +525,7 @@ Each handler receives (state block-state delta) and returns a new block-state or
                 (gethash "function" tool-call) function-body)
           (stream-turn-apply-event! (anthropic-stream-state-snapshot state)
                                     (list :type :tool-call-delta
+                                          :index index
                                           :tool-call (hash-to-tool-call tool-call)
                                           :tool-call-id (gethash "id" tool-call)
                                           :name (anthropic-stream-block-state-name block-state)

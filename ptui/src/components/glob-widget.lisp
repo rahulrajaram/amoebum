@@ -333,14 +333,20 @@ NEXT must return two values: CANDIDATE and DONE-P."
       (t
        (list :action :ignored :state state)))))
 
+(defparameter +glob-status-labels+
+  '((:streaming  . "scanning")
+    (:done       . "done")
+    (:cancelled  . "cancelled")
+    (:idle       . "idle")))
+
+(defun %status-label (status)
+  (or (cdr (assoc status +glob-status-labels+ :test #'eq))
+      (string-downcase (symbol-name status))))
+
 (defun %status-line (state)
   (let ((count (length (glob-widget-state-matches state))))
     (format nil "~A (~D match~:P)"
-            (case (glob-widget-state-status state)
-              (:streaming "scanning")
-              (:done "done")
-              (:cancelled "cancelled")
-              (t "idle"))
+            (%status-label (glob-widget-state-status state))
             count)))
 
 (defun make-glob-widget (state &key id key (input-id :glob-input) (borderp t) (padding 0))

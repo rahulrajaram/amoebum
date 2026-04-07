@@ -6,12 +6,20 @@
 (defparameter *demo-chunk-delay-seconds* 0.02
   "Delay in seconds between emitting chunks in demo mode.")
 
+(defun %demo-whitespace-chunk-p (chunk)
+  (or (null chunk)
+      (zerop (length chunk))
+      (every (lambda (char)
+               (member char '(#\Space #\Tab #\Newline #\Return) :test #'char=))
+             chunk)))
+
 (defun %demo-emit-text (stream-state text)
-  "Emit TEXT as individual word-chunks with realistic streaming delays."
-  (let ((words (cl-ppcre:split "( )" text :with-registers-p t)))
-    (dolist (word words)
-      (token-stream-emit-chunk stream-state word)
-      (sleep *demo-chunk-delay-seconds*))))
+  "Emit TEXT as word/whitespace chunks while delaying only on content words."
+  (let ((chunks (cl-ppcre:all-matches-as-strings "\\S+|\\s+" text)))
+    (dolist (chunk chunks)
+      (token-stream-emit-chunk stream-state chunk)
+      (unless (%demo-whitespace-chunk-p chunk)
+        (sleep *demo-chunk-delay-seconds*)))))
 
 (defun %demo-response-default ()
   "A multi-paragraph markdown response exercising various formatting."
@@ -213,6 +221,23 @@ I'll proceed without reading that file.")))))))
       (format nil "~%Second tool ~A. Done!"
               (if (eq (pending-approval-decision pa2) :allow) "approved" "denied")))))
 
+(defun %demo-response-scale (&key (sections 200))
+  "A very large response for scale/stress testing."
+  (with-output-to-string (out)
+    (format out "# Scale Test Response (~D sections)~%~%" sections)
+    (dotimes (i sections)
+      (format out "## Section ~D~%~%" (1+ i))
+      (format out "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ~
+Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. ~
+Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris ~
+nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in ~
+reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla ~
+pariatur.~%~%")
+      (format out "- Item A in section ~D~%" (1+ i))
+      (format out "- Item B in section ~D~%" (1+ i))
+      (format out "- Item C in section ~D~%" (1+ i))
+      (format out "- Item D in section ~D~%~%" (1+ i)))))
+
 (defun %demo-detect-response-type (prompt)
   "Return a keyword indicating which demo response to generate based on PROMPT."
   (let ((lower (string-downcase (or prompt ""))))
@@ -222,6 +247,7 @@ I'll proceed without reading that file.")))))))
       ((search "stress"  lower) :stress)
       ((search "tool"    lower) :tool)
       ((search "error"   lower) :error)
+      ((search "scale"   lower) :scale)
       ((search "long"    lower) :long)
       ((search "code"    lower) :code)
       (t                        :default))))
@@ -248,6 +274,8 @@ a canned response type, then streams chunks with small delays."
        (%demo-emit-stress-tool-calls stream-state))
       (:tool
        (%demo-emit-tool-call stream-state))
+      (:scale
+       (%demo-emit-text stream-state (%demo-response-scale)))
       (:long
        (%demo-emit-text stream-state (%demo-response-long)))
       (:code

@@ -24,6 +24,7 @@ Notes:
 
 ```bash
 ./ptui/bin/build.sh
+./ptui/bin/smoke-examples.sh
 PTUI_EXIT_AFTER_MS=500 ./ptui/dist/metrics-dashboard
 ./ptui/bin/compliance-gate.sh
 ```
@@ -228,6 +229,7 @@ PTUI_LOG_LEVEL=debug PTUI_EXIT_AFTER_MS=250 ./ptui/dist/metrics-dashboard 2>&1 |
 
 ```bash
 ./ptui/bin/build.sh
+./ptui/bin/smoke-examples.sh
 PTUI_EXIT_AFTER_MS=500 ./ptui/dist/metrics-dashboard
 ```
 

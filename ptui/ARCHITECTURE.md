@@ -10,7 +10,10 @@ PTUI is a Common Lisp terminal UI framework with a React-like component model:
 
 From `ptui/ptui.asd`, PTUI is organized as a core execution chain of 17 runtime systems
 (`ptui/caps` through `ptui/panel`), plus higher-layer systems (`ptui/api`, `ptui/components`,
-`ptui/standalone`, examples, and test systems). The PTUI `src/` tree is on the order of
+`ptui/standalone`, examples, and test systems). The `ptui/examples` layer now intentionally
+mixes low-level kernel demos (`buffer-basics`, `text-layout-basics`, `event-handling-basics`)
+with fuller application-style demos (`metrics-dashboard`, `atop-dashboard`, `panel-demo`,
+`ops-wallboard`, `release-tracker`, `focus-console`). The PTUI `src/` tree is on the order of
 ~5k+ LOC for the runtime/render/layout spine and ~10k LOC overall.
 
 ## 2) System Map (all systems with deps)

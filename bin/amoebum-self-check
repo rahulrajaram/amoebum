@@ -36,88 +36,59 @@ log_success() {
 }
 
 show_help() {
-    cat << EOF
-Amoebum Self-Check - Validate source integrity before loading
-
-USAGE:
-    amoebum-self-check [OPTIONS]
-
-OPTIONS:
-    -h, --help          Show this help message
-    -v, --verbose       Verbose output
-    --strict            Fail on warnings too
-    --fix               Attempt auto-fix where possible
-
-DESCRIPTION:
-    This tool validates amoebum's Lisp source files for:
-    - Unbalanced parentheses, brackets, braces
-    - Unclosed strings
-    - Missing critical function definitions
-    - Syntax errors that compile silently
-
-    Run this BEFORE compiling or loading amoebum to catch
-    issues like the March 23, 2025 yaml-theme-loader bug.
-
-EXAMPLES:
-    amoebum-self-check              # Quick validation
-    amoebum-self-check -v           # Detailed output
-    amoebum-self-check --strict     # Fail on any issue
-
-EOF
+    printf '%s\n' \
+        'Amoebum Self-Check - Validate source integrity before loading' \
+        '' \
+        'USAGE:' \
+        '    amoebum-self-check [OPTIONS]' \
+        '' \
+        'OPTIONS:' \
+        '    -h, --help          Show this help message' \
+        '    -v, --verbose       Verbose output' \
+        '    --strict            Fail on warnings too' \
+        '    --fix               Attempt auto-fix where possible' \
+        '' \
+        'DESCRIPTION:' \
+        '    This tool validates amoebum'\''s Lisp source files for:' \
+        '    - Parser-aware parenthesis balance (ignores strings/comments)' \
+        '    - Missing critical function definitions' \
+        '    - Repo prerequisites needed by the local Yarli wrapper' \
+        '' \
+        '    It also checks the repo wrapper prerequisites that must exist' \
+        '    before the local Yarli entrypoint can run safely.' \
+        '' \
+        'EXAMPLES:' \
+        '    amoebum-self-check              # Quick validation' \
+        '    amoebum-self-check -v           # Detailed output' \
+        '    amoebum-self-check --strict     # Fail on any issue' \
+        ''
 }
 
-count_char() {
-    local file="$1"
-    local char="$2"
-    tr -cd "$char" < "$file" | wc -c
-}
+check_lisp_structure() {
+    local verbose="$1"
+    shift
+    local files=("$@")
+    local report
 
-check_file_syntax() {
-    local file="$1"
-    local verbose="$2"
-    local basename=$(basename "$file")
-    
-    [[ "$verbose" == "true" ]] && log_info "Checking: $basename"
-    
-    # Count parens
-    local open_parens=$(count_char "$file" '(')
-    local close_parens=$(count_char "$file" ')')
-    
-    if [[ $open_parens -ne $close_parens ]]; then
-        log_error "Unbalanced parens in $basename: $open_parens open, $close_parens close"
-        
-        # Try to find problematic defun/defmacro lines
-        echo "  Potentially affected definitions:"
-        grep -n "^\\s*(defun\\|^\\s*(defmacro\\|^\\s*(defmethod" "$file" 2>/dev/null | head -5 | sed 's/^/    /'
+    if ! command -v sbcl >/dev/null 2>&1; then
+        log_error "sbcl command NOT FOUND on PATH"
         return 1
     fi
-    
-    # Count brackets
-    local open_brackets=$(count_char "$file" '[')
-    local close_brackets=$(count_char "$file" ']')
-    
-    if [[ $open_brackets -ne $close_brackets ]]; then
-        log_error "Unbalanced brackets in $basename: $open_brackets open, $close_brackets close"
-        return 1
+
+    report="$(mktemp)"
+    if sbcl --script "$PROJECT_ROOT/bin/lisp-paren-check.lisp" "${files[@]}" >"$report" 2>&1; then
+        log_success "Parser-aware structural scan OK (${#files[@]} files)"
+        if [[ "$verbose" == "true" ]]; then
+            sed 's/^/  /' "$report"
+        fi
+        rm -f "$report"
+        return 0
     fi
-    
-    # Count braces
-    local open_braces=$(count_char "$file" '{')
-    local close_braces=$(count_char "$file" '}')
-    
-    if [[ $open_braces -ne $close_braces ]]; then
-        log_error "Unbalanced braces in $basename: $open_braces open, $close_braces close"
-        return 1
-    fi
-    
-    # Check for unclosed strings (rough check)
-    local quote_count=$(count_char "$file" '"')
-    if (( quote_count % 2 != 0 )); then
-        log_warn "Odd number of quotes in $basename ($quote_count) - possible unclosed string"
-    fi
-    
-    log_success "$basename OK"
-    return 0
+
+    log_error "Parser-aware structural scan found issues"
+    sed 's/^/  /' "$report"
+    rm -f "$report"
+    return 1
 }
 
 check_critical_functions() {
@@ -136,6 +107,28 @@ check_critical_functions() {
         log_error "load-yaml-theme function NOT FOUND in yaml-theme-loader.lisp"
         echo "  This would cause runtime 'undefined function' errors"
         return 1
+    fi
+}
+
+check_repo_runtime_prereqs() {
+    log_info "Checking repo runtime prerequisites..."
+
+    if command -v yarli >/dev/null 2>&1; then
+        log_success "yarli command found"
+    else
+        log_error "yarli command NOT FOUND on PATH"
+    fi
+
+    if [[ -f "$PROJECT_ROOT/yarli.toml" ]]; then
+        log_success "yarli.toml found"
+    else
+        log_error "yarli.toml not found"
+    fi
+
+    if [[ -f "$PROJECT_ROOT/bin/yarli-bootstrap-local-state.sh" ]]; then
+        log_success "bin/yarli-bootstrap-local-state.sh found"
+    else
+        log_error "bin/yarli-bootstrap-local-state.sh not found"
     fi
 }
 
@@ -193,21 +186,20 @@ main() {
     log_info "Found ${#files[@]} Lisp files"
     echo ""
     
-    # Check each file
-    for file in "${files[@]}"; do
-        check_file_syntax "$file" "$verbose" || true
-    done
+    check_lisp_structure "$verbose" "${files[@]}" || true
     
     echo ""
     check_critical_functions || true
-    
+    echo ""
+    check_repo_runtime_prereqs || true
+
     # Summary
     echo ""
     echo "========================================"
     echo "Summary"
     echo "========================================"
     
-    if [[ $ERRORS -eq 0 ]]; then
+    if [[ $ERRORS -eq 0 && ! ( "$strict" == "true" && $WARNINGS -gt 0 ) ]]; then
         echo -e "${GREEN}✓ All checks passed${NC}"
         echo "  Files checked: ${#files[@]}"
         echo "  Errors: 0"
@@ -221,14 +213,13 @@ main() {
         echo "  Errors: $ERRORS"
         echo "  Warnings: $WARNINGS"
         echo ""
-        echo "Fix errors before compiling or loading amoebum."
-        echo "Run 'amoebum-diagnose syntax' for detailed analysis."
-        
-        if [[ "$strict" == "true" && $WARNINGS -gt 0 ]]; then
-            exit 1
-        elif [[ $ERRORS -gt 0 ]]; then
-            exit 1
+        if [[ "$strict" == "true" && $WARNINGS -gt 0 && $ERRORS -eq 0 ]]; then
+            echo "Strict mode treats warnings as failures."
+        else
+            echo "Fix errors before compiling or loading amoebum."
         fi
+        echo "Run 'sbcl --script bin/lisp-paren-check.lisp --project' for structural details."
+        exit 1
     fi
 }
 

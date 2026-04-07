@@ -107,6 +107,13 @@
                                                  :shiftp shiftp
                                                  :text? text?)))
 
+(defun %emit-mouse-event (parser kind button x y)
+  (%queue-event parser
+                (ptui.core.events:make-mouse-event :kind kind
+                                                   :button button
+                                                   :x x
+                                                   :y y)))
+
 (defun %digit-p (byte)
   (and (<= 48 byte) (<= byte 57)))
 
@@ -226,6 +233,118 @@
           (return-from %parse-csi-with-prefix consumed)))
       (%emit-csi-fallback-escape parser))))
 
+(defun %decode-sgr-button (cb final-byte)
+  "Decode SGR button code CB and final byte (M=press, m=release) into (values kind button).
+  Cb bits: 0-1=button, bit 5=motion, bit 6=scroll.
+  Returns (values :press/:release/:move/:scroll-up/:scroll-down button-or-nil)."
+  (let ((is-release (= final-byte 109))   ; lowercase m
+        (is-scroll  (logbitp 6 cb))
+        (is-motion  (logbitp 5 cb))
+        (btn-bits   (logand cb 3)))
+    (cond
+      (is-scroll
+       (if (= (logand cb 1) 0)
+           (values :scroll-up nil)
+           (values :scroll-down nil)))
+      (is-motion
+       (let ((button (case btn-bits
+                       (0 :left)
+                       (1 :middle)
+                       (2 :right)
+                       (otherwise nil))))
+         (values :move button)))
+      (is-release
+       (let ((button (case btn-bits
+                       (0 :left)
+                       (1 :middle)
+                       (2 :right)
+                       (otherwise nil))))
+         (values :release button)))
+      (t
+       (let ((button (case btn-bits
+                       (0 :left)
+                       (1 :middle)
+                       (2 :right)
+                       (otherwise nil))))
+         (values :press button))))))
+
+(defun %parse-sgr-mouse-sequence (parser)
+  "Parse an SGR mouse sequence starting at byte 3 (after ESC [ <).
+  Format: ESC [ < Cb ; Cx ; Cy M/m
+  Returns number of bytes consumed, or 0 if incomplete, or 1 (fallback escape) if malformed."
+  (let* ((pending (input-parser-pending parser))
+         (len (length pending))
+         ;; We have ESC [ < already confirmed at positions 0,1,2
+         ;; digits start at idx 3
+         (idx 3)
+         (cb 0)
+         (cx 0)
+         (cy 0))
+    ;; Parse Cb digits
+    (unless (< idx len)
+      (return-from %parse-sgr-mouse-sequence 0))
+    (let ((has-cb-digit nil))
+      (loop while (and (< idx len) (%digit-p (aref pending idx)))
+            do
+              (setf cb (+ (* cb 10) (%byte-digit (aref pending idx))))
+              (setf has-cb-digit t)
+              (incf idx))
+      ;; Need at least one digit for Cb
+      (unless has-cb-digit
+        ;; Malformed: no digits after ESC [ < — need more data or fallback
+        (if (>= idx len)
+            (return-from %parse-sgr-mouse-sequence 0)
+            ;; Got a non-digit character immediately: fallback
+            (return-from %parse-sgr-mouse-sequence (%emit-csi-fallback-escape parser)))))
+    ;; Expect semicolon separator
+    (unless (< idx len)
+      (return-from %parse-sgr-mouse-sequence 0))
+    (unless (= (aref pending idx) 59)   ; semicolon
+      (return-from %parse-sgr-mouse-sequence (%emit-csi-fallback-escape parser)))
+    (incf idx)
+    ;; Parse Cx digits
+    (unless (< idx len)
+      (return-from %parse-sgr-mouse-sequence 0))
+    (let ((has-cx-digit nil))
+      (loop while (and (< idx len) (%digit-p (aref pending idx)))
+            do
+              (setf cx (+ (* cx 10) (%byte-digit (aref pending idx))))
+              (setf has-cx-digit t)
+              (incf idx))
+      (unless has-cx-digit
+        (if (>= idx len)
+            (return-from %parse-sgr-mouse-sequence 0)
+            (return-from %parse-sgr-mouse-sequence (%emit-csi-fallback-escape parser)))))
+    ;; Expect semicolon separator
+    (unless (< idx len)
+      (return-from %parse-sgr-mouse-sequence 0))
+    (unless (= (aref pending idx) 59)
+      (return-from %parse-sgr-mouse-sequence (%emit-csi-fallback-escape parser)))
+    (incf idx)
+    ;; Parse Cy digits
+    (unless (< idx len)
+      (return-from %parse-sgr-mouse-sequence 0))
+    (let ((has-cy-digit nil))
+      (loop while (and (< idx len) (%digit-p (aref pending idx)))
+            do
+              (setf cy (+ (* cy 10) (%byte-digit (aref pending idx))))
+              (setf has-cy-digit t)
+              (incf idx))
+      (unless has-cy-digit
+        (if (>= idx len)
+            (return-from %parse-sgr-mouse-sequence 0)
+            (return-from %parse-sgr-mouse-sequence (%emit-csi-fallback-escape parser)))))
+    ;; Expect final byte: M (77) for press/motion or m (109) for release
+    (unless (< idx len)
+      (return-from %parse-sgr-mouse-sequence 0))
+    (let ((final-byte (aref pending idx)))
+      (unless (or (= final-byte 77) (= final-byte 109))
+        (return-from %parse-sgr-mouse-sequence (%emit-csi-fallback-escape parser)))
+      (multiple-value-bind (kind button) (%decode-sgr-button cb final-byte)
+        ;; Convert 1-based terminal coordinates to 0-based internal coords
+        (%emit-mouse-event parser kind button (1- cx) (1- cy)))
+      (1+ idx))))
+
 (defun %parse-escape-sequence (parser)
   (let* ((pending (input-parser-pending parser))
          (len (length pending)))
@@ -250,6 +369,8 @@
            ;; Home/End: ESC [ H / ESC [ F
            (72 (%emit-key-event parser :home) 3)
            (70 (%emit-key-event parser :end) 3)
+           ;; SGR mouse protocol: ESC [ < Cb ; Cx ; Cy M/m
+           (60 (%parse-sgr-mouse-sequence parser))
            ;; Numeric CSI: ESC [ <digit> ...
            ;; Handles: ESC [ N ~ (Home=1~, End=4~, PgUp=5~, PgDn=6~)
            ;; and:     ESC [ 1 ; 5 <letter> (Ctrl+Arrow)
