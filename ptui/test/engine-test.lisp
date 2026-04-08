@@ -166,11 +166,11 @@
      :backend backend
      :fps 20
      :on-event (lambda (state event)
-                (declare (ignore state))
-                (when (eql (ptui.core.events:key-event-key event) :resize)
-                  (setf (counting-test-backend-cols backend) 6
-                        (counting-test-backend-rows backend) 2))
-                state)
+                 (declare (ignorable state))
+                 (when (eql (ptui.core.events:key-event-key event) :resize)
+                   (setf (counting-test-backend-cols backend) 6
+                         (counting-test-backend-rows backend) 2))
+                 state)
      :initial-state nil)
     (setf sizes (nreverse sizes))
     (is (= (length sizes) 2))

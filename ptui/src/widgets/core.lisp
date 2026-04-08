@@ -52,7 +52,15 @@
   "Normalize a box padding spec to a 4-tuple (top right bottom left) of non-negative integers.
 Accepts: integer (uniform), (vert horiz) list/vector, (top right bottom left) list/vector,
 or nil (treated as 0)."
-  (labels ((clamp (n) (max 0 (if (integerp n) n (round (or n 0))))))
+  (labels ((invalid-padding ()
+             (error "Invalid box padding spec ~S. Expected NIL, a number, a 2-element list/vector, or a 4-element list/vector."
+                    padding))
+           (clamp (n)
+             (if (realp n)
+                 (max 0 (if (integerp n) n (round n)))
+                 (error "Invalid box padding component ~S in spec ~S. Expected a real number."
+                        n
+                        padding))))
     (cond
       ((null padding) (list 0 0 0 0))
       ((integerp padding)
@@ -64,20 +72,26 @@ or nil (treated as 0)."
          (list v h v h)))
       ((and (listp padding) (= (length padding) 4))
        (mapcar #'clamp padding))
-      ((and (vectorp padding) (= (length padding) 2))
+      ((listp padding)
+       (invalid-padding))
+      ((and (vectorp padding) (not (stringp padding)) (= (length padding) 2))
        (let ((v (clamp (aref padding 0))) (h (clamp (aref padding 1))))
          (list v h v h)))
-      ((and (vectorp padding) (= (length padding) 4))
+      ((and (vectorp padding) (not (stringp padding)) (= (length padding) 4))
        (list (clamp (aref padding 0)) (clamp (aref padding 1))
              (clamp (aref padding 2)) (clamp (aref padding 3))))
-      (t (list 0 0 0 0)))))
+      ((and (vectorp padding) (not (stringp padding)))
+       (invalid-padding))
+      (t
+       (invalid-padding)))))
 
 (defun make-box-widget (child &key id key (padding 0) (borderp nil) border fg bg attrs)
   "Create a box container element with optional padding and style.
 Accepted BORDER values are :rounded, :single, :double, :none, and nil/false.
 For compatibility, BORDERP continues to request default :rounded border when BORDER is NIL.
 PADDING may be an integer (uniform), a 2-element list (vert horiz), or a
-4-element list (top right bottom left)."
+4-element list/vector (top right bottom left) or a 2-element vector
+(vert horiz)."
   (let* ((border-value (cond
                          ((or (not (null borderp)) (and border (not (eq border :none))))
                           (or border :rounded))

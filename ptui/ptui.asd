@@ -347,7 +347,7 @@
   :description "PTUI FiveAM suites"
   :author "Ralph"
   :license "MIT"
-  :depends-on ("ptui" "ptui/components" "ptui/test-support" "fiveam")
+  :depends-on ("ptui" "ptui/components" "ptui/test-support" "ptui-preview" "fiveam")
   :serial t
   :components
   ((:file "test/theme-test")

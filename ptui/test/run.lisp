@@ -100,6 +100,21 @@
         (setf max-used (max max-used last-used))))
     max-used))
 
+(defun find-node-by-id (element target-id)
+  (when element
+    (if (equal (or (ptui.ui.elements:ui-element-id element)
+                   (ptui.ui.elements:ui-element-key element))
+               target-id)
+        element
+        (loop for child in (ptui.ui.elements:ui-element-children element)
+              for match = (find-node-by-id child target-id)
+              when match do (return match)))))
+
+(defun ptui-example-path (relative-path)
+  (merge-pathnames relative-path
+                   (uiop:pathname-parent-directory-pathname
+                    (uiop:pathname-directory-pathname *load-truename*))))
+
 (defun make-temp-directory (prefix)
   (uiop:ensure-directory-pathname
    (merge-pathnames
@@ -798,6 +813,9 @@
          (box-4 (ptui.widgets.core:make-box-widget
                  text :padding (list 1 2 3 4)))
          (size-4 (ptui.widgets.core:widget-measure box-4))
+         (box-v4 (ptui.widgets.core:make-box-widget
+                  text :padding #(1 2 3 4)))
+         (size-v4 (ptui.widgets.core:widget-measure box-v4))
          ;; 2-element shorthand [vert horiz]: [1 2] -> (1 2 1 2)
          (box-2 (ptui.widgets.core:make-box-widget
                  text :padding (list 1 2)))
@@ -809,6 +827,15 @@
                  "per-side padding: width = 2 + right(2) + left(4)")
     (assert-true (= (ptui.layout:layout-size-height size-4) 5)
                  "per-side padding: height = 1 + top(1) + bottom(3)")
+    (assert-true (= (ptui.layout:layout-size-width size-v4)
+                    (ptui.layout:layout-size-width size-4))
+                 "4-vector padding should measure identically to a 4-list")
+    (assert-true (= (ptui.layout:layout-size-height size-v4)
+                    (ptui.layout:layout-size-height size-4))
+                 "4-vector padding height should match the 4-list path")
+    (assert-true (equal (getf (ptui.ui.elements:ui-element-props box-v4) :padding-insets)
+                        (getf (ptui.ui.elements:ui-element-props box-4) :padding-insets))
+                 "4-vector padding should normalize to the same padding-insets as a 4-list")
     (assert-true (= (ptui.layout:layout-size-width size-2) 6)
                  "2-tuple padding: width = 2 + 2*horiz(2)")
     (assert-true (= (ptui.layout:layout-size-height size-2) 3)
@@ -824,6 +851,32 @@
                    "child 'A' should land at column left(4), row top(1)")
       (assert-true (string= (ptui.core.types:cell-glyph (buffer-cell-at buf 5 1)) "B")
                    "child 'B' should land at column left+1, row top"))))
+
+(deftest widgets-box-padding-rejects-malformed-specs
+  (let ((text (ptui.widgets.core:make-text-widget "AB")))
+    (flet ((assert-invalid-padding (padding)
+             (handler-case
+                 (progn
+                   (ptui.widgets.core:make-box-widget text :padding padding)
+                   (error "expected malformed padding ~S to signal an error" padding))
+               (error (condition)
+                 (assert-true (search "Invalid box padding spec"
+                                      (princ-to-string condition))
+                              "error for malformed padding ~S should mention invalid box padding spec"
+                              padding)))))
+      (assert-invalid-padding '(1 2 3))
+      (assert-invalid-padding #(1 2 3)))))
+
+(deftest preview-yaml-history-panel-padding-insets
+  (let* ((yaml-data (cl-yaml:parse (ptui-example-path "examples/preview-test.tui-spec.yaml")))
+         (tree (ptui.preview.yaml-translator:translate-yaml-to-tree yaml-data 80 24))
+         (history-node (find-node-by-id tree :HISTORY))
+         (history-props (and history-node (ptui.ui.elements:ui-element-props history-node))))
+    (assert-true history-node "expected preview translator to emit a :HISTORY node")
+    (assert-true (eq (ptui.ui.elements:ui-element-type history-node) :box)
+                 "expected history node to be wrapped in a box for padding/gutter handling")
+    (assert-true (equal (getf history-props :padding-insets) '(0 1 0 2))
+                 "history panel should normalize padding [0 1] plus gutter 1 to padding-insets (0 1 0 2)")))
 
 (deftest widgets-wrapped-text-measure-respects-available-width
   (let* ((text (ptui.widgets.core:make-text-widget "abcdef" :wrap t))

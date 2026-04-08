@@ -119,8 +119,7 @@ Returns a list of segment-lists. Each segment-list represents one output line."
          (prefix-len (if prefix-seg (length (first prefix-seg)) 0))
          (lines '())
          (current-line '())
-         (current-len 0)
-         (is-first-line t))
+         (current-len 0))
     (dolist (seg segments)
       (let* ((text (first seg))
              (cell (second seg))
@@ -138,7 +137,6 @@ Returns a list of segment-lists. Each segment-list represents one output line."
                       (push (%seg (subseq remaining 0 budget) cell) current-line)
                       (setf remaining (subseq remaining budget))
                       (push (nreverse current-line) lines)
-                      (setf is-first-line nil)
                       ;; Start continuation with prefix indent
                       (if (and prefix-seg (> prefix-len 0))
                           (setf current-line (list (list (first prefix-seg)
@@ -150,7 +148,6 @@ Returns a list of segment-lists. Each segment-list represents one output line."
                      (t
                       (when current-line
                         (push (nreverse current-line) lines))
-                      (setf is-first-line nil)
                       (if (and prefix-seg (> prefix-len 0))
                           (setf current-line (list (list (first prefix-seg)
                                                          (second prefix-seg)))

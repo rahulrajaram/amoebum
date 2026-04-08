@@ -400,6 +400,7 @@ Each entry gets a labeled colored block."
 
 (defun %make-roles-sample (role-entries width)
   "Create a widget showing sample text rendered in each role's style."
+  (declare (ignore width))
   (let ((lines '()))
     (dolist (entry role-entries)
       (destructuring-bind (name fg-rgb bg-rgb attrs-plist) entry
@@ -446,8 +447,9 @@ Each entry gets a labeled colored block."
   "Top-level: translate parsed YAML data into a complete widget tree.
 YAML-DATA is a hash-table or alist from cl-yaml:parse.
 STATUS-HINTS, when provided, replaces the activity text in the status bar.
-SCROLL-OFFSET controls the history panel's vertical scroll position.
-Returns a ui-element tree suitable for painting."
+  SCROLL-OFFSET controls the history panel's vertical scroll position.
+  Returns a ui-element tree suitable for painting."
+  (declare (ignore height))
   (handler-case
       (let* ((layout-section (%yaml-lookup-any yaml-data "layout"))
              (palette-section (%yaml-lookup-any yaml-data "palette"))
@@ -466,7 +468,7 @@ Returns a ui-element tree suitable for painting."
                                                      :scroll-offset scroll-offset)
                               (ptui.widgets.core:make-text-widget "[no layout section]")))
              ;; Build optional panels
-             (extra-children '()))
+             (extra-children nil))
         ;; Add palette swatch if toggled
         (when (and show-palette-p palette-entries)
           (push (ptui.widgets.core:make-text-widget
@@ -486,9 +488,9 @@ Returns a ui-element tree suitable for painting."
             (let* ((extra-stack (ptui.widgets.core:make-stack-widget
                                  (nreverse extra-children)
                                  :id :info-panel))
-                   (extra-height (min 15 (+ 2 (length (or palette-entries '()))
+                   (extra-height (min 15 (+ 2 (length (or palette-entries nil))
                                            (if show-roles-p
-                                               (+ 2 (length (or role-entries '())))
+                                               (+ 2 (length (or role-entries nil)))
                                                0)))))
               (ptui.ui.elements:make-element
                :constraint-layout

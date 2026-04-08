@@ -186,8 +186,11 @@ Semantically identical to use-memo but communicates intent."
        `((eql key ,pattern) ,@handler-body))
       ((and (listp pattern) (eq (first pattern) :text))
        (let ((char-var (second pattern)))
-         `((and (eql key :text) (string= text ,(string char-var)))
-           ,@handler-body)))
+         `((and (eql key :text)
+                (stringp text)
+                (= (length text) 1))
+           (let ((,char-var (char text 0)))
+             ,@handler-body))))
       (t
        (error "use-event-map: invalid pattern ~S. Expected keyword, (:text ch), or :any."
               pattern)))))
@@ -214,6 +217,7 @@ Patterns: keyword (:enter, :backspace), (:text ch) for char match, :any catch-al
 
 (defun %context-key (runtime context-name)
   "Build the runtime state-table key for a context value."
+  (declare (ignore runtime))
   (list :context context-name))
 
 (defun provide-context (context-name value)

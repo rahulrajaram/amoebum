@@ -55,6 +55,7 @@ sbcl --non-interactive \
   --load "${QL_SETUP}" \
   --eval "(ql:quickload '(:cffi
                           :bordeaux-threads
+                          :cl-yaml
                           :cl-ppcre
                           :dexador
                           :jonathan

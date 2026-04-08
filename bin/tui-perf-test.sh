@@ -24,7 +24,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BINARY="$REPO_ROOT/dist/amoebum"
 SESSION="amoebum-perf-test-$$"
-ARTIFACT_DIR="$REPO_ROOT/tmp/perf-test-$$"
+TMP_ROOT="$REPO_ROOT/tmp"
+ARTIFACT_DIR="$TMP_ROOT/perf-test-$$"
 
 NUM_PROMPTS=5
 WATCH=false
@@ -146,6 +147,7 @@ VERDICT
 run_self_test() {
     need_command jq
     local tmp_dir verdict_file
+    mkdir -p "${REPO_ROOT}/tmp"
     tmp_dir="$(mktemp -d "${REPO_ROOT}/tmp/tui-perf-self-test-XXXXXX")"
     verdict_file="${tmp_dir}/verdict.json"
 
@@ -406,7 +408,7 @@ peak_rss() {
 command -v tmux >/dev/null 2>&1 || die "tmux is not installed"
 command -v bc >/dev/null 2>&1 || die "bc is not installed"
 
-mkdir -p "$ARTIFACT_DIR"
+mkdir -p "$TMP_ROOT" "$ARTIFACT_DIR"
 
 echo "=== TUI Performance Regression Test ==="
 echo "Binary:  $BINARY"

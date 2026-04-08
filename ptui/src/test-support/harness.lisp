@@ -45,4 +45,5 @@ Returns (values pass-p diff-message)."
   "Create a test backend and bind it along with its buffer for testing."
   `(let* ((,backend-var (ptui.backend.test:make-test-backend :cols ,cols :rows ,rows))
           (,buffer-var (ptui.backend.test:test-backend-buffer ,backend-var)))
+     (declare (ignorable ,buffer-var))
      ,@body))

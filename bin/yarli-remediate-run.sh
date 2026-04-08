@@ -126,6 +126,8 @@ mkdir -p "${tasks_dir}"
 run_status_file="${artifact_dir}/run-status.txt"
 run_explain_file="${artifact_dir}/run-explain-exit.txt"
 task_list_file="${artifact_dir}/task-list.txt"
+audit_tail_file="${artifact_dir}/audit-tail.txt"
+command_evidence_file="${artifact_dir}/command-evidence.txt"
 summary_file="${artifact_dir}/summary.md"
 prompt_file="${artifact_dir}/prompt.md"
 dispatch_output_file="${artifact_dir}/dispatch-output.txt"
@@ -134,16 +136,51 @@ printf '%s\n' "${run_status}" > "${run_status_file}"
 printf '%s\n' "${run_explain}" > "${run_explain_file}"
 printf '%s\n' "${task_list}" > "${task_list_file}"
 
+set +e
+audit_tail="$(yarli audit tail --lines 100 2>&1)"
+audit_tail_rc=$?
+set -e
+printf '%s\n' "${audit_tail}" > "${audit_tail_file}"
+
 for task_id in "${task_ids[@]}"; do
   task_explain="$(yarli task explain "${task_id}")" || fail "unable to explain task: ${task_id}"
   printf '%s\n' "${task_explain}" > "${tasks_dir}/${task_id}.txt"
 done
+
+command_evidence_raw="$(printf '%s\n' "${audit_tail}" | grep -F "${run_id}" || true)"
+for task_id in "${task_ids[@]}"; do
+  task_command_evidence="$(printf '%s\n' "${audit_tail}" | grep -F "${task_id}" || true)"
+  if [[ -n "${task_command_evidence}" ]]; then
+    if [[ -n "${command_evidence_raw}" ]]; then
+      command_evidence_raw+=$'\n'
+    fi
+    command_evidence_raw+="${task_command_evidence}"
+  fi
+done
+
+command_evidence="$(printf '%s\n' "${command_evidence_raw}" | awk 'NF && !seen[$0]++')"
+if [[ -n "${command_evidence}" ]]; then
+  command_evidence_status="present"
+  printf '%s\n' "${command_evidence}" > "${command_evidence_file}"
+else
+  command_evidence_status="missing"
+  {
+    printf 'command_evidence=%s\n' "${command_evidence_status}"
+    printf 'audit_tail_rc=%s\n' "${audit_tail_rc}"
+    if [[ ${audit_tail_rc} -ne 0 ]]; then
+      printf '%s\n' "reason=yarli audit tail --lines 100 failed"
+    else
+      printf '%s\n' "reason=no audit lines in the last 100 entries matched the source run or candidate task ids"
+    fi
+  } > "${command_evidence_file}"
+fi
 
 {
   printf '# Yarli Remediation Context\n\n'
   printf '%s\n' "- Source run id: \`${run_id}\`"
   printf '%s\n' "- Source run state: \`${run_state}\`"
   printf '%s\n' "- Captured at (UTC): \`$(date -u +"%Y-%m-%dT%H:%M:%SZ")\`"
+  printf '%s\n' "- Command evidence status: \`${command_evidence_status}\`"
   printf '%s\n' "- Candidate task ids:"
   for task_id in "${task_ids[@]}"; do
     printf '  - `%s`\n' "${task_id}"
@@ -153,6 +190,8 @@ done
   printf '%s\n' '  - `run-status.txt`'
   printf '%s\n' '  - `run-explain-exit.txt`'
   printf '%s\n' '  - `task-list.txt`'
+  printf '%s\n' '  - `audit-tail.txt`'
+  printf '%s\n' '  - `command-evidence.txt`'
   printf '%s\n' '  - `tasks/<task-id>.txt`'
   printf '%s\n' '  - `prompt.md`'
   printf '%s\n' '  - `dispatch-output.txt`'
@@ -164,6 +203,7 @@ cp "${template_path}" "${prompt_file}"
   printf '%s\n' "- Originating run id: \`${run_id}\`"
   printf '%s\n' "- Originating run state: \`${run_state}\`"
   printf '%s\n' "- Artifact directory: \`${artifact_dir}\`"
+  printf '%s\n' "- Command evidence status: \`${command_evidence_status}\`"
   printf '%s' '- Candidate tasks:'
   for task_id in "${task_ids[@]}"; do
     printf ' `%s`' "${task_id}"
@@ -180,6 +220,14 @@ cp "${template_path}" "${prompt_file}"
   printf '### Task List\n'
   printf '```text\n'
   printf '%s\n' "${task_list}"
+  printf '```\n\n'
+  printf '### Audit Tail\n'
+  printf '```text\n'
+  printf '%s\n' "${audit_tail}"
+  printf '```\n\n'
+  printf '### Command Evidence\n'
+  printf '```text\n'
+  sed -n '1,200p' "${command_evidence_file}"
   printf '```\n\n'
 } >> "${prompt_file}"
 
