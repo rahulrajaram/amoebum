@@ -884,6 +884,245 @@ launched binary."
                     (write-char #\Newline out))
                   (write-string (%content-part-text part) out))))))
 
+(defun %tool-display-label (key)
+  (string-downcase (substitute #\- #\_ key)))
+
+(defun %normalize-tool-json-key (key)
+  (let ((text (cond
+                ((stringp key) key)
+                ((symbolp key) (symbol-name key))
+                (t (princ-to-string key)))))
+    (string-downcase
+     (substitute #\_ #\-
+                 (string-trim '(#\Space #\Tab #\Newline #\Return) text)))))
+
+(defun %tool-json-field (object key)
+  (when (hash-table-p object)
+    (let ((normalized-target (%normalize-tool-json-key key)))
+      (multiple-value-bind (value presentp) (gethash key object)
+        (if presentp
+            (values value t)
+            (loop for existing-key being the hash-keys of object
+                  for normalized-key = (%normalize-tool-json-key existing-key)
+                  when (string= normalized-key normalized-target)
+                    do (return (values (gethash existing-key object) t))
+                  finally (return (values nil nil))))))))
+
+(defun %trim-chat-error-text (text)
+  (if (stringp text)
+      (string-trim '(#\Space #\Tab #\Newline #\Return) text)
+      ""))
+
+(defun %parse-json-object-substring (text)
+  (when (stringp text)
+    (let ((start (position #\{ text)))
+      (when start
+        (ignore-errors
+          (jonathan:parse (subseq text start) :as :hash-table))))))
+
+(defun %stream-failure-provider-message (error-message)
+  (let ((payload (%parse-json-object-substring error-message)))
+    (when (hash-table-p payload)
+      (multiple-value-bind (error-object presentp) (gethash "error" payload)
+        (when (and presentp (hash-table-p error-object))
+          (multiple-value-bind (message message-present-p)
+              (gethash "message" error-object)
+            (when (and message-present-p
+                       (stringp message)
+                       (plusp (length (%trim-chat-error-text message))))
+              (%trim-chat-error-text message))))))))
+
+(defun %stream-failure-summary-line (error-message)
+  (let ((trimmed (%trim-chat-error-text error-message)))
+    (cond
+      ((zerop (length trimmed))
+       "The provider request failed.")
+      ((search "(status=429)" trimmed :test #'char=)
+       "Provider request failed with HTTP 429.")
+      (t
+       trimmed))))
+
+(defun %format-stream-failure-message (error-message)
+  (let* ((trimmed (%trim-chat-error-text error-message))
+         (provider-message (%stream-failure-provider-message trimmed))
+         (summary-line (%stream-failure-summary-line trimmed))
+         (retry-guidance
+           (if (search "(status=429)" trimmed :test #'char=)
+               "Retry your last message in a moment."
+               "Review the error and retry when ready.")))
+    (with-output-to-string (out)
+      (write-string "[Stream failed]" out)
+      (terpri out)
+      (write-string summary-line out)
+      (when (and (stringp provider-message)
+                 (plusp (length provider-message))
+                 (not (string= provider-message summary-line)))
+        (terpri out)
+        (write-string provider-message out))
+      (terpri out)
+      (write-string retry-guidance out))))
+
+(defun %tool-json-scalar-string (value)
+  (cond
+    ((stringp value) value)
+    ((numberp value) (princ-to-string value))
+    ((or (eq value t) (eq value :true)) "true")
+    ((or (null value) (eq value :false)) "false")
+    ((symbolp value) (string-downcase (symbol-name value)))
+    (t nil)))
+
+(defun %tool-primary-display-label-p (label)
+  (member label
+          '("stdout" "output" "text" "content" "message" "summary" "result" "body")
+          :test #'string=))
+
+(defun %tool-json-blank-string-p (value)
+  (or (null value)
+      (and (stringp value)
+           (zerop (length (string-trim '(#\Space #\Tab #\Newline #\Return) value))))))
+
+(defun %tool-json-true-p (value)
+  (or (eq value t)
+      (eq value :true)
+      (and (stringp value)
+           (member (string-downcase
+                    (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                   '("true" "t" "yes" "y" "1")
+                   :test #'string=))))
+
+(defun %tool-json-zero-p (value)
+  (cond
+    ((null value) t)
+    ((integerp value) (zerop value))
+    ((and (realp value) (not (complexp value))) (zerop value))
+    ((stringp value)
+     (let ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return) value)))
+       (or (string= trimmed "")
+           (string= trimmed "0"))))
+    (t nil)))
+
+(defun %tool-json-success-status-p (value)
+  (or (null value)
+      (and (stringp value)
+           (member (string-downcase
+                    (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                   '("" "completed" "complete" "success" "succeeded" "ok" "done" "finished")
+                   :test #'string=))
+      (and (symbolp value)
+           (member (string-downcase (symbol-name value))
+                   '("completed" "complete" "success" "succeeded" "ok" "done" "finished")
+                   :test #'string=))))
+
+(defun %tool-json-clean-success-p (value primary-block-p)
+  (and primary-block-p
+       (multiple-value-bind (stderr stderr-present-p) (%tool-json-field value "stderr")
+         (declare (ignore stderr-present-p))
+         (%tool-json-blank-string-p stderr))
+       (multiple-value-bind (error error-present-p) (%tool-json-field value "error")
+         (declare (ignore error-present-p))
+         (%tool-json-blank-string-p error))
+       (multiple-value-bind (signal signal-present-p) (%tool-json-field value "signal")
+         (declare (ignore signal-present-p))
+         (%tool-json-zero-p signal))
+       (multiple-value-bind (exit-code exit-code-present-p) (%tool-json-field value "exit_code")
+         (declare (ignore exit-code-present-p))
+         (%tool-json-zero-p exit-code))
+       (multiple-value-bind (status status-present-p) (%tool-json-field value "status")
+         (declare (ignore status-present-p))
+         (%tool-json-success-status-p status))
+       (multiple-value-bind (stdout-truncated truncated-present-p)
+           (%tool-json-field value "stdout_truncated_p")
+         (declare (ignore truncated-present-p))
+         (not (%tool-json-true-p stdout-truncated)))
+       (multiple-value-bind (stderr-truncated truncated-present-p)
+           (%tool-json-field value "stderr_truncated_p")
+         (declare (ignore truncated-present-p))
+         (not (%tool-json-true-p stderr-truncated)))
+       (multiple-value-bind (stdout-omitted omitted-present-p)
+           (%tool-json-field value "stdout_omitted_chars")
+         (declare (ignore omitted-present-p))
+         (%tool-json-zero-p stdout-omitted))
+       (multiple-value-bind (stderr-omitted omitted-present-p)
+           (%tool-json-field value "stderr_omitted_chars")
+         (declare (ignore omitted-present-p))
+         (%tool-json-zero-p stderr-omitted))))
+
+(defun %tool-json-display-text (value)
+  (cond
+    ((and (stringp value) (plusp (length value)))
+     value)
+    ((vectorp value)
+     (let ((items (coerce value 'list)))
+       (when (and items (every #'stringp items))
+         (format nil "~{~A~^~%~}" items))))
+    ((hash-table-p value)
+     (let ((blocks '())
+           (details '())
+           (nested-text nil))
+       (labels ((add-block (key)
+                  (multiple-value-bind (field presentp) (%tool-json-field value key)
+                    (when (and presentp (stringp field) (plusp (length field)))
+                      (push (cons (%tool-display-label key) field) blocks))))
+                (add-detail (key)
+                  (multiple-value-bind (field presentp) (%tool-json-field value key)
+                    (when presentp
+                      (let ((text (%tool-json-scalar-string field)))
+                        (when (and (stringp text) (plusp (length text)))
+                          (push (format nil "~A: ~A"
+                                        (%tool-display-label key)
+                                        text)
+                                details)))))))
+         (dolist (key '("stdout" "output" "text" "content" "message" "summary" "result" "body"))
+           (add-block key))
+         (dolist (key '("stderr" "error"))
+           (add-block key))
+         (let ((clean-success-p (%tool-json-clean-success-p value (not (null blocks)))))
+           (unless clean-success-p
+             (dolist (key '("exit_code" "status" "signal"))
+               (add-detail key)))
+           (dolist (key '("stdout_truncated_p" "stderr_truncated_p"
+                          "stdout_omitted_chars" "stderr_omitted_chars"))
+             (add-detail key)))
+         (when (and (null blocks) (null details))
+           (dolist (nested-key '("payload" "result" "data"))
+             (multiple-value-bind (nested presentp) (%tool-json-field value nested-key)
+               (when (and presentp (null nested-text))
+                 (setf nested-text (%tool-json-display-text nested)))))))
+       (cond
+         ((and (stringp nested-text) (plusp (length nested-text)))
+          nested-text)
+         ((or blocks details)
+          (setf blocks (nreverse blocks)
+                details (nreverse details))
+          (if (and (= (length blocks) 1)
+                   (null details)
+                   (%tool-primary-display-label-p (caar blocks)))
+              (cdar blocks)
+              (with-output-to-string (out)
+                (loop for (label . block) in blocks
+                      for index from 0 do
+                        (when (> index 0)
+                          (terpri out)
+                          (terpri out))
+                        (format out "~A:~%~A" label block))
+                (when details
+                  (when blocks
+                    (terpri out)
+                    (terpri out))
+                  (format out "~{~A~^~%~}" details)))))
+         (t nil))))
+    (t nil)))
+
+(defun %message-display-text (message)
+  (let ((body (%message-content->text message)))
+    (if (string= (%normalize-chat-role (pseudopod:message-role message)) "tool")
+        (or (ignore-errors
+              (%tool-json-display-text (jonathan:parse body :as :hash-table)))
+            (ignore-errors
+              (%tool-json-display-text (jonathan:parse body)))
+            body)
+        body)))
+
 (defun %replace-message-at-index! (messages index message)
   (let ((cell (nthcdr index messages)))
     (when cell
@@ -1574,13 +1813,15 @@ launched binary."
   (let* ((stream-state (chat-ui-state-stream-state chat-state))
          (summary (token-stream-progress-summary stream-state))
          (error-message (getf summary :error-message)))
+    (%finalize-streaming-assistant-message chat-state :partialp t)
     (when (and (stringp error-message)
-               (plusp (length error-message)))
-      (%append-streaming-assistant-chunk
+               (plusp (length (%trim-chat-error-text error-message))))
+      (chat-ui-add-message
        chat-state
-       (format nil "\n[stream failed: ~A]\n" error-message))))
-  (%finalize-streaming-assistant-message chat-state :partialp t)
+       "system"
+       (%format-stream-failure-message error-message))))
   (%clear-stream-tool-tracking! chat-state)
+  (%prefer-chat-input-focus! chat-state)
   (conversation-transition! conversation :error-recovery))
 
 (defun %record-chat-stream-event! (chat-state event)
@@ -2835,7 +3076,7 @@ Displays a truecolor gradient ASCII art logo for amoebum with color fills."
                                    :styled-segments segments)
                              entries))))
           ;; Use cache for wrapped lines to avoid re-wrapping every frame
-          (let* ((body (%message-content->text message))
+          (let* ((body (%message-display-text message))
                  (cached (%get-cached-wrapped-lines message content-width))
                  (wrapped (or cached
                               (let ((lines (ptui.text.layout:wrap-by-width body content-width)))
@@ -4459,6 +4700,8 @@ or before runtime routing has a focused target."
               (if (token-stream-active-p stream-state)
                   (progn
                     (token-stream-request-cancel stream-state)
+                    (ignore-errors
+                      (token-stream-force-reset-if-stuck stream-state))
                     t)
                   (approval-dialog-handle-key! approval-state :escape))
               (let* ((handler-name (gethash key *approval-dialog-key-handlers*))
@@ -4474,6 +4717,8 @@ or before runtime routing has a focused target."
   (let ((stream-state (getf context :stream-state)))
     (when (token-stream-active-p stream-state)
       (token-stream-request-cancel stream-state)
+      (ignore-errors
+        (token-stream-force-reset-if-stuck stream-state))
       :consume)))
 
 (defun %chat-ui-handle-ctrl-c-key (context key)
@@ -4483,6 +4728,8 @@ or before runtime routing has a focused target."
     (cond
       ((token-stream-active-p stream-state)
        (token-stream-request-cancel stream-state)
+       (ignore-errors
+         (token-stream-force-reset-if-stuck stream-state))
        :consume)
       ((%chat-ctrl-c-quit-armed-p chat-state)
        (%chat-disarm-ctrl-c-quit! chat-state)
@@ -4490,6 +4737,33 @@ or before runtime routing has a focused target."
       (t
        (%chat-arm-ctrl-c-quit! chat-state)
        :consume))))
+
+(defun %chat-ui-scroll-page-lines (chat-state)
+  (max 5
+       (floor (max 10
+                   (1+ (chat-ui-state-max-message-scrollback-lines chat-state)))
+              3)))
+
+(defun %chat-ui-handle-page-scroll-key (context key)
+  (let ((chat-state (getf context :chat-state)))
+    (case key
+      (:pgup
+       (chat-ui-scroll-history chat-state (%chat-ui-scroll-page-lines chat-state))
+       :consume)
+      (:pgdn
+       (chat-ui-scroll-history chat-state (- (%chat-ui-scroll-page-lines chat-state)))
+       :consume)
+      (:home
+       (setf (chat-ui-state-message-scrollback-lines chat-state)
+             (max 0 (chat-ui-state-max-message-scrollback-lines chat-state))
+             (chat-ui-state-stream-scroll-follow-p chat-state) nil)
+       :consume)
+      (:end
+       (setf (chat-ui-state-message-scrollback-lines chat-state) 0
+             (chat-ui-state-stream-scroll-follow-p chat-state) t)
+       :consume)
+      (otherwise
+       nil))))
 
 (defun %chat-ui-handle-key-event (chat-state runtime event route)
   (checkpoint-mark-activity)
@@ -4500,6 +4774,8 @@ or before runtime routing has a focused target."
     (%chat-ui-disarm-quit-unless-ctrl-c! chat-state key)
     (cond
       ((%chat-ui-handle-approval-key-event context key text)
+       :consume)
+      ((%chat-ui-handle-page-scroll-key context key)
        :consume)
       (t
        (let* ((handler-name (gethash key *chat-ui-key-handlers*))

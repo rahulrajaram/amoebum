@@ -30,6 +30,10 @@
         (amoebum:chat-ui-add-message state (first msg) (second msg)))
       state)))
 
+(defun %style-entry-text (entries)
+  (format nil "~{~A~^~%~}"
+          (mapcar (lambda (entry) (getf entry :text)) entries)))
+
 ;;; --- Markdown Rendering Tests ---
 
 (test style-markdown-code-block
@@ -79,6 +83,56 @@
                                  (list "tool" "glob-files returned: main.lisp, config.lisp, chat.lisp")))))
     (let ((buffer (%safe-render-chat-ui state :cols 84 :rows 20)))
       (%assert-style-snapshot buffer "style-message-roles"))))
+
+(test style-tool-json-output-decodes-newlines
+  "Tool-role JSON results should render decoded multiline text instead of literal \\n escapes."
+  (let* ((state (%style-test-chat-state
+                 :messages '(("tool" "{\"stdout\":\"line one\\nline two\",\"stderr\":\"\",\"exit_code\":0}"))))
+         (chat-state (amoebum::ensure-chat-ui-state state))
+         (entries (amoebum::%message-line-entries
+                   chat-state
+                   (amoebum::chat-ui-state-messages chat-state)
+                   72))
+         (rendered (%style-entry-text entries)))
+    (is (search "line one" rendered))
+    (is (search "line two" rendered))
+    (is-false (search "\\n" rendered))
+    (is-false (search "exit-code:" rendered))))
+
+(test style-tool-json-output-normalizes-uppercase-hyphen-keys
+  "Successful shell payloads should normalize uppercase keys and stay focused on useful output."
+  (let* ((state (%style-test-chat-state
+                 :messages
+                 '(("tool"
+                    "{\"STATUS\":\"COMPLETED\",\"EXIT-CODE\":0,\"STDOUT\":\"/home/rahul/Documents/amoebum\\n\",\"STDERR\":\"\"}"))))
+         (chat-state (amoebum::ensure-chat-ui-state state))
+         (entries (amoebum::%message-line-entries
+                   chat-state
+                   (amoebum::chat-ui-state-messages chat-state)
+                   72))
+         (rendered (%style-entry-text entries)))
+    (is (search "/home/rahul/Documents/amoebum" rendered))
+    (is-false (search "\"STDOUT\"" rendered))
+    (is-false (search "status:" rendered))
+    (is-false (search "exit-code:" rendered))
+    (is-false (search "\\n" rendered))))
+
+(test style-tool-json-output-retains-failure-details
+  "Failed shell payloads should keep stderr and exit metadata visible."
+  (let* ((state (%style-test-chat-state
+                 :messages
+                 '(("tool"
+                    "{\"STATUS\":\"FAILED\",\"EXIT-CODE\":1,\"STDOUT\":\"\",\"STDERR\":\"permission denied\"}"))))
+         (chat-state (amoebum::ensure-chat-ui-state state))
+         (entries (amoebum::%message-line-entries
+                   chat-state
+                   (amoebum::chat-ui-state-messages chat-state)
+                   72))
+         (rendered (%style-entry-text entries)))
+    (is (search "stderr:" rendered))
+    (is (search "permission denied" rendered))
+    (is (search "status: FAILED" rendered))
+    (is (search "exit-code: 1" rendered))))
 
 (test style-status-bar-token-usage-low
   "Status bar with low token usage (green zone)."

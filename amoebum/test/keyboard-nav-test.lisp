@@ -378,6 +378,27 @@
               "Expected scrollback to decrease after scroll-down. Up: ~D Down: ~D"
               after-up after-down))))))
 
+(test chat-pgup-scrolls-history-even-when-input-has-text
+  "Global page scrolling should work even when the prompt currently contains text."
+  (with-safe-chat-env
+    (let* ((messages (loop for i from 1 to 20
+                           collect (list "user" (format nil "Message ~D" i))
+                           collect (list "assistant" (format nil "Response ~D" i))))
+           (state (%safe-make-chat-ui-state :branch-name "test/kbd-nav")))
+      (dolist (msg messages)
+        (amoebum:chat-ui-add-message state (first msg) (second msg)))
+      (amoebum:chat-ui-set-input state "still typing")
+      (%safe-render-chat-ui state :cols 84 :rows 24)
+      (is (= 0 (amoebum::chat-ui-state-message-scrollback-lines state)))
+      (multiple-value-bind (_state disposition)
+          (amoebum.ui:handle-chat-ui-event
+           state
+           (ptui.core.events:make-key-event :pgup))
+        (declare (ignore _state))
+        (is (eq :consume disposition)))
+      (is (> (amoebum::chat-ui-state-message-scrollback-lines state) 0)
+          "Expected Page Up to scroll history even while input has text."))))
+
 (test chat-input-focusable-after-render
   "The chat input field is reachable in the focus order after rendering."
   (with-safe-chat-env

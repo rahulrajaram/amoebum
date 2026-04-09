@@ -37,10 +37,10 @@
     (is (plusp (length description))
         "Expected non-empty description for ~S." key)))
 
-(test output-style-defaults-to-operator
-  "make-status-bar-state defaults output-style to :operator."
+(test output-style-defaults-to-compact
+  "make-status-bar-state defaults output-style to :compact so the package starts quieter."
   (let ((state (%make-output-style-test-state)))
-    (is (eq :operator (amoebum.ui:status-bar-current-output-style state)))))
+    (is (eq :compact (amoebum.ui:status-bar-current-output-style state)))))
 
 (test output-style-explicit-compact
   "make-status-bar-state honours :compact output-style."
@@ -53,14 +53,14 @@
     (is (eq :verbose (amoebum.ui:status-bar-current-output-style state)))))
 
 (test output-style-unknown-coerces-to-default
-  "An unknown style keyword is silently coerced to :operator (the default)."
+  "An unknown style keyword is silently coerced to :compact (the default)."
   (let ((state (%make-output-style-test-state :output-style :bogus)))
-    (is (eq :operator (amoebum.ui:status-bar-current-output-style state)))))
+    (is (eq :compact (amoebum.ui:status-bar-current-output-style state)))))
 
 (test output-style-nil-coerces-to-default
-  "A nil style is silently coerced to :operator (the default)."
+  "A nil style is silently coerced to :compact (the default)."
   (let ((state (%make-output-style-test-state :output-style nil)))
-    (is (eq :operator (amoebum.ui:status-bar-current-output-style state)))))
+    (is (eq :compact (amoebum.ui:status-bar-current-output-style state)))))
 
 (test status-bar-set-output-style-mutates-state
   "status-bar-set-output-style! replaces the style in place and returns the state."
@@ -72,10 +72,10 @@
     (is (eq :verbose (amoebum.ui:status-bar-current-output-style state)))))
 
 (test status-bar-set-output-style-coerces-unknown
-  "status-bar-set-output-style! coerces an unrecognised style to :operator."
+  "status-bar-set-output-style! coerces an unrecognised style to :compact."
   (let ((state (%make-output-style-test-state :output-style :compact)))
     (amoebum.ui:status-bar-set-output-style! state :totally-unknown)
-    (is (eq :operator (amoebum.ui:status-bar-current-output-style state)))))
+    (is (eq :compact (amoebum.ui:status-bar-current-output-style state)))))
 
 (test output-style-updates-from-config-event
   "Publishing a :output-style config event updates the state immediately."
@@ -102,7 +102,7 @@
                       :key :output-style
                       :old-value :verbose
                       :new-value :not-a-style))
-    (is (eq :operator (amoebum.ui:status-bar-current-output-style state)))))
+    (is (eq :compact (amoebum.ui:status-bar-current-output-style state)))))
 
 (test output-style-render-key-includes-style
   "status-bar-render-key includes the output-style so caches invalidate on change."

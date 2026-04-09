@@ -30,7 +30,7 @@
         (:verbose  . "Detailed output: full tool results and debug info"))))
 
 (defparameter +known-status-bar-output-styles+ '(:compact :operator :verbose))
-(defparameter +default-status-bar-output-style+ :operator)
+(defparameter +default-status-bar-output-style+ :compact)
 
 (defstruct (status-bar-stream-payload
             (:constructor make-status-bar-stream-payload
