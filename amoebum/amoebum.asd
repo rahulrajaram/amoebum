@@ -8,6 +8,15 @@
   :components
   ((:file "src/package")
    (:file "src/util")
+   ;; NXT-264: Functional/immutable kernel (no internal deps).
+   (:file "src/fp/package")
+   (:file "src/fp/threading")
+   (:file "src/fp/result")
+   (:file "src/fp/update")
+   (:file "src/fp/match")
+   (:file "src/fp/plist")
+   (:file "src/fp/transition")
+   (:file "src/fp/frozen")
    (:file "src/runtime-log")
    (:file "src/usdt")
    (:file "src/events")
@@ -46,7 +55,6 @@
    (:file "src/sandbox")
    (:file "src/sandbox-os")
    (:file "src/asdf-extensions")
-   (:file "src/reader-macros")
    (:file "src/compile-validation")
    (:file "src/macros/deftool")
    (:file "src/macros/defhook")
@@ -108,12 +116,20 @@
    (:file "src/widgets/perf-dashboard")
    (:file "src/widgets/worker-dashboard")
    (:file "src/api-facades")
+   ;; NXT-263: Test isolation fixture. Must load AFTER api-facades because
+   ;; %install-facade! moves *checkpoint-directory-override* from :amoebum
+   ;; to :amoebum.sessions; the fixture references the post-install location.
+   (:file "src/test-support/globals-fixture")
    (:file "src/swarm")
    (:file "src/widgets/swarm-panel")
    (:file "src/system-prompt")
    (:file "src/ide-context")
    (:file "src/adapters/cultivar")
    (:file "src/adapters/yore")
+   ;; NXT-275: cultivar deftool wrappers. Must load AFTER src/adapters/cultivar
+   ;; which defines make-cultivar-adapter, %cultivar-usable-p, and the
+   ;; cultivar-resolve/expand/preview public API.
+   (:file "src/tools/cultivar-tools")
    (:file "src/ui/approval-dialog")
    (:file "src/ui/style-table")
    (:file "src/ui/streaming")
@@ -126,6 +142,19 @@
    ;; I297-I304: prompt-input must load before chat.lisp
    ;; because chat.lisp calls chat-panel-handle-input-key defined here
    (:file "src/ui/panels/prompt-input")
+   ;; NXT-278: chat-ui-state struct + low-level state helpers extracted
+   ;; from chat.lisp. Must load immediately before src/ui/chat.
+   (:file "src/ui/chat-state")
+   ;; NXT-279: chat streaming subsystem (event handlers, tool-call
+   ;; tracking/execution, budget enforcement) extracted from chat.lisp.
+   ;; Must load immediately after src/ui/chat-state and before src/ui/chat.
+   (:file "src/ui/chat-stream")
+   ;; NXT-280: chat rendering subsystem extracted from chat.lisp.
+   ;; Must load immediately after src/ui/chat-stream and before src/ui/chat.
+   (:file "src/ui/chat-render")
+   ;; NXT-281: chat input/editing subsystem extracted from chat.lisp.
+   ;; Must load immediately after src/ui/chat-render and before src/ui/chat.
+   (:file "src/ui/chat-input")
    (:file "src/ui/chat")
    ;; I297-I304: defpanel sub-panels extracted from chat.lisp
    (:file "src/ui/panels/message-history")
@@ -144,6 +173,13 @@
   :serial t
   :components
   ((:file "test/suite")
+   ;; NXT-263/NXT-264: agent-amenability kernel tests.
+   (:file "test/fp-kernel-test")
+   (:file "test/fp-match-test")
+   (:file "test/fp-plist-test")
+   (:file "test/fp-transition-test")
+   (:file "test/fp-frozen-test")
+   (:file "test/globals-fixture-test")
    (:file "test/indexer-smoke-test")
    (:file "test/os-sandbox-smoke-test")
    (:file "test/self-modify-smoke-test")
@@ -159,6 +195,8 @@
    (:file "test/deftool-dangerous-permission-test")
    (:file "test/macroexpand-golden-test")
    (:file "test/pipeline-context-test")
+   ;; NXT-287: phase-boundary unit tests for amoebum/src/pipeline.lisp
+   (:file "test/pipeline-unit-test")
    (:file "test/tool-argument-prompting-test")
    (:file "test/read-orchestration-test")
    (:file "test/write-safety-test")
@@ -172,6 +210,7 @@
    (:file "test/permission-command-matching-test")
    (:file "test/permission-command-canonicalization-test")
    (:file "test/permission-argument-granularity-test")
+   (:file "test/permissions-unit-test")
    (:file "test/policy-kernel-test")
    (:file "test/web-search-policy-test")
    (:file "test/shell-env-test")
@@ -205,6 +244,7 @@
    (:file "test/asr-test")
    (:file "test/chat-snapshot-test")
    (:file "test/conversation-roundtrip-test")
+   (:file "test/conversation-unit-test")
    (:file "test/session-resume-test")
    (:file "test/lifecycle-events-test")
    (:file "test/agent-activity-test")
@@ -215,6 +255,7 @@
    (:file "test/worker-retry-test")
    (:file "test/worker-fanout-test")
    (:file "test/swarm-execution-semantics-test")
+   (:file "test/swarm-unit-test")
    (:file "test/event-replay-test")
    (:file "test/session-recording-test")
    (:file "test/conversation-export-test")
@@ -232,6 +273,7 @@
    (:file "test/streaming-step-test")
    (:file "test/token-stream-transition-table-test")
    (:file "test/plan-execution-transition-table-test")
+   (:file "test/plan-execution-unit-test")
    (:file "test/budgeting-restart-test")
    (:file "test/codebase-index-test")
    (:file "test/persistence-test")
@@ -258,6 +300,9 @@
    (:file "test/ide-context-integration-test")
    ;; NXT-106/NXT-107: Cultivar and Yore adapter stubs
    (:file "test/cultivar-adapter-test")
+   ;; NXT-275: cultivar deftool wrappers — depends on the adapter tests
+   ;; above for shared diagnostic helpers and must load after them.
+   (:file "test/cultivar-tools-test")
    (:file "test/yore-adapter-test")
    ;; NXT-108/NXT-109: IDE context packet builder and context-pressure metadata
    (:file "test/nxt-108-109-context-pressure-test")

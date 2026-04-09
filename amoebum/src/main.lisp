@@ -516,7 +516,6 @@ die without triggering GC on every frame."
   nil)
 
 (defun main (&rest argv)
-  (activate-amoebum-readtable)
   (let ((effective-argv (or argv
                             #+sbcl (rest sb-ext:*posix-argv*)
                             #-sbcl nil))

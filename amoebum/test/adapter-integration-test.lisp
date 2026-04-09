@@ -3,10 +3,10 @@
 ;;; ============================================================
 ;;; NXT-110: Adapter Integration Tests
 ;;;
-;;; Happy-path integration tests for Cultivar resolve-preview-expand
+;;; Happy-path integration tests for Cultivar resolve-slice-expand
 ;;; and Yore search-fetch pipelines.  Tests exercise the full
 ;;; make-adapter -> operation -> result verification sequence, using
-;;; only the stub implementations (no live services required).
+;;; only offline-safe harnesses (no live services required).
 ;;; ============================================================
 
 (def-suite adapter-integration-suite
@@ -15,71 +15,130 @@
 
 (in-suite adapter-integration-suite)
 
+(defun %adapter-integration-cultivar-fake-cli-script (root)
+  (let ((path (merge-pathnames "cultivar-integration-fake.sh" root)))
+    (%write-text-file
+     path
+     "#!/bin/sh
+set -eu
+cmd=${1:-}
+shift || true
+case \"$cmd\" in
+  query)
+    sub=${1:-}
+    shift || true
+    case \"$sub\" in
+      resolve)
+        printf '%s' '{\"results_digest\":\"arena\",\"symbol\":{\"id\":\"sym_fake\",\"kind\":\"function\",\"file\":\"/tmp/fake.lisp\",\"qualified_name\":\"amoebum:fake\",\"range\":{\"start_line\":1,\"start_col\":2}},\"confidence\":{\"level\":\"must\"},\"reference_context\":{\"reference_mode\":\"structural_only\"}}'
+        ;;
+      refs)
+        printf '%s' '{\"results_digest\":\"arena\",\"reference_mode\":\"structural_only\",\"must_refs\":[],\"may_refs\":[{\"file\":\"/tmp/fake-ref.lisp\",\"kind\":\"reference\",\"symbol_id\":\"sym_fake\",\"range\":{\"start_line\":4,\"start_col\":2,\"end_line\":4,\"end_col\":6}}],\"unknown_refs\":[]}'
+        ;;
+      *)
+        printf '%s' '{}'
+        ;;
+    esac
+    ;;
+  slice)
+    markdown=no
+    while [ $# -gt 0 ]; do
+      case \"$1\" in
+        --markdown) markdown=yes; shift ;;
+        *) shift ;;
+      esac
+    done
+    if [ \"$markdown\" = yes ]; then
+      printf '%s' '```lisp
+(fake)
+```'
+    else
+      printf '%s' '{\"results_digest\":\"arena\",\"served_from_materialization\":true,\"materialization_kind\":\"neighborhood\",\"symbol\":{\"id\":\"sym_fake\",\"name\":\"amoebum:fake\",\"kind\":\"function\",\"file\":\"/tmp/fake.lisp\",\"line\":1,\"col\":2},\"definition_source\":\"(defun fake ())\",\"callers\":[{\"file\":\"/tmp/caller.lisp\",\"line\":4,\"col\":2,\"context_line\":\"(fake)\",\"confidence\":\"may\",\"from_symbol\":\"amoebum:caller\"}],\"callees\":[],\"quality\":{\"index_coverage_pct\":100.0,\"must_edges\":2,\"may_edges\":1,\"unknown_edges\":0,\"has_uncertainty\":true},\"truncation\":{\"budget_chars\":8000,\"callers_truncated\":false,\"callees_truncated\":false,\"original_callers\":1,\"original_callees\":0},\"notes\":[\"structural-only\"]}'
+    fi
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+")
+    (uiop:run-program (list "chmod" "+x" (namestring path))
+                      :output nil :error-output nil)
+    path))
+
+(defmacro %with-adapter-integration-cultivar ((adapter-var) &body body)
+  `(let* ((root (%make-temp-directory "amoebum-adapter-integration-cultivar"))
+          (index (merge-pathnames "index/" root))
+          (script (%adapter-integration-cultivar-fake-cli-script root)))
+     (unwind-protect
+          (let ((,adapter-var
+                  (amoebum:make-cultivar-adapter
+                   :enabled-p t
+                   :binary-path (namestring script)
+                   :root-path root
+                   :index-path index
+                   :daemon-mode :prefer
+                   :daemon-auto-start-p nil)))
+            (ensure-directories-exist (merge-pathnames ".keep" index))
+            ,@body)
+       (%delete-directory-tree-safe root))))
+
 ;;; ------------------------------------------------------------------
-;;; NXT-110.1 — Cultivar happy-path: resolve -> preview -> expand
+;;; NXT-110.1 — Cultivar happy-path: resolve -> canonical slice -> expand
 ;;; ------------------------------------------------------------------
 
-(test cultivar-happy-path-resolve-preview-expand
-  "Full Cultivar pipeline: make-cultivar-adapter -> cultivar-resolve ->
-cultivar-preview -> cultivar-expand all return valid stub plists."
-  (let* ((adapter (amoebum:make-cultivar-adapter :enabled-p t))
-         ;; Step 1: resolve
-         (resolve-result (amoebum:cultivar-resolve adapter "find lisp symbols"))
-         ;; Step 2: preview — use a stub context-id that would come from resolve
-         (preview-result (amoebum:cultivar-preview adapter "ctx-happy-001"))
-         ;; Step 3: expand — full content for the same context-id
-         (expand-result  (amoebum:cultivar-expand  adapter "ctx-happy-001")))
-    ;; Resolve must return a plist with :RESULTS
-    (is (listp resolve-result)
-        "cultivar-resolve should return a list plist")
-    (is (member :results resolve-result)
-        "cultivar-resolve result must contain :RESULTS key")
-    ;; Preview must return a plist with :PREVIEW
-    (is (listp preview-result)
-        "cultivar-preview should return a list plist")
-    (is (member :preview preview-result)
-        "cultivar-preview result must contain :PREVIEW key")
-    ;; Expand must return a plist with :CONTENT
-    (is (listp expand-result)
-        "cultivar-expand should return a list plist")
-    (is (member :content expand-result)
-        "cultivar-expand result must contain :CONTENT key")))
+(test cultivar-happy-path-resolve-slice-expand
+  "Full Cultivar pipeline: resolve a position, fetch the canonical slice, then expand refs."
+  (%with-adapter-integration-cultivar (adapter)
+    (let* ((location (list :file "/tmp/fake.lisp" :line 1 :col 2))
+           (slice-result (amoebum:cultivar-location-slice adapter location))
+           (expand-result (amoebum:cultivar-expand adapter (getf slice-result :symbol-id))))
+      (is (listp slice-result)
+          "cultivar-location-slice should return a plist")
+      (is (eq t (getf slice-result :resolved-p))
+          "location-slice should resolve the symbol")
+      (is (eq t (getf slice-result :slice))
+          "location-slice should return the canonical slice")
+      (is (listp (getf slice-result :resolution))
+          "location-slice should preserve resolve provenance")
+      (is (eq t (getf slice-result :served-from-materialization))
+          "canonical slice should preserve daemon materialization metadata")
+      (is (listp expand-result)
+          "cultivar-expand should return a list plist")
+      (is (member :content expand-result)
+          "cultivar-expand result must contain :CONTENT key"))))
 
 (test cultivar-happy-path-constructor-to-resolve
   "make-cultivar-adapter correctly seeds the adapter so cultivar-resolve
 returns a plist without signalling a condition."
-  (let* ((adapter (amoebum:make-cultivar-adapter
-                   :endpoint "http://cultivar.test:8080"
-                   :enabled-p t))
-         (result (handler-case
-                     (amoebum:cultivar-resolve adapter "test query")
-                   (error (c)
-                     (list :error (princ-to-string c))))))
-    (is (listp result) "Result should be a list, not an error")
-    (is (not (getf result :error)) "cultivar-resolve must not signal an error")
-    (is (member :results result) "Result must have :RESULTS key")))
+  (%with-adapter-integration-cultivar (adapter)
+    (let ((result (handler-case
+                      (amoebum:cultivar-resolve adapter (list :file "/tmp/fake.lisp" :line 1 :col 2))
+                    (error (c)
+                      (list :error (princ-to-string c))))))
+      (is (listp result) "Result should be a list, not an error")
+      (is (not (getf result :error)) "cultivar-resolve must not signal an error")
+      (is (member :results result) "Result must have :RESULTS key"))))
 
 (test cultivar-happy-path-preview-returns-plist
-  "cultivar-preview with an enabled adapter returns a plist — no condition."
-  (let* ((adapter (amoebum:make-cultivar-adapter :enabled-p t))
-         (result (handler-case
-                     (amoebum:cultivar-preview adapter "ctx-preview-test")
-                   (error (c)
-                     (list :error (princ-to-string c))))))
-    (is (listp result))
-    (is (not (getf result :error)))
-    (is (member :preview result))))
+  "cultivar-preview remains available as the human-readable fallback."
+  (%with-adapter-integration-cultivar (adapter)
+    (let ((result (handler-case
+                      (amoebum:cultivar-preview adapter "sym_fake")
+                    (error (c)
+                      (list :error (princ-to-string c))))))
+      (is (listp result))
+      (is (not (getf result :error)))
+      (is (member :preview result)))))
 
 (test cultivar-happy-path-expand-returns-plist
   "cultivar-expand with an enabled adapter returns a plist — no condition."
-  (let* ((adapter (amoebum:make-cultivar-adapter :enabled-p t))
-         (result (handler-case
-                     (amoebum:cultivar-expand adapter "ctx-expand-test")
-                   (error (c)
-                     (list :error (princ-to-string c))))))
-    (is (listp result))
-    (is (not (getf result :error)))
-    (is (member :content result))))
+  (%with-adapter-integration-cultivar (adapter)
+    (let ((result (handler-case
+                      (amoebum:cultivar-expand adapter "sym_fake")
+                    (error (c)
+                      (list :error (princ-to-string c))))))
+      (is (listp result))
+      (is (not (getf result :error)))
+      (is (member :content result)))))
 
 ;;; ------------------------------------------------------------------
 ;;; NXT-110.2 — Cultivar disabled adapter returns empty results
@@ -88,7 +147,7 @@ returns a plist without signalling a condition."
 (test cultivar-disabled-adapter-resolve-returns-empty-results
   "cultivar-resolve on a disabled adapter always returns (:RESULTS NIL)."
   (let* ((adapter (amoebum:make-cultivar-adapter))
-         (result  (amoebum:cultivar-resolve adapter "any query")))
+         (result  (amoebum:cultivar-resolve adapter (list :file "/tmp/fake.lisp" :line 1 :col 2))))
     (is (listp result))
     (is (null (getf result :results))
         "Disabled adapter must return NIL results")))
@@ -116,7 +175,7 @@ returns a plist without signalling a condition."
 (test cultivar-nil-adapter-resolve-does-not-signal
   "cultivar-resolve with NIL adapter returns (:RESULTS NIL) without signalling."
   (let ((result (handler-case
-                    (amoebum:cultivar-resolve nil "any query")
+                    (amoebum:cultivar-resolve nil (list :file "/tmp/fake.lisp" :line 1 :col 2))
                   (error (c)
                     (list :error (princ-to-string c))))))
     (is (listp result))

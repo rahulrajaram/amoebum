@@ -533,15 +533,6 @@
            #:clear-resolved-provider-cache
            #:emit-config-changed
            #:*current-config*
-           #:+amoebum-readtable-name+
-           #:activate-amoebum-readtable
-           #:reader-project-root
-           #:resolve-reader-path
-           #:glob-paths
-           #:compile-reader-regex
-           #:malformed-regex
-           #:malformed-regex-pattern
-           #:malformed-regex-reason
            #:+default-context-window-limit+
            #:+model-context-window-limits+
            #:+context-budget-green-threshold-percent+
@@ -2277,8 +2268,11 @@
            #:cultivar-adapter-enabled-p
            #:*cultivar-adapter*
            #:cultivar-resolve
+           #:cultivar-location-slice
+           #:cultivar-slice
            #:cultivar-preview
            #:cultivar-expand
+           #:cultivar-daemon-status
            ;; NXT-109: Cultivar context pressure
            #:cultivar-context-pressure
            ;; NXT-107: Yore adapter

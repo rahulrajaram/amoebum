@@ -14,9 +14,9 @@
 (defparameter +default-status-bar-focus-mode+ :arch)
 (defparameter +status-bar-focus-mode-segments+
   '((:lean . (:branch :stream :model :backends))
-    (:code . (:branch :permission :context :context-pressure :stream :model :worker :backends))
-    (:docs . (:branch :context :context-pressure :stream :model :provider :output-mode))
-    (:arch . (:branch :permission :context :context-pressure :stream :model :provider :worker :backends :output-mode))))
+    (:code . (:branch :permission :context :context-pressure :stream :model :cultivar :worker :backends))
+    (:docs . (:branch :context :context-pressure :stream :model :provider :cultivar :output-mode))
+    (:arch . (:branch :permission :context :context-pressure :stream :model :provider :cultivar :worker :backends :output-mode))))
 
 ;;; Context-pressure bar configuration
 (defparameter +context-pressure-bar-width+ 8
@@ -432,6 +432,32 @@
     (otherwise  "backend local")))
 
 ;;; -----------------------------------------------------------------------
+;;; Segment: :cultivar -- compact daemon warmth indicator
+;;; -----------------------------------------------------------------------
+
+(defun %cultivar-daemon-segment-spec ()
+  (let ((adapter *cultivar-adapter*))
+    (when (and adapter (cultivar-adapter-p adapter))
+      (let* ((usable (%cultivar-usable-p adapter))
+             (status (cultivar-daemon-status adapter))
+             (mode (getf status :mode))
+             (running-p (getf status :running-p))
+             (last-start-status (getf status :last-start-status)))
+        (cond
+          ((eq mode :off)
+           (list :text "cult off" :role :meta))
+          ((not usable)
+           (list :text "cult unavailable" :role :context-red))
+          (running-p
+           (list :text "cult warm" :role :context-green))
+          ((eq last-start-status :error)
+           (list :text "cult error" :role :context-red))
+          ((eq mode :prefer)
+           (list :text "cult cold" :role :context-yellow))
+          (t
+           (list :text "cult idle" :role :meta)))))))
+
+;;; -----------------------------------------------------------------------
 ;;; Segment: :output-mode -- show focus-mode + output-style
 ;;; -----------------------------------------------------------------------
 
@@ -476,6 +502,8 @@
        (when provider-indicator
          (list :text (getf provider-indicator :text)
                :role (or (getf provider-indicator :role) :meta)))))
+    (:cultivar
+     (%cultivar-daemon-segment-spec))
     (:worker
      (let ((worker-segment (worker-status-bar-segment)))
        (when (and (stringp worker-segment)
@@ -564,22 +592,31 @@
 
 (defun status-bar-render-key (state)
   (check-type state status-bar-state)
-  (list (status-bar-state-permission-mode state)
-        (status-bar-state-focus-mode state)
-        (status-bar-state-output-style state)
-        (status-bar-state-delegation-mode state)
-        (status-bar-state-plan-mode-active-p state)
-        (status-bar-state-plan-mode-mutating-tools-blocked-p state)
-        (status-bar-state-branch-name state)
-        (status-bar-state-model-name state)
-        (status-bar-state-context-used-tokens state)
-        (status-bar-state-context-max-tokens state)
-        (context-usage-level (status-bar-state-context-used-tokens state)
-                             (status-bar-state-context-max-tokens state))
-        (status-bar-state-stream-status state)
-        (truncate (* 100 (status-bar-state-stream-tokens-per-second state)))
-        (provider-health-signature)
-        (worker-status-bar-segment)))
+  (let ((cultivar-status
+          (when (and *cultivar-adapter*
+                     (cultivar-adapter-p *cultivar-adapter*))
+            (cultivar-daemon-status *cultivar-adapter*))))
+    (list (status-bar-state-permission-mode state)
+          (status-bar-state-focus-mode state)
+          (status-bar-state-output-style state)
+          (status-bar-state-delegation-mode state)
+          (status-bar-state-plan-mode-active-p state)
+          (status-bar-state-plan-mode-mutating-tools-blocked-p state)
+          (status-bar-state-branch-name state)
+          (status-bar-state-model-name state)
+          (status-bar-state-context-used-tokens state)
+          (status-bar-state-context-max-tokens state)
+          (context-usage-level (status-bar-state-context-used-tokens state)
+                               (status-bar-state-context-max-tokens state))
+          (status-bar-state-stream-status state)
+          (truncate (* 100 (status-bar-state-stream-tokens-per-second state)))
+          (and cultivar-status (%cultivar-usable-p *cultivar-adapter*))
+          (and cultivar-status (getf cultivar-status :mode))
+          (and cultivar-status (getf cultivar-status :running-p))
+          (and cultivar-status (getf cultivar-status :last-start-status))
+          (and cultivar-status (getf cultivar-status :last-start-reason))
+          (provider-health-signature)
+          (worker-status-bar-segment))))
 
 (defun status-bar-current-output-style (state)
   "Return the current output-style keyword for STATE.

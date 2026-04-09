@@ -1,7 +1,7 @@
 (in-package :amoebum/test)
 
 (def-suite status-bar-segments-suite
-  :description "Regression coverage for the new status-bar segments: backends, context-pressure, output-mode."
+  :description "Regression coverage for the new status-bar segments: backends, context-pressure, Cultivar daemon, output-mode."
   :in amoebum-suite)
 
 (in-suite status-bar-segments-suite)
@@ -29,6 +29,27 @@ DELEGATION-MODE is not a make-status-bar-state keyword; we set it directly."
     (when delegation-mode
       (setf (amoebum.ui:status-bar-state-delegation-mode state) delegation-mode))
     state))
+
+(defmacro %with-cultivar-status-adapter ((adapter-var &key socket-p mode) &body body)
+  `(let* ((root (%make-temp-directory "amoebum-status-cultivar"))
+          (index (merge-pathnames "index/" root))
+          (,adapter-var (amoebum:make-cultivar-adapter
+                         :enabled-p t
+                         :binary-path "/bin/sh"
+                         :index-path index
+                         :daemon-mode ,(or mode :prefer)
+                         :daemon-auto-start-p t)))
+     (unwind-protect
+          (progn
+            (ensure-directories-exist (merge-pathnames ".keep" index))
+            (when ,socket-p
+              (with-open-file (stream (merge-pathnames ".cultivar.sock" index)
+                                      :direction :output
+                                      :if-exists :supersede
+                                      :if-does-not-exist :create)
+                (write-string "" stream)))
+            ,@body)
+       (%delete-directory-tree-safe root))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; :backends segment tests
@@ -90,6 +111,33 @@ DELEGATION-MODE is not a make-status-bar-state keyword; we set it directly."
     (is (eq :networked (amoebum.ui:status-bar-state-delegation-mode state)))
     (let ((line (amoebum.ui:status-bar-line state)))
       (is (search "backend networked" line :test #'char-equal)))))
+
+;;; ---------------------------------------------------------------------------
+;;; :cultivar segment tests
+;;; ---------------------------------------------------------------------------
+
+(test cultivar-segment-absent-without-configured-adapter
+  "No Cultivar adapter means the status line should stay unchanged."
+  (let ((amoebum::*cultivar-adapter* nil))
+    (let* ((state (%make-segments-test-state :focus-mode :arch))
+           (line (amoebum.ui:status-bar-line state)))
+      (is-false (search "cult " line :test #'char-equal)))))
+
+(test cultivar-segment-shows-cold-when-daemon-preferred-but-stopped
+  "A daemon-preferred adapter without a socket renders a cold Cultivar segment."
+  (%with-cultivar-status-adapter (adapter :socket-p nil)
+    (let ((amoebum::*cultivar-adapter* adapter))
+      (let* ((state (%make-segments-test-state :focus-mode :arch))
+             (line (amoebum.ui:status-bar-line state)))
+        (is (search "cult cold" line :test #'char-equal))))))
+
+(test cultivar-segment-shows-warm-when-socket-exists
+  "A configured adapter with a live socket renders a warm Cultivar segment."
+  (%with-cultivar-status-adapter (adapter :socket-p t)
+    (let ((amoebum::*cultivar-adapter* adapter))
+      (let* ((state (%make-segments-test-state :focus-mode :docs))
+             (line (amoebum.ui:status-bar-line state)))
+        (is (search "cult warm" line :test #'char-equal))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; :context-pressure segment tests
@@ -217,3 +265,18 @@ DELEGATION-MODE is not a make-status-bar-state keyword; we set it directly."
       (setf (amoebum.ui:status-bar-state-delegation-mode state) :networked)
       (let ((key-networked (amoebum.ui:status-bar-render-key state)))
         (is-false (equal key-local key-networked))))))
+
+(test render-key-includes-cultivar-daemon-state
+  "status-bar-render-key changes when Cultivar daemon socket visibility changes."
+  (%with-cultivar-status-adapter (adapter :socket-p nil)
+    (let ((amoebum::*cultivar-adapter* adapter)
+          (state (%make-segments-test-state :focus-mode :arch)))
+      (let ((key-cold (amoebum.ui:status-bar-render-key state)))
+        (with-open-file (stream (merge-pathnames ".cultivar.sock"
+                                                 (amoebum::cultivar-adapter-index-path adapter))
+                                :direction :output
+                                :if-exists :supersede
+                                :if-does-not-exist :create)
+          (write-string "" stream))
+        (let ((key-warm (amoebum.ui:status-bar-render-key state)))
+          (is-false (equal key-cold key-warm)))))))

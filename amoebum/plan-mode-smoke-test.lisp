@@ -365,7 +365,7 @@
                                         `(:relative ".tmp-plan-mode-smokes"
                                                     ,(format nil "amoebum-i40-~A"
                                                              (get-universal-time))))
-                         repo-root)))
+                         amoebum-dir)))
              (read-target (merge-pathnames #P"plan-mode-read.txt" tmp-root))
              (write-target (merge-pathnames #P"plan-mode-write.txt" tmp-root))
              (event-bus (funcall make-event-bus-fn :capacity 64))
@@ -905,7 +905,7 @@
                                           `(:relative ".tmp-plan-mode-smokes"
                                                       ,(format nil "amoebum-i186-~A"
                                                                (get-universal-time))))
-                           repo-root)))
+                           amoebum-dir)))
                (execute-write-target (merge-pathnames #P"execute-write.txt" tmp-root))
                (context (funcall make-context-fn
                                  :toolset (symbol-value toolset-sym)
@@ -1120,7 +1120,7 @@
                                           `(:relative ".tmp-plan-mode-smokes"
                                                       ,(format nil "amoebum-i172-~A"
                                                                (get-universal-time))))
-                           repo-root)))
+                           amoebum-dir)))
                (rollback-file (merge-pathnames #P"tracked.txt" rollback-root))
                (execution-state (funcall initialize-plan-execution-fn :plan-state plan-state))
                (executed-order '()))
