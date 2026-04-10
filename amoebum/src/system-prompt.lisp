@@ -323,6 +323,30 @@ Do not guess at URLs, API endpoints, or version numbers you are not confident ab
                         summary)))
             sorted)))
 
+(defun %system-prompt-tool-name-table (definitions)
+  (let ((table (make-hash-table :test #'equal)))
+    (dolist (tool definitions table)
+      (setf (gethash (pseudopod:tool-definition-name tool) table) t))))
+
+(defun %system-prompt-tool-present-p (tool-name-table tool-name)
+  (and (hash-table-p tool-name-table)
+       (gethash tool-name tool-name-table)))
+
+(defun %system-prompt-cultivar-guidance-lines (definitions)
+  (let ((tool-name-table (%system-prompt-tool-name-table definitions)))
+    (when (and (%system-prompt-tool-present-p tool-name-table "cultivar-location-slice")
+               (%system-prompt-tool-present-p tool-name-table "cultivar-symbol-slice"))
+      (remove nil
+              (list "Cultivar Retrieval Strategy"
+                    "- For Common Lisp code intelligence, prefer `cultivar-location-slice` for file/line/column lookups and `cultivar-symbol-slice` for follow-up symbol-id retrieval."
+                    (when (%system-prompt-tool-present-p tool-name-table "cultivar-symbol-resolve")
+                      "- Use `cultivar-symbol-resolve` only when you specifically need the symbol identifier without the full canonical slice payload.")
+                    (when (%system-prompt-tool-present-p tool-name-table "cultivar-symbol-references")
+                      "- Use `cultivar-symbol-references` only when you explicitly need the flattened reference list; the canonical slice already carries richer definition, caller, and callee context.")
+                    (when (%system-prompt-tool-present-p tool-name-table "cultivar-span-preview")
+                      "- Treat `cultivar-span-preview` as the human-readable fallback, not the default machine reasoning path.")
+                    "- Preserve `results-digest`, `served-from-materialization`, `materialization-kind`, `quality`, `truncation`, and `notes` when summarizing or chaining Cultivar results.")))))
+
 (defun resolve-system-prompt-layers (&key project-root
                                           cwd
                                           global-layer-path
@@ -388,7 +412,9 @@ Do not guess at URLs, API endpoints, or version numbers you are not confident ab
   (let* ((root (%system-prompt-resolve-project-root project-root))
          (working-dir (%system-prompt-resolve-cwd cwd))
          (git (%system-prompt-git-context :project-root root))
-         (tool-lines (%system-prompt-tool-lines :toolset toolset))
+         (definitions (%system-prompt-tool-definitions toolset))
+         (tool-lines (%system-prompt-tool-lines :toolset definitions))
+         (cultivar-guidance (%system-prompt-cultivar-guidance-lines definitions))
          (shell (or (uiop:getenv "SHELL") "unknown"))
          (platform (format nil "~A ~A"
                            (software-type)
@@ -426,6 +452,10 @@ Do not guess at URLs, API endpoints, or version numbers you are not confident ab
           (dolist (line tool-lines)
             (format stream "~A~%" line))
           (format stream "- none~%"))
+      (when cultivar-guidance
+        (format stream "~%")
+        (dolist (line cultivar-guidance)
+          (format stream "~A~%" line)))
       ;; Persona manifest
       (let ((personas (ignore-errors
                         (discover-persona-files :project-root root))))
