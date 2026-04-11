@@ -14,37 +14,11 @@
 Like %start-streaming-assistant-response but without adding a new user message."
   (when (token-stream-active-p (chat-ui-state-stream-state chat-state))
     (return-from %start-agent-continuation-stream nil))
-  (let ((runner (chat-ui-state-stream-runner chat-state)))
-    (when (functionp runner)
-      (%maybe-trim-demo-transcript!
-       chat-state
-       :keep-last-messages (max 1 (1- (%chat-ui-render-message-limit chat-state))))
-      (let* ((history (copy-list (chat-ui-state-messages chat-state)))
-             (target-index (length history))
-             (stream-state (chat-ui-state-stream-state chat-state))
-             (system-prompt (chat-ui-state-stream-system-prompt chat-state)))
-        (setf (chat-ui-state-stream-scroll-follow-p chat-state) t)
-        (streaming-markdown-renderer-reset
-         (chat-ui-state-stream-markdown-renderer chat-state))
-        (setf (chat-ui-state-stream-response-chunks chat-state) '())
-        (conversation-transition! (%ensure-chat-conversation-state chat-state)
-                                  :streaming)
-        (chat-ui-add-message chat-state "assistant" "" :partial t)
-        (%clear-stream-tool-tracking! chat-state)
-        (token-stream-start
-         stream-state
-         (lambda (active-stream-state)
-           (let ((*stream-chunk-hook-callback* (%make-stream-chunk-hook-callback)))
-             (funcall runner
-                      active-stream-state
-                      ""
-                      history
-                      :system-prompt system-prompt
-                      :client (chat-ui-state-stream-client chat-state)
-                      :tools (%resolve-chat-tools chat-state))))
-         :target-message-index target-index
-         :budget-abort-threshold-percent
-         (%stream-budget-abort-threshold-percent chat-state))))))
+  (%start-streaming-turn
+   chat-state
+   :prompt ""
+   :history (copy-list (chat-ui-state-messages chat-state))
+   :system-prompt (chat-ui-state-stream-system-prompt chat-state)))
 
 (defun %resolve-chat-tools (chat-state)
   "Return the tool definitions list to pass to the streaming API.
@@ -209,50 +183,88 @@ Falls back to the global *toolset* when stream-tools is nil."
         (hook-chain :on-stream-chunk chunk chunk-index total-tokens))
       nil)))
 
+(defun %prepare-streaming-turn-history (chat-state &key user-message continuationp)
+  (let ((history (copy-list (chat-ui-state-messages chat-state))))
+    (if continuationp
+        history
+        (remove-if
+         (lambda (message)
+           (and (pseudopod:message-p message)
+                (string-equal (or (pseudopod:message-role message) "")
+                              "assistant")
+                (%blank-string-p (%message-content->text message))))
+         history))))
+
+(defun %prepare-streaming-turn-request (chat-state &key user-message continuationp)
+  (let* ((prompt (if continuationp
+                     ""
+                     (%message-content->text user-message)))
+         (history (%prepare-streaming-turn-history
+                   chat-state
+                   :user-message user-message
+                   :continuationp continuationp))
+         (system-prompt (if continuationp
+                            (chat-ui-state-stream-system-prompt chat-state)
+                            (%resolve-chat-system-prompt chat-state))))
+    (list :prompt prompt
+          :history history
+          :system-prompt system-prompt
+          :target-index (length history))))
+
+(defun %begin-streaming-turn! (chat-state request)
+  (%maybe-trim-demo-transcript!
+   chat-state
+   :keep-last-messages (max 1 (1- (%chat-ui-render-message-limit chat-state))))
+  (setf (chat-ui-state-stream-scroll-follow-p chat-state) t)
+  (when (getf request :system-prompt)
+    (setf (chat-ui-state-stream-system-prompt chat-state)
+          (getf request :system-prompt)))
+  (streaming-markdown-renderer-reset
+   (chat-ui-state-stream-markdown-renderer chat-state))
+  (setf (chat-ui-state-stream-response-chunks chat-state) '())
+  (conversation-transition! (%ensure-chat-conversation-state chat-state)
+                            :streaming)
+  (chat-ui-add-message chat-state "assistant" "" :partial t)
+  (%clear-stream-tool-tracking! chat-state)
+  request)
+
+(defun %start-streaming-turn (chat-state &key prompt history system-prompt)
+  (let ((runner (chat-ui-state-stream-runner chat-state)))
+    (when (functionp runner)
+      (let* ((request (list :prompt prompt
+                            :history history
+                            :system-prompt system-prompt
+                            :target-index (length history)))
+             (stream-state (chat-ui-state-stream-state chat-state)))
+        (%begin-streaming-turn! chat-state request)
+        (token-stream-start
+         stream-state
+         (lambda (active-stream-state)
+           (let ((*stream-chunk-hook-callback* (%make-stream-chunk-hook-callback)))
+             (funcall runner
+                      active-stream-state
+                      (getf request :prompt)
+                      (getf request :history)
+                      :system-prompt (getf request :system-prompt)
+                      :client (chat-ui-state-stream-client chat-state)
+                      :tools (%resolve-chat-tools chat-state))))
+         :target-message-index (getf request :target-index)
+         :budget-abort-threshold-percent
+         (%stream-budget-abort-threshold-percent chat-state))))))
+
 (defun %start-streaming-assistant-response (chat-state user-message)
   (when (and (pseudopod:message-p user-message)
              (not (token-stream-active-p (chat-ui-state-stream-state chat-state))))
-    (let ((runner (chat-ui-state-stream-runner chat-state)))
-      (if (functionp runner)
-          (progn
-            (%maybe-trim-demo-transcript!
-             chat-state
-             :keep-last-messages (max 1 (1- (%chat-ui-render-message-limit chat-state))))
-            (let* ((prompt (%message-content->text user-message))
-                   (history
-                     (remove-if
-                      (lambda (message)
-                        (and (pseudopod:message-p message)
-                             (string-equal (or (pseudopod:message-role message) "")
-                                           "assistant")
-                             (%blank-string-p (%message-content->text message))))
-                      (copy-list (chat-ui-state-messages chat-state))))
-                   (target-index (length history))
-                   (stream-state (chat-ui-state-stream-state chat-state))
-                   (system-prompt (%resolve-chat-system-prompt chat-state)))
-              (setf (chat-ui-state-stream-system-prompt chat-state) system-prompt)
-              (setf (chat-ui-state-stream-scroll-follow-p chat-state) t)
-              (streaming-markdown-renderer-reset
-               (chat-ui-state-stream-markdown-renderer chat-state))
-              (setf (chat-ui-state-stream-response-chunks chat-state) '())
-              (conversation-transition! (%ensure-chat-conversation-state chat-state)
-                                        :streaming)
-              (chat-ui-add-message chat-state "assistant" "" :partial t)
-              (%clear-stream-tool-tracking! chat-state)
-              (token-stream-start
-               stream-state
-               (lambda (active-stream-state)
-                 (let ((*stream-chunk-hook-callback* (%make-stream-chunk-hook-callback)))
-                   (funcall runner
-                            active-stream-state
-                            prompt
-                            history
-                            :system-prompt system-prompt
-                            :client (chat-ui-state-stream-client chat-state)
-                            :tools (%resolve-chat-tools chat-state))))
-               :target-message-index target-index
-               :budget-abort-threshold-percent
-               (%stream-budget-abort-threshold-percent chat-state))))
+    (let ((request (%prepare-streaming-turn-request
+                    chat-state
+                    :user-message user-message
+                    :continuationp nil)))
+      (if (functionp (chat-ui-state-stream-runner chat-state))
+          (%start-streaming-turn
+           chat-state
+           :prompt (getf request :prompt)
+           :history (getf request :history)
+           :system-prompt (getf request :system-prompt))
           (%start-step-loop-assistant-response chat-state)))))
 
 ;;; ---- block-A: stream tool-call preview tracking (originally chat.lisp:991-1134) ----
@@ -487,41 +499,58 @@ Falls back to the global *toolset* when stream-tools is nil."
           (capture-plan-steps-from-response
            (%message-content->text assistant-response)
            :state (current-plan-mode-state))))
-      (cond
-        ;; Malformed tool calls (missing tool_call_id) — ask LLM to retry
-        ((and malformed-names
-              (< (chat-ui-state-agentic-iteration-count chat-state)
-                 (%chat-effective-max-iterations chat-state)))
-         ;; Append results for any valid tool calls that did execute
-         (when tool-call-entries
-           (%append-tool-result-messages! chat-state tool-call-entries))
-         (chat-ui-add-message chat-state "user"
-                              (%malformed-tool-call-retry-message malformed-names))
-         (%clear-stream-tool-tracking! chat-state)
-         (incf (chat-ui-state-agentic-iteration-count chat-state))
-         (%start-agent-continuation-stream chat-state))
-        ;; Normal tool call continuation
-        ((and tool-call-entries
-              (< (chat-ui-state-agentic-iteration-count chat-state)
-                 (%chat-effective-max-iterations chat-state)))
-         (%append-tool-result-messages! chat-state tool-call-entries)
-         (%clear-stream-tool-tracking! chat-state)
-         (incf (chat-ui-state-agentic-iteration-count chat-state))
-         (%start-agent-continuation-stream chat-state))
-        ;; Max iterations reached
-        (tool-call-entries
-         (%append-tool-result-messages! chat-state tool-call-entries)
-         (%clear-stream-tool-tracking! chat-state)
-         (chat-ui-add-message chat-state "assistant"
-                              "[Agentic loop stopped: max iterations reached]")
-         (conversation-transition! conversation :idle)
-         (%checkpoint-after-turn chat-state conversation))
-        ;; Normal text-only response
-        (t
-         (%clear-stream-tool-tracking! chat-state)
-         (%emit-post-receive-hook assistant-response)
-         (conversation-transition! conversation :idle)
-         (%checkpoint-after-turn chat-state conversation))))))
+      (%resolve-stream-terminal-outcome
+       chat-state
+       conversation
+       assistant-response
+       tool-call-entries
+       malformed-names))))
+
+(defun %stream-turn-can-continue-p (chat-state)
+  (< (chat-ui-state-agentic-iteration-count chat-state)
+     (%chat-effective-max-iterations chat-state)))
+
+(defun %append-tool-results-and-clear! (chat-state tool-call-entries)
+  (when tool-call-entries
+    (%append-tool-result-messages! chat-state tool-call-entries))
+  (%clear-stream-tool-tracking! chat-state))
+
+(defun %start-tool-continuation! (chat-state tool-call-entries)
+  (%append-tool-results-and-clear! chat-state tool-call-entries)
+  (incf (chat-ui-state-agentic-iteration-count chat-state))
+  (%start-agent-continuation-stream chat-state))
+
+(defun %start-tool-retry! (chat-state tool-call-entries malformed-names)
+  (%append-tool-results-and-clear! chat-state tool-call-entries)
+  (chat-ui-add-message chat-state "user"
+                       (%malformed-tool-call-retry-message malformed-names))
+  (incf (chat-ui-state-agentic-iteration-count chat-state))
+  (%start-agent-continuation-stream chat-state))
+
+(defun %finish-stream-turn-with-max-iterations! (chat-state conversation tool-call-entries)
+  (%append-tool-results-and-clear! chat-state tool-call-entries)
+  (chat-ui-add-message chat-state "assistant"
+                       "[Agentic loop stopped: max iterations reached]")
+  (conversation-transition! conversation :idle)
+  (%checkpoint-after-turn chat-state conversation))
+
+(defun %finish-stream-turn-with-answer! (chat-state conversation assistant-response)
+  (%clear-stream-tool-tracking! chat-state)
+  (%emit-post-receive-hook assistant-response)
+  (conversation-transition! conversation :idle)
+  (%checkpoint-after-turn chat-state conversation))
+
+(defun %resolve-stream-terminal-outcome (chat-state conversation assistant-response
+                                         tool-call-entries malformed-names)
+  (cond
+    ((and malformed-names (%stream-turn-can-continue-p chat-state))
+     (%start-tool-retry! chat-state tool-call-entries malformed-names))
+    ((and tool-call-entries (%stream-turn-can-continue-p chat-state))
+     (%start-tool-continuation! chat-state tool-call-entries))
+    (tool-call-entries
+     (%finish-stream-turn-with-max-iterations! chat-state conversation tool-call-entries))
+    (t
+     (%finish-stream-turn-with-answer! chat-state conversation assistant-response))))
 
 (defun %checkpoint-after-turn (chat-state conversation)
   "Fire an auto-checkpoint after a completed agent interaction turn."
@@ -827,13 +856,19 @@ Falls back to the global *toolset* when stream-tools is nil."
 
 (defun %handle-stream-cancelled-event (chat-state event conversation)
   (declare (ignore event))
+  (%finalize-streaming-terminal-cancellation! chat-state conversation))
+
+(defun %handle-stream-failed-event (chat-state event conversation)
+  (declare (ignore event))
+  (%finalize-streaming-terminal-failure! chat-state conversation))
+
+(defun %finalize-streaming-terminal-cancellation! (chat-state conversation)
   (%finalize-streaming-assistant-message chat-state :partialp t)
   (%clear-stream-tool-tracking! chat-state)
   (%prefer-chat-input-focus! chat-state)
   (conversation-transition! conversation :idle))
 
-(defun %handle-stream-failed-event (chat-state event conversation)
-  (declare (ignore event))
+(defun %finalize-streaming-terminal-failure! (chat-state conversation)
   (let* ((stream-state (chat-ui-state-stream-state chat-state))
          (summary (token-stream-progress-summary stream-state))
          (error-message (getf summary :error-message)))
