@@ -159,8 +159,7 @@ Falls back to the global *toolset* when stream-tools is nil."
   (let* ((config (%chat-config))
          (project-root (and (config-p config)
                             (config-project-root config)))
-         (tools (or (chat-ui-state-stream-tools chat-state)
-                    *toolset*))
+         (tools (%resolve-chat-tools chat-state))
          (working-directory (or (ignore-errors (uiop:getcwd))
                                 *default-pathname-defaults*))
          (assembled

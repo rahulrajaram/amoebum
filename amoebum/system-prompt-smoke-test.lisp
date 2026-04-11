@@ -189,6 +189,26 @@
           (assert-true (contains-substring-p "seed commit for system prompt smoke" assembled)
                        "Expected recent commit history to be injected."))
 
+        ;; Streaming prompt assembly now consumes the same tool-definition view
+        ;; that the runtime sends to the provider. The prompt should keep the
+        ;; same tool and Cultivar guidance when handed a plain definitions list.
+        (let* ((tool-definitions (funcall (funcall fn-in "TOOLSET-TOOLS" pseudopod-pkg)
+                                          toolset))
+               (assembled
+                 (funcall assemble-system-prompt-fn
+                          :project-root project-root
+                          :cwd working-dir
+                          :toolset tool-definitions
+                          :global-layer-path global-prompt
+                          :project-layer-path project-prompt
+                          :directory-layer-paths (list directory-prompt))))
+          (assert-true (contains-substring-p "sysprompt-sentinel-tool" assembled)
+                       "Expected available tools section to survive definition-list assembly.")
+          (assert-true (contains-substring-p "Cultivar Retrieval Strategy" assembled)
+                       "Expected Cultivar guidance when prompt assembly receives tool definitions.")
+          (assert-true (contains-substring-p "prefer `cultivar-location-slice`" assembled)
+                       "Expected slice-first Cultivar guidance for definition-list assembly."))
+
         ;; Candidate discovery should include codex-style user defaults.
         (let* ((candidate-paths (mapcar #'namestring (funcall global-layer-candidates-fn)))
                (home (user-homedir-pathname))
