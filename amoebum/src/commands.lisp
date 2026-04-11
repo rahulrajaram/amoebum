@@ -318,6 +318,25 @@
                   (princ-to-string result)
                   nil)))))
 
+(defun resolve-slash-command (input &key config memory-backend chat-state)
+  (multiple-value-bind (handledp result)
+      (dispatch-slash-command input
+                              :config config
+                              :memory-backend memory-backend
+                              :chat-state chat-state)
+    (values handledp
+            (and handledp (%coerce-command-result result)))))
+
+(defun apply-slash-command-result-action (result &key chat-state config memory-backend)
+  (declare (ignore config memory-backend))
+  (let* ((action (and (typep result 'slash-command-result)
+                      (slash-command-result-action result)))
+         (handler (and action
+                       (not (eq action :none))
+                       (find-slash-command-action-handler action))))
+    (when handler
+      (funcall handler result :chat-state chat-state))))
+
 (defun %slash-command-failure-result (invocation condition)
   (make-slash-command-result
    :output (format nil "Command /~A failed: ~A"

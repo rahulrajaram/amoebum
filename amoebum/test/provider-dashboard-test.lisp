@@ -136,6 +136,16 @@
     (is-true (funcall handle-slash-input chat-state "/providers"))
     (is-true (amoebum.ui:chat-ui-state-provider-dashboard-visible-p chat-state))))
 
+(test slash-command-action-registry-applies-provider-dashboard-toggle
+  (let* ((chat-state (amoebum.ui:make-chat-ui-state :stream-runner nil))
+         (result (amoebum.commands:make-slash-command-result
+                  :action :toggle-provider-dashboard
+                  :payload :off)))
+    (setf (amoebum.ui:chat-ui-state-provider-dashboard-visible-p chat-state) t)
+    (let ((output (amoebum:apply-slash-command-result-action result :chat-state chat-state)))
+      (is (string= "Provider dashboard hidden." output))
+      (is-false (amoebum.ui:chat-ui-state-provider-dashboard-visible-p chat-state)))))
+
 (test provider-dashboard-smoke-sentinel
   (is-true t)
   (format t "PROVIDER_DASHBOARD_SMOKE_OK~%"))

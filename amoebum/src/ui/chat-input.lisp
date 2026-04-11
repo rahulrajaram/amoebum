@@ -310,68 +310,69 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
               (getf compression :keep-last-turns +context-compression-default-keep-last-turns+))
       "Compaction skipped: not enough older context to summarize."))
 
+(defun %clear-chat-command-action-handler (result &key chat-state)
+  (declare (ignore result))
+  (let ((conversation (%ensure-chat-conversation-state chat-state)))
+    (conversation-reset! conversation)
+    (%chat-deactivate-history-search! chat-state)
+    (setf (chat-ui-state-messages chat-state)
+          (conversation-state-messages conversation)
+          (chat-ui-state-message-scrollback-lines chat-state) 0
+          (chat-ui-state-max-message-scrollback-lines chat-state) 0)
+    (%invalidate-styled-lines-cache)
+    nil))
+
+(defun %compact-chat-command-action-handler (result &key chat-state)
+  (%format-compression-output
+   (%compress-chat-history!
+    chat-state
+    :keep-last-turns (slash-command-result-payload result)
+    :trigger :manual)))
+
+(defun %toggle-provider-dashboard-command-action-handler (result &key chat-state)
+  (let* ((payload (slash-command-result-payload result))
+         (current (chat-ui-state-provider-dashboard-visible-p chat-state))
+         (next
+           (case payload
+             ((:on t) t)
+             ((:off nil) nil)
+             (otherwise (not current)))))
+    (setf (chat-ui-state-provider-dashboard-visible-p chat-state) next)
+    (provider-health-refresh! :force t)
+    (format nil "Provider dashboard ~:[hidden~;visible~]." next)))
+
 (defun %apply-slash-command-action (chat-state result)
-  (let ((action-output nil)
-        (conversation (%ensure-chat-conversation-state chat-state)))
-    (case (slash-command-result-action result)
-      (:clear-chat
-       (conversation-reset! conversation)
-       (%chat-deactivate-history-search! chat-state)
-       (setf (chat-ui-state-messages chat-state)
-             (conversation-state-messages conversation)
-             (chat-ui-state-message-scrollback-lines chat-state) 0
-             (chat-ui-state-max-message-scrollback-lines chat-state) 0)
-       (%invalidate-styled-lines-cache))
-      (:compact-chat
-       (let ((compression
-               (%compress-chat-history!
-                chat-state
-                :keep-last-turns (slash-command-result-payload result)
-                :trigger :manual)))
-         (setf action-output (%format-compression-output compression))))
-      (:toggle-provider-dashboard
-       (let* ((payload (slash-command-result-payload result))
-              (current (chat-ui-state-provider-dashboard-visible-p chat-state))
-              (next
-                (case payload
-                  ((:on t) t)
-                  ((:off nil) nil)
-                  (otherwise (not current)))))
-         (setf (chat-ui-state-provider-dashboard-visible-p chat-state) next
-               action-output (format nil "Provider dashboard ~:[hidden~;visible~]." next))
-         (provider-health-refresh! :force t)))
-      (otherwise nil))
+  (let ((action-output
+          (apply-slash-command-result-action result :chat-state chat-state)))
     (%sync-chat-context-usage! chat-state :allow-auto-compress-p nil)
     action-output))
 
-(defun %normalize-command-result (result)
-  (cond
-    ((typep result 'slash-command-result)
-     result)
-    ((stringp result)
-     (make-slash-command-result :output result))
-    (t
-     (make-slash-command-result :output nil))))
-
 (defun %handle-slash-command-input (chat-state input)
-  (multiple-value-bind (handledp raw-result)
-      (dispatch-slash-command input
-                              :config (current-config)
-                              :memory-backend (current-memory-backend)
-                              :chat-state chat-state)
+  (multiple-value-bind (handledp result)
+      (resolve-slash-command input
+                             :config (current-config)
+                             :memory-backend (current-memory-backend)
+                             :chat-state chat-state)
     (when handledp
-      (let ((result (%normalize-command-result raw-result)))
-        (let ((action-output (%apply-slash-command-action chat-state result)))
-          (when (slash-command-result-echo-input-p result)
-            (chat-ui-add-message chat-state "user" input))
-          (let ((output (or action-output
-                            (slash-command-result-output result))))
-            (when (and (stringp output)
-                       (plusp (length (%slash-trim output))))
-              (chat-ui-add-message chat-state "system" output)))
-          (setf (chat-ui-state-input-text chat-state) ""
-                (chat-ui-state-prompt-scroll-offset chat-state) nil))
-        t))))
+      (let ((action-output (%apply-slash-command-action chat-state result)))
+        (when (slash-command-result-echo-input-p result)
+          (chat-ui-add-message chat-state "user" input))
+        (let ((output (or action-output
+                          (slash-command-result-output result))))
+          (when (and (stringp output)
+                     (plusp (length (%slash-trim output))))
+            (chat-ui-add-message chat-state "system" output)))
+        (setf (chat-ui-state-input-text chat-state) ""
+              (chat-ui-state-prompt-scroll-offset chat-state) nil))
+      t)))
+
+(eval-when (:load-toplevel :execute)
+  (register-slash-command-action-handler :clear-chat
+                                         #'%clear-chat-command-action-handler)
+  (register-slash-command-action-handler :compact-chat
+                                         #'%compact-chat-command-action-handler)
+  (register-slash-command-action-handler :toggle-provider-dashboard
+                                         #'%toggle-provider-dashboard-command-action-handler))
 
 (defun %handle-command-tab-completion (chat-state)
   (let ((input (chat-ui-state-input-text chat-state)))

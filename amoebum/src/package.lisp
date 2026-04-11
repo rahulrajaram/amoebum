@@ -1031,15 +1031,21 @@
            #:slash-command-context-memory-backend
            #:slash-command-context-chat-state
            #:*slash-command-registry*
+           #:*slash-command-action-handlers*
            #:slash-command-input-p
            #:parse-slash-command
            #:parse-slash-command-arguments
            #:clear-slash-commands
+           #:clear-slash-command-action-handlers
            #:register-slash-command
+           #:register-slash-command-action-handler
+           #:find-slash-command-action-handler
            #:find-slash-command
            #:list-slash-commands
            #:complete-slash-command-input
            #:dispatch-slash-command
+           #:resolve-slash-command
+           #:apply-slash-command-result-action
            #:register-builtin-slash-commands
            #:*tts-run-command-function*
            #:*tts-backend*
