@@ -67,3 +67,17 @@
                                  (list "assistant" "I will try to be concise. The remaining analysis shows..."))))
          (buffer (%safe-render-chat-ui state :cols 84 :rows 20)))
     (%assert-error-snapshot buffer "error-budget-warning")))
+
+(test error-stream-provider-overloaded
+  "Provider overload errors should render as a clear system message."
+  (let* ((state (%error-test-chat-state
+                 :messages
+                 (list
+                  (list "user" "what directory are we in?")
+                  (list "system"
+                        "[Stream failed]
+Provider request failed with HTTP 429.
+The engine is currently overloaded, please try again later.
+Retry your last message in a moment."))))
+         (buffer (%safe-render-chat-ui state :cols 84 :rows 20)))
+    (%assert-error-snapshot buffer "error-stream-provider-overloaded")))

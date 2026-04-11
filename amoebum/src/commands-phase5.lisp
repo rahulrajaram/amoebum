@@ -222,6 +222,68 @@
                        declared-count
                        discovered-count))))))))
 
+(defun %format-cultivar-status-timestamp (timestamp)
+  (if (and (integerp timestamp) (plusp timestamp))
+      (multiple-value-bind (second minute hour day month year)
+          (decode-universal-time timestamp)
+        (format nil "~4,'0D-~2,'0D-~2,'0D ~2,'0D:~2,'0D:~2,'0D"
+                year month day hour minute second))
+      "never"))
+
+(defun %cultivar-status-adapter ()
+  (or *cultivar-tool-adapter*
+      *cultivar-adapter*
+      (setf *cultivar-adapter*
+            (make-cultivar-adapter :enabled-p t
+                                   :daemon-mode :prefer
+                                   :daemon-auto-start-p t))))
+
+(defun %cultivar-status-last-slice-line (last-slice)
+  (if (not (listp last-slice))
+      "Latest slice: none recorded yet."
+      (format nil
+              "Latest slice: ~A origin=~(~A~) digest=~A materialized=~:[no~;yes~] kind=~A query=~@[~A:~D:~D~] at ~A~@[ warning=~A~]~@[ notes=~{~A~^, ~}~]"
+              (or (getf last-slice :symbol-id) "unknown")
+              (or (getf last-slice :origin) :unknown)
+              (or (getf last-slice :results-digest) "unknown")
+              (getf last-slice :served-from-materialization)
+              (or (getf last-slice :materialization-kind) "direct")
+              (getf last-slice :query-file)
+              (getf last-slice :query-line)
+              (getf last-slice :query-col)
+              (%format-cultivar-status-timestamp
+               (getf last-slice :recorded-at))
+              (getf last-slice :quality-warning)
+              (let ((notes (getf last-slice :notes)))
+                (and (listp notes) notes)))))
+
+(defun %cultivar-handler (_invocation _arguments _context)
+  (declare (ignore _invocation _arguments _context))
+  (let* ((adapter (%cultivar-status-adapter))
+         (status (cultivar-daemon-status adapter))
+         (last-slice (getf status :last-slice)))
+    (make-slash-command-result
+     :echo-input-p t
+     :output
+     (with-output-to-string (out)
+       (format out
+               "Cultivar daemon: mode=~(~A~) auto-start=~:[off~;on~] running=~:[no~;yes~] socket=~A~%"
+               (or (getf status :mode) :unknown)
+               (getf status :auto-start-p)
+               (getf status :running-p)
+               (or (getf status :socket-path) "unknown"))
+       (format out
+               "Paths: root=~A index=~A~%"
+               (or (getf status :root-path) "unknown")
+               (or (getf status :index-path) "unknown"))
+       (format out
+               "Last start: status=~A at ~A~@[ reason=~A~]~%"
+               (or (getf status :last-start-status) "none")
+               (%format-cultivar-status-timestamp
+                (getf status :last-start-at))
+               (getf status :last-start-reason))
+       (write-string (%cultivar-status-last-slice-line last-slice) out)))))
+
 (defun %mcp-auth-usage ()
   "/mcp-auth [list|set <server|default> <allow|deny|prompt>|clear <server|all>]")
 
@@ -420,6 +482,8 @@
 (defun register-phase5-slash-commands ()
   (register-slash-command
    (make-slash-command :name "mcp-status" :description "Show MCP server negotiation state, capabilities, and discovered tool counts." :usage "/mcp-status" :handler #'%mcp-status-handler))
+  (register-slash-command
+   (make-slash-command :name "cultivar" :description "Show Cultivar daemon warmth and latest structured slice provenance." :usage "/cultivar" :handler #'%cultivar-handler))
   (register-slash-command
    (make-slash-command
     :name "mcp-auth"

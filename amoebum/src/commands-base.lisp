@@ -107,6 +107,7 @@
 ;; --- Registry and registration ---
 
 (defparameter *slash-command-registry* (make-hash-table :test #'equal))
+(defparameter *slash-command-action-handlers* (make-hash-table :test #'eq))
 
 ;; Defined in src/macros/deftool.lisp; declared here for compile/load order.
 (defvar *tool-metadata*)
@@ -118,6 +119,21 @@
 (defun clear-slash-commands ()
   (clrhash *slash-command-registry*)
   t)
+
+(defun clear-slash-command-action-handlers ()
+  (clrhash *slash-command-action-handlers*)
+  t)
+
+(defun register-slash-command-action-handler (action handler)
+  (check-type action symbol)
+  (unless (functionp handler)
+    (error "Slash command action handler for ~S must be a function." action))
+  (setf (gethash action *slash-command-action-handlers*) handler)
+  handler)
+
+(defun find-slash-command-action-handler (action)
+  (and (symbolp action)
+       (gethash action *slash-command-action-handlers*)))
 
 (defun register-slash-command (command)
   (check-type command slash-command)

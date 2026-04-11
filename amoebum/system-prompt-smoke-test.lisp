@@ -81,20 +81,41 @@
                               exit-code
                               stdout
                               stderr)))
-             (toolset-with-sentinel-tool ()
-               (let* ((toolset (funcall make-toolset-fn))
-                      (tool (funcall make-tool-definition-fn
-                                     :name "sysprompt-sentinel-tool"
-                                     :description "Sentinel prompt test tool."
-                                     :parameters (let ((schema (make-hash-table :test #'equal))
-                                                        (props (make-hash-table :test #'equal)))
-                                                   (setf (gethash "type" schema) "object")
-                                                   (setf (gethash "properties" schema) props)
-                                                   schema)
-                                     :fn (lambda (_args &optional _call)
-                                           (declare (ignore _args _call))
-                                           "ok"))))
+             (register-tool (toolset name description)
+               (let ((tool (funcall make-tool-definition-fn
+                                    :name name
+                                    :description description
+                                    :parameters (let ((schema (make-hash-table :test #'equal))
+                                                      (props (make-hash-table :test #'equal)))
+                                                  (setf (gethash "type" schema) "object")
+                                                  (setf (gethash "properties" schema) props)
+                                                  schema)
+                                    :fn (lambda (_args &optional _call)
+                                          (declare (ignore _args _call))
+                                          "ok"))))
                  (funcall register-tool-fn toolset tool)
+                 toolset))
+             (toolset-with-sentinel-tool (&key include-cultivar-p)
+               (let* ((toolset (funcall make-toolset-fn))
+                      (toolset (register-tool toolset
+                                              "sysprompt-sentinel-tool"
+                                              "Sentinel prompt test tool.")))
+                 (when include-cultivar-p
+                   (register-tool toolset
+                                  "cultivar-location-slice"
+                                  "Resolve a source location into the canonical Cultivar JSON slice.")
+                   (register-tool toolset
+                                  "cultivar-symbol-slice"
+                                  "Return the canonical Cultivar JSON slice for a symbol id.")
+                   (register-tool toolset
+                                  "cultivar-symbol-resolve"
+                                  "Resolve a source location into a Cultivar symbol id.")
+                   (register-tool toolset
+                                  "cultivar-symbol-references"
+                                  "Return Cultivar references for a symbol id.")
+                   (register-tool toolset
+                                  "cultivar-span-preview"
+                                  "Return a human-readable Cultivar source preview."))
                  toolset)))
       (let* ((tmp-root
                (funcall ensure-directory-pathname-fn
@@ -116,7 +137,7 @@
              (codex-home (merge-pathnames #P"codex-home/" tmp-root))
              (codex-global (merge-pathnames #P".codex/AGENTS.md" codex-home))
              (original-home (uiop:getenv "HOME"))
-             (toolset (toolset-with-sentinel-tool)))
+             (toolset (toolset-with-sentinel-tool :include-cultivar-p t)))
         (ensure-directories-exist working-dir)
         (write-text-file global-prompt "GLOBAL_LAYER_SENTINEL")
         (write-text-file project-prompt "PROJECT_LAYER_SENTINEL")
@@ -159,8 +180,34 @@
                        "Expected available tools section in dynamic context.")
           (assert-true (contains-substring-p "sysprompt-sentinel-tool" assembled)
                        "Expected custom tool to be listed in dynamic context.")
+          (assert-true (contains-substring-p "Cultivar Retrieval Strategy" assembled)
+                       "Expected Cultivar guidance section when slice tools are present.")
+          (assert-true (contains-substring-p "prefer `cultivar-location-slice`" assembled)
+                       "Expected prompt guidance to prefer location-slice for machine retrieval.")
+          (assert-true (contains-substring-p "Treat `cultivar-span-preview` as the human-readable fallback" assembled)
+                       "Expected prompt guidance to keep preview as the human-readable fallback.")
           (assert-true (contains-substring-p "seed commit for system prompt smoke" assembled)
                        "Expected recent commit history to be injected."))
+
+        ;; Streaming prompt assembly now consumes the same tool-definition view
+        ;; that the runtime sends to the provider. The prompt should keep the
+        ;; same tool and Cultivar guidance when handed a plain definitions list.
+        (let* ((tool-definitions (funcall (funcall fn-in "TOOLSET-TOOLS" pseudopod-pkg)
+                                          toolset))
+               (assembled
+                 (funcall assemble-system-prompt-fn
+                          :project-root project-root
+                          :cwd working-dir
+                          :toolset tool-definitions
+                          :global-layer-path global-prompt
+                          :project-layer-path project-prompt
+                          :directory-layer-paths (list directory-prompt))))
+          (assert-true (contains-substring-p "sysprompt-sentinel-tool" assembled)
+                       "Expected available tools section to survive definition-list assembly.")
+          (assert-true (contains-substring-p "Cultivar Retrieval Strategy" assembled)
+                       "Expected Cultivar guidance when prompt assembly receives tool definitions.")
+          (assert-true (contains-substring-p "prefer `cultivar-location-slice`" assembled)
+                       "Expected slice-first Cultivar guidance for definition-list assembly."))
 
         ;; Candidate discovery should include codex-style user defaults.
         (let* ((candidate-paths (mapcar #'namestring (funcall global-layer-candidates-fn)))

@@ -96,7 +96,6 @@
     ("permissions-smoke-test.lisp" "AMOEBUM_PERMISSIONS_SMOKE_OK")
     ("pipeline-smoke-test.lisp" "AMOEBUM_PIPELINE_SMOKE_OK")
     ("plan-mode-smoke-test.lisp" "AMOEBUM_PLAN_MODE_SMOKE_OK")
-    ("reader-macros-smoke-test.lisp" "AMOEBUM_READER_MACROS_SMOKE_OK")
     ("sandbox-smoke-test.lisp" "AMOEBUM_SANDBOX_SMOKE_OK")
     ("search-tools-smoke-test.lisp" "AMOEBUM_SEARCH_TOOLS_SMOKE_OK")
     ("shell-tool-smoke-test.lisp" "AMOEBUM_SHELL_TOOL_SMOKE_OK")
@@ -137,7 +136,6 @@
     "fork-smoke-test.lisp"
     "history-smoke-test.lisp"
     "tool-reload-smoke-test.lisp"
-    "reader-macros-smoke-test.lisp"
     "sandbox-smoke-test.lisp"
     "event-filters-smoke-test.lisp"
     "sounds-smoke-test.lisp"
@@ -1434,6 +1432,7 @@
 (test phase5-slash-commands-registered
   "Phase 5 slash commands should be registered."
   (dolist (cmd-name '("models" "cost" "index" "self-modify" "image"
+                      "cultivar"
                       "extensions-asdf" "perf" "spawn" "approvals"))
     (is-true (amoebum:find-slash-command cmd-name)
              "Expected slash command /~A to be registered." cmd-name)))

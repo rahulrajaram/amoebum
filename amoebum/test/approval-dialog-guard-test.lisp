@@ -332,6 +332,51 @@
         (is (eq :consume disposition))
         (is-true (amoebum:token-stream-cancel-requested-p stream-state))))))
 
+(test stream-ctrl-c-force-resets-stuck-streams
+  "Ctrl-C should use the same force-reset safety net as Escape for obviously stuck streams."
+  (let ((state (%approval-test-chat-state)))
+    (let ((stream-state (amoebum::chat-ui-state-stream-state state)))
+      (let ((stuck-start-ms (- (ptui.util.time:monotonic-ms)
+                               amoebum::+stream-stuck-timeout-ms+
+                               1000)))
+      (setf (amoebum::token-stream-state-status stream-state) :running
+            (amoebum::token-stream-state-cancel-requested-p stream-state) nil
+            (amoebum::token-stream-state-started-ms stream-state) stuck-start-ms))
+      (multiple-value-bind (updated-state disposition)
+          (amoebum.ui:handle-chat-ui-event
+           state
+           (ptui.core.events:make-key-event :ctrl-c :ctrlp t))
+        (is (eq state updated-state))
+        (is (eq :consume disposition))
+        (is (not (eq :running (amoebum::token-stream-state-status stream-state))))
+        (is-false (amoebum:token-stream-cancel-requested-p stream-state))
+        (is (> (amoebum::token-stream-state-ended-ms stream-state) 0))))))
+
+(test approval-stream-ctrl-c-force-resets-stuck-streams
+  "Ctrl-C should still force-reset a stuck stream even when the approval overlay is active."
+  (let ((state (%approval-test-chat-state)))
+    (let ((stream-state (amoebum::chat-ui-state-stream-state state))
+          (dialog (amoebum::chat-ui-state-approval-dialog-state state)))
+      (amoebum:approval-dialog-activate! dialog
+                                         "bash-exec"
+                                         :command "ls -la"
+                                         :decision-id "approval-stuck-stream-001")
+      (let ((stuck-start-ms (- (ptui.util.time:monotonic-ms)
+                               amoebum::+stream-stuck-timeout-ms+
+                               1000)))
+        (setf (amoebum::token-stream-state-status stream-state) :running
+              (amoebum::token-stream-state-cancel-requested-p stream-state) nil
+              (amoebum::token-stream-state-started-ms stream-state) stuck-start-ms))
+      (multiple-value-bind (updated-state disposition)
+          (amoebum.ui:handle-chat-ui-event
+           state
+           (ptui.core.events:make-key-event :ctrl-c :ctrlp t))
+        (is (eq state updated-state))
+        (is (eq :consume disposition))
+        (is (not (eq :running (amoebum::token-stream-state-status stream-state))))
+        (is-false (amoebum:token-stream-cancel-requested-p stream-state))
+        (is (> (amoebum::token-stream-state-ended-ms stream-state) 0))))))
+
 (test idle-ctrl-c-requires-second-press-to-exit
   (let ((state (%approval-test-chat-state)))
     (multiple-value-bind (updated-state first-disposition)

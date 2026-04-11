@@ -533,15 +533,6 @@
            #:clear-resolved-provider-cache
            #:emit-config-changed
            #:*current-config*
-           #:+amoebum-readtable-name+
-           #:activate-amoebum-readtable
-           #:reader-project-root
-           #:resolve-reader-path
-           #:glob-paths
-           #:compile-reader-regex
-           #:malformed-regex
-           #:malformed-regex-pattern
-           #:malformed-regex-reason
            #:+default-context-window-limit+
            #:+model-context-window-limits+
            #:+context-budget-green-threshold-percent+
@@ -1040,15 +1031,21 @@
            #:slash-command-context-memory-backend
            #:slash-command-context-chat-state
            #:*slash-command-registry*
+           #:*slash-command-action-handlers*
            #:slash-command-input-p
            #:parse-slash-command
            #:parse-slash-command-arguments
            #:clear-slash-commands
+           #:clear-slash-command-action-handlers
            #:register-slash-command
+           #:register-slash-command-action-handler
+           #:find-slash-command-action-handler
            #:find-slash-command
            #:list-slash-commands
            #:complete-slash-command-input
            #:dispatch-slash-command
+           #:resolve-slash-command
+           #:apply-slash-command-result-action
            #:register-builtin-slash-commands
            #:*tts-run-command-function*
            #:*tts-backend*
@@ -2277,8 +2274,11 @@
            #:cultivar-adapter-enabled-p
            #:*cultivar-adapter*
            #:cultivar-resolve
+           #:cultivar-location-slice
+           #:cultivar-slice
            #:cultivar-preview
            #:cultivar-expand
+           #:cultivar-daemon-status
            ;; NXT-109: Cultivar context pressure
            #:cultivar-context-pressure
            ;; NXT-107: Yore adapter
