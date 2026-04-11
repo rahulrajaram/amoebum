@@ -55,7 +55,7 @@
 
 (test i248-default-repo-map-token-target-range
   "Default repo-map budget should remain in the tranche target range."
-  (is (<= 500 amoebum:+default-repo-map-token-target+ 2000)))
+  (is (<= 500 amoebum.observability:+default-repo-map-token-target+ 2000)))
 
 (test i248-indexes-symbols-from-loaded-system
   "Indexer should extract symbols from loaded ASDF systems via sb-introspect."
@@ -71,10 +71,10 @@
           (multiple-value-setq (system-name system-root asd-path core-path)
             (%i248-write-temp-system tmp-root))
           (%i248-load-temp-system asd-path system-name)
-          (setf index (amoebum:make-codebase-index :project-root tmp-root
-                                                   :language :common-lisp))
+          (setf index (amoebum.observability:make-codebase-index :project-root tmp-root
+                                                                 :language :common-lisp))
           (multiple-value-bind (_ stats)
-              (amoebum:index-loaded-asdf-systems
+              (amoebum.observability:index-loaded-asdf-systems
                index
                :systems (list system-name)
                :refresh t
@@ -83,14 +83,14 @@
             (is-true (getf stats :reindexed-p))
             (is (> (getf stats :entries 0) 0))
             (is (> (getf stats :files-tracked 0) 0)))
-          (let ((functions (amoebum:index-find-symbol index "I248-TEMP-FN"
-                                                      :package "I248-TEMP"))
-                (macros (amoebum:index-find-symbol index "I248-TEMP-MACRO"
-                                                   :package "I248-TEMP"))
-                (classes (amoebum:index-find-symbol index "I248-TEMP-CLASS"
-                                                    :package "I248-TEMP"))
-                (variables (amoebum:index-find-symbol index "*I248-TEMP-VAR*"
-                                                      :package "I248-TEMP")))
+          (let ((functions (amoebum.observability:index-find-symbol index "I248-TEMP-FN"
+                                                                    :package "I248-TEMP"))
+                (macros (amoebum.observability:index-find-symbol index "I248-TEMP-MACRO"
+                                                                 :package "I248-TEMP"))
+                (classes (amoebum.observability:index-find-symbol index "I248-TEMP-CLASS"
+                                                                  :package "I248-TEMP"))
+                (variables (amoebum.observability:index-find-symbol index "*I248-TEMP-VAR*"
+                                                                    :package "I248-TEMP")))
             (is (>= (length functions) 1))
             (is (>= (length macros) 1))
             (is (>= (length classes) 1))
@@ -111,16 +111,16 @@
           (multiple-value-setq (system-name system-root asd-path core-path)
             (%i248-write-temp-system tmp-root))
           (%i248-load-temp-system asd-path system-name)
-          (setf index (amoebum:make-codebase-index :project-root tmp-root))
+          (setf index (amoebum.observability:make-codebase-index :project-root tmp-root))
           (multiple-value-bind (_ stats1)
-              (amoebum:index-loaded-asdf-systems
+              (amoebum.observability:index-loaded-asdf-systems
                index
                :systems (list system-name)
                :refresh t)
             (declare (ignore _))
             (is (> (getf stats1 :files-changed 0) 0)))
           (multiple-value-bind (_ stats2)
-              (amoebum:index-loaded-asdf-systems
+              (amoebum.observability:index-loaded-asdf-systems
                index
                :systems (list system-name)
                :refresh nil)
@@ -145,7 +145,7 @@
   (i248-temp-macro x))
 ")
           (multiple-value-bind (_ stats3)
-              (amoebum:index-loaded-asdf-systems
+              (amoebum.observability:index-loaded-asdf-systems
                index
                :systems (list system-name)
                :refresh nil)
@@ -161,16 +161,16 @@
          (system-root nil)
          (asd-path nil)
          (core-path nil)
-         (old-index amoebum:*active-codebase-index*))
+         (old-index amoebum.observability:*active-codebase-index*))
     (declare (ignore system-root core-path))
     (unwind-protect
         (progn
           (multiple-value-setq (system-name system-root asd-path core-path)
             (%i248-write-temp-system tmp-root))
           (%i248-load-temp-system asd-path system-name)
-          (setf amoebum:*active-codebase-index*
-                (amoebum:make-codebase-index :project-root tmp-root
-                                             :language :common-lisp))
+          (setf amoebum.observability:*active-codebase-index*
+                (amoebum.observability:make-codebase-index :project-root tmp-root
+                                                           :language :common-lisp))
           (multiple-value-bind (handled result)
               (amoebum:dispatch-slash-command
                (format nil "/index --refresh --system ~A --tokens 700" system-name))
@@ -179,7 +179,7 @@
               (is-true (search "codebase index" output :test #'char-equal))
               (is-true (search "tracked" output :test #'char-equal))
               (is-true (search "repo-map" output :test #'char-equal)))))
-      (setf amoebum:*active-codebase-index* old-index)
+      (setf amoebum.observability:*active-codebase-index* old-index)
       (%delete-directory-tree-safe tmp-root))))
 
 (test codebase-index-smoke-sentinel

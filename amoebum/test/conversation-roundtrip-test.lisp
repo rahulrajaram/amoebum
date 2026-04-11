@@ -54,6 +54,20 @@
               (is (string= assistant-tool-call-id
                            (pseudopod:message-tool-call-id (second messages)))
                   "Message round-trip should preserve assistant tool-call-id.")
+              (let* ((assistant-tool-calls (pseudopod:message-tool-calls (second messages)))
+                     (assistant-tool-call (and assistant-tool-calls
+                                               (first assistant-tool-calls))))
+                (is (= 1 (length assistant-tool-calls))
+                    "Assistant message should keep its tool-calls list.")
+                (is (string= assistant-tool-call-id
+                             (or (pseudopod:tool-call-id assistant-tool-call) ""))
+                    "Round-trip should preserve assistant tool-call id inside tool-calls.")
+                (is (string= "mock_tool"
+                             (or (pseudopod:tool-call-name assistant-tool-call) ""))
+                    "Round-trip should preserve assistant tool-call name.")
+                (is (string= "{}"
+                             (or (pseudopod:tool-call-arguments assistant-tool-call) ""))
+                    "Round-trip should preserve assistant tool-call arguments."))
               (is (string= assistant-tool-call-id
                            (pseudopod:message-tool-call-id (third messages)))
                   "Message round-trip should preserve tool tool-call-id.")

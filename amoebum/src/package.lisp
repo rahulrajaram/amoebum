@@ -2427,6 +2427,15 @@
 (defpackage :amoebum.extensions
   (:use :cl))
 
+(defpackage :amoebum.observability
+  (:use :cl))
+
+(defpackage :amoebum.commands
+  (:use :cl)
+  (:import-from :amoebum
+                #:make-slash-command-result)
+  (:export #:make-slash-command-result))
+
 (defpackage :amoebum.commands.plan
   (:use :cl)
   (:import-from :amoebum
@@ -2457,33 +2466,30 @@
 
 (defpackage :amoebum.commands.history
   (:use :cl)
-  (:import-from :amoebum
+  (:import-from :amoebum.commands
                 #:make-slash-command-result)
   (:export #:%history-handler))
 
 (defpackage :amoebum.commands.index
   (:use :cl)
-  (:import-from :amoebum
+  (:import-from :amoebum.commands
                 #:make-slash-command-result)
   (:export #:%index-handler))
 
 (defpackage :amoebum.commands.self-modify
   (:use :cl)
-  (:import-from :amoebum
+  (:import-from :amoebum.commands
                 #:make-slash-command-result)
   (:export #:%self-modify-handler))
 
 (defpackage :amoebum.commands.permissions
   (:use :cl)
-  (:import-from :amoebum
+  (:import-from :amoebum.commands
                 #:make-slash-command-result)
   (:export #:%permissions-handler
            #:%permissions-arg-completer))
 
 (defpackage :amoebum.ui
-  (:use :cl))
-
-(defpackage :amoebum.commands
   (:use :cl))
 
 (defpackage :amoebum.workers

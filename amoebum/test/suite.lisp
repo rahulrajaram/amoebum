@@ -1187,24 +1187,24 @@
 
 (test phase5-indexer-structs
   "Indexer structs should be constructable and queryable."
-  (let ((entry (amoebum:make-symbol-entry :name "test-fn"
-                                           :package "TEST"
-                                           :kind :function)))
-    (is (amoebum:symbol-entry-p entry))
-    (is (string= "test-fn" (amoebum:symbol-entry-name entry)))
-    (is (eq :function (amoebum:symbol-entry-kind entry)))))
+  (let ((entry (amoebum.observability:make-symbol-entry :name "test-fn"
+                                                         :package "TEST"
+                                                         :kind :function)))
+    (is (amoebum.observability:symbol-entry-p entry))
+    (is (string= "test-fn" (amoebum.observability:symbol-entry-name entry)))
+    (is (eq :function (amoebum.observability:symbol-entry-kind entry)))))
 
 (test phase5-indexer-package-scan
   "Indexing a known package should produce entries."
-  (let ((index (amoebum:make-codebase-index)))
-    (amoebum:index-package-symbols index :keyword)
-    (is (> (length (amoebum:codebase-index-entries index)) 0))))
+  (let ((index (amoebum.observability:make-codebase-index)))
+    (amoebum.observability:index-package-symbols index :keyword)
+    (is (> (length (amoebum.observability:codebase-index-entries index)) 0))))
 
 (test phase5-indexer-repo-map
   "Repo map generation should produce a string within token limit."
-  (let ((index (amoebum:make-codebase-index)))
-    (amoebum:index-package-symbols index :keyword)
-    (let ((map (amoebum:generate-repo-map index :max-tokens 500)))
+  (let ((index (amoebum.observability:make-codebase-index)))
+    (amoebum.observability:index-package-symbols index :keyword)
+    (let ((map (amoebum.observability:generate-repo-map index :max-tokens 500)))
       (is (stringp map))
       (is (<= (length map) 2500)))))
 
@@ -1258,26 +1258,26 @@
 
 (test phase5-profiler-metrics-store
   "Metrics store should push, count, and retrieve entries."
-  (let ((store (amoebum:make-metrics-store :capacity 8)))
-    (amoebum:metrics-store-push store
-      (amoebum:make-metrics-entry :kind :tool-call :name "read" :duration-ms 15))
-    (amoebum:metrics-store-push store
-      (amoebum:make-metrics-entry :kind :gc :name "gc" :duration-ms 3))
-    (is (= 2 (amoebum:metrics-store-count store)))
-    (let ((recent (amoebum:metrics-store-recent store)))
+  (let ((store (amoebum.observability:make-metrics-store :capacity 8)))
+    (amoebum.observability:metrics-store-push store
+      (amoebum.observability:make-metrics-entry :kind :tool-call :name "read" :duration-ms 15))
+    (amoebum.observability:metrics-store-push store
+      (amoebum.observability:make-metrics-entry :kind :gc :name "gc" :duration-ms 3))
+    (is (= 2 (amoebum.observability:metrics-store-count store)))
+    (let ((recent (amoebum.observability:metrics-store-recent store)))
       (is (= 2 (length recent))))
-    (let ((tool-only (amoebum:metrics-store-recent store :kind :tool-call)))
+    (let ((tool-only (amoebum.observability:metrics-store-recent store :kind :tool-call)))
       (is (= 1 (length tool-only))))))
 
 (test phase5-profiler-record-metric
   "record-metric should push to global store."
-  (let ((amoebum::*global-metrics-store* (amoebum:make-metrics-store)))
-    (amoebum:record-metric :tool-call "test" 42)
-    (is (= 1 (amoebum:metrics-store-count amoebum::*global-metrics-store*)))))
+  (let ((amoebum::*global-metrics-store* (amoebum.observability:make-metrics-store)))
+    (amoebum.observability:record-metric :tool-call "test" 42)
+    (is (= 1 (amoebum.observability:metrics-store-count amoebum::*global-metrics-store*)))))
 
 (test phase5-profiler-memory-statistics
   "memory-statistics should return a plist with dynamic-usage."
-  (let ((stats (amoebum:memory-statistics)))
+  (let ((stats (amoebum.observability:memory-statistics)))
     (is (listp stats))
     (is (numberp (getf stats :dynamic-usage)))))
 

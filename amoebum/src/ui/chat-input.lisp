@@ -310,7 +310,7 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
               (getf compression :keep-last-turns +context-compression-default-keep-last-turns+))
       "Compaction skipped: not enough older context to summarize."))
 
-(defun %clear-chat-command-action-handler (result &key chat-state)
+(defun %slash-command-clear-chat-action (result &key chat-state)
   (declare (ignore result))
   (let ((conversation (%ensure-chat-conversation-state chat-state)))
     (conversation-reset! conversation)
@@ -320,16 +320,19 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
           (chat-ui-state-message-scrollback-lines chat-state) 0
           (chat-ui-state-max-message-scrollback-lines chat-state) 0)
     (%invalidate-styled-lines-cache)
+    (%sync-chat-context-usage! chat-state :allow-auto-compress-p nil)
     nil))
 
-(defun %compact-chat-command-action-handler (result &key chat-state)
-  (%format-compression-output
-   (%compress-chat-history!
-    chat-state
-    :keep-last-turns (slash-command-result-payload result)
-    :trigger :manual)))
+(defun %slash-command-compact-chat-action (result &key chat-state)
+  (let ((compression
+          (%compress-chat-history!
+           chat-state
+           :keep-last-turns (slash-command-result-payload result)
+           :trigger :manual)))
+    (%sync-chat-context-usage! chat-state :allow-auto-compress-p nil)
+    (%format-compression-output compression)))
 
-(defun %toggle-provider-dashboard-command-action-handler (result &key chat-state)
+(defun %slash-command-toggle-provider-dashboard-action (result &key chat-state)
   (let* ((payload (slash-command-result-payload result))
          (current (chat-ui-state-provider-dashboard-visible-p chat-state))
          (next
@@ -339,13 +342,14 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
              (otherwise (not current)))))
     (setf (chat-ui-state-provider-dashboard-visible-p chat-state) next)
     (provider-health-refresh! :force t)
+    (%sync-chat-context-usage! chat-state :allow-auto-compress-p nil)
     (format nil "Provider dashboard ~:[hidden~;visible~]." next)))
 
-(defun %apply-slash-command-action (chat-state result)
-  (let ((action-output
-          (apply-slash-command-result-action result :chat-state chat-state)))
-    (%sync-chat-context-usage! chat-state :allow-auto-compress-p nil)
-    action-output))
+(eval-when (:load-toplevel :execute)
+  (register-slash-command-action-handler :clear-chat #'%slash-command-clear-chat-action)
+  (register-slash-command-action-handler :compact-chat #'%slash-command-compact-chat-action)
+  (register-slash-command-action-handler :toggle-provider-dashboard
+                                         #'%slash-command-toggle-provider-dashboard-action))
 
 (defun %handle-slash-command-input (chat-state input)
   (multiple-value-bind (handledp result)
@@ -354,7 +358,7 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
                              :memory-backend (current-memory-backend)
                              :chat-state chat-state)
     (when handledp
-      (let ((action-output (%apply-slash-command-action chat-state result)))
+      (let ((action-output (apply-slash-command-result-action result :chat-state chat-state)))
         (when (slash-command-result-echo-input-p result)
           (chat-ui-add-message chat-state "user" input))
         (let ((output (or action-output
@@ -363,16 +367,8 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
                      (plusp (length (%slash-trim output))))
             (chat-ui-add-message chat-state "system" output)))
         (setf (chat-ui-state-input-text chat-state) ""
-              (chat-ui-state-prompt-scroll-offset chat-state) nil))
-      t)))
-
-(eval-when (:load-toplevel :execute)
-  (register-slash-command-action-handler :clear-chat
-                                         #'%clear-chat-command-action-handler)
-  (register-slash-command-action-handler :compact-chat
-                                         #'%compact-chat-command-action-handler)
-  (register-slash-command-action-handler :toggle-provider-dashboard
-                                         #'%toggle-provider-dashboard-command-action-handler))
+              (chat-ui-state-prompt-scroll-offset chat-state) nil)
+        t))))
 
 (defun %handle-command-tab-completion (chat-state)
   (let ((input (chat-ui-state-input-text chat-state)))
@@ -431,6 +427,14 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
            nil)
           (otherwise nil))))))
 
+(defun %chat-input-route-submitted-message (chat-state submitted-message)
+  (when submitted-message
+    (if (%handle-memory-candidate chat-state submitted-message)
+        (conversation-transition! (%ensure-chat-conversation-state chat-state)
+                                  :idle)
+        (%start-streaming-assistant-response chat-state submitted-message))
+    t))
+
 (defun %chat-trim-text (text)
   (if (stringp text)
       (string-trim '(#\Space #\Tab #\Newline #\Return) text)
@@ -467,6 +471,21 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
             (chat-ui-state-prompt-scroll-offset chat-state) nil)
       t)))
 
+(defun %chat-input-handle-submit-routing (chat-state input)
+  (cond
+    ((and (plan-step-awaiting-approval-p)
+          (zerop (length input)))
+     (approve-next-plan-step)
+     t)
+    ((%handle-slash-command-input chat-state input)
+     t)
+    ((%handle-plan-mode-entry-instruction chat-state input)
+     t)
+    (t
+     (%chat-input-route-submitted-message
+      chat-state
+      (chat-ui-submit-input chat-state)))))
+
 (defun %chat-plan-move-selection! (chat-state delta)
   (let* ((plan-state (current-plan-mode-state))
          (execution-state (current-plan-execution-state)))
@@ -498,6 +517,40 @@ skip trailing whitespace, then delete back to the next whitespace boundary."
              (next-index (nth next-position visible-indexes)))
         (setf (chat-ui-state-plan-selected-step-index chat-state) next-index)
         t))))
+
+(defun %chat-input-handle-vertical-cursor-move (chat-state cursor-pos input-width delta)
+  (let* ((input-text (chat-ui-state-input-text chat-state))
+         (pos (%ensure-cursor-pos input-text cursor-pos))
+         (lines (%prompt-wrapped-lines input-text input-width))
+         (max-rows 4))
+    (multiple-value-bind (cur-line cur-col)
+        (%cursor-to-line-col pos lines)
+      (let ((target-line (+ cur-line delta)))
+        (when (and (>= target-line 0)
+                   (< target-line (length lines)))
+          (let* ((line (nth target-line lines))
+                 (target-col (min cur-col (length line)))
+                 (new-pos (%line-col-to-cursor-pos target-line target-col lines))
+                 (last-line-p (= target-line (1- (length lines)))))
+            (setf (chat-ui-state-cursor-position chat-state)
+                  (if (and last-line-p
+                           (= target-col (length line)))
+                      nil
+                      new-pos))
+            (let* ((current-scroll (or (chat-ui-state-prompt-scroll-offset chat-state) 0))
+                   (total-lines (length lines))
+                   (visible-rows (min max-rows total-lines))
+                   (max-scroll (max 0 (- total-lines visible-rows)))
+                   (new-scroll
+                     (cond
+                       ((< target-line current-scroll)
+                        target-line)
+                       ((>= target-line (+ current-scroll visible-rows))
+                        (max 0 (- target-line visible-rows -1)))
+                       (t current-scroll))))
+              (setf (chat-ui-state-prompt-scroll-offset chat-state)
+                    (min new-scroll max-scroll)))
+            t))))))
 
 (defun %agent-completion-summary (completion)
   (let* ((result (getf completion :result))

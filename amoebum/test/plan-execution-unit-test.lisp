@@ -189,6 +189,34 @@
     ;; At least one continuity-output entry was appended by the effect.
     (is-true (plusp (length (amoebum::plan-execution-state-continuity-output state))))))
 
+(test pe-unit-wait-for-approval-records-step-index
+  "`%wait-for-plan-step-approval` records the pending step index while blocked, then clears it."
+  (let ((state (%pe-unit-state :status :running))
+        (worker nil)
+        (observed-index nil)
+        (observed-awaiting nil))
+    (unwind-protect
+        (progn
+          (setf worker
+                (bt:make-thread
+                 (lambda ()
+                   (amoebum::%wait-for-plan-step-approval state 3))
+                 :name "plan-exec-approval-test"))
+          (loop repeat 100
+                until (amoebum::plan-step-awaiting-approval-p)
+                do (sleep 0.01))
+          (setf observed-awaiting (amoebum::plan-step-awaiting-approval-p)
+                observed-index (amoebum::plan-execution-state-awaiting-approval-step-index state))
+          (amoebum::approve-next-plan-step)
+          (bt:join-thread worker))
+      (when (and worker (bt:thread-alive-p worker))
+        (amoebum::approve-next-plan-step)
+        (bt:join-thread worker)))
+    (is-true observed-awaiting)
+    (is (= 3 observed-index))
+    (is-false (amoebum::plan-step-awaiting-approval-p))
+    (is (null (amoebum::plan-execution-state-awaiting-approval-step-index state)))))
+
 ;;; --- abort effect content ----------------------------------------------
 
 (test pe-unit-abort-effect-includes-reason-text

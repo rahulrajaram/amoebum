@@ -68,19 +68,7 @@
 (defun %chat-panel-input-handle-submit (context)
   (let ((state (chat-panel-input-key-context-state context))
         (input-text (chat-panel-input-key-context-input-text context)))
-    (if (and (plan-step-awaiting-approval-p)
-             (zerop (length input-text)))
-        (approve-next-plan-step)
-        (if (%handle-slash-command-input state input-text)
-            t
-            (if (%handle-plan-mode-entry-instruction state input-text)
-                t
-                (let ((submitted (chat-ui-submit-input state)))
-                  (when submitted
-                    (if (%handle-memory-candidate state submitted)
-                        (conversation-transition! (%ensure-chat-conversation-state state)
-                                                  :idle)
-                        (%start-streaming-assistant-response state submitted))))))))
+    (%chat-input-handle-submit-routing state input-text))
   t)
 
 (defun %chat-panel-input-handle-backspace (context)
@@ -166,44 +154,10 @@
 
 (defun %chat-panel-input-handle-vertical-move (context delta)
   (let* ((state (chat-panel-input-key-context-state context))
-         (input-text (chat-panel-input-key-context-input-text context))
-         (pos (chat-panel-input-key-context-pos context))
          (input-width (chat-panel-input-key-context-input-width context))
-         (lines (%prompt-wrapped-lines input-text input-width))
-         (max-rows 4))  ; Maximum visible content rows in prompt box
-    (multiple-value-bind (cur-line cur-col)
-        (%cursor-to-line-col pos lines)
-      (let ((target-line (+ cur-line delta)))
-        (when (and (>= target-line 0)
-                   (< target-line (length lines)))
-          (let* ((line (nth target-line lines))
-                 (target-col (min cur-col (length line)))
-                 (new-pos (%line-col-to-cursor-pos target-line target-col lines))
-                 (last-line-p (= target-line (1- (length lines)))))
-            (setf (chat-ui-state-cursor-position state)
-                  (if (and last-line-p
-                           (= target-col (length line)))
-                      nil
-                      new-pos))
-            ;; Update scroll offset to ensure cursor stays visible
-            (let* ((current-scroll (or (chat-ui-state-prompt-scroll-offset state) 0))
-                   (total-lines (length lines))
-                   (visible-rows (min max-rows total-lines))
-                   (max-scroll (max 0 (- total-lines visible-rows)))
-                   ;; Calculate new scroll offset to keep cursor in view
-                   (new-scroll
-                     (cond
-                       ;; Cursor moved above visible area - scroll up
-                       ((< target-line current-scroll)
-                        target-line)
-                       ;; Cursor moved below visible area - scroll down
-                       ((>= target-line (+ current-scroll visible-rows))
-                        (max 0 (- target-line visible-rows -1)))
-                       ;; Cursor still visible - keep current scroll
-                       (t current-scroll))))
-              (setf (chat-ui-state-prompt-scroll-offset state)
-                    (min new-scroll max-scroll)))))))
-  t))
+         (cur-pos (chat-panel-input-key-context-cur-pos context)))
+    (%chat-input-handle-vertical-cursor-move state cur-pos input-width delta))
+  t)
 
 (defparameter +chat-panel-input-key-handlers+
   (list (cons :text #'%chat-panel-input-handle-text)

@@ -37,12 +37,14 @@
                       (role "assistant")
                       (content "")
                       name
+                      tool-calls
                       partial
                       tool-call-id)))
   (timestamp (get-universal-time) :type integer)
   (role "assistant" :type string)
   (content "" :type string)
   name
+  (tool-calls '() :type list)
   partial
   tool-call-id)
 
@@ -222,6 +224,7 @@
    :role (string-downcase (or (pseudopod:message-role message) "assistant"))
    :content (%conversation-message-content->text message)
    :name (pseudopod:message-name message)
+   :tool-calls (copy-list (or (pseudopod:message-tool-calls message) '()))
    :partial (pseudopod:message-partial message)
    :tool-call-id (pseudopod:message-tool-call-id message)))
 
@@ -231,14 +234,52 @@
    :role (conversation-history-entry-role entry)
    :name (conversation-history-entry-name entry)
    :content (conversation-history-entry-content entry)
+   :tool-calls (copy-list (or (conversation-history-entry-tool-calls entry) '()))
    :tool-call-id (conversation-history-entry-tool-call-id entry)
    :partial (conversation-history-entry-partial entry)))
+
+(defun %conversation-tool-call->sexp (tool-call)
+  (let ((hash (pseudopod:tool-call-to-hash tool-call)))
+    (when (hash-table-p hash)
+      (jonathan:to-json hash))))
+
+(defun %conversation-tool-call-from-sexp (payload)
+  (cond
+    ((pseudopod:tool-call-p payload)
+     payload)
+    ((hash-table-p payload)
+     (pseudopod:hash-to-tool-call payload))
+    ((stringp payload)
+     (ignore-errors
+       (pseudopod:hash-to-tool-call (jonathan:parse payload :as :hash-table))))
+    (t
+     nil)))
+
+(defun %conversation-tool-calls->sexp (tool-calls)
+  (let ((normalized
+          (remove nil
+                  (mapcar #'%conversation-tool-call->sexp
+                          (or tool-calls '())))))
+    (if normalized
+        normalized
+        nil)))
+
+(defun %conversation-tool-calls-from-sexp (payload)
+  (remove nil
+          (mapcar #'%conversation-tool-call-from-sexp
+                  (cond
+                    ((null payload) '())
+                    ((listp payload) payload)
+                    ((vectorp payload) (coerce payload 'list))
+                    (t (list payload))))))
 
 (defun %conversation-entry->sexp (entry)
   (list :timestamp (conversation-history-entry-timestamp entry)
         :role (conversation-history-entry-role entry)
         :content (conversation-history-entry-content entry)
         :name (conversation-history-entry-name entry)
+        :tool-calls (%conversation-tool-calls->sexp
+                     (conversation-history-entry-tool-calls entry))
         :partial (conversation-history-entry-partial entry)
         :tool-call-id (conversation-history-entry-tool-call-id entry)))
 
@@ -254,6 +295,7 @@
      :content (or (getf payload :content) "")
      :name (let ((name (getf payload :name)))
              (and name (princ-to-string name)))
+     :tool-calls (%conversation-tool-calls-from-sexp (getf payload :tool-calls))
      :partial (getf payload :partial)
      :tool-call-id (let ((tool-call-id (getf payload :tool-call-id)))
                      (and tool-call-id (princ-to-string tool-call-id))))))

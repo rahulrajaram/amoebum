@@ -337,6 +337,55 @@
     (when handler
       (funcall handler result :chat-state chat-state))))
 
+(defun %slash-action-clear-chat (result &key chat-state)
+  (declare (ignore result))
+  (let ((conversation (%ensure-chat-conversation-state chat-state)))
+    (conversation-reset! conversation)
+    (%chat-deactivate-history-search! chat-state)
+    (setf (chat-ui-state-messages chat-state)
+          (conversation-state-messages conversation)
+          (chat-ui-state-message-scrollback-lines chat-state) 0
+          (chat-ui-state-max-message-scrollback-lines chat-state) 0)
+    (%invalidate-styled-lines-cache)
+    (%sync-chat-context-usage! chat-state :allow-auto-compress-p nil)
+    nil))
+
+(defun %slash-action-compact-chat (result &key chat-state)
+  (let ((compression
+          (%compress-chat-history!
+           chat-state
+           :keep-last-turns (slash-command-result-payload result)
+           :trigger :manual)))
+    (%sync-chat-context-usage! chat-state :allow-auto-compress-p nil)
+    (if (getf compression :compressed-p)
+        (format nil
+                "Compacted context: ~D -> ~D tokens (saved ~D). Summarized ~D messages; kept last ~D turns."
+                (getf compression :before-tokens 0)
+                (getf compression :after-tokens 0)
+                (getf compression :saved-tokens 0)
+                (getf compression :summarized-messages 0)
+                (getf compression :keep-last-turns +context-compression-default-keep-last-turns+))
+        "Compaction skipped: not enough older context to summarize.")))
+
+(defun %slash-action-toggle-provider-dashboard (result &key chat-state)
+  (let* ((payload (slash-command-result-payload result))
+         (current (chat-ui-state-provider-dashboard-visible-p chat-state))
+         (next
+           (case payload
+             ((:on t) t)
+             ((:off nil) nil)
+             (otherwise (not current)))))
+    (setf (chat-ui-state-provider-dashboard-visible-p chat-state) next)
+    (provider-health-refresh! :force t)
+    (%sync-chat-context-usage! chat-state :allow-auto-compress-p nil)
+    (format nil "Provider dashboard ~:[hidden~;visible~]." next)))
+
+(eval-when (:load-toplevel :execute)
+  (register-slash-command-action-handler :clear-chat #'%slash-action-clear-chat)
+  (register-slash-command-action-handler :compact-chat #'%slash-action-compact-chat)
+  (register-slash-command-action-handler :toggle-provider-dashboard
+                                         #'%slash-action-toggle-provider-dashboard))
+
 (defun %slash-command-failure-result (invocation condition)
   (make-slash-command-result
    :output (format nil "Command /~A failed: ~A"

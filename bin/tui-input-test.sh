@@ -237,7 +237,7 @@ start_session() {
     sleep 0.5
     tmux new-session -d -s "$SESSION" -x 120 -y 40 \
         "env TERM=screen-256color '$BINARY' --demo; rc=\$?; printf '\n__AMOEBUM_EXIT__=%s\n' \"\$rc\"; sleep 30"
-    wait_for_text "Type below and press Enter." 20 || die "amoebum did not reach interactive prompt"
+    wait_for_text "Type below and press Enter to start" 20 || die "amoebum did not reach interactive prompt"
     assert_binary_alive "startup remains alive" || die "amoebum exited during startup"
 }
 
@@ -650,7 +650,16 @@ watch_pause
 
 CONTENT="$(capture_pane)"
 assert_not_contains "streaming hint gone after escape" "Streaming... Press Ctrl-C to stop early." "$CONTENT"
-assert_contains "partial response preserved" "Long Response" "$CONTENT"
+if printf '%s\n' "$CONTENT" | grep -qiE 'Section [0-9]+|Lorem ipsum dolor sit amet'; then
+    echo "  PASS: partial response preserved (long-response body remains visible)"
+    PASSED=$((PASSED + 1))
+else
+    echo "  FAIL: partial response preserved (no long-response body visible after cancellation)"
+    echo "  --- captured pane (last 20 lines) ---"
+    echo "$CONTENT" | tail -20
+    echo "  --- end ---"
+    FAILED=$((FAILED + 1))
+fi
 
 end_session
 
