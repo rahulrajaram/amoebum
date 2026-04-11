@@ -437,25 +437,25 @@ group = "cchat-dag"
 [[tranches]]
 key = "NXT-318"
 summary = "Refine the entry spine in `amoebum/src/main.lisp` and `amoebum/src/ui/chat.lisp`: keep headless and TUI launch semantics aligned, make runtime-shell invariants explicit, and preserve the thin-shell ownership boundary without reopening the five-file split."
-status = "incomplete"
+status = "complete"
 group = "cchat-dag"
 
 [[tranches]]
 key = "NXT-319"
 summary = "Refactor `amoebum/src/ui/chat-state.lisp` first, separating state shape/init from history/context/persistence helpers so downstream render/stream/input work depends on a cleaner state kernel."
-status = "incomplete"
+status = "complete"
 group = "cchat-dag"
 
 [[tranches]]
 key = "NXT-320"
 summary = "Tighten the `chat-state.lisp` <-> `conversation.lisp` boundary: preserve append-only history, tool pairing, restore/checkpoint assumptions, and rerun the broad suite after the state wave closes."
-status = "incomplete"
+status = "complete"
 group = "cchat-dag"
 
 [[tranches]]
 key = "NXT-321"
 summary = "Record a Haake memory after the entry/state wave capturing the preserved chat invariants, the files touched, and the verification evidence so later Yarli runs can resume without re-deriving the shell/state contract."
-status = "incomplete"
+status = "complete"
 group = "cchat-dag"
 
 [[tranches]]
@@ -467,7 +467,7 @@ group = "cchat-dag"
 [[tranches]]
 key = "NXT-323"
 summary = "Refine the provider-stream runtime in `amoebum/src/ui/streaming.lisp` while preserving chat semantics, then rerun both bounded headless and tmux streaming regressions before moving deeper."
-status = "incomplete"
+status = "complete"
 group = "cchat-dag"
 
 [[tranches]]

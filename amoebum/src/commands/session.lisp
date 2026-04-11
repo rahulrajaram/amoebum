@@ -8,17 +8,6 @@
                 year month day hour minute second))
       "unknown"))
 
-(defun %apply-chat-conversation! (chat-state next-conversation)
-  (when (and (typep chat-state 'chat-ui-state)
-             (typep next-conversation 'conversation-state))
-    (setf (chat-ui-state-conversation chat-state) next-conversation
-          (chat-ui-state-messages chat-state)
-          (conversation-state-messages next-conversation)
-          (chat-ui-state-message-scrollback-lines chat-state) 0
-          (chat-ui-state-max-message-scrollback-lines chat-state) 0)
-    (%sync-chat-context-usage! chat-state :allow-auto-compress-p nil))
-  next-conversation)
-
 (defun %checkpoint-usage ()
   "/checkpoint [save|list|restore <id>]")
 

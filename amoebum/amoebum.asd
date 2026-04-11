@@ -202,6 +202,7 @@
    (:file "test/write-safety-test")
    (:file "test/edit-validation-test")
    (:file "test/json-cli-contract-test")
+   (:file "test/entry-spine-test")
    (:file "test/review-workflow-test")
    (:file "test/multimodal-chat-test")
    (:file "test/notebook-edit-toolchain-test")

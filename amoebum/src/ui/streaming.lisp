@@ -1710,6 +1710,14 @@ Returns T if reset was performed, NIL otherwise."
         (stream-pseudopod-chat-context-stream-char-count context) 0)
   context)
 
+(defun %stream-pseudopod-chat-fallback-content (message)
+  (cond
+    ((not (pseudopod:message-p message)) "")
+    ((stringp (pseudopod:message-content message))
+     (pseudopod:message-content message))
+    (t
+     (%message-content->text message))))
+
 (defun %stream-pseudopod-chat-run-fallback (context)
   (let* ((message (pseudopod:chat-completion*
                    (stream-pseudopod-chat-context-resolved-client context)
@@ -1717,11 +1725,36 @@ Returns T if reset was performed, NIL otherwise."
                    :system-prompt (stream-pseudopod-chat-context-system-prompt context)
                    :messages (stream-pseudopod-chat-context-messages context)
                    :tools (stream-pseudopod-chat-context-tools context)))
-         (content (and (pseudopod:message-p message)
-                       (pseudopod:message-content message))))
+         (content (%stream-pseudopod-chat-fallback-content message)))
     (unless (%token-stream-blank-string-p content)
       (%stream-pseudopod-chat-track-chunk! context content :fallback-content))
     (%stream-pseudopod-chat-emit-fallback-tool-calls context message)))
+
+(defun %stream-pseudopod-chat-handle-primary-error (context stream-state condition)
+  (setf (stream-pseudopod-chat-context-stream-status context) :error)
+  (token-stream-check-cancel stream-state)
+  (%stream-pseudopod-chat-prepare-fallback! context)
+  (%stream-pseudopod-chat-emit-fallback-error context condition)
+  (%stream-pseudopod-chat-with-probe
+   context
+   :fallback
+   (stream-pseudopod-chat-context-stream-request-id context)
+   (lambda ()
+     (%stream-pseudopod-chat-run-fallback context))))
+
+(defun %stream-pseudopod-chat-run-provider-runtime (context stream-state)
+  (%stream-pseudopod-chat-with-probe
+   context
+   :stream
+   (stream-pseudopod-chat-context-stream-request-id context)
+   (lambda ()
+     (handler-case
+         (%stream-pseudopod-chat-run-primary-stream context)
+       (token-stream-cancelled ()
+         (setf (stream-pseudopod-chat-context-stream-status context) :cancelled)
+         (error 'token-stream-cancelled))
+       (error (condition)
+         (%stream-pseudopod-chat-handle-primary-error context stream-state condition))))))
 
 (defun %stream-pseudopod-chat-with-probe (context mode request-id thunk)
   (let ((status :ok)
@@ -1752,27 +1785,7 @@ Returns T if reset was performed, NIL otherwise."
                                 tools)
   (let ((context (%make-stream-pseudopod-chat-runtime
                   stream-state prompt messages system-prompt client tools)))
-    (%stream-pseudopod-chat-with-probe
-     context
-     :stream
-     (stream-pseudopod-chat-context-stream-request-id context)
-     (lambda ()
-       (handler-case
-           (%stream-pseudopod-chat-run-primary-stream context)
-         (token-stream-cancelled ()
-           (setf (stream-pseudopod-chat-context-stream-status context) :cancelled)
-           (error 'token-stream-cancelled))
-         (error (condition)
-           (setf (stream-pseudopod-chat-context-stream-status context) :error)
-           (token-stream-check-cancel stream-state)
-           (%stream-pseudopod-chat-prepare-fallback! context)
-           (%stream-pseudopod-chat-emit-fallback-error context condition)
-           (%stream-pseudopod-chat-with-probe
-            context
-            :fallback
-            (stream-pseudopod-chat-context-stream-request-id context)
-            (lambda ()
-              (%stream-pseudopod-chat-run-fallback context)))))))))
+    (%stream-pseudopod-chat-run-provider-runtime context stream-state)))
 
 ;;; -----------------------------------------------------------------------------
 ;;; NXT-129: Stream Event Journal (append-only ring buffer)

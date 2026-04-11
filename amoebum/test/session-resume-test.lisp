@@ -142,6 +142,34 @@
       (amoebum.config:setconfig :project-root old-project-root)
       (%delete-directory-tree-safe tmp-root))))
 
+(test restore-application-keeps-message-order-and-tool-pairing
+  (let* ((tmp-root (%make-temp-directory "amoebum-i338-apply"))
+         (conversation (%i338-build-saved-session tmp-root "apply-conversation"))
+         (chat-state (amoebum.ui:make-chat-ui-state :stream-runner nil)))
+    (unwind-protect
+         (progn
+           (amoebum::%apply-chat-conversation! chat-state conversation)
+           (let* ((restored-conversation (amoebum.ui:chat-ui-state-conversation chat-state))
+                  (messages (amoebum.ui:chat-ui-state-messages chat-state))
+                  (first (first messages))
+                  (second (second messages))
+                  (third (third messages)))
+             (is (eq conversation restored-conversation))
+             (is (= 3 (length messages)))
+             (is (string= "user" (pseudopod:message-role first)))
+             (is (string= "assistant" (pseudopod:message-role second)))
+             (is (string= "tool" (pseudopod:message-role third)))
+             (is (string= "Running shell tool."
+                          (or (pseudopod:content-part-text
+                               (first (pseudopod:message-content second)))
+                              "")))
+             (is (string= (or (pseudopod:message-tool-call-id second) "")
+                          (or (pseudopod:message-tool-call-id third) "")))
+             (is (= 0 (amoebum.ui:chat-ui-state-message-scrollback-lines chat-state)))
+             (is (= 0 (amoebum.ui:chat-ui-state-max-message-scrollback-lines chat-state)))
+             (is (plusp (amoebum.ui:chat-ui-state-context-used-tokens chat-state)))))
+      (%delete-directory-tree-safe tmp-root))))
+
 (test session-resume-smoke-sentinel
   (is-true t)
   (format t "SESSION_RESUME_SMOKE_OK~%"))

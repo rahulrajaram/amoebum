@@ -167,6 +167,55 @@
     (is (eq :tool-continuation
             (pseudopod:stream-turn-snapshot-terminal-outcome snapshot)))))
 
+(test chat-stream-terminal-outcome-phase-classification
+  "Terminal outcome phase selection should stay explicit across retry, continuation, limit, and answer."
+  (let ((state (amoebum:ensure-chat-ui-state
+                (amoebum.ui:make-chat-ui-state :stream-runner nil))))
+    (flet ((classify (tool-call-entries malformed-names)
+             (amoebum::%stream-terminal-outcome-kind
+              (amoebum::%stream-terminal-phase-context
+               state
+               :conversation
+               :assistant-response
+               tool-call-entries
+               malformed-names))))
+      (setf (amoebum::chat-ui-state-agentic-iteration-count state) 0)
+      (is (eq :retry (classify '((:name "tool")) '("broken-tool"))))
+      (is (eq :tool-continuation (classify '((:name "tool")) nil)))
+      (setf (amoebum::chat-ui-state-agentic-iteration-count state)
+            (amoebum::%chat-effective-max-iterations state))
+      (is (eq :max-iterations (classify '((:name "tool")) nil)))
+      (is (eq :answer (classify nil nil))))))
+
+(test chat-stream-terminal-finalization-shares-focus-reset
+  "Cancellation and failure finalization should both restore input focus and clear stream tracking."
+  (let* ((state (amoebum:ensure-chat-ui-state
+                 (amoebum.ui:make-chat-ui-state :stream-runner nil)))
+         (runtime (ptui.ui.runtime:make-runtime))
+         (conversation (amoebum::%ensure-chat-conversation-state state)))
+    (setf (amoebum::chat-ui-state-runtime state) runtime
+          (ptui.ui.runtime:runtime-focus-id runtime) :overlay
+          (amoebum::chat-ui-state-stream-completion-pending-p state) t)
+    (setf (gethash "id:tc-1" (amoebum::chat-ui-state-stream-tool-calls state))
+          (list :key "id:tc-1" :executed-p t))
+    (amoebum::%finalize-streaming-terminal! state conversation
+                                            :partialp t
+                                            :next-state :idle)
+    (is (eq :chat-input (ptui.ui.runtime:runtime-focus-id runtime)))
+    (is (eq :idle (amoebum::conversation-state-state conversation)))
+    (is (zerop (hash-table-count (amoebum::chat-ui-state-stream-tool-calls state))))
+    (setf (ptui.ui.runtime:runtime-focus-id runtime) :overlay)
+    (setf (amoebum::token-stream-state-error-message
+           (amoebum::chat-ui-state-stream-state state))
+          "Provider timeout while streaming.")
+    (amoebum::%finalize-streaming-terminal-failure! state conversation)
+    (is (eq :chat-input (ptui.ui.runtime:runtime-focus-id runtime)))
+    (is (eq :error-recovery (amoebum::conversation-state-state conversation)))
+    (is (search "Provider timeout while streaming."
+                (amoebum::%message-content->text
+                 (car (last (amoebum::chat-ui-state-messages state))))
+                :test #'char-equal))))
+
 ;;; --- NXT-126: Token stream emitters use canonical :type key ---
 
 (test token-stream-emitters-use-type-key

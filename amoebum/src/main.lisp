@@ -515,6 +515,23 @@ die without triggering GC on every frame."
   #-sbcl
   nil)
 
+(defun %resolve-interactive-chat-state (&key demo-mode-p session-id resume)
+  (unless demo-mode-p
+    (make-chat-ui-state
+     :conversation (%resolve-cli-conversation
+                    :session-id session-id
+                    :resume resume))))
+
+(defun %run-interactive-chat-ui (&key demo-mode-p session-id resume
+                                   (backend :auto) (fps 60))
+  (run-chat-ui :backend backend
+               :fps fps
+               :demo demo-mode-p
+               :initial-state (%resolve-interactive-chat-state
+                               :demo-mode-p demo-mode-p
+                               :session-id session-id
+                               :resume resume)))
+
 (defun main (&rest argv)
   (let ((effective-argv (or argv
                             #+sbcl (rest sb-ext:*posix-argv*)
@@ -582,23 +599,20 @@ die without triggering GC on every frame."
                                         :crash-log (crash-log-path)))
       (unwind-protect
            (handler-case
-               (prog1
-                   (%run-with-optional-event-journal
-                    (lambda ()
-                      (cond
-                        ((getf options :json-mode-p)
-                         (apply #'run-cli-json effective-argv))
-                        ((getf options :demo-mode-p)
-                         (run-chat-ui :backend :auto :fps 60
-                                      :demo t))
-                        (t
-                         (let ((conversation (%resolve-cli-conversation
-                                              :session-id (getf options :session-id)
-                                              :resume (getf options :resume))))
-                           (run-chat-ui :backend :auto :fps 60
-                                        :initial-state (make-chat-ui-state
-                                                        :conversation conversation)))))))
-                 (setf completedp t))
+               (let ((result
+                       (%run-with-optional-event-journal
+                        (lambda ()
+                          (cond
+                            ((getf options :json-mode-p)
+                             (apply #'run-cli-json effective-argv))
+                            ((getf options :demo-mode-p)
+                             (%run-interactive-chat-ui :demo-mode-p t))
+                            (t
+                             (%run-interactive-chat-ui
+                              :session-id (getf options :session-id)
+                              :resume (getf options :resume))))))))
+                 (setf completedp t)
+                 result)
              (error (condition)
                (log-runtime-condition condition
                                       :kind "runtime-unhandled-error"
