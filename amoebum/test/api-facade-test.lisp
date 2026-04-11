@@ -36,7 +36,8 @@
         (list :package :amoebum.commands
               :symbols amoebum.internal::+amoebum-command-facade-symbol-names+)
         (list :package :amoebum.workers
-              :symbols amoebum.internal::+amoebum-worker-facade-symbol-names+)
+              :symbols amoebum.internal::+amoebum-worker-facade-symbol-names+
+              :root-reexports amoebum.internal::+amoebum-worker-root-reexport-names+)
         (list :package :amoebum.config
               :symbols amoebum.internal::+amoebum-config-facade-symbol-names+)
         (list :package :amoebum.notifications
@@ -48,8 +49,88 @@
         (list :package :amoebum.extensions
               :symbols amoebum.internal::+amoebum-extension-facade-symbol-names+)
         (list :package :amoebum.observability
-              :symbols amoebum.internal::+amoebum-observability-facade-symbol-names+
-              :root-reexports :all)))
+              :symbols amoebum.internal::+amoebum-observability-facade-symbol-names+)
+        (list :package :amoebum.safety
+              :symbols amoebum.internal::+amoebum-safety-facade-symbol-names+)
+        (list :package :amoebum.tools
+              :symbols amoebum.internal::+amoebum-tools-facade-symbol-names+
+              :root-reexports '("*CULTIVAR-ADAPTER*"
+                                "*IDE-CONTEXT*"
+                                "*TOOL-HISTORY*"
+                                "*TOOL-METADATA*"
+                                "*TOOLSET*"
+                                "*YORE-ADAPTER*"
+                                "+EVENT-TYPE-IDE-CONTEXT-ATTACHED+"
+                                "+EVENT-TYPE-IDE-CONTEXT-DROPPED+"
+                                "+EVENT-TYPE-IDE-CONTEXT-TRUNCATED+"
+                                "AMOEBUM-CONTEXT"
+                                "CACHED-TOOL-RESULT"
+                                "CONTEXT-HOOK-REGISTRY"
+                                "CONTEXT-METRICS"
+                                "CONTEXT-PERMISSION-MODE"
+                                "CONTEXT-TOOL-METRICS"
+                                "CULTIVAR-ADAPTER-ENABLED-P"
+                                "CULTIVAR-ADAPTER-ENDPOINT"
+                                "CULTIVAR-ADAPTER-P"
+                                "CULTIVAR-CONTEXT-PRESSURE"
+                                "CULTIVAR-DAEMON-STATUS"
+                                "CULTIVAR-EXPAND"
+                                "CULTIVAR-LOCATION-SLICE"
+                                "CULTIVAR-PREVIEW"
+                                "CULTIVAR-RESOLVE"
+                                "CULTIVAR-SLICE"
+                                "DISPATCH-SLASH-COMMAND"
+                                "EXECUTE-TOOL"
+                                "EXECUTE-TOOL-WITH-RESTARTS"
+                                "HOOK-EXECUTION-ERROR"
+                                "IDE-CONTEXT-ACTIVE-FILE"
+                                "IDE-CONTEXT-ATTACHED-PAYLOAD-ACTIVE-FILE"
+                                "IDE-CONTEXT-ATTACHED-PAYLOAD-OPEN-FILE-COUNT"
+                                "IDE-CONTEXT-ATTACHED-PAYLOAD-P"
+                                "IDE-CONTEXT-BUILD-PACKET"
+                                "IDE-CONTEXT-DIAGNOSTICS"
+                                "CLEAR-IDE-CONTEXT!"
+                                "UPDATE-IDE-CONTEXT!"
+                                "IDE-CONTEXT-DROPPED-PAYLOAD-ACTIVE-FILE"
+                                "IDE-CONTEXT-DROPPED-PAYLOAD-P"
+                                "IDE-CONTEXT-OPEN-FILES"
+                                "IDE-CONTEXT-P"
+                                "IDE-CONTEXT-PROMPT-FRAGMENT"
+                                "IDE-CONTEXT-PROMPT-FRAGMENT/BUDGET"
+                                "IDE-CONTEXT-SELECTIONS"
+                                "IDE-CONTEXT-SUMMARY"
+                                "IDE-CONTEXT-TIMESTAMP"
+                                "IDE-CONTEXT-TOKEN-ESTIMATE"
+                                "IDE-CONTEXT-TRUNCATED-PAYLOAD-DIAGNOSTICS-DROPPED"
+                                "IDE-CONTEXT-TRUNCATED-PAYLOAD-P"
+                                "IDE-CONTEXT-TRUNCATED-PAYLOAD-TOKEN-BUDGET"
+                                "IDE-CONTEXT-TRUNCATED-PAYLOAD-TOKEN-ESTIMATE"
+                                "MAKE-AMOEBUM-CONTEXT"
+                                "MAKE-CULTIVAR-ADAPTER"
+                                "MAKE-IDE-CONTEXT"
+                                "MAKE-YORE-ADAPTER"
+                                "TOOL-ARGUMENT-ERROR"
+                                "TOOL-ERROR"
+                                "TOOL-ERROR-REASON"
+                                "TOOL-ERROR-REASON-CODE"
+                                "TOOL-EXECUTION-CONTEXT"
+                                "TOOL-EXECUTION-ERROR"
+                                "TOOL-METADATA-CATEGORY"
+                                "TOOL-METADATA-MCP-SERVER"
+                                "TOOL-METADATA-P"
+                                "TOOL-MISSING-ARGUMENT"
+                                "TOOL-NOT-FOUND"
+                                "TOOL-NOT-FOUND-ERROR"
+                                "TOOL-PERMISSION-DENIED"
+                                "TOOL-TIMEOUT"
+                                "TOOL-TIMEOUT-ERROR"
+                                "TOOL-TYPE-MISMATCH"
+                                "YORE-ADAPTER-ENABLED-P"
+                                "YORE-ADAPTER-ENDPOINT"
+                                "YORE-ADAPTER-P"
+                                "YORE-CONTEXT-PRESSURE"
+                                "YORE-FETCH-CONTEXT"
+                                "YORE-SEARCH-CONTEXT"))))
 
 (defun %assert-facade-package-exports-expected-surface (package-name symbol-names)
   (let* ((expected (%sorted-unique-symbol-names symbol-names))
@@ -66,17 +147,19 @@
           (is-false (%external-symbol-p :amoebum symbol-name))))))
 
 (test amoebum-root-surface-is-smaller-and-facades-own-moved-families
-  (is (< (%external-symbol-count :amoebum) 1700))
-  (is (> (%external-symbol-count :amoebum.ui) 60))
+  (is (< (%external-symbol-count :amoebum) 1250))
+  (is (> (%external-symbol-count :amoebum.ui) 140))
   (is (> (%external-symbol-count :amoebum.commands) 30))
-  (is (> (%external-symbol-count :amoebum.workers) 30))
+  (is (> (%external-symbol-count :amoebum.workers) 239))
   (is (find-package :amoebum.tools))
+  (is (> (%external-symbol-count :amoebum.tools) 50))
   (is (> (%external-symbol-count :amoebum.config) 20))
-  (is (> (%external-symbol-count :amoebum.notifications) 80))
+  (is (> (%external-symbol-count :amoebum.notifications) 130))
   (is (> (%external-symbol-count :amoebum.sessions) 60))
   (is (> (%external-symbol-count :amoebum.plan) 40))
   (is (> (%external-symbol-count :amoebum.extensions) 30))
-  (is (> (%external-symbol-count :amoebum.observability) 80)))
+  (is (> (%external-symbol-count :amoebum.observability) 80))
+  (is (> (%external-symbol-count :amoebum.safety) 30)))
 
 (test installed-facade-packages-export-their-full-declared-surfaces
   (dolist (spec (%facade-specs))

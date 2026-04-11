@@ -2495,5 +2495,8 @@
 (defpackage :amoebum.workers
   (:use :cl))
 
+(defpackage :amoebum.safety
+  (:use :cl))
+
 (defpackage :amoebum.internal
   (:use :cl))
