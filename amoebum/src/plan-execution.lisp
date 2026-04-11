@@ -73,6 +73,7 @@
                       rollback-attempted-p
                       rollback-succeeded-p
                       rollback-notes
+                      awaiting-approval-step-index
                       (interactive-p nil))))
   run-id
   (status :idle)
@@ -95,6 +96,7 @@
   (rollback-attempted-p nil :type boolean)
   (rollback-succeeded-p nil :type boolean)
   rollback-notes
+  awaiting-approval-step-index
   (interactive-p nil :type boolean))
 
 (defstruct (plan-execution-context
@@ -1354,15 +1356,18 @@ for events registered there, falls back to *plan-execution-transition-handlers*.
   "Returns T if interactive plan execution is paused for user approval."
   *plan-step-awaiting-approval-p*)
 
-(defun %wait-for-plan-step-approval ()
+(defun %wait-for-plan-step-approval (state step-index)
   "Block until the user approves the next step."
+  (check-type state plan-execution-state)
   (bt:with-lock-held (*plan-step-approval-lock*)
-    (setf *plan-step-awaiting-approval-p* t
+    (setf (plan-execution-state-awaiting-approval-step-index state) step-index
+          *plan-step-awaiting-approval-p* t
           *plan-step-approved-p* nil)
     (loop until *plan-step-approved-p*
           do (bt:condition-wait *plan-step-approval-condvar*
                                 *plan-step-approval-lock*))
-    (setf *plan-step-awaiting-approval-p* nil
+    (setf (plan-execution-state-awaiting-approval-step-index state) nil
+          *plan-step-awaiting-approval-p* nil
           *plan-step-approved-p* nil)))
 
 (defun %plan-execution-context-state (context)
@@ -1414,7 +1419,14 @@ for events registered there, falls back to *plan-execution-transition-handlers*.
          :phase :execution
          :style :meta
          :state state)
-        (%wait-for-plan-step-approval)))))
+        (%wait-for-plan-step-approval state next-idx)
+        (plan-execution-append-output
+         (format nil "LIVE> [step ~D] Approval received; resuming execution."
+                 next-idx)
+         :step-index next-idx
+         :phase :execution
+         :style :meta
+         :state state)))))
 
 (defun %record-plan-execution-result (context step result)
   (check-type context plan-execution-context)

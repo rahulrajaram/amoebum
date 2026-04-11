@@ -252,3 +252,21 @@
     (amoebum::%apply-plan-execution-transition!
      state (amoebum::%dispatch-plan-execution-transition state :reset))
     (is (eq :idle (amoebum::plan-execution-state-status state)))))
+
+(test plan-markdown-includes-review-and-gating-metadata
+  "Captured plan markdown carries review and gating details for chat-facing review flows."
+  (let* ((state (amoebum::%make-plan-mode-state
+                 :steps (list (amoebum::make-plan-step
+                               :index 1
+                               :description "Inspect plan rendering"
+                               :file-paths '("amoebum/src/plan-mode.lisp")))
+                 :approved-step-indexes '(1)
+                 :review-decision :approved
+                 :review-pending-p nil
+                 :execution-pathways-enabled-p nil
+                 :last-plan-markdown "placeholder"))
+         (markdown (amoebum::plan-markdown :state state :reason :review-smoke)))
+    (is (search "- review_decision: approved" markdown :test #'char-equal))
+    (is (search "- approved_steps: 1" markdown :test #'char-equal))
+    (is (search "- input_gating_reason: awaiting-explicit-execute" markdown :test #'char-equal))
+    (is (search "- execution_pathways_enabled: false" markdown :test #'char-equal))))

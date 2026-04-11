@@ -17,16 +17,80 @@
       (declare (ignore _))
       (incf count))))
 
+(defun %sorted-unique-symbol-names (symbol-names)
+  (sort (remove-duplicates (copy-list symbol-names) :test #'string=) #'string<))
+
+(defun %external-symbol-names (package-name)
+  (let ((names '()))
+    (do-external-symbols (symbol (find-package package-name) (%sorted-unique-symbol-names names))
+      (push (symbol-name symbol) names))))
+
+(defun %facade-specs ()
+  (list (list :package :amoebum.ui
+              :symbols amoebum.internal::+amoebum-ui-facade-symbol-names+
+              :root-reexports '("MAKE-APPROVAL-DIALOG-STATE"
+                                "PROVIDER-HEALTH-ENTRIES"
+                                "CHAT-UI-BUILD-TREE"
+                                "RUN-CHAT-UI"
+                                "ENSURE-WORKER-DASHBOARD-STATE"))
+        (list :package :amoebum.commands
+              :symbols amoebum.internal::+amoebum-command-facade-symbol-names+)
+        (list :package :amoebum.workers
+              :symbols amoebum.internal::+amoebum-worker-facade-symbol-names+)
+        (list :package :amoebum.config
+              :symbols amoebum.internal::+amoebum-config-facade-symbol-names+)
+        (list :package :amoebum.notifications
+              :symbols amoebum.internal::+amoebum-notification-facade-symbol-names+)
+        (list :package :amoebum.sessions
+              :symbols amoebum.internal::+amoebum-session-facade-symbol-names+)
+        (list :package :amoebum.plan
+              :symbols amoebum.internal::+amoebum-plan-facade-symbol-names+)
+        (list :package :amoebum.extensions
+              :symbols amoebum.internal::+amoebum-extension-facade-symbol-names+)
+        (list :package :amoebum.observability
+              :symbols amoebum.internal::+amoebum-observability-facade-symbol-names+
+              :root-reexports :all)))
+
+(defun %assert-facade-package-exports-expected-surface (package-name symbol-names)
+  (let* ((expected (%sorted-unique-symbol-names symbol-names))
+         (actual (%external-symbol-names package-name)))
+    (is (equal expected actual))))
+
+(defun %assert-root-surface-contract (symbol-names root-reexports)
+  (let ((allowed (if (eq root-reexports :all)
+                     (%sorted-unique-symbol-names symbol-names)
+                     (%sorted-unique-symbol-names root-reexports))))
+    (dolist (symbol-name (%sorted-unique-symbol-names symbol-names))
+      (if (member symbol-name allowed :test #'string=)
+          (is-true (%external-symbol-p :amoebum symbol-name))
+          (is-false (%external-symbol-p :amoebum symbol-name))))))
+
 (test amoebum-root-surface-is-smaller-and-facades-own-moved-families
   (is (< (%external-symbol-count :amoebum) 1700))
-  (is (> (%external-symbol-count :amoebum.ui) 40))
+  (is (> (%external-symbol-count :amoebum.ui) 60))
   (is (> (%external-symbol-count :amoebum.commands) 30))
   (is (> (%external-symbol-count :amoebum.workers) 30))
+  (is (find-package :amoebum.tools))
   (is (> (%external-symbol-count :amoebum.config) 20))
   (is (> (%external-symbol-count :amoebum.notifications) 80))
   (is (> (%external-symbol-count :amoebum.sessions) 60))
   (is (> (%external-symbol-count :amoebum.plan) 40))
   (is (> (%external-symbol-count :amoebum.extensions) 30))
+  (is (> (%external-symbol-count :amoebum.observability) 80)))
+
+(test installed-facade-packages-export-their-full-declared-surfaces
+  (dolist (spec (%facade-specs))
+    (%assert-facade-package-exports-expected-surface
+     (getf spec :package)
+     (getf spec :symbols))))
+
+(test root-package-only-keeps-intended-facade-compatibility-reexports
+  (dolist (spec (%facade-specs))
+    (%assert-root-surface-contract
+     (getf spec :symbols)
+     (getf spec :root-reexports '()))))
+
+(test legacy-tools-compatibility-surface-remains-available
 
   (dolist (symbol-name '("MAKE-CHAT-UI-STATE"
                          "STATUS-BAR-LINE"
@@ -34,45 +98,6 @@
     (is-false (%external-symbol-p :amoebum symbol-name))
     (is-true (%external-symbol-p :amoebum.ui symbol-name)))
 
-  (dolist (symbol-name '("MAKE-SLASH-COMMAND"
-                         "MAKE-SLASH-COMMAND-PARAMETER"
-                         "SLASH-COMMAND-RESULT-OUTPUT"))
-    (is-false (%external-symbol-p :amoebum symbol-name))
-    (is-true (%external-symbol-p :amoebum.commands symbol-name)))
-
-  (dolist (symbol-name '("WORKER-RECORD-ID"
-                         "WORKER-LIST"
-                         "WORKER-STATUS-BAR-SEGMENT"))
-    (is-false (%external-symbol-p :amoebum symbol-name))
-    (is-true (%external-symbol-p :amoebum.workers symbol-name)))
-
-  (dolist (symbol-name '("CURRENT-CONFIG"
-                         "SETCONFIG"
-                         "RESOLVE-PROVIDER"))
-    (is-false (%external-symbol-p :amoebum symbol-name))
-    (is-true (%external-symbol-p :amoebum.config symbol-name)))
-
-  (dolist (symbol-name '("MAKE-NOTIFICATION"
-                         "SEND-DESKTOP-NOTIFICATION"
-                         "SOUND-BACKEND-KIND"))
-    (is-false (%external-symbol-p :amoebum symbol-name))
-    (is-true (%external-symbol-p :amoebum.notifications symbol-name)))
-
-  (dolist (symbol-name '("CONVERSATION-SAVE"
-                         "CHECKPOINT-SESSION"
-                         "START-SESSION"
-                         "EXPORT-CONVERSATION"))
-    (is-false (%external-symbol-p :amoebum symbol-name))
-    (is-true (%external-symbol-p :amoebum.sessions symbol-name)))
-
-  (dolist (symbol-name '("ENTER-PLAN-MODE"
-                         "CURRENT-PLAN-MODE-STATE"
-                         "EXECUTE-APPROVED-PLAN-STEPS"))
-    (is-false (%external-symbol-p :amoebum symbol-name))
-    (is-true (%external-symbol-p :amoebum.plan symbol-name)))
-
-  (dolist (symbol-name '("LOAD-USER-EXTENSIONS"
-                         "LIST-EXTENSION-REGISTRY"
-                         "EXTENSION-LOAD-RECORD-STATUS"))
-    (is-false (%external-symbol-p :amoebum symbol-name))
-    (is-true (%external-symbol-p :amoebum.extensions symbol-name))))
+  (dolist (symbol-name '("DEFTOOL" "DEFSKILL"))
+    (is-true (%external-symbol-p :amoebum symbol-name))
+    (is-false (%external-symbol-p :amoebum.tools symbol-name))))

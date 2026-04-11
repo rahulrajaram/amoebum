@@ -634,6 +634,9 @@ Unknown values are coerced to the default (:operator)."
   state)
 
 (defun make-status-bar-widget (state &key id key width)
+  "Build the text element for a status-bar-state.
+Panel surfaces should delegate here instead of reconstructing line and
+styled-segment ownership themselves."
   (ptui.ui.elements:make-element
    :text
    :id id

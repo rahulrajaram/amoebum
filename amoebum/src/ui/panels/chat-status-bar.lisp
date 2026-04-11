@@ -2,6 +2,17 @@
 ;;; Extracts status bar, plan presentation, and provider health panel.
 (in-package :amoebum)
 
+(defun build-chat-status-bar-widget (chat-state inner-width &key exit-warning-active-p)
+  "Build the bottom status region for chat-panel."
+  (if exit-warning-active-p
+      (%chat-text-widget (%chat-exit-warning-text)
+                         :chat-status-warning
+                         :warning)
+      (make-status-bar-widget
+       (chat-ui-state-status-bar-state chat-state)
+       :id :chat-status-bar
+       :width inner-width)))
+
 (ptui.ui.panel:defpanel chat-status-bar-panel (chat-state inner-width)
   (:data
     (plan-state (current-plan-mode-state) :deps (chat-state)))
@@ -16,7 +27,4 @@
       (plan :fixed 6 :when (not (null (%chat-plan-presentation-widget plan-state chat-state)))
         (%chat-plan-presentation-widget plan-state chat-state))
       (status :fixed 1
-        (make-status-bar-widget
-         (chat-ui-state-status-bar-state chat-state)
-         :id :chat-status-bar
-         :width inner-width)))))
+        (build-chat-status-bar-widget chat-state inner-width)))))

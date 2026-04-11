@@ -260,6 +260,24 @@
 (defun plan-input-gating-execution-pathways-enabled-p (&optional (state (current-plan-mode-state)))
   (not (null (getf (plan-input-gating-snapshot state) :execution-pathways-enabled-p))))
 
+(defun plan-review-snapshot (&optional (state (current-plan-mode-state)))
+  (check-type state plan-mode-state)
+  (let* ((approved-step-indexes
+           (copy-list (or (plan-mode-state-approved-step-indexes state) '())))
+         (input-gating-snapshot (plan-input-gating-snapshot state)))
+    (list :review-decision (%normalize-plan-review-decision
+                            (plan-mode-state-review-decision state))
+          :review-pending-p (not (null (plan-mode-state-review-pending-p state)))
+          :review-notes (plan-mode-state-review-notes state)
+          :approved-step-indexes approved-step-indexes
+          :approved-step-count (length approved-step-indexes)
+          :input-gating-snapshot input-gating-snapshot
+          :input-gating-reason (getf input-gating-snapshot :reason)
+          :terminal-stdin-enabled-p
+          (not (null (getf input-gating-snapshot :terminal-stdin-enabled-p)))
+          :execution-pathways-enabled-p
+          (not (null (getf input-gating-snapshot :execution-pathways-enabled-p))))))
+
 (defun %normalize-path-list (values)
   (loop for value in values
         for text = (typecase value
@@ -727,8 +745,10 @@
 
 (defun %plan-markdown (state reason)
   (with-output-to-string (stream)
-    (let ((steps (plan-mode-state-steps state))
-          (approved-step-indexes (plan-mode-state-approved-step-indexes state)))
+    (let* ((steps (plan-mode-state-steps state))
+           (review-snapshot (plan-review-snapshot state))
+           (approved-step-indexes (getf review-snapshot :approved-step-indexes))
+           (input-gating-reason (getf review-snapshot :input-gating-reason)))
       (format stream "# Amoebum Plan~%~%")
       (format stream "- generated_at: ~A~%" (%timestamp-iso8601))
       (format stream "- exit_reason: ~A~%"
@@ -738,6 +758,18 @@
       (format stream "- step_count: ~D~%~%" (length steps))
       (format stream "- approved_step_count: ~D~%~%"
               (length approved-step-indexes))
+      (format stream "- review_decision: ~(~A~)~%"
+              (getf review-snapshot :review-decision))
+      (format stream "- review_pending: ~:[false~;true~]~%"
+              (getf review-snapshot :review-pending-p))
+      (format stream "- approved_steps: ~:[none~;~:*~{~D~^, ~}~]~%"
+              approved-step-indexes)
+      (format stream "- input_gating_reason: ~(~A~)~%"
+              (or input-gating-reason :open))
+      (format stream "- terminal_stdin_enabled: ~:[false~;true~]~%"
+              (getf review-snapshot :terminal-stdin-enabled-p))
+      (format stream "- execution_pathways_enabled: ~:[false~;true~]~%~%"
+              (getf review-snapshot :execution-pathways-enabled-p))
       (format stream "## Steps~%~%")
       (if steps
           (dolist (step steps)

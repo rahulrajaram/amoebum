@@ -171,6 +171,19 @@
               (string-downcase (or (funcall message-role-fn message) "")))
             (bool-true-p (value)
                (not (null value)))
+            (make-temp-root (prefix)
+              (let* ((project-root (or (funcall config-value-fn
+                                                :project-root
+                                                (funcall current-config-fn))
+                                       repo-root))
+                     (tmp-base (funcall ensure-directory-pathname-fn
+                                        (merge-pathnames #P"tmp/plan-mode-smokes/"
+                                                         (funcall ensure-directory-pathname-fn
+                                                                  project-root)))))
+                (funcall ensure-directory-pathname-fn
+                         (merge-pathnames
+                          (make-pathname :directory `(:relative ,prefix))
+                          tmp-base))))
             (segment-text (segment)
               (let ((compact-segment-p-fn (funcall fn-in "COMPACT-SEGMENT-P" amoebum-pkg)))
                 (if (funcall compact-segment-p-fn segment)
@@ -358,14 +371,8 @@
                      "Expected second step dependencies to infer '(1), got ~S."
                      (funcall plan-step-depends-on-fn second-step)))
 
-      (let* ((tmp-root
-               (funcall ensure-directory-pathname-fn
-                        (merge-pathnames
-                         (make-pathname :directory
-                                        `(:relative ".tmp-plan-mode-smokes"
-                                                    ,(format nil "amoebum-i40-~A"
-                                                             (get-universal-time))))
-                         amoebum-dir)))
+      (let* ((tmp-root (make-temp-root (format nil "amoebum-i40-~A"
+                                               (get-universal-time))))
              (read-target (merge-pathnames #P"plan-mode-read.txt" tmp-root))
              (write-target (merge-pathnames #P"plan-mode-write.txt" tmp-root))
              (event-bus (funcall make-event-bus-fn :capacity 64))
@@ -898,14 +905,8 @@
                            (funcall plan-mode-mutating-tools-blocked-p-fn
                                     (funcall current-config-fn))))
                      "Expected /execute transition to re-enable mutating execution pathways.")
-        (let* ((tmp-root
-                 (funcall ensure-directory-pathname-fn
-                          (merge-pathnames
-                           (make-pathname :directory
-                                          `(:relative ".tmp-plan-mode-smokes"
-                                                      ,(format nil "amoebum-i186-~A"
-                                                               (get-universal-time))))
-                           amoebum-dir)))
+        (let* ((tmp-root (make-temp-root (format nil "amoebum-i186-~A"
+                                                 (get-universal-time))))
                (execute-write-target (merge-pathnames #P"execute-write.txt" tmp-root))
                (context (funcall make-context-fn
                                  :toolset (symbol-value toolset-sym)
@@ -1113,14 +1114,8 @@
                              step-index)))))
         (funcall set-step-approvals-fn '(1 2) :state plan-state)
         (funcall reset-plan-execution-state-fn)
-        (let* ((rollback-root
-                 (funcall ensure-directory-pathname-fn
-                          (merge-pathnames
-                           (make-pathname :directory
-                                          `(:relative ".tmp-plan-mode-smokes"
-                                                      ,(format nil "amoebum-i172-~A"
-                                                               (get-universal-time))))
-                           amoebum-dir)))
+        (let* ((rollback-root (make-temp-root (format nil "amoebum-i172-~A"
+                                                      (get-universal-time))))
                (rollback-file (merge-pathnames #P"tracked.txt" rollback-root))
                (execution-state (funcall initialize-plan-execution-fn :plan-state plan-state))
                (executed-order '()))

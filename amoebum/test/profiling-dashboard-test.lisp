@@ -7,17 +7,17 @@
 
 (defun %report-top-entry-names (report)
   (mapcar (lambda (entry) (getf entry :name))
-          (amoebum:profiling-report-top-functions report)))
+          (amoebum.observability:profiling-report-top-functions report)))
 
 (test profiling-report-model-and-table-render
-  (let* ((report (amoebum:make-profiling-report
+  (let* ((report (amoebum.observability:make-profiling-report
                   :top-functions
                   (list (list :name "foo/a" :samples 10 :percentage 62.5d0)
                         (list :name "bar/b" :samples 6 :percentage 37.5d0))
                   :call-graph (list (list :caller "root" :callee "foo/a" :samples 4))
                   :total-samples 16
                   :elapsed-ms 150))
-         (table (amoebum:render-profiling-report-table :report report
+         (table (amoebum.observability:render-profiling-report-table :report report
                                                        :sort-by :samples
                                                        :sort-direction :desc)))
     (is (stringp table))
@@ -26,14 +26,14 @@
     (is (search "foo/a" table :test #'char-equal))))
 
 (test profile-slash-command-start-stop-report
-  (let ((original-last amoebum:*last-profiling-report*))
+  (let ((original-last amoebum.observability:*last-profiling-report*))
     (unwind-protect
         (progn
           (multiple-value-bind (handledp start-result)
               (amoebum:dispatch-slash-command "/profile start")
             (is-true handledp)
             (is-true (typep start-result 'amoebum.commands:slash-command-result))
-            (is-true amoebum:*profiling-enabled-p*))
+            (is-true amoebum.observability:*profiling-enabled-p*))
           (dotimes (_ 50000)
             (declare (ignore _))
             (sqrt 9.0))
@@ -41,8 +41,8 @@
               (amoebum:dispatch-slash-command "/profile stop")
             (is-true handledp)
             (is-true (typep stop-result 'amoebum.commands:slash-command-result))
-            (is-false amoebum:*profiling-enabled-p*)
-            (is (typep amoebum:*last-profiling-report* 'amoebum:profiling-report)))
+            (is-false amoebum.observability:*profiling-enabled-p*)
+            (is (typep amoebum.observability:*last-profiling-report* 'amoebum.observability:profiling-report)))
           (multiple-value-bind (handledp report-result)
               (amoebum:dispatch-slash-command "/profile report")
             (is-true handledp)
@@ -50,9 +50,9 @@
             (let ((output (amoebum.commands:slash-command-result-output report-result)))
               (is (stringp output))
               (is (plusp (length output))))))
-      (setf amoebum:*last-profiling-report* original-last)
+      (setf amoebum.observability:*last-profiling-report* original-last)
       (ignore-errors
-        (amoebum:stop-profiling)))))
+        (amoebum.observability:stop-profiling)))))
 
 (test per-tool-profiling-captures-pipeline-execution
   (let ((original-toolset amoebum:*toolset*)
@@ -76,7 +76,7 @@
                    (declare (ignore _))
                    (+ 1 1))
                  "ok"))
-          (amoebum:start-profiling :tool-profiling t)
+          (amoebum.observability:start-profiling :tool-profiling t)
           (let* ((context (amoebum:make-amoebum-context
                            :toolset amoebum:*toolset*
                            :permission-mode :full-auto
@@ -88,27 +88,27 @@
                         :name "i236-profile-tool"
                         :arguments "{}")))
             (is (string= "ok" (amoebum:execute-tool call context)))
-            (let* ((report (amoebum:stop-profiling))
+            (let* ((report (amoebum.observability:stop-profiling))
                    (names (%report-top-entry-names report))
-                   (call-graph (amoebum:profiling-report-call-graph report)))
-              (is (typep report 'amoebum:profiling-report))
+                   (call-graph (amoebum.observability:profiling-report-call-graph report)))
+              (is (typep report 'amoebum.observability:profiling-report))
               (is-true (find "i236-profile-tool" names :test #'string=))
               (is-true (find "i236-profile-tool"
                              call-graph
                              :test #'string=
                              :key (lambda (edge) (getf edge :callee)))))))
       (ignore-errors
-        (amoebum:stop-profiling))
+        (amoebum.observability:stop-profiling))
       (setf amoebum:*toolset* original-toolset
             amoebum:*hook-registry* original-hooks
             amoebum:*event-bus* original-event-bus))))
 
 (test profiling-dashboard-widget-renders
-  (let* ((report (amoebum:make-profiling-report
+  (let* ((report (amoebum.observability:make-profiling-report
                   :top-functions (list (list :name "widget/fn" :samples 2 :percentage 100.0d0))
                   :total-samples 2
                   :elapsed-ms 10))
-         (widget (amoebum:profiling-report-table-widget
+         (widget (amoebum.observability:profiling-report-table-widget
                   (list :report report :sort-by :samples :sort-direction :desc))))
     (is-true (typep widget 'ptui.ui.elements:ui-element))))
 
