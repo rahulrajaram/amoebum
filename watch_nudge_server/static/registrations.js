@@ -1,6 +1,6 @@
 (() => {
   const apiBase = (document.body.dataset.apiBase || "").replace(/\/+$/, "");
-  const registrationsUrl = `${apiBase}/registrations`;
+  const registrationsUrl = `${apiBase}/api/watches`;
   const statusEl = document.getElementById("status");
   const form = document.getElementById("registration-form");
   const rowsEl = document.getElementById("registration-rows");
@@ -23,6 +23,9 @@
   function normalizeRows(payload) {
     if (Array.isArray(payload)) {
       return payload;
+    }
+    if (payload && payload.data && Array.isArray(payload.data.items)) {
+      return payload.data.items;
     }
     if (payload && Array.isArray(payload.registrations)) {
       return payload.registrations;

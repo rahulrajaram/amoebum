@@ -33,6 +33,8 @@
 (defparameter +event-type-ide-context-attached+ (%event-type-keyword "ide-context:attached"))
 (defparameter +event-type-ide-context-truncated+ (%event-type-keyword "ide-context:truncated"))
 (defparameter +event-type-ide-context-dropped+ (%event-type-keyword "ide-context:dropped"))
+(defparameter +event-type-watch-triggered+ (%event-type-keyword "watch:triggered"))
+(defparameter +event-type-nudge-triggered+ (%event-type-keyword "nudge:triggered"))
 
 (defparameter +core-event-types+
   (list +event-type-tool-invoked+
@@ -61,7 +63,9 @@
         +event-type-plan-step-status+
         +event-type-ide-context-attached+
         +event-type-ide-context-truncated+
-        +event-type-ide-context-dropped+))
+        +event-type-ide-context-dropped+
+        +event-type-watch-triggered+
+        +event-type-nudge-triggered+))
 
 (defparameter *event-bus* nil)
 

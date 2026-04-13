@@ -722,6 +722,19 @@
     (let ((form-str (format nil "~S" form)))
       (is (search ":GUTTERS" form-str)))))
 
+(test region-min-max-height-parsed
+  "(history :flex 1 :min-height 5 :max-height 20 ...) emits :MIN and :MAX in constraint."
+  (let ((form (ptui.ui.panel::%compile-layout-tree
+               '((:column
+                   (history :flex 1 :min-height 5 :max-height 20
+                     (ptui.widgets.core:make-text-widget "Messages"))
+                   (status :fixed 1
+                     (ptui.widgets.core:make-text-widget "OK")))))))
+    (is (not (null form)))
+    (let ((form-str (format nil "~S" form)))
+      (is (search ":MIN" form-str))
+      (is (search ":MAX" form-str)))))
+
 (test container-padding-absent
   "No :padding keyword -> no :padding prop (backward compat)."
   (let ((form (ptui.ui.panel::%compile-layout-tree

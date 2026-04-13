@@ -439,6 +439,8 @@
       ((eq event-type +event-type-tool-error+) :error)
       ((eq event-type +event-type-agent-completed+) :long-running-complete)
       ((eq event-type +event-type-permission-prompted+) :approval-needed)
+      ((eq event-type +event-type-watch-triggered+) :watch-triggered)
+      ((eq event-type +event-type-nudge-triggered+) :nudge-triggered)
       (t nil))))
 
 (defun %notification-from-event (event trigger)
@@ -479,7 +481,21 @@
                       (format nil "Permission prompt for tool ~A (~A)."
                               (or (permission-prompted-payload-tool-name payload) "unknown")
                               (or (permission-prompted-payload-reason payload) "approval required"))
-                      "Approval requested."))))
+                      "Approval requested.")))
+      (:watch-triggered
+       (setf title "Watch Triggered"
+             severity :info
+             urgency :normal
+             body (if (and (listp payload) (getf payload :path))
+                      (format nil "Watched path changed: ~A" (getf payload :path))
+                      "A watched path changed.")))
+      (:nudge-triggered
+       (setf title "Nudge Reminder"
+             severity :info
+             urgency :normal
+             body (if (and (listp payload) (getf payload :id))
+                      (format nil "Nudge reminder for: ~A" (getf payload :id))
+                      "Nudge reminder."))))
     (make-notification
      :title title
      :body body
@@ -557,6 +573,14 @@
                          (%notification-event-handler manager event))
                        :priority 40)
             (subscribe bus +event-type-permission-prompted+
+                       (lambda (event)
+                         (%notification-event-handler manager event))
+                       :priority 40)
+            (subscribe bus +event-type-watch-triggered+
+                       (lambda (event)
+                         (%notification-event-handler manager event))
+                       :priority 40)
+            (subscribe bus +event-type-nudge-triggered+
                        (lambda (event)
                          (%notification-event-handler manager event))
                        :priority 40))))

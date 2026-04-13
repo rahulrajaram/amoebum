@@ -410,60 +410,75 @@ Returns (values options-plist region-list)."
     (values (nreverse options) remaining)))
 
 (defun %parse-region-form (region-form)
-  "Parse a region form into (values name sizing-type sizing-value when-clause gutter body).
-Handles optional :when and :gutter clauses: (name :fixed N :when pred :gutter N body...)."
+  "Parse a region form into (values name sizing-type sizing-value when-clause gutter min-height max-height body).
+Handles optional :when, :gutter, :min-height, and :max-height clauses."
   (let ((name (first region-form))
         (sizing-type (second region-form))
         (sizing-value (third region-form))
         (rest (cdddr region-form))
         (when-clause nil)
-        (gutter nil))
-    ;; Check for :when keyword after sizing-value
-    (when (and rest (eq (first rest) :when))
-      (setf when-clause (second rest))
-      (setf rest (cddr rest)))
-    ;; Check for :gutter keyword
-    (when (and rest (eq (first rest) :gutter))
-      (setf gutter (second rest))
-      (setf rest (cddr rest)))
-    (values name sizing-type sizing-value when-clause gutter rest)))
+        (gutter nil)
+        (min-height nil)
+        (max-height nil))
+    ;; Scan trailing keyword options in any order
+    (loop while (and rest (keywordp (first rest)))
+          do (cond
+               ((eq (first rest) :when)
+                (setf when-clause (second rest))
+                (setf rest (cddr rest)))
+               ((eq (first rest) :gutter)
+                (setf gutter (second rest))
+                (setf rest (cddr rest)))
+               ((eq (first rest) :min-height)
+                (setf min-height (second rest))
+                (setf rest (cddr rest)))
+               ((eq (first rest) :max-height)
+                (setf max-height (second rest))
+                (setf rest (cddr rest)))
+               (t
+                ;; Unknown keyword — stop scanning, treat as body
+                (return))))
+    (values name sizing-type sizing-value when-clause gutter min-height max-height rest)))
 
 (defun %compile-region-constraint (region-form)
   "Extract constraint spec from a :region form.
 (name :fixed N body...) -> (ptui.layout.constraints:fixed 'name N)
 (name :flex N body...) -> (ptui.layout.constraints:flex 'name :weight N)
-(name :percentage N body...) -> (ptui.layout.constraints:percentage 'name N)"
-  (multiple-value-bind (name sizing-type sizing-value when-clause gutter body)
+(name :percentage N body...) -> (ptui.layout.constraints:percentage 'name N)
+:min-height and :max-height are threaded into :flex as :min/:max."
+  (multiple-value-bind (name sizing-type sizing-value when-clause gutter min-height max-height body)
       (%parse-region-form region-form)
     (declare (ignore when-clause gutter body))
     (case sizing-type
       (:fixed `(ptui.layout.constraints:fixed ',name ,sizing-value))
-      (:flex `(ptui.layout.constraints:flex ',name :weight ,(or sizing-value 1)))
+      (:flex `(ptui.layout.constraints:flex ',name :weight ,(or sizing-value 1)
+                                            ,@(when min-height `(:min ,min-height))
+                                            ,@(when max-height `(:max ,max-height))))
       (:percentage `(ptui.layout.constraints:percentage ',name ,sizing-value))
       (t (error "defpanel :region sizing must be :fixed, :flex, or :percentage. Got: ~S"
                 sizing-type)))))
 
 (defun %region-when-clause (region-form)
   "Extract the :when clause from a region form, or NIL if absent."
-  (multiple-value-bind (name sizing-type sizing-value when-clause gutter body)
+  (multiple-value-bind (name sizing-type sizing-value when-clause gutter min-height max-height body)
       (%parse-region-form region-form)
-    (declare (ignore name sizing-type sizing-value gutter body))
+    (declare (ignore name sizing-type sizing-value gutter min-height max-height body))
     when-clause))
 
 (defun %region-gutter (region-form)
   "Extract the :gutter value from a region form, or NIL if absent."
-  (multiple-value-bind (name sizing-type sizing-value when-clause gutter body)
+  (multiple-value-bind (name sizing-type sizing-value when-clause gutter min-height max-height body)
       (%parse-region-form region-form)
-    (declare (ignore name sizing-type sizing-value when-clause body))
+    (declare (ignore name sizing-type sizing-value when-clause min-height max-height body))
     gutter))
 
 (defun %compile-region-body (region-form)
   "Extract the body expression from a :region form.
 (name :fixed N body-expr) -> body-expr
 (name :fixed N :when pred body-expr) -> body-expr"
-  (multiple-value-bind (name sizing-type sizing-value when-clause gutter body)
+  (multiple-value-bind (name sizing-type sizing-value when-clause gutter min-height max-height body)
       (%parse-region-form region-form)
-    (declare (ignore name sizing-type sizing-value when-clause gutter))
+    (declare (ignore name sizing-type sizing-value when-clause gutter min-height max-height))
     (if (= (length body) 1)
         (first body)
         `(progn ,@body))))
