@@ -2245,6 +2245,8 @@
            #:+event-type-ide-context-attached+
            #:+event-type-ide-context-truncated+
            #:+event-type-ide-context-dropped+
+           #:+event-type-watch-triggered+
+           #:+event-type-nudge-triggered+
            #:ide-context-attached-payload
            #:ide-context-attached-payload-p
            #:make-ide-context-attached-payload

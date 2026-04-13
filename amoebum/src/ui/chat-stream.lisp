@@ -582,14 +582,14 @@ Falls back to the global *toolset* when stream-tools is nil."
         (assistant-response (getf context :assistant-response))
         (tool-call-entries (getf context :tool-call-entries))
         (malformed-names (getf context :malformed-names)))
-    (case (%stream-terminal-outcome-kind context)
+    (amoebum.fp:match (%stream-terminal-outcome-kind context)
       (:retry
        (%start-tool-retry! chat-state tool-call-entries malformed-names))
       (:tool-continuation
        (%start-tool-continuation! chat-state tool-call-entries))
       (:max-iterations
        (%finish-stream-turn-with-max-iterations! chat-state conversation tool-call-entries))
-      (otherwise
+      (:answer
        (%finish-stream-turn-with-answer! chat-state conversation assistant-response)))))
 
 (defun %resolve-stream-terminal-outcome (chat-state conversation assistant-response
@@ -1266,27 +1266,27 @@ Sanitizes ANSI escape codes from tool results to prevent LLM API errors."
          (elapsed-ms (or (getf summary :elapsed-ms) 0))
          (tps (or (getf summary :tokens-per-second) 0.0d0))
          (error-message (getf summary :error-message)))
-    (case status
-      (:running
-       (format nil "stream ~D tok @ ~,2f tok/s ~,1fs"
-               tokens
-               tps
-               (/ elapsed-ms 1000.0d0)))
-      (:cancelled
-       (if (getf summary :aborted-p)
-           (format nil "stream aborted (~D tok, ~A)"
+    (if (null status)
+        nil
+        (amoebum.fp:match status
+          (:running
+           (format nil "stream ~D tok @ ~,2f tok/s ~,1fs"
                    tokens
-                   (or (getf summary :abort-reason) :unknown))
-           (format nil "stream cancelled (~D tok, ~,1fs)"
+                   tps
+                   (/ elapsed-ms 1000.0d0)))
+          (:cancelled
+           (if (getf summary :aborted-p)
+               (format nil "stream aborted (~D tok, ~A)"
+                       tokens
+                       (or (getf summary :abort-reason) :unknown))
+               (format nil "stream cancelled (~D tok, ~,1fs)"
+                       tokens
+                       (/ elapsed-ms 1000.0d0))))
+          (:completed
+           (format nil "stream complete (~D tok, ~,1fs)"
                    tokens
-                   (/ elapsed-ms 1000.0d0))))
-      (:completed
-       (format nil "stream complete (~D tok, ~,1fs)"
-               tokens
-               (/ elapsed-ms 1000.0d0)))
-      (:failed
-       (if (and (stringp error-message) (plusp (length error-message)))
-           (format nil "stream failed: ~A" error-message)
-           "stream failed"))
-      (otherwise
-       nil))))
+                   (/ elapsed-ms 1000.0d0)))
+          (:failed
+           (if (and (stringp error-message) (plusp (length error-message)))
+               (format nil "stream failed: ~A" error-message)
+               "stream failed"))))))

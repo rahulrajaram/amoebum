@@ -172,14 +172,10 @@
             (bool-true-p (value)
                (not (null value)))
             (make-temp-root (prefix)
-              (let* ((project-root (or (funcall config-value-fn
-                                                :project-root
-                                                (funcall current-config-fn))
-                                       repo-root))
-                     (tmp-base (funcall ensure-directory-pathname-fn
+              (let* ((tmp-base (funcall ensure-directory-pathname-fn
                                         (merge-pathnames #P"tmp/plan-mode-smokes/"
                                                          (funcall ensure-directory-pathname-fn
-                                                                  project-root)))))
+                                                                  amoebum-dir)))))
                 (funcall ensure-directory-pathname-fn
                          (merge-pathnames
                           (make-pathname :directory `(:relative ,prefix))

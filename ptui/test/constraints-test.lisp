@@ -124,6 +124,18 @@
     ;; 'a should be clamped between 10 and 30
     (is (<= 10 (cdr (assoc 'a result)) 30))))
 
+(test solve-min-max-clamping-from-dsl-path
+  "flex constraint built via DSL (:min-height/:max-height) clamps correctly in solver."
+  ;; This exercises the full DSL path: panel.lisp emits (flex 'a :min 5 :max 20),
+  ;; which the constraint builder promotes to :min-max kind, and the solver clamps.
+  (let* ((specs (list (ptui.layout.constraints:flex 'a :weight 1 :min 5 :max 20)
+                      (ptui.layout.constraints:flex 'b :weight 1)))
+         ;; With 100 available, unclamped share for 'a would be 50; clamp to 20.
+         (result (ptui.layout.solver:solve-constraints specs 100)))
+    (is (<= 5 (cdr (assoc 'a result)) 20))
+    ;; 'b absorbs the rest: 100 - (cdr (assoc 'a result))
+    (is (= (+ (cdr (assoc 'a result)) (cdr (assoc 'b result))) 100))))
+
 (test solve-preserves-input-order
   (let* ((specs (list (ptui.layout.constraints:flex 'z)
                       (ptui.layout.constraints:fixed 'a 5)
