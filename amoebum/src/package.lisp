@@ -792,6 +792,7 @@
            #:agent-record-stdout
            #:agent-record-stderr
            #:agent-record-error-message
+           #:agent-record-worktree
            ;; Agent personas
            #:persona-definition
            #:persona-definition-p
@@ -820,6 +821,7 @@
            #:runtime-agent-result
            #:runtime-agent-error-message
            #:runtime-agent-output
+           #:runtime-agent-worktree
            #:runtime-agent-terminal-p
            #:spawn-agent
            #:cancel-agent
@@ -1935,6 +1937,7 @@
            ;; NXT-018: stalled-run detection
            #:swarm-agent-heartbeat-at
            #:swarm-agent-last-output-at
+           #:swarm-agent-worktree
            #:*swarm-registry*
            #:*swarm-counter*
            #:spawn-swarm-agent
@@ -1948,6 +1951,29 @@
            #:update-swarm-agent-heartbeat
            #:update-swarm-agent-last-output
            #:detect-stalled-agents
+           ;; NXT-336: local SW4RM worktree runtime wrapper
+           #:worktree-metadata
+           #:worktree-metadata-p
+           #:make-worktree-metadata
+           #:worktree-metadata-id
+           #:worktree-metadata-branch
+           #:worktree-metadata-path
+           #:coerce-worktree-metadata
+           #:worktree-runtime
+           #:worktree-runtime-p
+           #:worktree-runtime-repo-root
+           #:worktree-runtime-scratch-root
+           #:worktree-runtime-lock-root
+           #:worktree-runtime-coordinator
+           #:make-worktree-runtime
+           #:current-worktree-runtime
+           #:default-worktree-repo-root
+           #:default-worktree-scratch-root
+           #:default-worktree-lock-root
+           #:worktree-runtime-path
+           #:spawn-local-worktree
+           #:collect-local-worktree
+           #:kill-local-worktree
            ;; Inter-user coordination (I253)
            #:register-user-session-peer
            #:unregister-user-session-peer
@@ -2085,6 +2111,7 @@
            #:worker-record-max-retries
            #:worker-record-backend
            #:worker-record-inner-id
+           #:worker-record-worktree
            #:+event-type-worker-spawned+
            #:+event-type-worker-started+
            #:+event-type-worker-completed+

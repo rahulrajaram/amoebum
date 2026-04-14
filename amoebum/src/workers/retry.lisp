@@ -113,7 +113,8 @@
                                                        (worker-record-label worker)
                                                        attempt)
                                         :timeout-seconds new-timeout
-                                        :max-retries (worker-record-max-retries worker))))
+                                        :max-retries (worker-record-max-retries worker)
+                                        :worktree (worker-record-worktree worker))))
       (%with-worker-lock
         (setf (worker-record-retry-count new-worker) attempt))
       new-worker)))
@@ -124,7 +125,8 @@
                                                label
                                                (timeout-seconds 120)
                                                (policy *default-supervision-policy*)
-                                               cwd)
+                                               cwd
+                                               worktree)
   "Spawn a worker with automatic retry on transient failure.
    Blocks until final success or max retries exhausted.
    Returns (values final-worker final-status)."
@@ -133,7 +135,8 @@
                                    :label (or label "supervised-task")
                                    :timeout-seconds timeout-seconds
                                    :max-retries (worker-supervision-policy-max-retries policy)
-                                   :cwd cwd)))
+                                   :cwd cwd
+                                   :worktree worktree)))
     (loop
       (multiple-value-bind (status _result)
           (await-worker (worker-record-id worker) :timeout-seconds (+ timeout-seconds 10))

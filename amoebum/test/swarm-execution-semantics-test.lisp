@@ -64,7 +64,8 @@ Returns the final status keyword or NIL on timeout."
   (is (fboundp 'amoebum:swarm-agent-signal-name))
   (is (fboundp 'amoebum:swarm-agent-retry-count))
   (is (fboundp 'amoebum:swarm-agent-retry-policy))
-  (is (fboundp 'amoebum:swarm-agent-timeout-seconds)))
+  (is (fboundp 'amoebum:swarm-agent-timeout-seconds))
+  (is (fboundp 'amoebum:swarm-agent-worktree)))
 
 (test swarm-agent-nxt017-defaults
   "Fresh swarm-agent has sensible NXT-017 defaults."
@@ -107,6 +108,26 @@ Returns the final status keyword or NIL on timeout."
                   :timeout-seconds 30
                   :runner (lambda (_a) (declare (ignore _a)) "done"))))
       (is (= 30 (amoebum:swarm-agent-timeout-seconds agent)))
+      (amoebum:collect-swarm-result (amoebum:swarm-agent-id agent)))))
+
+(test swarm-agent-spawn-propagates-worktree-metadata
+  "spawn-swarm-agent stores worktree ownership metadata for SW4RM routing."
+  (with-isolated-swarm
+    (let* ((worktree (amoebum:make-worktree-metadata
+                      :id "wt-337"
+                      :branch "sw4rm/wf/node"
+                      :path "/tmp/wt-337/"))
+           (agent (amoebum:spawn-swarm-agent
+                   "nxt337 worktree metadata"
+                   :worktree worktree
+                   :runner (lambda (_a) (declare (ignore _a)) "done"))))
+      (let ((metadata (amoebum:swarm-agent-worktree agent)))
+        (is (typep metadata 'amoebum:worktree-metadata))
+        (is (string= "wt-337" (amoebum:worktree-metadata-id metadata)))
+        (is (string= "sw4rm/wf/node"
+                     (amoebum:worktree-metadata-branch metadata)))
+        (is (string= "/tmp/wt-337/"
+                     (amoebum:worktree-metadata-path metadata))))
       (amoebum:collect-swarm-result (amoebum:swarm-agent-id agent)))))
 
 ;;; ============================================================

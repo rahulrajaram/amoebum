@@ -54,7 +54,8 @@
   (is (fboundp 'amoebum.workers:worker-record-retry-count))
   (is (fboundp 'amoebum.workers:worker-record-max-retries))
   (is (fboundp 'amoebum.workers:worker-record-backend))
-  (is (fboundp 'amoebum.workers:worker-record-inner-id)))
+  (is (fboundp 'amoebum.workers:worker-record-inner-id))
+  (is (fboundp 'amoebum.workers:worker-record-worktree)))
 
 ;;; --- Event types ---
 
@@ -224,16 +225,31 @@
                   cfg))
           (let* ((worker (amoebum:spawn-worker :agent "worker networked task"
                                                :label "worker networked"
-                                               :timeout-seconds 10))
+                                               :timeout-seconds 10
+                                               :worktree (amoebum:make-worktree-metadata
+                                                          :id "wt-337"
+                                                          :branch "sw4rm/demo/node"
+                                                          :path "/tmp/wt-337/")))
                  (wid (amoebum.workers:worker-record-id worker)))
             (multiple-value-bind (status result)
                 (amoebum.workers:await-worker wid :timeout-seconds 15)
               (is (eq :completed status))
               (is (listp result))
               (is (eq :swarm (getf result :backend)))
-              (is (eq :completed (getf result :status))))
+              (is (eq :completed (getf result :status)))
+              (is (equal '(:id "wt-337"
+                           :branch "sw4rm/demo/node"
+                           :path "/tmp/wt-337/")
+                         (getf result :worktree))))
             (is (eq :swarm (amoebum.workers:worker-record-backend worker)))
             (is (string= "swarm-1" (amoebum.workers:worker-record-inner-id worker)))
+            (let ((worktree (amoebum.workers:worker-record-worktree worker)))
+              (is (typep worktree 'amoebum:worktree-metadata))
+              (is (string= "wt-337" (amoebum:worktree-metadata-id worktree)))
+              (is (string= "sw4rm/demo/node"
+                           (amoebum:worktree-metadata-branch worktree)))
+              (is (string= "/tmp/wt-337/"
+                           (amoebum:worktree-metadata-path worktree))))
             (is (= 0 (hash-table-count amoebum::*agent-registry*)))
             (is (= 1 (hash-table-count amoebum::*swarm-registry*)))))
       (setf amoebum:*worker-supervisor* old-supervisor
@@ -257,13 +273,23 @@
                 amoebum::*swarm-registry* (make-hash-table :test #'equal)
                 amoebum::*next-agent-sequence* 0
                 amoebum::*swarm-counter* 0)
-          (let* ((local-agent (amoebum:spawn-agent
+          (let* ((local-worktree (amoebum:make-worktree-metadata
+                                  :id "local-337"
+                                  :branch "local/runtime"
+                                  :path "/tmp/local-337/"))
+                 (swarm-worktree (amoebum:make-worktree-metadata
+                                  :id "swarm-337"
+                                  :branch "sw4rm/runtime"
+                                  :path "/tmp/swarm-337/"))
+                 (local-agent (amoebum:spawn-agent
                                "local runtime status task"
+                               :worktree local-worktree
                                :runner (lambda (_agent)
                                          (declare (ignore _agent))
                                          "local runtime ok")))
                  (swarm-agent (amoebum:spawn-swarm-agent
                                "swarm runtime status task"
+                               :worktree swarm-worktree
                                :runner (lambda (_agent)
                                          (declare (ignore _agent))
                                          "swarm runtime ok")))
@@ -278,6 +304,11 @@
             (is (eq :local (amoebum:runtime-agent-backend local-id)))
             (is (eq :local (amoebum:runtime-agent-backend local-agent)))
             (is (string= local-id (amoebum:runtime-agent-id local-id)))
+            (let ((metadata (amoebum:runtime-agent-worktree local-id)))
+              (is (typep metadata 'amoebum:worktree-metadata))
+              (is (string= "local-337" (amoebum:worktree-metadata-id metadata)))
+              (is (string= "local/runtime"
+                           (amoebum:worktree-metadata-branch metadata))))
             (is (string= "local runtime status task"
                          (amoebum:runtime-agent-task local-id)))
             (is (eq :completed (amoebum:runtime-agent-status local-id)))
@@ -287,6 +318,11 @@
             (is (eq :swarm (amoebum:runtime-agent-backend swarm-id)))
             (is (eq :swarm (amoebum:runtime-agent-backend swarm-agent)))
             (is (string= swarm-id (amoebum:runtime-agent-id swarm-id)))
+            (let ((metadata (amoebum:runtime-agent-worktree swarm-id :backend :swarm)))
+              (is (typep metadata 'amoebum:worktree-metadata))
+              (is (string= "swarm-337" (amoebum:worktree-metadata-id metadata)))
+              (is (string= "sw4rm/runtime"
+                           (amoebum:worktree-metadata-branch metadata))))
             (is (string= "swarm runtime status task"
                          (amoebum:runtime-agent-task swarm-id)))
             (is (eq :completed

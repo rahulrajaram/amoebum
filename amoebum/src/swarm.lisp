@@ -16,6 +16,7 @@
                 (&key id task (status :initializing)
                       (created-at (get-universal-time))
                       state-machine result thread error-message backing-agent
+                      worktree
                       signal-name
                       (retry-count 0)
                       retry-policy
@@ -32,6 +33,7 @@
   (thread nil)
   (error-message nil :type (or null string))
   (backing-agent nil)
+  (worktree nil)
   ;; NXT-017: Signal tracking and retry semantics
   (signal-name nil :type (or null string))   ; e.g. "SIGTERM", "SIGKILL"
   (retry-count 0 :type integer)              ; number of times this agent has been retried
@@ -157,6 +159,7 @@
                                (event-bus (current-event-bus))
                                runner
                                timeout-seconds
+                               worktree
                                (retry-count 0)
                                retry-policy)
   "Spawn a new swarm sub-agent for TASK. Returns a swarm-agent.
@@ -165,16 +168,19 @@ NXT-017: Accepts RETRY-COUNT (number of prior retries) and RETRY-POLICY
 NXT-018: Records heartbeat-at and last-output-at timestamps on the agent struct."
   (let* ((agent-id (or id (%next-swarm-id)))
          (spawn-time (get-universal-time))
+         (worktree-metadata (coerce-worktree-metadata :worktree worktree))
          (runner-agent (%make-agent-record
                         :id agent-id
                         :type :swarm
                         :task task
                         :status :queued
-                        :created-ms (%agent-now-ms)))
+                        :created-ms (%agent-now-ms)
+                        :worktree worktree-metadata))
          (agent (make-swarm-agent :id agent-id
                                   :task task
                                   :status :initializing
                                   :backing-agent runner-agent
+                                  :worktree worktree-metadata
                                   :retry-count retry-count
                                   :retry-policy retry-policy
                                   :timeout-seconds timeout-seconds
@@ -182,20 +188,22 @@ NXT-018: Records heartbeat-at and last-output-at timestamps on the agent struct.
                                   :last-output-at spawn-time))
          (agent-runner (or runner #'%default-agent-runner)))
     (setf (gethash agent-id *swarm-registry*) agent)
-    ;; Create a state machine for the agent
     (handler-case
         (let ((sm (make-instance 'sw4rm-sdk::agent-state-machine)))
           (setf (swarm-agent-state-machine agent) sm)
-          ;; Transition to RUNNABLE
           (%swarm-transition-safe agent :runnable
                                   :metadata (%swarm-status-metadata :queued)))
       (error () nil))
-    ;; Publish spawn event
     (publish event-bus
              (make-event :type +event-type-agent-spawn+
                          :source "swarm"
-                         :payload (list :id agent-id :task task)))
-    ;; Run task in background thread
+                         :payload (append (list :id agent-id
+                                                :task task)
+                                          (let ((metadata
+                                                  (worktree-metadata-plist
+                                                   worktree-metadata)))
+                                            (when metadata
+                                              (list :worktree metadata))))))
     (setf (swarm-agent-thread agent)
           (bt:make-thread
            (lambda ()
@@ -205,7 +213,6 @@ NXT-018: Records heartbeat-at and last-output-at timestamps on the agent struct.
                    (status :completed)
                    (error-message nil)
                    (terminal-signal-name nil))
-               ;; NXT-018: update heartbeat when thread starts running
                (setf (swarm-agent-heartbeat-at agent) (get-universal-time))
                (%swarm-mark-running agent)
                (handler-case
@@ -224,16 +231,14 @@ NXT-018: Records heartbeat-at and last-output-at timestamps on the agent struct.
                            status (%swarm-runner-finished-status runner-agent)))
                  (agent-cancelled (condition)
                    (setf status :cancelled
-                         ;; NXT-017: record SIGTERM as the signal that
-                         ;; caused cooperative cancellation
                          terminal-signal-name "SIGTERM"
                          error-message (princ-to-string condition)))
                  #+sbcl
                  (sb-ext:timeout (_condition)
                    (setf status :timeout
-                         ;; NXT-017: timeout is a SIGALRM-like expiry
                          terminal-signal-name "SIGALRM"
-                         error-message (format nil "Swarm agent ~A timed out after ~A seconds."
+                         error-message (format nil
+                                               "Swarm agent ~A timed out after ~A seconds."
                                                agent-id
                                                timeout-seconds)))
                  (error (condition)
@@ -243,7 +248,6 @@ NXT-018: Records heartbeat-at and last-output-at timestamps on the agent struct.
                              error-message (princ-to-string condition))
                        (setf status :failed
                              error-message (princ-to-string condition)))))
-               ;; NXT-018: update last-output-at if any output was produced
                (let ((stdout-text (get-output-stream-string stdout-stream))
                      (stderr-text (get-output-stream-string stderr-stream)))
                  (when (or (plusp (length stdout-text))
@@ -259,12 +263,19 @@ NXT-018: Records heartbeat-at and last-output-at timestamps on the agent struct.
                                               +event-type-agent-cancelled+
                                               +event-type-agent-complete+)
                                     :source "swarm"
-                                    :payload (list :id agent-id
-                                                   :status status
-                                                   :task task
-                                                   :signal-name terminal-signal-name
-                                                   :retry-count (swarm-agent-retry-count agent)
-                                                   :error-message error-message)))))
+                                    :payload (append
+                                              (list :id agent-id
+                                                    :status status
+                                                    :task task
+                                                    :signal-name terminal-signal-name
+                                                    :retry-count
+                                                    (swarm-agent-retry-count agent)
+                                                    :error-message error-message)
+                                              (let ((metadata
+                                                      (worktree-metadata-plist
+                                                       (swarm-agent-worktree agent))))
+                                                (when metadata
+                                                  (list :worktree metadata))))))))
            :name (format nil "swarm-~A" agent-id)))
     agent))
 
@@ -296,9 +307,13 @@ NXT-017: SIGNAL-NAME records which signal caused termination (default SIGKILL)."
       (publish event-bus
                (make-event :type +event-type-agent-cancelled+
                            :source "swarm"
-                           :payload (list :id agent-id
-                                          :status :cancelled
-                                          :signal-name signal-name))))
+                           :payload (append (list :id agent-id
+                                                  :status :cancelled
+                                                  :signal-name signal-name)
+                                             (let ((metadata (worktree-metadata-plist
+                                                              (swarm-agent-worktree agent))))
+                                               (when metadata
+                                                 (list :worktree metadata)))))))
     agent))
 
 ;;; --- Registry Queries ---
