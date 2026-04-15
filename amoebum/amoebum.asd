@@ -25,6 +25,8 @@
    (:file "src/config")
    (:file "src/config/loader")
    (:file "src/worktrees")
+   ;; NXT-354: abandonment markers and cleanup policy extracted from worktrees.lisp.
+   (:file "src/worktrees/cleanup")
    (:file "src/provider-factory")
    (:file "src/ui/provider-dashboard")
    (:file "src/context")
