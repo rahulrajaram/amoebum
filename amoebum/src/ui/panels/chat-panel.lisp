@@ -9,6 +9,7 @@
   '((:provider "provider-dashboard" "provider")
     (:tree "tree-browser" "tree")
     (:plan "plan-view" "plan")
+    (:handoff "worktree-handoff" "handoff")
     (:history "message-history" "history")
     (:approval "approval-dialog" "approval")
     (:picker "fuzzy-picker" "picker")
@@ -71,6 +72,7 @@
                                               provider-active-p
                                               tree-active-p
                                               plan-active-p
+                                              handoff-visible-p
                                               approval-active-p
                                               picker-active-p)
   "Compute the actual allocated history region height for chat-panel."
@@ -89,6 +91,10 @@
                       (ptui.layout.constraints:fixed
                        'plan
                        (%chat-panel-fixed-height :plan 12)))
+                    (when (%chat-panel-layout-visible-p :handoff handoff-visible-p)
+                      (ptui.layout.constraints:fixed
+                       'handoff
+                       (%chat-panel-fixed-height :handoff 8)))
                     (ptui.layout.constraints:flex
                      'history
                      :weight (%chat-panel-flex-weight :history 1))
@@ -137,6 +143,8 @@
     (plan-state (current-plan-mode-state) :deps ((current-plan-mode-state)))
     (plan-widget (%chat-plan-presentation-widget plan-state chat-state) :deps (plan-state chat-state))
     (plan-active-p (not (null plan-widget)) :deps (plan-widget))
+    (handoff-visible-p (worktree-handoff-dashboard-visible-p)
+      :deps ((worktree-handoff-dashboard-visible-p)))
     (provider-visible-p (chat-ui-state-provider-dashboard-visible-p chat-state)
       :deps ((chat-ui-state-provider-dashboard-visible-p chat-state)))
     (history-viewport-height
@@ -145,9 +153,11 @@
        :provider-active-p provider-visible-p
        :tree-active-p tree-active-p
        :plan-active-p plan-active-p
+       :handoff-visible-p handoff-visible-p
        :approval-active-p approval-active-p
        :picker-active-p picker-active-p)
       :deps (inner-height provider-visible-p tree-active-p plan-active-p
+             handoff-visible-p
              approval-active-p picker-active-p)))
   (:effects
     (sync-approval (%sync-pending-approval-dialog! chat-state)
@@ -187,6 +197,9 @@
       (plan :fixed (%chat-panel-fixed-height :plan 12)
         :when (%chat-panel-layout-visible-p :plan plan-active-p)
         plan-widget)
+      (handoff :fixed (%chat-panel-fixed-height :handoff 8)
+        :when (%chat-panel-layout-visible-p :handoff handoff-visible-p)
+        (worktree-handoff-dashboard (list :limit 4)))
       (history :flex (%chat-panel-flex-weight :history 1)
         (build-message-history-widget chat-state inner-width history-viewport-height))
       (approval :fixed (%chat-panel-fixed-height :approval 8)
@@ -230,6 +243,14 @@
       (:pgdn (chat-panel-handle-fuzzy-picker-key chat-state :pgdn))
       (:escape (chat-panel-handle-fuzzy-picker-key chat-state :escape))
       (:enter (chat-panel-handle-fuzzy-picker-key chat-state :enter)))
+    (:mode :handoff :when (and handoff-visible-p
+                               (zerop (length (chat-ui-state-input-text chat-state))))
+      (:up (worktree-handoff-dashboard-move-selection -1))
+      (:down (worktree-handoff-dashboard-move-selection 1))
+      (:left (worktree-handoff-dashboard-cycle-action -1))
+      (:right (worktree-handoff-dashboard-cycle-action 1))
+      (:enter (worktree-handoff-dashboard-apply-selected-action))
+      (:escape (dismiss-worktree-handoff-dashboard)))
     (:mode :tree :when (and tree-active-p
                             (zerop (length (chat-ui-state-input-text chat-state))))
       (:up (chat-panel-handle-tree-browser-key chat-state :up))

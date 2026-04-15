@@ -795,9 +795,10 @@ separately.  The tree reflects prompt->agent and agent->sub-agent handoffs."
 ;;; ---- NXT-344: /worktree-handoff ----
 
 (defun %worktree-handoff-usage ()
-  "Usage: /worktree-handoff <list|inspect|accept|defer|resolve|abandon|help> [args...]
+  "Usage: /worktree-handoff <list|inspect|panel|accept|defer|resolve|abandon|help> [args...]
   list
   inspect <handoff-id>
+  panel [on|off|toggle]
   accept <handoff-id> [note...]
   defer <handoff-id> [note...]
   resolve <handoff-id> [note...]
@@ -897,9 +898,31 @@ separately.  The tree reflects prompt->agent and agent->sub-agent handoffs."
                               :include-room-status-p t)))
                (make-slash-command-result
                 :echo-input-p t
-                :output (if snapshot
-                            (%worktree-handoff-inspect-output snapshot)
-                            (format nil "Unknown worktree handoff ~A." handoff-id)))))))
+               :output (if snapshot
+                           (%worktree-handoff-inspect-output snapshot)
+                           (format nil "Unknown worktree handoff ~A." handoff-id)))))))
+      ((string-equal subcommand "panel")
+       (let* ((mode-token (and (second tokens)
+                               (string-downcase (%slash-trim (second tokens)))))
+              (visible
+                (cond
+                  ((or (null mode-token)
+                       (string= mode-token "")
+                       (string= mode-token "toggle"))
+                   (toggle-worktree-handoff-dashboard))
+                  ((member mode-token '("on" "show" "open") :test #'string=)
+                   (toggle-worktree-handoff-dashboard t))
+                  ((member mode-token '("off" "hide" "close") :test #'string=)
+                   (toggle-worktree-handoff-dashboard nil))
+                  (t
+                   (return-from %worktree-handoff-handler
+                     (make-slash-command-result
+                      :echo-input-p t
+                      :output "Usage: /worktree-handoff panel [on|off|toggle]"))))))
+         (make-slash-command-result
+          :echo-input-p t
+          :output (format nil "Worktree handoff panel ~:[hidden~;visible~]."
+                          visible))))
       ((string-equal subcommand "accept")
        (let ((handoff-id (second tokens)))
          (if (%slash-blank-p handoff-id)

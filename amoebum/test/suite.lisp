@@ -1645,6 +1645,28 @@
             (is (string= "operator declined" (getf updated :note))))))
     (amoebum:clear-worktree-conflict-handoffs)))
 
+(test worktree-handoff-command-toggles-panel-visibility
+  "The /worktree-handoff panel subcommand should toggle the PTUI worktree handoff surface."
+  (let ((old-state amoebum::*worktree-handoff-dashboard-state*))
+    (unwind-protect
+         (progn
+           (setf amoebum::*worktree-handoff-dashboard-state* nil)
+           (multiple-value-bind (handled on-result)
+               (amoebum:dispatch-slash-command "/worktree-handoff panel on")
+             (is-true handled)
+             (is (search "visible"
+                         (amoebum.commands:slash-command-result-output on-result)
+                         :test #'char-equal))
+             (is-true (amoebum::worktree-handoff-dashboard-visible-p)))
+           (multiple-value-bind (handled off-result)
+               (amoebum:dispatch-slash-command "/worktree-handoff panel off")
+             (is-true handled)
+             (is (search "hidden"
+                         (amoebum.commands:slash-command-result-output off-result)
+                         :test #'char-equal))
+             (is-false (amoebum::worktree-handoff-dashboard-visible-p))))
+      (setf amoebum::*worktree-handoff-dashboard-state* old-state))))
+
 (test slash-command-argument-parser-handles-defaults-choices-and-greedy-text
   (let* ((command
            (amoebum.commands:make-slash-command

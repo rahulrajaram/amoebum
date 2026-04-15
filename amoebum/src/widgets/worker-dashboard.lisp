@@ -238,6 +238,224 @@
     (when wid
       (worker-output wid))))
 
+;;; --- Worktree handoff dashboard ---
+
+(defstruct (worktree-handoff-dashboard-state
+            (:constructor %make-worktree-handoff-dashboard-state
+                (&key visible-p selected-handoff-id selected-action last-message)))
+  (visible-p nil :type boolean)
+  (selected-handoff-id nil :type (or null string))
+  (selected-action nil :type (or null keyword))
+  (last-message nil :type (or null string)))
+
+(defvar *worktree-handoff-dashboard-state* nil)
+
+(defun ensure-worktree-handoff-dashboard-state ()
+  (or *worktree-handoff-dashboard-state*
+      (setf *worktree-handoff-dashboard-state*
+            (%make-worktree-handoff-dashboard-state :visible-p nil))))
+
+(defun %worktree-handoff-open-p (snapshot)
+  (member (getf snapshot :status) '(:pending :deferred :accepted) :test #'eq))
+
+(defun %worktree-handoff-dashboard-snapshots ()
+  (remove-if-not #'%worktree-handoff-open-p
+                 (list-worktree-conflict-handoffs)))
+
+(defun %worktree-handoff-dashboard-find (handoff-id snapshots)
+  (find handoff-id
+        snapshots
+        :key (lambda (snapshot)
+               (getf snapshot :handoff-id))
+        :test #'equal))
+
+(defun %worktree-handoff-dashboard-actions (snapshot)
+  (case (getf snapshot :status)
+    ((:pending :deferred) '(:accept :defer))
+    (:accepted '(:resolve))
+    (otherwise '())))
+
+(defun %sync-worktree-handoff-dashboard-state (&optional (state (ensure-worktree-handoff-dashboard-state)))
+  (let* ((snapshots (%worktree-handoff-dashboard-snapshots))
+         (selected
+           (or (%worktree-handoff-dashboard-find
+                (worktree-handoff-dashboard-state-selected-handoff-id state)
+                snapshots)
+               (first snapshots)))
+         (actions (%worktree-handoff-dashboard-actions selected))
+         (selected-action
+           (and actions
+                (if (member (worktree-handoff-dashboard-state-selected-action state)
+                            actions
+                            :test #'eq)
+                    (worktree-handoff-dashboard-state-selected-action state)
+                    (first actions)))))
+    (setf (worktree-handoff-dashboard-state-selected-handoff-id state)
+          (and selected (getf selected :handoff-id))
+          (worktree-handoff-dashboard-state-selected-action state)
+          selected-action)
+    state))
+
+(defun worktree-handoff-dashboard-visible-p ()
+  (let ((state *worktree-handoff-dashboard-state*))
+    (and state
+         (worktree-handoff-dashboard-state-visible-p state))))
+
+(defun toggle-worktree-handoff-dashboard (&optional (visible-p nil visible-p-supplied-p))
+  (let ((state (ensure-worktree-handoff-dashboard-state)))
+    (setf (worktree-handoff-dashboard-state-visible-p state)
+          (if visible-p-supplied-p
+              (not (null visible-p))
+              (not (worktree-handoff-dashboard-state-visible-p state))))
+    (%sync-worktree-handoff-dashboard-state state)
+    (worktree-handoff-dashboard-state-visible-p state)))
+
+(defun dismiss-worktree-handoff-dashboard ()
+  (toggle-worktree-handoff-dashboard nil))
+
+(defun %worktree-handoff-dashboard-selected-snapshot (&optional (state (ensure-worktree-handoff-dashboard-state)))
+  (let* ((synced (%sync-worktree-handoff-dashboard-state state))
+         (snapshots (%worktree-handoff-dashboard-snapshots)))
+    (%worktree-handoff-dashboard-find
+     (worktree-handoff-dashboard-state-selected-handoff-id synced)
+     snapshots)))
+
+(defun worktree-handoff-dashboard-move-selection (delta)
+  (let* ((state (%sync-worktree-handoff-dashboard-state))
+         (snapshots (%worktree-handoff-dashboard-snapshots))
+         (count (length snapshots)))
+    (when (plusp count)
+      (let* ((selected-id (worktree-handoff-dashboard-state-selected-handoff-id state))
+             (current-index
+               (or (position selected-id
+                             snapshots
+                             :key (lambda (snapshot)
+                                    (getf snapshot :handoff-id))
+                             :test #'equal)
+                   0))
+             (next-index (mod (+ current-index delta) count))
+             (snapshot (nth next-index snapshots)))
+        (setf (worktree-handoff-dashboard-state-selected-handoff-id state)
+              (getf snapshot :handoff-id)
+              (worktree-handoff-dashboard-state-selected-action state)
+              (first (%worktree-handoff-dashboard-actions snapshot)))
+        t))))
+
+(defun worktree-handoff-dashboard-cycle-action (delta)
+  (let* ((state (%sync-worktree-handoff-dashboard-state))
+         (snapshot (%worktree-handoff-dashboard-selected-snapshot state))
+         (actions (%worktree-handoff-dashboard-actions snapshot))
+         (count (length actions)))
+    (when (plusp count)
+      (let* ((current
+               (or (position (worktree-handoff-dashboard-state-selected-action state)
+                             actions
+                             :test #'eq)
+                   0))
+             (next-index (mod (+ current delta) count)))
+        (setf (worktree-handoff-dashboard-state-selected-action state)
+              (nth next-index actions))
+        t))))
+
+(defun %worktree-handoff-action-prefix (action)
+  (case action
+    (:accept "Accepted")
+    (:defer "Deferred")
+    (:resolve "Resolved")
+    (otherwise "Updated")))
+
+(defun worktree-handoff-dashboard-apply-selected-action ()
+  (let* ((state (%sync-worktree-handoff-dashboard-state))
+         (snapshot (%worktree-handoff-dashboard-selected-snapshot state))
+         (handoff-id (and snapshot (getf snapshot :handoff-id)))
+         (action (worktree-handoff-dashboard-state-selected-action state)))
+    (when (and handoff-id action)
+      (let ((message
+              (handler-case
+                  (progn
+                    (case action
+                      (:accept (accept-worktree-conflict-handoff handoff-id))
+                      (:defer (defer-worktree-conflict-handoff handoff-id))
+                      (:resolve (resolve-worktree-conflict-handoff handoff-id))
+                      (otherwise
+                       (error "Unsupported worktree handoff action ~S." action)))
+                    (format nil "~A worktree handoff ~A."
+                            (%worktree-handoff-action-prefix action)
+                            handoff-id))
+                (error (condition)
+                  (format nil "Failed to update worktree handoff ~A: ~A"
+                          handoff-id
+                          condition)))))
+        (setf (worktree-handoff-dashboard-state-last-message state)
+              message)
+        (%sync-worktree-handoff-dashboard-state state)
+        message))))
+
+(defun %worktree-handoff-action-label (action selected-p)
+  (let ((label (string-downcase (symbol-name action))))
+    (if selected-p
+        (format nil "[~A]" label)
+        label)))
+
+(defun %worktree-handoff-row-lines (snapshot state)
+  (let* ((handoff-id (or (getf snapshot :handoff-id) "?"))
+         (selected-p
+           (equal handoff-id
+                  (worktree-handoff-dashboard-state-selected-handoff-id state)))
+         (status (string-downcase
+                  (symbol-name (or (getf snapshot :status) :pending))))
+         (worktree (getf snapshot :worktree))
+         (worktree-id (or (getf worktree :id) "?"))
+         (branch (getf worktree :branch))
+         (target-ref (or (getf snapshot :target-ref) "?"))
+         (conflicts (getf (getf snapshot :preflight) :conflicts))
+         (actions (%worktree-handoff-dashboard-actions snapshot)))
+    (append
+     (list
+      (format nil "~A ~A | ~A | wt ~A~@[ (~A)~] -> ~A"
+              (if selected-p ">" " ")
+              handoff-id
+              status
+              worktree-id
+              branch
+              target-ref))
+     (when selected-p
+       (append
+        (when conflicts
+          (list (format nil "    conflicts: ~{~A~^, ~}" conflicts)))
+        (when actions
+          (list (format nil "    actions: ~{~A~^  ~}"
+                        (mapcar (lambda (action)
+                                  (%worktree-handoff-action-label
+                                   action
+                                   (eq action
+                                       (worktree-handoff-dashboard-state-selected-action state))))
+                                actions))))
+        (when (getf snapshot :note)
+          (list (format nil "    note: ~A" (getf snapshot :note)))))))))
+
+(ptui.widgets.defwidget:defwidget worktree-handoff-dashboard (state)
+  (let* ((dashboard-state (%sync-worktree-handoff-dashboard-state))
+         (limit (or (getf state :limit) 4))
+         (snapshots (%worktree-handoff-dashboard-snapshots))
+         (visible (subseq snapshots 0 (min limit (length snapshots))))
+         (last-message (worktree-handoff-dashboard-state-last-message dashboard-state)))
+    (%dash-box
+     (append
+      (list (%dash-text (format nil "Worktree handoffs — ~D open"
+                                (length snapshots))))
+      (when (and (stringp last-message)
+                 (plusp (length last-message)))
+        (list (%dash-text (format nil "  ~A" last-message))))
+      (if (null visible)
+          (list (%dash-text "  No open worktree handoffs."))
+          (mapcan (lambda (snapshot)
+                    (mapcar #'%dash-text
+                            (%worktree-handoff-row-lines
+                             snapshot
+                             dashboard-state)))
+                  visible))))))
+
 ;;; --- Status bar segment ---
 
 (defun worker-status-bar-segment ()

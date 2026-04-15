@@ -7,6 +7,9 @@
 (def-suite worker-dashboard-suite :in amoebum-suite)
 (in-suite worker-dashboard-suite)
 
+(defun %ui-element-content (element)
+  (getf (ptui.ui.elements:ui-element-props element) :content))
+
 ;;; --- Widget exists ---
 
 (test worker-dashboard-widget-exists
@@ -204,3 +207,99 @@
            (setf amoebum::*worker-dashboard-state* nil)
            (is (null (amoebum.workers:worker-dashboard-selected-output))))
       (setf amoebum::*worker-dashboard-state* old-state))))
+
+(test worktree-handoff-dashboard-toggle
+  "The worktree handoff dashboard visibility toggle should be controllable."
+  (let ((old-state amoebum::*worktree-handoff-dashboard-state*))
+    (unwind-protect
+         (progn
+           (setf amoebum::*worktree-handoff-dashboard-state* nil)
+           (is-false (amoebum::worktree-handoff-dashboard-visible-p))
+           (is-true (amoebum::toggle-worktree-handoff-dashboard t))
+           (is-true (amoebum::worktree-handoff-dashboard-visible-p))
+           (is-false (amoebum::toggle-worktree-handoff-dashboard nil))
+           (is-false (amoebum::worktree-handoff-dashboard-visible-p)))
+      (setf amoebum::*worktree-handoff-dashboard-state* old-state))))
+
+(test worktree-handoff-dashboard-renders-open-conflicts
+  "The worktree handoff dashboard should surface target refs, conflicts, and available actions."
+  (let ((old-state amoebum::*worktree-handoff-dashboard-state*))
+    (unwind-protect
+         (progn
+           (setf amoebum::*worktree-handoff-dashboard-state* nil)
+           (amoebum:clear-worktree-conflict-handoffs)
+           (let* ((snapshot (amoebum:create-worktree-conflict-handoff
+                             :worktree (amoebum:make-worktree-metadata
+                                        :id "wt-dashboard-handoff"
+                                        :branch "sw4rm/dashboard/node"
+                                        :path "/tmp/wt-dashboard-handoff/")
+                             :target-ref "sw4rm/dashboard"
+                             :preflight '(:status :conflict
+                                          :conflicts ("README.md" "guide.md")
+                                          :conflict-kind :file-overlap)
+                             :agent-id "swarm-dashboard"
+                             :backend :swarm
+                             :task "dashboard handoff"
+                             :result '(:status :completed)))
+                  (handoff-id (getf snapshot :handoff-id)))
+             (amoebum::toggle-worktree-handoff-dashboard t)
+             (let* ((tree (amoebum::worktree-handoff-dashboard '(:limit 4)))
+                    (children (ptui.ui.elements:ui-element-children tree))
+                    (lines (mapcar #'%ui-element-content children)))
+               (is (some (lambda (line)
+                           (and (stringp line)
+                                (search "Worktree handoffs" line :test #'char-equal)))
+                         lines))
+               (is (some (lambda (line)
+                           (and (stringp line)
+                                (search handoff-id line :test #'char-equal)))
+                         lines))
+               (is (some (lambda (line)
+                           (and (stringp line)
+                                (search "README.md, guide.md" line :test #'char-equal)))
+                         lines))
+               (is (some (lambda (line)
+                           (and (stringp line)
+                                (search "[accept]" line :test #'char-equal)))
+                         lines))
+               (is (some (lambda (line)
+                           (and (stringp line)
+                                (search "sw4rm/dashboard" line :test #'char-equal)))
+                         lines)))))
+      (amoebum:clear-worktree-conflict-handoffs)
+      (setf amoebum::*worktree-handoff-dashboard-state* old-state))))
+
+(test worktree-handoff-dashboard-applies-selected-action
+  "The selected worktree handoff action should drive the existing accept and resolve lifecycle."
+  (let ((old-state amoebum::*worktree-handoff-dashboard-state*))
+    (unwind-protect
+         (progn
+           (setf amoebum::*worktree-handoff-dashboard-state* nil)
+           (amoebum:clear-worktree-conflict-handoffs)
+           (let* ((snapshot (amoebum:create-worktree-conflict-handoff
+                             :worktree (amoebum:make-worktree-metadata
+                                        :id "wt-dashboard-apply"
+                                        :branch "sw4rm/dashboard/apply"
+                                        :path "/tmp/wt-dashboard-apply/")
+                             :target-ref "sw4rm/dashboard"
+                             :preflight '(:status :conflict
+                                          :conflicts ("status.md")
+                                          :conflict-kind :file-overlap)
+                             :agent-id "swarm-dashboard"
+                             :backend :swarm
+                             :task "dashboard apply"
+                             :result '(:status :completed)))
+                  (handoff-id (getf snapshot :handoff-id)))
+             (amoebum::toggle-worktree-handoff-dashboard t)
+             (let ((accept-message
+                     (amoebum::worktree-handoff-dashboard-apply-selected-action)))
+               (is (search "Accepted worktree handoff" accept-message))
+               (let ((accepted (amoebum:find-worktree-conflict-handoff handoff-id)))
+                 (is (eq :accepted (getf accepted :status)))))
+             (let ((resolve-message
+                     (amoebum::worktree-handoff-dashboard-apply-selected-action)))
+               (is (search "Resolved worktree handoff" resolve-message))
+               (let ((resolved (amoebum:find-worktree-conflict-handoff handoff-id)))
+                 (is (eq :resolved (getf resolved :status)))))))
+      (amoebum:clear-worktree-conflict-handoffs)
+      (setf amoebum::*worktree-handoff-dashboard-state* old-state))))
