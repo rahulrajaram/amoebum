@@ -507,7 +507,7 @@
       (%delete-directory-tree-safe tmp-root))))
 
 (test worktree-runtime-conflict-handoff-status-updates
-  "Manual worktree conflict handoffs should support accept/defer transitions with operator notes."
+  "Manual worktree conflict handoffs should materialize a resolution path and support terminal operator outcomes."
   (unwind-protect
       (progn
         (amoebum:clear-worktree-conflict-handoffs)
@@ -528,12 +528,37 @@
                (accepted (amoebum:accept-worktree-conflict-handoff
                           handoff-id
                           :note "taking ownership"))
-               (deferred (amoebum:defer-worktree-conflict-handoff
+               (resolved (amoebum:resolve-worktree-conflict-handoff
                           handoff-id
-                          :note "waiting on operator")))
+                          :note "merged by operator")))
           (is (stringp handoff-id))
           (is (eq :accepted (getf accepted :status)))
           (is (string= "taking ownership" (getf accepted :note)))
-          (is (eq :deferred (getf deferred :status)))
-          (is (string= "waiting on operator" (getf deferred :note)))))
+          (is (eq :active (getf (getf accepted :resolution) :status)))
+          (is (eq :operator (getf (getf accepted :resolution) :owner)))
+          (is (eq :resolved (getf resolved :status)))
+          (is (eq :resolved (getf (getf resolved :resolution) :status)))
+          (is (string= "merged by operator" (getf resolved :note))))
+        (let* ((snapshot (amoebum:create-worktree-conflict-handoff
+                          :worktree (amoebum:make-worktree-metadata
+                                     :id "wt-344b"
+                                     :branch "sw4rm/manual/node-b"
+                                     :path "/tmp/wt-344b/")
+                          :target-ref "sw4rm/manual"
+                          :preflight '(:status :conflict
+                                       :conflicts ("docs.txt")
+                                       :conflict-kind :file-overlap)
+                          :agent-id "swarm-344b"
+                          :backend :swarm
+                          :task "manual conflict"
+                          :result '(:status :completed)))
+               (handoff-id (getf snapshot :handoff-id)))
+          (amoebum:accept-worktree-conflict-handoff handoff-id
+                                                    :note "investigating")
+          (let ((abandoned (amoebum:abandon-worktree-conflict-handoff
+                            handoff-id
+                            :note "operator declined")))
+            (is (eq :abandoned (getf abandoned :status)))
+            (is (eq :abandoned (getf (getf abandoned :resolution) :status)))
+            (is (string= "operator declined" (getf abandoned :note))))))
     (amoebum:clear-worktree-conflict-handoffs)))

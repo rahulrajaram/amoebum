@@ -35,6 +35,7 @@
                       backend
                       task
                       result
+                      resolution
                       negotiation-room-id
                       artifact-id
                       note)))
@@ -49,6 +50,7 @@
   backend
   task
   result
+  resolution
   (negotiation-room-id nil :type (or null string))
   (artifact-id nil :type (or null string))
   note)
@@ -940,6 +942,35 @@
 (defun %copy-worktree-data (value)
   (and value (copy-tree value)))
 
+(defun %make-worktree-conflict-resolution (handoff &key note)
+  (let ((started-at (get-universal-time)))
+    (list :status :active
+          :owner :operator
+          :started-at started-at
+          :updated-at started-at
+          :worktree (worktree-metadata-plist
+                     (worktree-conflict-handoff-worktree handoff))
+          :target-ref (worktree-conflict-handoff-target-ref handoff)
+          :note (%normalize-worktree-string note))))
+
+(defun %update-worktree-conflict-resolution (handoff status &key note)
+  (let ((timestamp (get-universal-time))
+        (resolution (or (%copy-worktree-data
+                         (worktree-conflict-handoff-resolution handoff))
+                        (%make-worktree-conflict-resolution handoff
+                                                           :note note))))
+    (setf (getf resolution :status) status
+          (getf resolution :owner) :operator
+          (getf resolution :updated-at) timestamp)
+    (when (eq status :active)
+      (setf (getf resolution :started-at)
+            (or (getf resolution :started-at) timestamp)))
+    (when (member status '(:resolved :abandoned))
+      (setf (getf resolution :completed-at) timestamp))
+    (when note
+      (setf (getf resolution :note) (%normalize-worktree-string note)))
+    resolution))
+
 (defun %worktree-conflict-handoff-room-status (handoff)
   (let ((room-id (and handoff
                       (worktree-conflict-handoff-negotiation-room-id handoff))))
@@ -965,6 +996,8 @@
                   :task (worktree-conflict-handoff-task handoff)
                   :result (%copy-worktree-data
                            (worktree-conflict-handoff-result handoff))
+                  :resolution (%copy-worktree-data
+                               (worktree-conflict-handoff-resolution handoff))
                   :negotiation-room-id
                   (worktree-conflict-handoff-negotiation-room-id handoff)
                   :artifact-id (worktree-conflict-handoff-artifact-id handoff)
@@ -1024,6 +1057,8 @@
    handoff-id
    (lambda (handoff)
      (setf (worktree-conflict-handoff-status handoff) :accepted
+           (worktree-conflict-handoff-resolution handoff)
+           (%make-worktree-conflict-resolution handoff :note note)
            (worktree-conflict-handoff-note handoff)
            (%normalize-worktree-string note)))))
 
@@ -1032,6 +1067,30 @@
    handoff-id
    (lambda (handoff)
      (setf (worktree-conflict-handoff-status handoff) :deferred
+           (worktree-conflict-handoff-note handoff)
+           (%normalize-worktree-string note)))))
+
+(defun resolve-worktree-conflict-handoff (handoff-id &key note)
+  (%update-worktree-conflict-handoff!
+   handoff-id
+   (lambda (handoff)
+     (unless (eq (worktree-conflict-handoff-status handoff) :accepted)
+       (error "Worktree conflict handoff ~A is not accepted." handoff-id))
+     (setf (worktree-conflict-handoff-status handoff) :resolved
+           (worktree-conflict-handoff-resolution handoff)
+           (%update-worktree-conflict-resolution handoff :resolved :note note)
+           (worktree-conflict-handoff-note handoff)
+           (%normalize-worktree-string note)))))
+
+(defun abandon-worktree-conflict-handoff (handoff-id &key note)
+  (%update-worktree-conflict-handoff!
+   handoff-id
+   (lambda (handoff)
+     (unless (eq (worktree-conflict-handoff-status handoff) :accepted)
+       (error "Worktree conflict handoff ~A is not accepted." handoff-id))
+     (setf (worktree-conflict-handoff-status handoff) :abandoned
+           (worktree-conflict-handoff-resolution handoff)
+           (%update-worktree-conflict-resolution handoff :abandoned :note note)
            (worktree-conflict-handoff-note handoff)
            (%normalize-worktree-string note)))))
 
@@ -1437,6 +1496,7 @@
        :backend backend
        :task task
        :result (%copy-worktree-data result)
+       :resolution nil
        :negotiation-room-id room-id
        :artifact-id artifact-id))
      :include-room-status-p t)))

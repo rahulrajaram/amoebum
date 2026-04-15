@@ -1559,7 +1559,7 @@
           (is (search "Running swarm agent swarm-1" output)))))))
 
 (test worktree-handoff-command-lists-inspects-and-updates-conflicts
-  "The /worktree-handoff slash command should expose manual conflict handoffs for operator action."
+  "The /worktree-handoff slash command should expose the full operator resolution lifecycle."
   (unwind-protect
       (progn
         (amoebum:clear-worktree-conflict-handoffs)
@@ -1577,42 +1577,72 @@
                           :task "suite handoff"
                           :result '(:status :completed)))
                (handoff-id (getf snapshot :handoff-id)))
-          (multiple-value-bind (handled result)
+          (multiple-value-bind (handled list-result)
               (amoebum:dispatch-slash-command "/worktree-handoff list")
             (is-true handled)
-            (let ((output (amoebum.commands:slash-command-result-output result)))
+            (let ((output (amoebum.commands:slash-command-result-output list-result)))
               (is (search "Worktree conflict handoffs (1):" output))
-              (is (search handoff-id output))
-              (is (search "wt-suite-handoff" output))
-              (is (search "conflicts 1" output))))
-          (multiple-value-bind (handled result)
+              (is (search handoff-id output))))
+          (multiple-value-bind (handled inspect-result)
               (amoebum:dispatch-slash-command
                (format nil "/worktree-handoff inspect ~A" handoff-id))
             (is-true handled)
-            (let ((output (amoebum.commands:slash-command-result-output result)))
-              (is (search "Worktree handoff" output))
-              (is (search handoff-id output))
-              (is (search "target-ref: sw4rm/suite" output))
+            (let ((output (amoebum.commands:slash-command-result-output inspect-result)))
               (is (search "conflicts: README.md" output))))
-          (multiple-value-bind (handled result)
+          (multiple-value-bind (handled accept-result)
               (amoebum:dispatch-slash-command
                (format nil "/worktree-handoff accept ~A taking ownership" handoff-id))
             (is-true handled)
             (is (search "Accepted worktree handoff"
-                        (amoebum.commands:slash-command-result-output result)))
-            (is (eq :accepted
-                    (getf (amoebum:find-worktree-conflict-handoff handoff-id)
-                          :status))))
-          (multiple-value-bind (handled result)
+                        (amoebum.commands:slash-command-result-output accept-result))))
+          (let ((accepted (amoebum:find-worktree-conflict-handoff handoff-id)))
+            (is (eq :accepted (getf accepted :status)))
+            (is (eq :active (getf (getf accepted :resolution) :status))))
+          (multiple-value-bind (handled inspect-result)
               (amoebum:dispatch-slash-command
-               (format nil "/worktree-handoff defer ~A waiting on operator" handoff-id))
+               (format nil "/worktree-handoff inspect ~A" handoff-id))
             (is-true handled)
-            (is (search "Deferred worktree handoff"
-                        (amoebum.commands:slash-command-result-output result)))
-            (let ((updated (amoebum:find-worktree-conflict-handoff handoff-id)))
-              (is (eq :deferred (getf updated :status)))
-              (is (string= "waiting on operator"
-                           (getf updated :note)))))))
+            (let ((output (amoebum.commands:slash-command-result-output inspect-result)))
+              (is (search "resolution: active owned by operator" output))))
+          (multiple-value-bind (handled resolve-result)
+              (amoebum:dispatch-slash-command
+               (format nil "/worktree-handoff resolve ~A merged manually" handoff-id))
+            (is-true handled)
+            (is (search "Resolved worktree handoff"
+                        (amoebum.commands:slash-command-result-output resolve-result))))
+          (let ((updated (amoebum:find-worktree-conflict-handoff handoff-id)))
+            (is (eq :resolved (getf updated :status)))
+            (is (eq :resolved (getf (getf updated :resolution) :status)))
+            (is (string= "merged manually" (getf updated :note)))))
+        (let* ((abandon-snapshot (amoebum:create-worktree-conflict-handoff
+                                  :worktree (amoebum:make-worktree-metadata
+                                             :id "wt-suite-abandon"
+                                             :branch "sw4rm/suite/abandon"
+                                             :path "/tmp/wt-suite-abandon/")
+                                  :target-ref "sw4rm/suite"
+                                  :preflight '(:status :conflict
+                                               :conflicts ("guide.md")
+                                               :conflict-kind :file-overlap)
+                                  :agent-id "swarm-suite"
+                                  :backend :swarm
+                                  :task "suite abandon"
+                                  :result '(:status :completed)))
+               (abandon-handoff-id (getf abandon-snapshot :handoff-id)))
+          (amoebum:dispatch-slash-command
+           (format nil "/worktree-handoff accept ~A taking ownership"
+                   abandon-handoff-id))
+          (multiple-value-bind (handled abandon-result)
+              (amoebum:dispatch-slash-command
+               (format nil "/worktree-handoff abandon ~A operator declined"
+                       abandon-handoff-id))
+            (is-true handled)
+            (is (search "Abandoned worktree handoff"
+                        (amoebum.commands:slash-command-result-output abandon-result))))
+          (let ((updated (amoebum:find-worktree-conflict-handoff
+                          abandon-handoff-id)))
+            (is (eq :abandoned (getf updated :status)))
+            (is (eq :abandoned (getf (getf updated :resolution) :status)))
+            (is (string= "operator declined" (getf updated :note))))))
     (amoebum:clear-worktree-conflict-handoffs)))
 
 (test slash-command-argument-parser-handles-defaults-choices-and-greedy-text

@@ -1994,6 +1994,8 @@
 	           #:find-worktree-conflict-handoff
 	           #:accept-worktree-conflict-handoff
 	           #:defer-worktree-conflict-handoff
+	           #:resolve-worktree-conflict-handoff
+	           #:abandon-worktree-conflict-handoff
 	           ;; Inter-user coordination (I253)
            #:register-user-session-peer
            #:unregister-user-session-peer

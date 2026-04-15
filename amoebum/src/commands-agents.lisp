@@ -795,11 +795,13 @@ separately.  The tree reflects prompt->agent and agent->sub-agent handoffs."
 ;;; ---- NXT-344: /worktree-handoff ----
 
 (defun %worktree-handoff-usage ()
-  "Usage: /worktree-handoff <list|inspect|accept|defer|help> [args...]
+  "Usage: /worktree-handoff <list|inspect|accept|defer|resolve|abandon|help> [args...]
   list
   inspect <handoff-id>
   accept <handoff-id> [note...]
-  defer <handoff-id> [note...]")
+  defer <handoff-id> [note...]
+  resolve <handoff-id> [note...]
+  abandon <handoff-id> [note...]")
 
 (defun %worktree-handoff-status-text (status)
   (string-downcase (symbol-name (or status :pending))))
@@ -827,7 +829,8 @@ separately.  The tree reflects prompt->agent and agent->sub-agent handoffs."
   (let* ((worktree (getf snapshot :worktree))
          (preflight (getf snapshot :preflight))
          (conflicts (getf preflight :conflicts))
-         (negotiation-status (getf snapshot :negotiation-status)))
+         (negotiation-status (getf snapshot :negotiation-status))
+         (resolution (getf snapshot :resolution)))
     (with-output-to-string (out)
       (format out "Worktree handoff ~A~%" (or (getf snapshot :handoff-id) "?"))
       (format out "status: ~A~%"
@@ -846,6 +849,10 @@ separately.  The tree reflects prompt->agent and agent->sub-agent handoffs."
         (format out "negotiation-status: ~S~%" negotiation-status))
       (when conflicts
         (format out "conflicts: ~{~A~^, ~}~%" conflicts))
+      (when resolution
+        (format out "resolution: ~A owned by ~A~%"
+                (%worktree-handoff-status-text (getf resolution :status))
+                (%worktree-handoff-status-text (getf resolution :owner))))
       (when (getf snapshot :note)
         (format out "note: ~A~%" (getf snapshot :note)))
       (when (getf snapshot :task)
@@ -937,8 +944,56 @@ separately.  The tree reflects prompt->agent and agent->sub-agent handoffs."
                (error (condition)
                  (make-slash-command-result
                   :echo-input-p t
-                  :output (format nil
+                 :output (format nil
                                   "Failed to defer worktree handoff ~A: ~A"
+                                  handoff-id
+                                  condition)))))))
+      ((string-equal subcommand "resolve")
+       (let ((handoff-id (second tokens)))
+         (if (%slash-blank-p handoff-id)
+             (make-slash-command-result
+              :echo-input-p t
+              :output "Usage: /worktree-handoff resolve <handoff-id> [note...]")
+             (handler-case
+                 (let ((snapshot (resolve-worktree-conflict-handoff
+                                  handoff-id
+                                  :note (%worktree-handoff-note (cddr tokens)))))
+                   (make-slash-command-result
+                    :echo-input-p t
+                    :output (format nil
+                                    "Resolved worktree handoff ~A. Status: ~A"
+                                    handoff-id
+                                    (%worktree-handoff-status-text
+                                     (getf snapshot :status)))))
+               (error (condition)
+                 (make-slash-command-result
+                  :echo-input-p t
+                  :output (format nil
+                                  "Failed to resolve worktree handoff ~A: ~A"
+                                  handoff-id
+                                  condition)))))))
+      ((string-equal subcommand "abandon")
+       (let ((handoff-id (second tokens)))
+         (if (%slash-blank-p handoff-id)
+             (make-slash-command-result
+              :echo-input-p t
+              :output "Usage: /worktree-handoff abandon <handoff-id> [note...]")
+             (handler-case
+                 (let ((snapshot (abandon-worktree-conflict-handoff
+                                  handoff-id
+                                  :note (%worktree-handoff-note (cddr tokens)))))
+                   (make-slash-command-result
+                    :echo-input-p t
+                    :output (format nil
+                                    "Abandoned worktree handoff ~A. Status: ~A"
+                                    handoff-id
+                                    (%worktree-handoff-status-text
+                                     (getf snapshot :status)))))
+               (error (condition)
+                 (make-slash-command-result
+                  :echo-input-p t
+                  :output (format nil
+                                  "Failed to abandon worktree handoff ~A: ~A"
                                   handoff-id
                                   condition)))))))
       (t
@@ -1186,7 +1241,7 @@ separately.  The tree reflects prompt->agent and agent->sub-agent handoffs."
    (make-slash-command
     :name "worktree-handoff"
     :description "Inspect or update manual worktree merge conflict handoffs."
-    :usage "/worktree-handoff <list|inspect|accept|defer|help> [args...]"
+    :usage "/worktree-handoff <list|inspect|accept|defer|resolve|abandon|help> [args...]"
     :parameters
     (list (make-slash-command-parameter :name "args" :type :string :required-p nil :greedy-p t :description "Subcommand and arguments."))
     :handler #'%worktree-handoff-handler))
