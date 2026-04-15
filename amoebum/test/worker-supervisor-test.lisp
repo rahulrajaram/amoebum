@@ -24,6 +24,32 @@
         do (return nil)
       do (sleep 0.01))))
 
+(defmacro with-worker-full-auto-permission-mode (&body body)
+  (let ((config (gensym "CONFIG"))
+        (old-mode (gensym "OLD-MODE")))
+    `(let* ((,config (amoebum.config:current-config))
+            (,old-mode (amoebum.config:config-permission-mode ,config)))
+       (unwind-protect
+            (progn
+              (amoebum.config:setconfig :permission-mode :full-auto)
+              ,@body)
+         (amoebum.config:setconfig :permission-mode ,old-mode)))))
+
+(defmacro with-isolated-worker-secret-registry ((agent-id) &body body)
+  (let ((saved-registry (gensym "SAVED-REGISTRY"))
+        (registry (gensym "REGISTRY")))
+    `(let ((,saved-registry amoebum::*user-session-registry*))
+       (unwind-protect
+            (let ((,registry (sw4rm-sdk:make-local-registry)))
+              (setf amoebum::*user-session-registry* ,registry)
+              (sw4rm-sdk:local-registry-register
+               ,registry
+               (sw4rm-sdk:make-agent-config
+                :agent-id ,agent-id
+                :name ,agent-id))
+              ,@body)
+         (setf amoebum::*user-session-registry* ,saved-registry)))))
+
 ;;; --- Protocol completeness ---
 
 (test worker-supervisor-protocol-generics-exist
@@ -260,6 +286,89 @@
             amoebum::*next-agent-sequence* old-agent-seq
             amoebum::*swarm-counter* old-swarm-counter
             amoebum::*current-config* old-config)))) 
+
+(test networked-agent-worker-preserves-remote-worktree-merge-results
+  "Networked agent workers should surface remote worktree merge results through the shared runtime seam."
+  (let ((old-supervisor amoebum:*worker-supervisor*)
+        (old-worker-registry amoebum::*worker-registry*)
+        (old-agent-registry amoebum::*agent-registry*)
+        (old-swarm-registry amoebum::*swarm-registry*)
+        (old-worker-seq amoebum::*next-worker-sequence*)
+        (old-agent-seq amoebum::*next-agent-sequence*)
+        (old-swarm-counter amoebum::*swarm-counter*)
+        (old-config amoebum::*current-config*)
+        (old-runtime-factory amoebum::*delegated-worktree-runtime-factory*))
+    (unwind-protect
+        (let* ((tmp-root (%make-temp-directory "amoebum-worker-remote-runtime"))
+               (merge-call nil)
+               (coordinator
+                 (sw4rm-sdk:make-remote-worktree-coordinator
+                  :spawn-fn (lambda (&rest args)
+                              (declare (ignore args))
+                              nil)
+                  :collect-fn (lambda (&rest args)
+                                (declare (ignore args))
+                                nil)
+                  :merge-fn (lambda (request)
+                              (setf merge-call request)
+                              (list :merge-status :remote-merged
+                                    :target-ref (getf request :target-ref)
+                                    :backend :remote))
+                  :kill-fn (lambda (&rest args)
+                             (declare (ignore args))
+                             t))))
+          (setf amoebum:*worker-supervisor* nil
+                amoebum::*worker-registry* (make-hash-table :test #'equal)
+                amoebum::*agent-registry* (make-hash-table :test #'equal)
+                amoebum::*swarm-registry* (make-hash-table :test #'equal)
+                amoebum::*next-worker-sequence* 0
+                amoebum::*next-agent-sequence* 0
+                amoebum::*swarm-counter* 0
+                amoebum::*current-config*
+                (let ((cfg (amoebum.config:load-config :project-root tmp-root)))
+                  (setf (gethash :swarm-delegation-mode (amoebum.config:config-values cfg)) :networked)
+                  cfg)
+                amoebum::*delegated-worktree-runtime-factory*
+                (lambda (&key backend worktree)
+                  (declare (ignore backend worktree))
+                  (amoebum:make-worktree-runtime
+                   :project-root tmp-root
+                   :backend :remote
+                   :coordinator coordinator)))
+          (let* ((worker (amoebum:spawn-worker
+                          :agent
+                          "worker networked remote merge"
+                          :label "worker networked remote merge"
+                          :timeout-seconds 10
+                          :worktree (amoebum:make-worktree-metadata
+                                     :id "wt-remote-worker"
+                                     :branch "sw4rm/worker-flow/node-1"
+                                     :path "/remote/wt-remote-worker/")))
+                 (wid (amoebum.workers:worker-record-id worker)))
+            (multiple-value-bind (status result)
+                (amoebum.workers:await-worker wid :timeout-seconds 15)
+              (is (eq :completed status))
+              (is (eq :swarm (getf result :backend)))
+              (is (eq :completed (getf result :status)))
+              (is (eq :remote-merged
+                      (getf (getf result :merge) :merge-status)))
+              (is (string= "sw4rm/workflow/worker-flow"
+                           (getf (getf result :merge) :target-ref))))
+            (is (string= "wt-remote-worker" (getf merge-call :worktree-id)))
+            (is (string= "sw4rm/worker-flow/node-1"
+                         (getf merge-call :worktree-branch)))
+            (is (string= "sw4rm/workflow/worker-flow"
+                         (getf merge-call :target-ref)))
+            (is (eq :swarm (getf merge-call :backend)))))
+      (setf amoebum:*worker-supervisor* old-supervisor
+            amoebum::*worker-registry* old-worker-registry
+            amoebum::*agent-registry* old-agent-registry
+            amoebum::*swarm-registry* old-swarm-registry
+            amoebum::*next-worker-sequence* old-worker-seq
+            amoebum::*next-agent-sequence* old-agent-seq
+            amoebum::*swarm-counter* old-swarm-counter
+            amoebum::*current-config* old-config
+            amoebum::*delegated-worktree-runtime-factory* old-runtime-factory))))
 
 (test runtime-agent-api-unifies-local-and-swarm-lookups
   "The shared runtime agent API should resolve both local and SW4RM-backed agents."
@@ -529,6 +638,101 @@
                 (or (amoebum:tool-error-reason condition) "")))
     (is (search "sw4rm/demo/other"
                 (or (amoebum:tool-error-reason condition) "")))))
+
+(test local-agent-shell-execution-uses-agent-scoped-secret-env
+  "Local delegated agents should receive agent-scoped secret env overrides during shell execution."
+  (let ((old-agent-registry amoebum::*agent-registry*)
+        (old-agent-seq amoebum::*next-agent-sequence*))
+    (unwind-protect
+         (with-worker-full-auto-permission-mode
+           (setf amoebum::*agent-registry* (make-hash-table :test #'equal)
+                 amoebum::*next-agent-sequence* 0)
+           (with-isolated-worker-secret-registry ("task-0001")
+             (sw4rm-sdk:local-registry-set-provider-secret
+              amoebum::*user-session-registry*
+              "task-0001"
+              "OPENAI_API_KEY"
+              "scoped-openai-key")
+             (let* ((worktree (amoebum:make-worktree-metadata
+                               :id "wt-local-secret-shell"
+                               :branch "sw4rm/secret-flow/node-shell"
+                               :path "/tmp/wt-local-secret-shell/"))
+                    (agent (amoebum:spawn-agent
+                            "local secret shell task"
+                            :worktree worktree
+                            :runner (lambda (_agent)
+                                      (declare (ignore _agent))
+                                      (getf (amoebum::%run-shell-command
+                                             "printf '%s' \"$OPENAI_API_KEY\""
+                                             "/tmp"
+                                             10
+                                             4096
+                                             :env-vars '(("OPENAI_API_KEY" . "attempted-override")))
+                                            :stdout))))
+                    (agent-id (amoebum:agent-record-id agent)))
+               (let ((status (%wait-for-runtime-agent-terminal-status
+                              agent-id
+                              :backend :local
+                              :timeout-ms 4000))
+                     (message ""))
+                 (setf message (or (amoebum:runtime-agent-error-message
+                                    agent-id
+                                    :backend :local)
+                                   ""))
+                 (is (eq :completed status) message)
+                 (is (string= "scoped-openai-key"
+                              (or (amoebum:runtime-agent-result
+                                   agent-id
+                                   :backend :local)
+                                  "")))))))
+      (setf amoebum::*agent-registry* old-agent-registry
+            amoebum::*next-agent-sequence* old-agent-seq))))
+
+(test local-agent-git-helper-uses-agent-scoped-secret-env
+  "Local delegated agents should receive agent-scoped secret env overrides during git helper execution."
+  (let ((old-agent-registry amoebum::*agent-registry*)
+        (old-agent-seq amoebum::*next-agent-sequence*))
+    (unwind-protect
+         (progn
+           (setf amoebum::*agent-registry* (make-hash-table :test #'equal)
+                 amoebum::*next-agent-sequence* 0)
+           (with-isolated-worker-secret-registry ("task-0001")
+             (sw4rm-sdk:local-registry-set-provider-secret
+              amoebum::*user-session-registry*
+              "task-0001"
+              "GITHUB_TOKEN"
+              "scoped-github-token")
+             (let* ((worktree (amoebum:make-worktree-metadata
+                               :id "wt-local-secret-git"
+                               :branch "sw4rm/secret-flow/node-git"
+                               :path "/tmp/wt-local-secret-git/"))
+                    (agent (amoebum:spawn-agent
+                            "local secret git task"
+                            :worktree worktree
+                            :runner (lambda (_agent)
+                                      (declare (ignore _agent))
+                                      (getf (amoebum::%git-run-bash-command
+                                             #P"/tmp/"
+                                             "printf '%s' \"$GITHUB_TOKEN\"")
+                                            :stdout))))
+                    (agent-id (amoebum:agent-record-id agent)))
+               (let ((status (%wait-for-runtime-agent-terminal-status
+                              agent-id
+                              :backend :local
+                              :timeout-ms 4000))
+                     (message ""))
+                 (setf message (or (amoebum:runtime-agent-error-message
+                                    agent-id
+                                    :backend :local)
+                                   ""))
+                 (is (eq :completed status) message)
+                 (is (string= "scoped-github-token"
+                              (or (amoebum:runtime-agent-result
+                                   agent-id
+                                   :backend :local)
+                                  "")))))))
+      (setf amoebum::*agent-registry* old-agent-registry
+            amoebum::*next-agent-sequence* old-agent-seq))))
 
 (test local-agent-shell-push-guard-blocks-wrong-worktree-branch
   "Local delegated agents should fail immediately when a shell command pushes a branch outside their assigned worktree."

@@ -1972,12 +1972,20 @@
            #:worktree-runtime-scratch-root
            #:worktree-runtime-lock-root
            #:worktree-runtime-coordinator
+           #:worktree-runtime-backend
+           #:worktree-runtime-local-p
+           #:worktree-runtime-remote-p
            #:make-worktree-runtime
            #:current-worktree-runtime
            #:default-worktree-repo-root
            #:default-worktree-scratch-root
            #:default-worktree-lock-root
            #:worktree-runtime-path
+           #:spawn-worktree
+           #:collect-worktree
+           #:inspect-worktree
+           #:merge-worktree
+           #:kill-worktree
            #:spawn-local-worktree
            #:collect-local-worktree
            #:kill-local-worktree

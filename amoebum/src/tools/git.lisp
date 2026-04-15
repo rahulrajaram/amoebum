@@ -39,27 +39,42 @@
       (error "Git project root does not exist: ~A." (coerce-path-string directory)))
     directory))
 
+(defun %git-delegated-process-env ()
+  (when (current-delegated-agent-id)
+    (%coerce-process-env
+     (shell-env-to-string-list
+      (assemble-shell-env
+       (merge-shell-environment
+        (%default-shell-environment)
+        :env-overrides (current-delegated-agent-secret-env-overrides)
+        :inherit-env-p t
+        :filter-sensitive-p t))))))
+
 (defun %git-run-command (root args)
-  (multiple-value-bind (stdout stderr exit-code)
-      (uiop:run-program (append (list "git") args)
-                        :directory root
-                        :ignore-error-status t
-                        :output :string
-                        :error-output :string)
+  (let ((process-env (%git-delegated-process-env)))
+    (multiple-value-bind (stdout stderr exit-code)
+        (uiop:run-program (append (list "git") args)
+                          :directory root
+                          :ignore-error-status t
+                          :output :string
+                          :error-output :string
+                          :env process-env)
     (list :stdout (or stdout "")
           :stderr (or stderr "")
-          :exit-code (or exit-code 0))))
+          :exit-code (or exit-code 0)))))
 
 (defun %git-run-bash-command (root command)
-  (multiple-value-bind (stdout stderr exit-code)
-      (uiop:run-program (list "bash" "-lc" command)
-                        :directory root
-                        :ignore-error-status t
-                        :output :string
-                        :error-output :string)
+  (let ((process-env (%git-delegated-process-env)))
+    (multiple-value-bind (stdout stderr exit-code)
+        (uiop:run-program (list "bash" "-lc" command)
+                          :directory root
+                          :ignore-error-status t
+                          :output :string
+                          :error-output :string
+                          :env process-env)
     (list :stdout (or stdout "")
           :stderr (or stderr "")
-          :exit-code (or exit-code 0))))
+          :exit-code (or exit-code 0)))))
 
 (defun %git-publish-lifecycle-event (event-type payload &key (severity :info))
   (handler-case

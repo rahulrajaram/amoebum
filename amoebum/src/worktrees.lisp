@@ -9,11 +9,12 @@
 
 (defstruct (worktree-runtime
             (:constructor %make-worktree-runtime
-                (&key repo-root scratch-root lock-root coordinator)))
+                (&key repo-root scratch-root lock-root coordinator backend)))
   (repo-root nil :type pathname)
   (scratch-root nil :type pathname)
   (lock-root nil :type pathname)
-  coordinator)
+  coordinator
+  (backend :local :type keyword))
 
 (defstruct (worktree-metadata
             (:constructor %make-worktree-metadata
@@ -153,6 +154,60 @@
          (%strip-live-worktree-branch-ref
           (worktree-metadata-branch metadata)))))
 
+(defun %maybe-user-session-registry ()
+  (let ((symbol (find-symbol "*USER-SESSION-REGISTRY*" :amoebum)))
+    (when (and symbol (boundp symbol))
+      (let ((value (symbol-value symbol)))
+        (when (ignore-errors (typep value 'sw4rm-sdk:local-registry))
+          value)))))
+
+(defun %worktree-env-name-valid-p (name)
+  (and (stringp name)
+       (plusp (length name))
+       (let ((first (char name 0)))
+         (and (or (alpha-char-p first)
+                  (char= first #\_))
+              (loop for char across name
+                    always (or (alpha-char-p char)
+                               (digit-char-p char)
+                               (char= char #\_)))))))
+
+(defun %delegated-agent-provider-secret-keys (registry agent-id)
+  (sort (copy-list
+         (or (ignore-errors
+               (sw4rm-sdk:local-registry-list-provider-secret-keys
+                registry
+                agent-id
+                agent-id))
+             '()))
+        #'string<))
+
+(defun current-delegated-agent-secret-env-overrides (&optional agent-id)
+  (let* ((resolved-agent-id
+           (%normalize-worktree-string
+            (or agent-id
+                (current-delegated-agent-id))))
+         (registry (%maybe-user-session-registry)))
+    (when (and registry resolved-agent-id)
+      (let ((overrides '()))
+        (dolist (key (%delegated-agent-provider-secret-keys
+                      registry
+                      resolved-agent-id)
+                     (nreverse overrides))
+          (let* ((env-name (%normalize-worktree-string key))
+                 (secret-value
+                   (ignore-errors
+                     (sw4rm-sdk:local-registry-resolve-provider-secret
+                      registry
+                      resolved-agent-id
+                      resolved-agent-id
+                      env-name
+                      :signal-if-missing nil))))
+            (when (and (%worktree-env-name-valid-p env-name)
+                       (stringp secret-value)
+                       (plusp (length secret-value)))
+              (push (cons env-name secret-value) overrides))))))))
+
 (defun %worktree-project-root (&key project-root config)
   (uiop:ensure-directory-pathname
    (or project-root
@@ -178,7 +233,21 @@
                         (default-worktree-scratch-root :project-root project-root
                                                        :config config)))))
 
-(defun make-worktree-runtime (&key project-root config repo-root scratch-root lock-root)
+(defun %normalize-worktree-backend (value)
+  (case value
+    ((nil :local) :local)
+    ((:remote :sw4rm :networked) :remote)
+    (otherwise
+     (error "Unsupported worktree backend ~S." value))))
+
+(defun %default-worktree-backend (&optional (config (ignore-errors (current-config))))
+  (let ((mode (ignore-errors (%configured-swarm-delegation-mode config))))
+    (if (eq mode :networked)
+        :remote
+        :local)))
+
+(defun make-worktree-runtime (&key project-root config repo-root scratch-root lock-root
+                                   coordinator backend)
   (let* ((resolved-repo-root
            (uiop:ensure-directory-pathname
             (or repo-root
@@ -191,19 +260,32 @@
          (resolved-lock-root
            (uiop:ensure-directory-pathname
             (or lock-root
-                (default-worktree-lock-root :scratch-root resolved-scratch-root)))))
+                (default-worktree-lock-root :scratch-root resolved-scratch-root))))
+         (resolved-backend (%normalize-worktree-backend
+                            (or backend
+                                (and coordinator :remote)
+                                (%default-worktree-backend config))))
+         (resolved-coordinator (or coordinator
+                                  (sw4rm-sdk:make-git-worktree-coordinator
+                                   resolved-repo-root
+                                   :lock-dir resolved-lock-root))))
     (ensure-directories-exist resolved-scratch-root)
     (ensure-directories-exist resolved-lock-root)
     (%make-worktree-runtime
      :repo-root resolved-repo-root
      :scratch-root resolved-scratch-root
      :lock-root resolved-lock-root
-     :coordinator (sw4rm-sdk:make-git-worktree-coordinator
-                   resolved-repo-root
-                   :lock-dir resolved-lock-root))))
+     :backend resolved-backend
+     :coordinator resolved-coordinator)))
 
 (defun current-worktree-runtime (&optional (config (ignore-errors (current-config))))
   (make-worktree-runtime :config config))
+
+(defun worktree-runtime-local-p (runtime)
+  (eq (worktree-runtime-backend runtime) :local))
+
+(defun worktree-runtime-remote-p (runtime)
+  (eq (worktree-runtime-backend runtime) :remote))
 
 (defun %worktree-id-path-component (worktree-id)
   (let* ((raw (string-downcase
@@ -1624,11 +1706,192 @@
                  :error-message (princ-to-string condition)
                  :reason :handoff-creation-failed))))
            (otherwise
-            (%local-worktree-merge-result
+           (%local-worktree-merge-result
              merge-target
              :blocked
              :preflight preflight
              :reason (getf preflight :status)))))))))
+
+(defun %ensure-worktree-runtime (runtime)
+  (check-type runtime worktree-runtime)
+  runtime)
+
+(defun spawn-worktree (runtime worktree-id branch &key
+                              base-ref
+                              worktree
+                              workflow-id
+                              node-id
+                              worktree-path)
+  (%ensure-worktree-runtime runtime)
+  (if (worktree-runtime-local-p runtime)
+      (spawn-local-worktree runtime
+                            worktree-id
+                            branch
+                            :base-ref base-ref
+                            :worktree worktree
+                            :workflow-id workflow-id
+                            :node-id node-id
+                            :worktree-path worktree-path)
+      (let* ((metadata (resolve-worktree-metadata :runtime runtime
+                                                  :worktree worktree
+                                                  :worktree-id worktree-id
+                                                  :worktree-branch branch
+                                                  :worktree-path worktree-path
+                                                  :workflow-id workflow-id
+                                                  :node-id node-id))
+             (resolved-id (and metadata (worktree-metadata-id metadata)))
+             (resolved-branch (and metadata (worktree-metadata-branch metadata)))
+             (resolved-path (and metadata (worktree-metadata-path metadata))))
+        (unless resolved-id
+          (error "Unable to resolve a remote worktree id from ~S."
+                 (list :worktree worktree
+                       :worktree-id worktree-id
+                       :worktree-branch branch
+                       :workflow-id workflow-id
+                       :node-id node-id)))
+        (sw4rm-sdk:spawn-worktree (worktree-runtime-coordinator runtime)
+                                  resolved-id
+                                  resolved-path
+                                  resolved-branch
+                                  :base-ref (or base-ref "HEAD")))))
+
+(defun collect-worktree (runtime worktree-id &key worktree worktree-path worktree-branch)
+  (%ensure-worktree-runtime runtime)
+  (if (worktree-runtime-local-p runtime)
+      (collect-local-worktree runtime
+                              worktree-id
+                              :worktree worktree
+                              :worktree-path worktree-path
+                              :worktree-branch worktree-branch)
+      (let* ((metadata (resolve-worktree-metadata :runtime runtime
+                                                  :worktree worktree
+                                                  :worktree-id worktree-id
+                                                  :worktree-path worktree-path
+                                                  :worktree-branch worktree-branch))
+             (resolved-id (or (and metadata (worktree-metadata-id metadata))
+                              (%normalize-worktree-string worktree-id)))
+             (collected (sw4rm-sdk:collect-worktree
+                         (worktree-runtime-coordinator runtime)
+                         resolved-id))
+             (record (getf collected :record))
+             (live (getf collected :live))
+             (status (inspect-worktree runtime
+                                       resolved-id
+                                       :worktree metadata
+                                       :worktree-path worktree-path
+                                       :worktree-branch worktree-branch)))
+        (list :record (or record
+                          (and metadata
+                               (list :worktree-id (worktree-metadata-id metadata)
+                                     :path (worktree-metadata-path metadata)
+                                     :branch (worktree-metadata-branch metadata)
+                                     :state :remote)))
+              :live live
+              :status status))))
+
+(defun inspect-worktree (runtime worktree-id &key
+                                worktree
+                                worktree-path
+                                worktree-branch
+                                base-ref)
+  (%ensure-worktree-runtime runtime)
+  (if (worktree-runtime-local-p runtime)
+      (inspect-local-worktree :runtime runtime
+                              :worktree worktree
+                              :worktree-id worktree-id
+                              :worktree-path worktree-path
+                              :worktree-branch worktree-branch
+                              :base-ref base-ref)
+      (let* ((metadata (resolve-worktree-metadata :runtime runtime
+                                                  :worktree worktree
+                                                  :worktree-id worktree-id
+                                                  :worktree-path worktree-path
+                                                  :worktree-branch worktree-branch))
+             (resolved-id (or (and metadata (worktree-metadata-id metadata))
+                              (%normalize-worktree-string worktree-id)))
+             (inspection (sw4rm-sdk:inspect-worktree
+                          (worktree-runtime-coordinator runtime)
+                          resolved-id
+                          :worktree-path (and metadata
+                                              (worktree-metadata-path metadata))
+                          :branch (and metadata
+                                       (worktree-metadata-branch metadata)))))
+        (append (list :id (or (getf inspection :id)
+                              (and metadata (worktree-metadata-id metadata)))
+                      :path (or (getf inspection :path)
+                                (and metadata (worktree-metadata-path metadata)))
+                      :branch (or (getf inspection :branch)
+                                  (and metadata (worktree-metadata-branch metadata)))
+                      :repo-root (and (worktree-runtime-repo-root runtime)
+                                      (%worktree-path-namestring
+                                       (worktree-runtime-repo-root runtime)))
+                      :backend :remote)
+                inspection))))
+
+(defun merge-worktree (&key runtime
+                            repo-root
+                            worktree
+                            worktree-id
+                            worktree-path
+                            worktree-branch
+                            target-ref
+                            (delete-worktree-p t)
+                            agent-id
+                            backend
+                            task
+                            result)
+  (%ensure-worktree-runtime runtime)
+  (if (worktree-runtime-local-p runtime)
+      (merge-local-worktree :runtime runtime
+                            :repo-root repo-root
+                            :worktree worktree
+                            :worktree-id worktree-id
+                            :worktree-path worktree-path
+                            :worktree-branch worktree-branch
+                            :target-ref target-ref
+                            :delete-worktree-p delete-worktree-p
+                            :agent-id agent-id
+                            :backend backend
+                            :task task
+                            :result result)
+      (sw4rm-sdk:merge-worktree
+       (worktree-runtime-coordinator runtime)
+       (list :repo-root (and repo-root (%worktree-path-namestring repo-root))
+             :worktree (worktree-metadata-plist
+                        (resolve-worktree-metadata :runtime runtime
+                                                   :worktree worktree
+                                                   :worktree-id worktree-id
+                                                   :worktree-path worktree-path
+                                                   :worktree-branch worktree-branch))
+             :worktree-id (%normalize-worktree-string worktree-id)
+             :worktree-path (%normalize-worktree-path-string worktree-path)
+             :worktree-branch (%normalize-worktree-string worktree-branch)
+             :target-ref (%normalize-worktree-string target-ref)
+             :delete-worktree-p delete-worktree-p
+             :agent-id (%normalize-worktree-string agent-id)
+             :backend (or backend :remote)
+             :task task
+             :result result))))
+
+(defun kill-worktree (runtime worktree-id &key force worktree worktree-path worktree-branch)
+  (%ensure-worktree-runtime runtime)
+  (if (worktree-runtime-local-p runtime)
+      (kill-local-worktree runtime
+                           worktree-id
+                           :force force
+                           :worktree worktree
+                           :worktree-path worktree-path
+                           :worktree-branch worktree-branch)
+      (let* ((metadata (resolve-worktree-metadata :runtime runtime
+                                                  :worktree worktree
+                                                  :worktree-id worktree-id
+                                                  :worktree-path worktree-path
+                                                  :worktree-branch worktree-branch))
+             (resolved-id (or (and metadata (worktree-metadata-id metadata))
+                              (%normalize-worktree-string worktree-id))))
+        (sw4rm-sdk:kill-worktree (worktree-runtime-coordinator runtime)
+                                 resolved-id
+                                 :force force))))
 
 (defun spawn-local-worktree (runtime worktree-id branch &key
                                                        base-ref

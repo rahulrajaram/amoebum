@@ -149,6 +149,48 @@
   (when env-vars
     (mapcar #'%coerce-process-env-entry env-vars)))
 
+(defun %process-env-entry-keyword (entry)
+  (car entry))
+
+(defun %process-env-override-pair (entry)
+  (cond
+    ((and (consp entry) (keywordp (car entry)))
+     (cons (string-upcase (symbol-name (car entry)))
+           (or (cdr entry) "")))
+    ((and (consp entry) (stringp (car entry)))
+     (cons (car entry) (or (cdr entry) "")))
+    ((stringp entry)
+     (multiple-value-bind (name value)
+         (%split-env-assignment entry)
+       (cons name value)))
+    (t
+     (error "Unsupported environment entry ~S." entry))))
+
+(defun %dedupe-process-env (entries)
+  (let ((seen (make-hash-table :test #'eq))
+        (result '()))
+    (dolist (entry (reverse entries) (nreverse result))
+      (let ((key (%process-env-entry-keyword entry)))
+        (unless (gethash key seen)
+          (setf (gethash key seen) t)
+          (push entry result))))))
+
+(defun %effective-process-env (env-vars)
+  (if (current-delegated-agent-id)
+      (let* ((scoped-overrides (current-delegated-agent-secret-env-overrides))
+             (shell-env (merge-shell-environment
+                         (%default-shell-environment)
+                         :env-overrides (append (mapcar #'%process-env-override-pair
+                                                        (or env-vars '()))
+                                                scoped-overrides)
+                         :inherit-env-p t
+                         :filter-sensitive-p t))
+             (scoped-env
+               (%coerce-process-env
+                (shell-env-to-string-list (assemble-shell-env shell-env)))))
+        (%dedupe-process-env scoped-env))
+      (%coerce-process-env env-vars)))
+
 (defun %utf8-char-size (char)
   (let ((code (char-code char)))
     (cond
@@ -267,7 +309,7 @@
                                 max-output-chars max-output-bytes max-output-lines
                                 &key shell-executable profile-files env-vars)
   (let* ((resolved-shell (or shell-executable "bash"))
-         (process-env (%coerce-process-env env-vars))
+         (process-env (%effective-process-env env-vars))
          (prepared-command (if profile-files
                                (wrap-command-with-shell-profile-init
                                 command profile-files)
@@ -693,7 +735,7 @@
                                    :env-vars env-vars)
     #-sbcl
     (let* ((resolved-shell (or shell-executable "bash"))
-           (process-env (%coerce-process-env env-vars))
+           (process-env (%effective-process-env env-vars))
            (prepared-command (if profile-files
                                  (wrap-command-with-shell-profile-init
                                   command profile-files)

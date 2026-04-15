@@ -106,6 +106,104 @@
                          (amoebum:worktree-runtime-lock-root runtime)))))
       (%delete-directory-tree-safe tmp-root))))
 
+(test worktree-runtime-remote-coordinator-dispatches-through-backend-neutral-seam
+  "Remote runtimes should preserve metadata and dispatch create/inspect/collect/merge/kill through coordinator callbacks."
+  (let* ((tmp-root (%make-temp-directory "amoebum-worktree-runtime"))
+         (project-root (merge-pathnames #P"repo/" tmp-root))
+         (spawn-call nil)
+         (collect-call nil)
+         (inspect-call nil)
+         (merge-call nil)
+         (kill-call nil)
+         (coordinator
+           (sw4rm-sdk:make-remote-worktree-coordinator
+            :spawn-fn (lambda (worktree-id worktree-path branch &key base-ref)
+                        (setf spawn-call (list :id worktree-id
+                                               :path worktree-path
+                                               :branch branch
+                                               :base-ref base-ref))
+                        (list :worktree-id worktree-id
+                              :path worktree-path
+                              :branch branch
+                              :state :spawned))
+            :collect-fn (lambda (worktree-id)
+                          (setf collect-call worktree-id)
+                          (list :record (list :worktree-id worktree-id
+                                              :path "/remote/wt-347/"
+                                              :branch "sw4rm/flow-347/node-a"
+                                              :state :spawned)
+                                :live (list :path "/remote/wt-347/"
+                                            :branch "refs/heads/sw4rm/flow-347/node-a")))
+            :inspect-fn (lambda (worktree-id &key worktree-path branch)
+                          (setf inspect-call (list :id worktree-id
+                                                   :path worktree-path
+                                                   :branch branch))
+                          (list :id worktree-id
+                                :path (or worktree-path "/remote/wt-347/")
+                                :branch (or branch "sw4rm/flow-347/node-a")
+                                :lifecycle-state :active
+                                :remote-state :ok))
+            :merge-fn (lambda (request)
+                        (setf merge-call request)
+                        (list :merge-status :remote-merged
+                              :target-ref (getf request :target-ref)
+                              :backend :remote))
+            :kill-fn (lambda (worktree-id &key force)
+                       (setf kill-call (list :id worktree-id :force force))
+                       t)))
+         (runtime (amoebum:make-worktree-runtime
+                   :project-root project-root
+                   :backend :remote
+                   :coordinator coordinator)))
+    (unwind-protect
+         (let* ((spawned (amoebum:spawn-worktree runtime
+                                                 nil
+                                                 nil
+                                                 :workflow-id "Flow 347"
+                                                 :node-id "Node A"
+                                                 :base-ref "origin/main"))
+                (collected (amoebum:collect-worktree runtime
+                                                     "sw4rm-flow-347-node-a"))
+                (inspected (amoebum:inspect-worktree runtime
+                                                     "sw4rm-flow-347-node-a"
+                                                     :worktree-branch "sw4rm/flow-347/node-a"))
+                (merged (amoebum:merge-worktree
+                         :runtime runtime
+                         :worktree-id "sw4rm-flow-347-node-a"
+                         :worktree-branch "sw4rm/flow-347/node-a"
+                         :target-ref "sw4rm/workflow/flow-347"
+                         :agent-id "agent-347"
+                         :backend :swarm
+                         :task "merge remote worktree"
+                         :result '(:status :completed))))
+           (declare (ignore spawned))
+           (is (amoebum:worktree-runtime-remote-p runtime))
+           (is (not (amoebum:worktree-runtime-local-p runtime)))
+           (is (string= "sw4rm-flow-347-node-a" (getf spawn-call :id)))
+           (is (string= "sw4rm/flow-347/node-a" (getf spawn-call :branch)))
+           (is (string= "origin/main" (getf spawn-call :base-ref)))
+           (is (search ".amoebum/worktrees/sw4rm-flow-347-node-a/"
+                       (getf spawn-call :path)))
+           (is (string= "sw4rm-flow-347-node-a" collect-call))
+           (is (string= "sw4rm/flow-347/node-a"
+                        (getf inspected :branch)))
+           (is (eq :remote (getf inspected :backend)))
+           (is (eq :active (getf inspected :lifecycle-state)))
+           (is (string= "sw4rm-flow-347-node-a" (getf inspect-call :id)))
+           (is (string= "sw4rm-flow-347-node-a"
+                        (getf (getf collected :record) :worktree-id)))
+           (is (eq :remote (getf (getf collected :status) :backend)))
+           (is (eq :remote-merged (getf merged :merge-status)))
+           (is (string= "sw4rm/workflow/flow-347" (getf merge-call :target-ref)))
+           (is (string= "sw4rm-flow-347-node-a" (getf merge-call :worktree-id)))
+           (is (string= "sw4rm/flow-347/node-a" (getf merge-call :worktree-branch)))
+           (is (eq :swarm (getf merge-call :backend)))
+           (is-true (getf merge-call :worktree))
+           (is (eq t (amoebum:kill-worktree runtime "sw4rm-flow-347-node-a" :force t)))
+           (is (string= "sw4rm-flow-347-node-a" (getf kill-call :id)))
+           (is-true (getf kill-call :force)))
+      (%delete-directory-tree-safe tmp-root))))
+
 (test worktree-runtime-resolves-workflow-node-naming
   "resolve-worktree-metadata should use the sw4rm/<workflow>/<node> convention and local runtime path."
   (let* ((tmp-root (%make-temp-directory "amoebum-worktree-runtime"))

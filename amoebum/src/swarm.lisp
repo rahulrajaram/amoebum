@@ -112,28 +112,19 @@
                           :metadata (%swarm-status-metadata :cancelling))
   agent)
 
-(defun %maybe-merge-swarm-worktree (agent status result)
-  (when (and (eq status :completed)
-             (swarm-agent-worktree agent))
-    (handler-case
-        (merge-local-worktree
-         :worktree (swarm-agent-worktree agent)
-         :agent-id (swarm-agent-id agent)
-         :backend :swarm
-         :task (swarm-agent-task agent)
-         :result result)
-      (error (condition)
-        (list :merge-status :error
-              :reason :merge-helper-failed
-              :error-message (princ-to-string condition))))))
-
 (defun %swarm-mark-terminal (agent status result error-message &key timeout-seconds stdout stderr signal-name)
   (let ((backing-agent (swarm-agent-backing-agent agent))
         (metadata (%swarm-status-metadata status
                                           :timeout-seconds timeout-seconds
                                           :error-message error-message))
         (finished-ms (%agent-now-ms))
-        (worktree-merge (%maybe-merge-swarm-worktree agent status result)))
+        (worktree-merge (%maybe-finalize-runtime-worktree
+                         (swarm-agent-worktree agent)
+                         status
+                         :agent-id (swarm-agent-id agent)
+                         :backend :swarm
+                         :task (swarm-agent-task agent)
+                         :result result)))
     (when backing-agent
       (setf (agent-record-status backing-agent) status
             (agent-record-finished-ms backing-agent) finished-ms
@@ -154,7 +145,6 @@
     (setf (swarm-agent-signal-name agent) signal-name))
   (when timeout-seconds
     (setf (swarm-agent-timeout-seconds agent) timeout-seconds))
-  (%maybe-mark-swarm-worktree-abandoned agent status)
   (case status
     (:completed
      (%swarm-transition-safe agent :completed :metadata metadata))
@@ -173,21 +163,6 @@
       :cancelled
       :completed))
 
-(defun %maybe-mark-swarm-worktree-abandoned (agent status)
-  (when (and (member status '(:failed :cancelled :timeout) :test #'eq)
-             (swarm-agent-worktree agent))
-    (let ((finished-at (get-universal-time)))
-      (ignore-errors
-        (mark-local-worktree-abandoned
-         :worktree (swarm-agent-worktree agent)
-         :status status
-         :finished-at finished-at))
-      (ignore-errors
-        (cleanup-abandoned-local-worktree
-         :worktree (swarm-agent-worktree agent)
-         :status status
-         :finished-at finished-at)))))
-
 ;;; --- Lifecycle ---
 
 (defun spawn-swarm-agent (task &key
@@ -204,6 +179,7 @@ NXT-017: Accepts RETRY-COUNT (number of prior retries) and RETRY-POLICY
 NXT-018: Records heartbeat-at and last-output-at timestamps on the agent struct."
   (let* ((agent-id (or id (%next-swarm-id)))
          (spawn-time (get-universal-time))
+         (worktree-runtime-factory *delegated-worktree-runtime-factory*)
          (worktree-metadata (coerce-worktree-metadata :worktree worktree))
          (runner-agent (%make-agent-record
                         :id agent-id
@@ -243,79 +219,81 @@ NXT-018: Records heartbeat-at and last-output-at timestamps on the agent struct.
     (setf (swarm-agent-thread agent)
           (bt:make-thread
            (lambda ()
-             (let ((stdout-stream (make-string-output-stream))
-                   (stderr-stream (make-string-output-stream))
-                   (result nil)
-                   (status :completed)
-                   (error-message nil)
-                   (terminal-signal-name nil))
-               (setf (swarm-agent-heartbeat-at agent) (get-universal-time))
-               (%swarm-mark-running agent)
-               (handler-case
-                   (with-delegated-agent-worktree-context
-                       (:agent-id (swarm-agent-id agent)
-                        :backend :swarm
-                        :worktree (swarm-agent-worktree agent))
-                     (let ((*standard-output* stdout-stream)
-                           (*error-output* stderr-stream))
-                       (setf result
-                             #+sbcl
-                             (if (and timeout-seconds
-                                      (numberp timeout-seconds)
-                                      (> timeout-seconds 0))
-                                 (sb-ext:with-timeout timeout-seconds
+             (let ((*delegated-worktree-runtime-factory*
+                     worktree-runtime-factory))
+               (let ((stdout-stream (make-string-output-stream))
+                     (stderr-stream (make-string-output-stream))
+                     (result nil)
+                     (status :completed)
+                     (error-message nil)
+                     (terminal-signal-name nil))
+                 (setf (swarm-agent-heartbeat-at agent) (get-universal-time))
+                 (%swarm-mark-running agent)
+                 (handler-case
+                     (with-delegated-agent-worktree-context
+                         (:agent-id (swarm-agent-id agent)
+                          :backend :swarm
+                          :worktree (swarm-agent-worktree agent))
+                       (let ((*standard-output* stdout-stream)
+                             (*error-output* stderr-stream))
+                         (setf result
+                               #+sbcl
+                               (if (and timeout-seconds
+                                        (numberp timeout-seconds)
+                                        (> timeout-seconds 0))
+                                   (sb-ext:with-timeout timeout-seconds
+                                     (funcall agent-runner runner-agent))
                                    (funcall agent-runner runner-agent))
-                                 (funcall agent-runner runner-agent))
-                             #-sbcl
-                             (funcall agent-runner runner-agent)
-                             status (%swarm-runner-finished-status runner-agent))))
-                 (agent-cancelled (condition)
-                   (setf status :cancelled
-                         terminal-signal-name "SIGTERM"
-                         error-message (princ-to-string condition)))
-                 #+sbcl
-                 (sb-ext:timeout (_condition)
-                   (setf status :timeout
-                         terminal-signal-name "SIGALRM"
-                         error-message (format nil
-                                               "Swarm agent ~A timed out after ~A seconds."
-                                               agent-id
-                                               timeout-seconds)))
-                 (error (condition)
-                   (if (agent-record-cancel-requested-p runner-agent)
-                       (setf status :cancelled
-                             terminal-signal-name "SIGTERM"
-                             error-message (princ-to-string condition))
-                       (setf status :failed
-                             error-message (princ-to-string condition)))))
-               (let ((stdout-text (get-output-stream-string stdout-stream))
-                     (stderr-text (get-output-stream-string stderr-stream)))
-                 (when (or (plusp (length stdout-text))
-                           (plusp (length stderr-text)))
-                   (setf (swarm-agent-last-output-at agent) (get-universal-time)))
-                 (%swarm-mark-terminal agent status result error-message
-                                       :timeout-seconds timeout-seconds
-                                       :signal-name terminal-signal-name
-                                       :stdout stdout-text
-                                       :stderr stderr-text))
-               (publish event-bus
-                        (make-event :type (if (eq status :cancelled)
-                                              +event-type-agent-cancelled+
-                                              +event-type-agent-complete+)
-                                    :source "swarm"
-                                    :payload (append
-                                              (list :id agent-id
-                                                    :status status
-                                                    :task task
-                                                    :signal-name terminal-signal-name
-                                                    :retry-count
-                                                    (swarm-agent-retry-count agent)
-                                                    :error-message error-message)
-                                              (let ((metadata
-                                                      (worktree-metadata-plist
-                                                       (swarm-agent-worktree agent))))
-                                                (when metadata
-                                                  (list :worktree metadata))))))))
+                               #-sbcl
+                               (funcall agent-runner runner-agent)
+                               status (%swarm-runner-finished-status runner-agent))))
+                   (agent-cancelled (condition)
+                     (setf status :cancelled
+                           terminal-signal-name "SIGTERM"
+                           error-message (princ-to-string condition)))
+                   #+sbcl
+                   (sb-ext:timeout (_condition)
+                     (setf status :timeout
+                           terminal-signal-name "SIGALRM"
+                           error-message (format nil
+                                                 "Swarm agent ~A timed out after ~A seconds."
+                                                 agent-id
+                                                 timeout-seconds)))
+                   (error (condition)
+                     (if (agent-record-cancel-requested-p runner-agent)
+                         (setf status :cancelled
+                               terminal-signal-name "SIGTERM"
+                               error-message (princ-to-string condition))
+                         (setf status :failed
+                               error-message (princ-to-string condition)))))
+                 (let ((stdout-text (get-output-stream-string stdout-stream))
+                       (stderr-text (get-output-stream-string stderr-stream)))
+                   (when (or (plusp (length stdout-text))
+                             (plusp (length stderr-text)))
+                     (setf (swarm-agent-last-output-at agent) (get-universal-time)))
+                   (%swarm-mark-terminal agent status result error-message
+                                         :timeout-seconds timeout-seconds
+                                         :signal-name terminal-signal-name
+                                         :stdout stdout-text
+                                         :stderr stderr-text))
+                 (publish event-bus
+                          (make-event :type (if (eq status :cancelled)
+                                                +event-type-agent-cancelled+
+                                                +event-type-agent-complete+)
+                                      :source "swarm"
+                                      :payload (append
+                                                (list :id agent-id
+                                                      :status status
+                                                      :task task
+                                                      :signal-name terminal-signal-name
+                                                      :retry-count
+                                                      (swarm-agent-retry-count agent)
+                                                      :error-message error-message)
+                                                (let ((metadata
+                                                        (worktree-metadata-plist
+                                                         (swarm-agent-worktree agent))))
+                                                  (when metadata
+                                                    (list :worktree metadata)))))))))
            :name (format nil "swarm-~A" agent-id)))
     agent))
 

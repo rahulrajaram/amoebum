@@ -66,6 +66,11 @@
 
 (defparameter *next-agent-sequence* 0)
 
+(defparameter *delegated-worktree-runtime-factory* nil
+  "Optional callback that returns a worktree runtime for delegated terminal flows.
+Called with keyword arguments `:backend` and `:worktree`. When NIL, delegated
+completion falls back to the landed local worktree runtime seam.")
+
 (defmacro %with-agent-registry-lock (() &body body)
   `(bordeaux-threads:with-lock-held (*agent-registry-lock*)
      ,@body))
@@ -327,6 +332,96 @@
           '(:completed :failed :cancelled :timeout)
           :test #'eq))
 
+(defun %maybe-delegated-worktree-runtime (&key backend worktree)
+  (let* ((metadata (coerce-worktree-metadata :worktree worktree))
+         (runtime
+           (and *delegated-worktree-runtime-factory*
+                (funcall *delegated-worktree-runtime-factory*
+                         :backend backend
+                         :worktree metadata))))
+    (when runtime
+      (check-type runtime worktree-runtime))
+    runtime))
+
+(defun %cleanup-terminal-worktree (runtime worktree status finished-at)
+  (if (worktree-runtime-local-p runtime)
+      (progn
+        (ignore-errors
+          (mark-local-worktree-abandoned
+           :runtime runtime
+           :worktree worktree
+           :status status
+           :finished-at finished-at))
+        (ignore-errors
+          (cleanup-abandoned-local-worktree
+           :runtime runtime
+           :worktree worktree
+           :status status
+           :finished-at finished-at)))
+      (ignore-errors
+        (kill-worktree runtime nil :force t :worktree worktree))))
+
+(defun %maybe-finalize-runtime-worktree (worktree status &key agent-id backend task result)
+  (let ((metadata (coerce-worktree-metadata :worktree worktree)))
+    (when metadata
+      (let ((runtime (%maybe-delegated-worktree-runtime :backend backend
+                                                        :worktree metadata)))
+        (if runtime
+            (case status
+              (:completed
+               (handler-case
+                   (merge-worktree
+                    :runtime runtime
+                    :worktree metadata
+                    :worktree-id (worktree-metadata-id metadata)
+                    :worktree-path (worktree-metadata-path metadata)
+                    :worktree-branch (worktree-metadata-branch metadata)
+                    :target-ref (resolve-worktree-workflow-branch :worktree metadata)
+                    :agent-id agent-id
+                    :backend backend
+                    :task task
+                    :result result)
+                 (error (condition)
+                   (list :merge-status :error
+                         :reason :merge-helper-failed
+                         :error-message (princ-to-string condition)))))
+              ((:failed :cancelled :timeout)
+               (%cleanup-terminal-worktree runtime
+                                           metadata
+                                           status
+                                           (get-universal-time))
+               nil)
+              (otherwise
+               nil))
+            (case status
+              (:completed
+               (handler-case
+                   (merge-local-worktree
+                    :worktree metadata
+                    :agent-id agent-id
+                    :backend backend
+                    :task task
+                    :result result)
+                 (error (condition)
+                   (list :merge-status :error
+                         :reason :merge-helper-failed
+                         :error-message (princ-to-string condition)))))
+              ((:failed :cancelled :timeout)
+               (let ((finished-at (get-universal-time)))
+                 (ignore-errors
+                   (mark-local-worktree-abandoned
+                    :worktree metadata
+                    :status status
+                    :finished-at finished-at))
+                 (ignore-errors
+                   (cleanup-abandoned-local-worktree
+                    :worktree metadata
+                    :status status
+                    :finished-at finished-at)))
+               nil)
+              (otherwise
+               nil)))))))
+
 (defun %default-agent-runner (agent)
   (format t "Running ~A agent ~A~%"
           (string-downcase (symbol-name (agent-record-type agent)))
@@ -411,36 +506,6 @@ lifecycle fully inspectable within the same runtime."
     (:failed :failed)
     (otherwise :complete)))
 
-(defun %maybe-mark-agent-worktree-abandoned (agent status)
-  (when (and (member status '(:failed :cancelled :timeout) :test #'eq)
-             (agent-record-worktree agent))
-    (let ((finished-at (get-universal-time)))
-      (ignore-errors
-        (mark-local-worktree-abandoned
-         :worktree (agent-record-worktree agent)
-         :status status
-         :finished-at finished-at))
-      (ignore-errors
-        (cleanup-abandoned-local-worktree
-         :worktree (agent-record-worktree agent)
-         :status status
-         :finished-at finished-at)))))
-
-(defun %maybe-merge-agent-worktree (agent status)
-  (when (and (eq status :completed)
-             (agent-record-worktree agent))
-    (handler-case
-        (merge-local-worktree
-         :worktree (agent-record-worktree agent)
-         :agent-id (agent-record-id agent)
-         :backend :local
-         :task (agent-record-task agent)
-         :result (agent-record-result agent))
-      (error (condition)
-        (list :merge-status :error
-              :reason :merge-helper-failed
-              :error-message (princ-to-string condition))))))
-
 (defun %finish-agent! (agent status result stdout stderr error-message)
   (let ((now (%agent-now-ms)))
     (%with-agent-registry-lock ()
@@ -450,7 +515,13 @@ lifecycle fully inspectable within the same runtime."
             (agent-record-stdout agent) stdout
             (agent-record-stderr agent) stderr
             (agent-record-error-message agent) error-message))
-    (let ((worktree-merge (%maybe-merge-agent-worktree agent status)))
+    (let ((worktree-merge (%maybe-finalize-runtime-worktree
+                           (agent-record-worktree agent)
+                           status
+                           :agent-id (agent-record-id agent)
+                           :backend :local
+                           :task (agent-record-task agent)
+                           :result result)))
       (when worktree-merge
         (%with-agent-registry-lock ()
           (setf (agent-record-worktree-merge agent) worktree-merge))))
@@ -464,7 +535,6 @@ lifecycle fully inspectable within the same runtime."
                                   elapsed-ms
                                   :parent-message-id
                                   (agent-record-parent-message-id agent)))
-    (%maybe-mark-agent-worktree-abandoned agent status)
     (let ((payload (%agent-payload agent)))
       (ptui.runtime.queue:queue-push *agent-completion-queue* payload)
       (%publish-agent-event +event-type-agent-complete+
@@ -523,6 +593,7 @@ lifecycle fully inspectable within the same runtime."
    SYSTEM-PROMPT is an ad-hoc string override. Persona takes precedence."
   (let* ((normalized-type (%normalize-agent-type agent-type))
          (agent-id (%next-agent-id normalized-type))
+         (worktree-runtime-factory *delegated-worktree-runtime-factory*)
          (worktree-metadata (coerce-worktree-metadata :worktree worktree))
          (agent (%make-agent-record
                  :id agent-id
@@ -536,7 +607,9 @@ lifecycle fully inspectable within the same runtime."
          (thread
            (bordeaux-threads:make-thread
             (lambda ()
-              (%run-agent-worker agent agent-runner))
+              (let ((*delegated-worktree-runtime-factory*
+                      worktree-runtime-factory))
+                (%run-agent-worker agent agent-runner)))
             :name (format nil "amoebum-agent-~A" agent-id))))
     (declare (ignore persona system-prompt))
     (%with-agent-registry-lock ()

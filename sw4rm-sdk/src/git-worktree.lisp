@@ -3,6 +3,21 @@
 
 (in-package :sw4rm-sdk)
 
+(defgeneric spawn-worktree (coordinator worktree-id worktree-path branch &key base-ref)
+  (:documentation "Spawn a worktree through COORDINATOR."))
+
+(defgeneric collect-worktree (coordinator worktree-id)
+  (:documentation "Collect worktree metadata through COORDINATOR."))
+
+(defgeneric inspect-worktree (coordinator worktree-id &key worktree-path branch)
+  (:documentation "Inspect worktree lifecycle state through COORDINATOR."))
+
+(defgeneric merge-worktree (coordinator request)
+  (:documentation "Merge worktree described by REQUEST through COORDINATOR."))
+
+(defgeneric kill-worktree (coordinator worktree-id &key force)
+  (:documentation "Delete a worktree through COORDINATOR."))
+
 (defmacro with-worktree-lock ((lock-path) &body body)
   "Acquire advisory lock at LOCK-PATH for BODY duration."
   (let ((stream-sym (gensym "LOCK-STREAM-"))
@@ -99,11 +114,46 @@
     :accessor git-worktree-coordinator-state))
   (:documentation "Coordinates spawn/collect/kill flow for worktrees."))
 
+(defclass remote-worktree-coordinator ()
+  ((spawn-fn
+    :initarg :spawn-fn
+    :reader remote-worktree-coordinator-spawn-fn)
+   (collect-fn
+    :initarg :collect-fn
+    :reader remote-worktree-coordinator-collect-fn)
+   (inspect-fn
+    :initarg :inspect-fn
+    :reader remote-worktree-coordinator-inspect-fn
+    :initform nil)
+   (merge-fn
+    :initarg :merge-fn
+    :reader remote-worktree-coordinator-merge-fn
+    :initform nil)
+   (kill-fn
+    :initarg :kill-fn
+    :reader remote-worktree-coordinator-kill-fn))
+  (:documentation "Backend-neutral remote worktree service shim."))
+
 (defun make-git-worktree-coordinator (repo-root &key lock-dir)
   "Construct a git worktree coordinator."
   (make-instance 'git-worktree-coordinator
                  :repo-root repo-root
                  :lock-dir (or lock-dir (merge-pathnames ".sw4rm-locks/" repo-root))))
+
+(defun make-remote-worktree-coordinator (&key spawn-fn collect-fn inspect-fn merge-fn kill-fn)
+  "Construct a remote worktree coordinator around backend callbacks."
+  (unless spawn-fn
+    (error "REMOTE-WORKTREE-COORDINATOR requires SPAWN-FN."))
+  (unless collect-fn
+    (error "REMOTE-WORKTREE-COORDINATOR requires COLLECT-FN."))
+  (unless kill-fn
+    (error "REMOTE-WORKTREE-COORDINATOR requires KILL-FN."))
+  (make-instance 'remote-worktree-coordinator
+                 :spawn-fn spawn-fn
+                 :collect-fn collect-fn
+                 :inspect-fn inspect-fn
+                 :merge-fn merge-fn
+                 :kill-fn kill-fn))
 
 (defun %ensure-lock-dir (coordinator)
   (ensure-directories-exist (git-worktree-coordinator-lock-dir coordinator)))
@@ -113,7 +163,11 @@
    (format nil "~A.lock" worktree-id)
    (git-worktree-coordinator-lock-dir coordinator)))
 
-(defun spawn-worktree (coordinator worktree-id worktree-path branch &key base-ref)
+(defmethod spawn-worktree ((coordinator git-worktree-coordinator)
+                           worktree-id
+                           worktree-path
+                           branch
+                           &key base-ref)
   "Spawn a worktree under coordinator lock."
   (%ensure-lock-dir coordinator)
   (with-worktree-lock ((%worktree-lock-path coordinator worktree-id))
@@ -129,7 +183,7 @@
                 :updated-at (get-universal-time)))
     (gethash worktree-id (git-worktree-coordinator-state coordinator))))
 
-(defun collect-worktree (coordinator worktree-id)
+(defmethod collect-worktree ((coordinator git-worktree-coordinator) worktree-id)
   "Return tracked metadata for WORKTREE-ID plus live git status."
   (let ((record (gethash worktree-id (git-worktree-coordinator-state coordinator))))
     (unless record
@@ -144,7 +198,31 @@
                         :key (lambda (item) (getf item :path))
                         :test #'string=)))))
 
-(defun kill-worktree (coordinator worktree-id &key force)
+(defmethod inspect-worktree ((coordinator git-worktree-coordinator) worktree-id
+                             &key worktree-path branch)
+  (declare (ignore worktree-path branch))
+  (let* ((collected (collect-worktree coordinator worktree-id))
+         (record (getf collected :record))
+         (live (getf collected :live)))
+    (list :id (and record (getf record :worktree-id))
+          :path (or (and live (getf live :path))
+                    (and record (getf record :path)))
+          :branch (or (and live (getf live :branch))
+                      (and record (getf record :branch)))
+          :record record
+          :live live
+          :live-p (not (null live))
+          :lifecycle-state (if live :active :missing)
+          :backend :local)))
+
+(defmethod merge-worktree ((coordinator git-worktree-coordinator) request)
+  (declare (ignore request))
+  (error 'worktree-error
+         :message "Git worktree coordinator does not implement merge-worktree."
+         :worktree-id ""
+         :state :unsupported))
+
+(defmethod kill-worktree ((coordinator git-worktree-coordinator) worktree-id &key force)
   "Remove a tracked worktree under coordinator lock."
   (%ensure-lock-dir coordinator)
   (let ((record (gethash worktree-id (git-worktree-coordinator-state coordinator))))
@@ -160,3 +238,39 @@
       (remhash worktree-id (git-worktree-coordinator-state coordinator))
       (git-worktree-prune (git-worktree-coordinator-repo-root coordinator))
       t)))
+
+(defmethod spawn-worktree ((coordinator remote-worktree-coordinator)
+                           worktree-id
+                           worktree-path
+                           branch
+                           &key base-ref)
+  (funcall (remote-worktree-coordinator-spawn-fn coordinator)
+           worktree-id
+           worktree-path
+           branch
+           :base-ref base-ref))
+
+(defmethod collect-worktree ((coordinator remote-worktree-coordinator) worktree-id)
+  (funcall (remote-worktree-coordinator-collect-fn coordinator)
+           worktree-id))
+
+(defmethod inspect-worktree ((coordinator remote-worktree-coordinator) worktree-id
+                             &key worktree-path branch)
+  (let ((fn (remote-worktree-coordinator-inspect-fn coordinator)))
+    (if fn
+        (funcall fn worktree-id :worktree-path worktree-path :branch branch)
+        (collect-worktree coordinator worktree-id))))
+
+(defmethod merge-worktree ((coordinator remote-worktree-coordinator) request)
+  (let ((fn (remote-worktree-coordinator-merge-fn coordinator)))
+    (unless fn
+      (error 'worktree-error
+             :message "Remote worktree coordinator does not implement merge-worktree."
+             :worktree-id (or (getf request :worktree-id) "")
+             :state :unsupported))
+    (funcall fn request)))
+
+(defmethod kill-worktree ((coordinator remote-worktree-coordinator) worktree-id &key force)
+  (funcall (remote-worktree-coordinator-kill-fn coordinator)
+           worktree-id
+           :force force))
