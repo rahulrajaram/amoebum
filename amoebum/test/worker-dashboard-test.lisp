@@ -114,7 +114,10 @@
             (amoebum::%make-worker-record
              :id "w-agent-local" :type :agent :label "Local worker row"
              :status :running :created-at 1
-             :backend :in-process :inner-id "task-0001"))
+             :backend :in-process :inner-id "task-0001"
+             :worktree (amoebum:make-worktree-metadata
+                        :id "wt-local-1"
+                        :branch "sw4rm/demo/local-1")))
            (amoebum::%store-worker
             (amoebum::%make-worker-record
              :id "w-agent-swarm" :type :agent :label "Swarm worker row"
@@ -131,6 +134,7 @@
                                     :key #'amoebum.workers:worker-record-id
                                     :test #'equal))))
              (is (search "[local/running]" local-line :test #'char-equal))
+             (is (search "[wt:wt-local-1]" local-line :test #'char-equal))
              (is (search "[swarm/completed]" swarm-line :test #'char-equal))))
       (amoebum:clear-workers)
       (setf amoebum:*worker-supervisor* old-sup

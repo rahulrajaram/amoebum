@@ -503,3 +503,65 @@
   (is (fboundp 'amoebum.workers:await-worker))
   (is (fboundp 'amoebum.workers:await-workers))
   (is (fboundp 'amoebum:await-any-worker)))
+
+(test delegated-git-push-helper-denies-unassigned-branch
+  "Delegated git push helpers should reject pushes outside the assigned worktree branch."
+  (let* ((worktree (amoebum:make-worktree-metadata
+                    :id "wt-scope"
+                    :branch "sw4rm/demo/node"
+                    :path "/tmp/wt-scope/"))
+         (condition
+           (handler-case
+               (amoebum::with-delegated-agent-worktree-context
+                   (:agent-id "task-scope"
+                    :backend :local
+                    :worktree worktree)
+                 (amoebum::%git-push-set-upstream-if-needed!
+                  "/tmp"
+                  "sw4rm/demo/other")
+                 nil)
+             (amoebum:tool-permission-denied (caught)
+               caught))))
+    (is (typep condition 'amoebum:tool-permission-denied))
+    (is (eq :worktree-branch-scope
+            (amoebum:tool-error-reason-code condition)))
+    (is (search "sw4rm/demo/node"
+                (or (amoebum:tool-error-reason condition) "")))
+    (is (search "sw4rm/demo/other"
+                (or (amoebum:tool-error-reason condition) "")))))
+
+(test local-agent-shell-push-guard-blocks-wrong-worktree-branch
+  "Local delegated agents should fail immediately when a shell command pushes a branch outside their assigned worktree."
+  (let ((old-agent-registry amoebum::*agent-registry*)
+        (old-agent-seq amoebum::*next-agent-sequence*))
+    (unwind-protect
+        (progn
+          (setf amoebum::*agent-registry* (make-hash-table :test #'equal)
+                amoebum::*next-agent-sequence* 0)
+          (let* ((worktree (amoebum:make-worktree-metadata
+                            :id "wt-local-scope"
+                            :branch "sw4rm/demo/node"
+                            :path "/tmp/wt-local-scope/"))
+                 (agent (amoebum:spawn-agent
+                         "branch scope local task"
+                         :worktree worktree
+                         :runner (lambda (_agent)
+                                   (declare (ignore _agent))
+                                   (amoebum::%run-shell-command
+                                    "git push origin sw4rm/demo/other"
+                                    "/tmp"
+                                    10
+                                    4096))))
+                 (agent-id (amoebum:agent-record-id agent)))
+            (is (eq :failed
+                    (%wait-for-runtime-agent-terminal-status
+                     agent-id
+                     :backend :local)))
+            (let ((message (or (amoebum:runtime-agent-error-message
+                                agent-id
+                                :backend :local)
+                               "")))
+              (is (search "may only push branch sw4rm/demo/node" message))
+              (is (search "sw4rm/demo/other" message)))))
+      (setf amoebum::*agent-registry* old-agent-registry
+            amoebum::*next-agent-sequence* old-agent-seq))))

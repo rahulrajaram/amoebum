@@ -55,6 +55,16 @@ Returns the final status keyword or NIL on timeout."
           (return nil))
         (sleep 0.02)))))
 
+(defun %swarm-test-commit-file! (directory relative-path contents message)
+  (%write-text-file (merge-pathnames relative-path directory) contents)
+  (unless (%worktree-test-run-program-ok directory
+                                         (list "git" "add" relative-path))
+    (error "Failed to stage ~A in ~A." relative-path directory))
+  (unless (%worktree-test-run-program-ok directory
+                                         (list "git" "commit" "-m" message))
+    (error "Failed to commit ~A in ~A." relative-path directory))
+  t)
+
 ;;; ============================================================
 ;;; NXT-017: struct accessor smoke tests
 ;;; ============================================================
@@ -437,3 +447,96 @@ Returns the final status keyword or NIL on timeout."
           (is (member :seconds-since-output entry))))
       (amoebum:kill-swarm-agent agent-id)
       (%wait-swarm-terminal agent-id :timeout-ms 2000))))
+
+(test swarm-agent-completed-worktree-conflict-creates-manual-handoff
+  "A completed swarm agent with overlapping worktree edits should preserve completion while surfacing a manual merge handoff."
+  (with-isolated-swarm
+    (let* ((tmp-root (%make-temp-directory "amoebum-swarm-worktree"))
+           (repo-root (merge-pathnames #P"repo/" tmp-root))
+           (runtime nil)
+           (path nil))
+      (unwind-protect
+          (progn
+            (%init-worktree-test-repo repo-root)
+            (setf runtime (amoebum:make-worktree-runtime :project-root repo-root))
+            (amoebum:clear-worktree-conflict-handoffs)
+            (amoebum:spawn-local-worktree runtime
+                                          "wt-swarm-handoff"
+                                          "sw4rm/swarm-flow/node-1"
+                                          :base-ref "HEAD")
+            (setf path (amoebum:worktree-runtime-path runtime "wt-swarm-handoff"))
+            (%worktree-test-commit-file repo-root
+                                        "README.md"
+                                        (format nil "# worktree runtime~%main branch edit~%")
+                                        "main readme change")
+            (let* ((worktree (amoebum:make-worktree-metadata
+                              :id "wt-swarm-handoff"
+                              :branch "sw4rm/swarm-flow/node-1"
+                              :path (namestring path)))
+                   (agent (amoebum:spawn-swarm-agent
+                           "swarm merge conflict task"
+                           :worktree worktree
+                           :runner (lambda (_agent)
+                                     (declare (ignore _agent))
+                                     (%swarm-test-commit-file!
+                                     path
+                                     "README.md"
+                                     (format nil
+                                             "# worktree runtime~%feature branch edit~%")
+                                     "feature readme change")
+                                     "swarm work done")))
+                   (agent-id (amoebum:swarm-agent-id agent)))
+              (multiple-value-bind (result status)
+                  (amoebum:collect-swarm-result agent-id)
+                (is (eq :completed status))
+                (is (string= "swarm work done" result)))
+              (let* ((merge (amoebum:runtime-agent-worktree-merge
+                             agent-id
+                             :backend :swarm))
+                     (handoff-id (getf merge :handoff-id))
+                     (snapshot (and handoff-id
+                                    (amoebum:find-worktree-conflict-handoff
+                                     handoff-id
+                                     :include-room-status-p t))))
+                (is (eq :completed
+                        (amoebum:runtime-agent-status agent-id :backend :swarm)))
+                (is (eq :conflict-handoff (getf merge :merge-status)))
+                (is (string= "sw4rm/workflow/swarm-flow" (getf merge :target-ref)))
+                (is (stringp handoff-id))
+                (is (stringp (getf merge :negotiation-room-id)))
+                (is (eq :pending (getf snapshot :status)))
+                (is-true (member "README.md"
+                                 (getf (getf snapshot :preflight) :conflicts)
+                                 :test #'string=))
+                (is (probe-file path)))))
+        (ignore-errors
+          (when (and runtime (probe-file path))
+            (amoebum:kill-local-worktree runtime "wt-swarm-handoff" :force t)))
+        (amoebum:clear-worktree-conflict-handoffs)
+        (%delete-directory-tree-safe tmp-root)))))
+
+(test swarm-agent-shell-push-guard-blocks-wrong-worktree-branch
+  "Swarm-backed delegated agents should fail immediately when a shell command pushes a branch outside their assigned worktree."
+  (with-isolated-swarm
+    (let* ((worktree (amoebum:make-worktree-metadata
+                      :id "wt-swarm-scope"
+                      :branch "sw4rm/demo/node"
+                      :path "/tmp/wt-swarm-scope/"))
+           (agent (amoebum:spawn-swarm-agent
+                   "swarm branch scope task"
+                   :worktree worktree
+                   :runner (lambda (_agent)
+                             (declare (ignore _agent))
+                             (amoebum::%run-shell-command
+                              "git push origin sw4rm/demo/other"
+                              "/tmp"
+                              10
+                              4096))))
+           (agent-id (amoebum:swarm-agent-id agent)))
+      (is (eq :failed (%wait-swarm-terminal agent-id :timeout-ms 4000)))
+      (let ((message (or (amoebum:runtime-agent-error-message
+                          agent-id
+                          :backend :swarm)
+                         "")))
+        (is (search "may only push branch sw4rm/demo/node" message))
+        (is (search "sw4rm/demo/other" message))))))

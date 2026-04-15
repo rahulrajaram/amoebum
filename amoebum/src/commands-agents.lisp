@@ -264,6 +264,31 @@
         task
         "(no task description)")))
 
+(defun %runtime-agent-worktree-summary (agent)
+  (let ((metadata (runtime-agent-worktree agent)))
+    (when metadata
+      (let* ((worktree-id (worktree-metadata-id metadata))
+             (branch (worktree-metadata-branch metadata))
+             (inspection (and (worktree-metadata-path metadata)
+                              (ignore-errors
+                                (inspect-local-worktree :worktree metadata))))
+             (status-fragment
+               (and inspection
+                    (getf inspection :abandoned-p)
+                    (format nil "~A/~A"
+                            (string-downcase
+                             (symbol-name
+                              (or (getf inspection :lifecycle-state)
+                                  :abandoned)))
+                            (string-downcase
+                             (symbol-name
+                              (or (getf inspection :cleanup-classification)
+                                  :unknown)))))))
+        (format nil "wt ~A~@[ (~A)~]~@[ ~A~]"
+                (or worktree-id "?")
+                branch
+                status-fragment)))))
+
 (defun %agents-handler (_invocation _arguments _context)
   (declare (ignore _invocation _arguments _context))
   (let ((running (%list-runtime-agents :include-completed-p nil)))
@@ -273,11 +298,12 @@
          :output (with-output-to-string (out)
                    (format out "Running agents (~D):~%" (length running))
                    (dolist (agent running)
-                     (format out "- ~A | ~A | ~A~@[ | ~A~]~%"
+                     (format out "- ~A | ~A | ~A~@[ | ~A~]~@[ | ~A~]~%"
                              (runtime-agent-id agent)
                              (%agent-status-text (runtime-agent-status agent))
                              (%runtime-agent-backend-label agent)
-                             (%agent-task-summary agent))))))))
+                             (%agent-task-summary agent)
+                             (%runtime-agent-worktree-summary agent))))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; NXT-014: /agent-tree — parent-child execution tree
@@ -766,6 +792,162 @@ separately.  The tree reflects prompt->agent and agent->sub-agent handoffs."
          :echo-input-p t
          :output (format nil "Failed to complete handoff ~A: ~A" handoff-id condition))))))
 
+;;; ---- NXT-344: /worktree-handoff ----
+
+(defun %worktree-handoff-usage ()
+  "Usage: /worktree-handoff <list|inspect|accept|defer|help> [args...]
+  list
+  inspect <handoff-id>
+  accept <handoff-id> [note...]
+  defer <handoff-id> [note...]")
+
+(defun %worktree-handoff-status-text (status)
+  (string-downcase (symbol-name (or status :pending))))
+
+(defun %worktree-handoff-summary-line (snapshot)
+  (let* ((handoff-id (or (getf snapshot :handoff-id) "?"))
+         (status (%worktree-handoff-status-text (getf snapshot :status)))
+         (worktree (getf snapshot :worktree))
+         (worktree-id (or (getf worktree :id) "?"))
+         (branch (getf worktree :branch))
+         (target-ref (or (getf snapshot :target-ref) "?"))
+         (room-id (getf snapshot :negotiation-room-id))
+         (conflicts (getf (getf snapshot :preflight) :conflicts)))
+    (format nil
+            "  ~A | ~A | wt ~A~@[ (~A)~] -> ~A~@[ | conflicts ~D~]~@[ | room ~A~]"
+            handoff-id
+            status
+            worktree-id
+            branch
+            target-ref
+            (and conflicts (length conflicts))
+            room-id)))
+
+(defun %worktree-handoff-inspect-output (snapshot)
+  (let* ((worktree (getf snapshot :worktree))
+         (preflight (getf snapshot :preflight))
+         (conflicts (getf preflight :conflicts))
+         (negotiation-status (getf snapshot :negotiation-status)))
+    (with-output-to-string (out)
+      (format out "Worktree handoff ~A~%" (or (getf snapshot :handoff-id) "?"))
+      (format out "status: ~A~%"
+              (%worktree-handoff-status-text (getf snapshot :status)))
+      (format out "worktree: ~A~@[ (~A)~]~%"
+              (or (getf worktree :id) "?")
+              (getf worktree :branch))
+      (format out "target-ref: ~A~%" (or (getf snapshot :target-ref) "?"))
+      (format out "agent: ~A~@[ via ~A~]~%"
+              (or (getf snapshot :agent-id) "?")
+              (getf snapshot :backend))
+      (format out "room: ~A~@[ | artifact: ~A~]~%"
+              (or (getf snapshot :negotiation-room-id) "?")
+              (getf snapshot :artifact-id))
+      (when negotiation-status
+        (format out "negotiation-status: ~S~%" negotiation-status))
+      (when conflicts
+        (format out "conflicts: ~{~A~^, ~}~%" conflicts))
+      (when (getf snapshot :note)
+        (format out "note: ~A~%" (getf snapshot :note)))
+      (when (getf snapshot :task)
+        (format out "task: ~A~%" (getf snapshot :task))))))
+
+(defun %worktree-handoff-note (tokens)
+  (let ((note (%slash-trim (format nil "~{~A~^ ~}" tokens))))
+    (unless (zerop (length note))
+      note)))
+
+(defun %worktree-handoff-handler (_invocation arguments _context)
+  (declare (ignore _invocation _context))
+  (let* ((args (or (gethash :ARGS arguments) ""))
+         (tokens (%tokenize-command-arguments args))
+         (subcommand (or (first tokens) "list")))
+    (cond
+      ((or (string-equal subcommand "help")
+           (string-equal subcommand "--help"))
+       (make-slash-command-result
+        :echo-input-p t
+        :output (%worktree-handoff-usage)))
+      ((string-equal subcommand "list")
+       (let ((handoffs (list-worktree-conflict-handoffs)))
+         (make-slash-command-result
+          :echo-input-p t
+          :output (if (null handoffs)
+                      "No worktree conflict handoffs."
+                      (with-output-to-string (out)
+                        (format out "Worktree conflict handoffs (~D):~%"
+                                (length handoffs))
+                        (dolist (snapshot handoffs)
+                          (format out "~A~%"
+                                  (%worktree-handoff-summary-line snapshot))))))))
+      ((string-equal subcommand "inspect")
+       (let ((handoff-id (second tokens)))
+         (if (%slash-blank-p handoff-id)
+             (make-slash-command-result
+              :echo-input-p t
+              :output "Usage: /worktree-handoff inspect <handoff-id>")
+             (let ((snapshot (find-worktree-conflict-handoff
+                              handoff-id
+                              :include-room-status-p t)))
+               (make-slash-command-result
+                :echo-input-p t
+                :output (if snapshot
+                            (%worktree-handoff-inspect-output snapshot)
+                            (format nil "Unknown worktree handoff ~A." handoff-id)))))))
+      ((string-equal subcommand "accept")
+       (let ((handoff-id (second tokens)))
+         (if (%slash-blank-p handoff-id)
+             (make-slash-command-result
+              :echo-input-p t
+              :output "Usage: /worktree-handoff accept <handoff-id> [note...]")
+             (handler-case
+                 (let ((snapshot (accept-worktree-conflict-handoff
+                                  handoff-id
+                                  :note (%worktree-handoff-note (cddr tokens)))))
+                   (make-slash-command-result
+                    :echo-input-p t
+                    :output (format nil
+                                    "Accepted worktree handoff ~A. Status: ~A"
+                                    handoff-id
+                                    (%worktree-handoff-status-text
+                                     (getf snapshot :status)))))
+               (error (condition)
+                 (make-slash-command-result
+                  :echo-input-p t
+                  :output (format nil
+                                  "Failed to accept worktree handoff ~A: ~A"
+                                  handoff-id
+                                  condition)))))))
+      ((string-equal subcommand "defer")
+       (let ((handoff-id (second tokens)))
+         (if (%slash-blank-p handoff-id)
+             (make-slash-command-result
+              :echo-input-p t
+              :output "Usage: /worktree-handoff defer <handoff-id> [note...]")
+             (handler-case
+                 (let ((snapshot (defer-worktree-conflict-handoff
+                                  handoff-id
+                                  :note (%worktree-handoff-note (cddr tokens)))))
+                   (make-slash-command-result
+                    :echo-input-p t
+                    :output (format nil
+                                    "Deferred worktree handoff ~A. Status: ~A"
+                                    handoff-id
+                                    (%worktree-handoff-status-text
+                                     (getf snapshot :status)))))
+               (error (condition)
+                 (make-slash-command-result
+                  :echo-input-p t
+                  :output (format nil
+                                  "Failed to defer worktree handoff ~A: ~A"
+                                  handoff-id
+                                  condition)))))))
+      (t
+       (make-slash-command-result
+        :echo-input-p t
+        :output (format nil
+                        "Unknown worktree-handoff subcommand ~S. Try /worktree-handoff help."
+                        subcommand))))))
+
 ;;; ---- NXT-006: /review-room ----
 
 (defun %review-room-handler (_invocation arguments _context)
@@ -1000,6 +1182,14 @@ separately.  The tree reflects prompt->agent and agent->sub-agent handoffs."
     :parameters
     (list (make-slash-command-parameter :name "id" :type :string :required-p t :description "Handoff identifier."))
     :handler #'%handoff-complete-handler))
+  (register-slash-command
+   (make-slash-command
+    :name "worktree-handoff"
+    :description "Inspect or update manual worktree merge conflict handoffs."
+    :usage "/worktree-handoff <list|inspect|accept|defer|help> [args...]"
+    :parameters
+    (list (make-slash-command-parameter :name "args" :type :string :required-p nil :greedy-p t :description "Subcommand and arguments."))
+    :handler #'%worktree-handoff-handler))
   ;; NXT-006: /review-room
   (register-slash-command
    (make-slash-command

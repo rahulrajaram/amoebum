@@ -62,11 +62,35 @@
               (string-downcase (symbol-name (or backend :agent)))
               (string-downcase (symbol-name status))))))
 
+(defun %worker-worktree-label (worker)
+  (let* ((metadata (worker-record-worktree worker))
+         (worktree-id (and metadata (worktree-metadata-id metadata))))
+    (when worktree-id
+      (let* ((inspection (and (worktree-metadata-path metadata)
+                              (ignore-errors
+                                (inspect-local-worktree :worktree metadata))))
+             (status-fragment
+               (and inspection
+                    (getf inspection :abandoned-p)
+                    (format nil " ~A/~A"
+                            (string-downcase
+                             (symbol-name
+                              (or (getf inspection :lifecycle-state)
+                                  :abandoned)))
+                            (string-downcase
+                             (symbol-name
+                              (or (getf inspection :cleanup-classification)
+                                  :unknown)))))))
+        (format nil "[wt:~A~A]"
+                worktree-id
+                (or status-fragment ""))))))
+
 (defun %worker-status-line (worker)
-  (format nil "  ~A ~A~@[ ~A~] ~A  ~A  ~A"
+  (format nil "  ~A ~A~@[ ~A~]~@[ ~A~] ~A  ~A  ~A"
           (%worker-status-indicator (worker-record-status worker))
           (worker-record-id worker)
           (%worker-runtime-status-label worker)
+          (%worker-worktree-label worker)
           (let ((label (worker-record-label worker)))
             (if (> (length label) 30)
                 (concatenate 'string (subseq label 0 27) "...")

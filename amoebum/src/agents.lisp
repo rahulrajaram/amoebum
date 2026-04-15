@@ -37,6 +37,7 @@
                    stderr
                    error-message
                    worktree
+                   worktree-merge
                    thread)))
   id
   (type :task)
@@ -52,6 +53,7 @@
   stderr
   error-message
   worktree
+  worktree-merge
   thread)
 
 (defparameter *agent-registry* (make-hash-table :test #'equal))
@@ -113,8 +115,12 @@
                 :error-message (agent-record-error-message agent)
                 :parent-message-id (agent-record-parent-message-id agent))))
     (let ((worktree (worktree-metadata-plist (agent-record-worktree agent))))
-      (if worktree
-          (append payload (list :worktree worktree))
+      (when worktree
+        (setf payload (append payload (list :worktree worktree)))))
+    (let ((worktree-merge (agent-record-worktree-merge agent)))
+      (if worktree-merge
+          (append payload
+                  (list :worktree-merge (copy-tree worktree-merge)))
           payload))))
 
 (defun %publish-agent-event (event-type payload &key (severity :info))
@@ -309,6 +315,13 @@
       ((%swarm-agent-present-p agent) (swarm-agent-worktree agent))
       (t nil))))
 
+(defun runtime-agent-worktree-merge (agent-or-id &key (backend :auto))
+  (let ((agent (%resolve-runtime-agent agent-or-id backend)))
+    (cond
+      ((agent-record-p agent) (agent-record-worktree-merge agent))
+      ((%swarm-agent-present-p agent) (swarm-agent-worktree-merge agent))
+      (t nil))))
+
 (defun runtime-agent-terminal-p (agent-or-id &key (backend :auto))
   (member (runtime-agent-status agent-or-id :backend backend)
           '(:completed :failed :cancelled :timeout)
@@ -398,6 +411,36 @@ lifecycle fully inspectable within the same runtime."
     (:failed :failed)
     (otherwise :complete)))
 
+(defun %maybe-mark-agent-worktree-abandoned (agent status)
+  (when (and (member status '(:failed :cancelled :timeout) :test #'eq)
+             (agent-record-worktree agent))
+    (let ((finished-at (get-universal-time)))
+      (ignore-errors
+        (mark-local-worktree-abandoned
+         :worktree (agent-record-worktree agent)
+         :status status
+         :finished-at finished-at))
+      (ignore-errors
+        (cleanup-abandoned-local-worktree
+         :worktree (agent-record-worktree agent)
+         :status status
+         :finished-at finished-at)))))
+
+(defun %maybe-merge-agent-worktree (agent status)
+  (when (and (eq status :completed)
+             (agent-record-worktree agent))
+    (handler-case
+        (merge-local-worktree
+         :worktree (agent-record-worktree agent)
+         :agent-id (agent-record-id agent)
+         :backend :local
+         :task (agent-record-task agent)
+         :result (agent-record-result agent))
+      (error (condition)
+        (list :merge-status :error
+              :reason :merge-helper-failed
+              :error-message (princ-to-string condition))))))
+
 (defun %finish-agent! (agent status result stdout stderr error-message)
   (let ((now (%agent-now-ms)))
     (%with-agent-registry-lock ()
@@ -407,6 +450,10 @@ lifecycle fully inspectable within the same runtime."
             (agent-record-stdout agent) stdout
             (agent-record-stderr agent) stderr
             (agent-record-error-message agent) error-message))
+    (let ((worktree-merge (%maybe-merge-agent-worktree agent status)))
+      (when worktree-merge
+        (%with-agent-registry-lock ()
+          (setf (agent-record-worktree-merge agent) worktree-merge))))
     (let ((elapsed-ms (if (plusp (agent-record-started-ms agent))
                           (max 0 (- now (agent-record-started-ms agent)))
                           0)))
@@ -417,6 +464,7 @@ lifecycle fully inspectable within the same runtime."
                                   elapsed-ms
                                   :parent-message-id
                                   (agent-record-parent-message-id agent)))
+    (%maybe-mark-agent-worktree-abandoned agent status)
     (let ((payload (%agent-payload agent)))
       (ptui.runtime.queue:queue-push *agent-completion-queue* payload)
       (%publish-agent-event +event-type-agent-complete+
@@ -440,10 +488,14 @@ lifecycle fully inspectable within the same runtime."
         (status :completed)
         (error-message nil))
     (handler-case
-        (let ((*standard-output* stdout-stream)
-              (*error-output* stderr-stream))
-          (setf result (funcall runner agent)
-                status (%agent-runner-finished-status agent)))
+        (with-delegated-agent-worktree-context
+            (:agent-id (agent-record-id agent)
+             :backend :local
+             :worktree (agent-record-worktree agent))
+          (let ((*standard-output* stdout-stream)
+                (*error-output* stderr-stream))
+            (setf result (funcall runner agent)
+                  status (%agent-runner-finished-status agent))))
       (agent-cancelled (condition)
         (setf status :cancelled
               error-message (princ-to-string condition)))

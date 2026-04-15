@@ -22,6 +22,79 @@
   (branch nil :type (or null string))
   (path nil :type (or null string)))
 
+(defstruct (worktree-conflict-handoff
+            (:constructor %make-worktree-conflict-handoff
+                (&key id
+                      (status :pending)
+                      (created-at 0)
+                      (updated-at 0)
+                      worktree
+                      target-ref
+                      preflight
+                      agent-id
+                      backend
+                      task
+                      result
+                      negotiation-room-id
+                      artifact-id
+                      note)))
+  (id nil :type (or null string))
+  (status :pending :type keyword)
+  (created-at 0 :type integer)
+  (updated-at 0 :type integer)
+  worktree
+  (target-ref nil :type (or null string))
+  preflight
+  (agent-id nil :type (or null string))
+  backend
+  task
+  result
+  (negotiation-room-id nil :type (or null string))
+  (artifact-id nil :type (or null string))
+  note)
+
+(defparameter *default-worktree-cleanup-grace-period-seconds* 900
+  "Default retention window before Amoebum auto-removes abandoned local worktrees.")
+
+(defparameter *worktree-abandoned-terminal-statuses* '(:failed :cancelled :timeout)
+  "Delegated terminal statuses that qualify a local worktree as abandoned.")
+
+(defparameter *worktree-conflict-handoffs* (make-hash-table :test #'equal)
+  "Registry of worktree merge conflicts awaiting manual handling.")
+
+(defparameter *worktree-conflict-handoff-sequence* 0)
+
+(defparameter *worktree-conflict-handoff-lock*
+  (bordeaux-threads:make-lock "amoebum-worktree-conflict-handoffs"))
+
+(defparameter *worktree-negotiation-client* nil
+  "Dedicated local SW4RM negotiation client for worktree-merge conflicts.")
+
+(defvar *current-delegated-agent-id* nil)
+(defvar *current-delegated-agent-backend* nil)
+(defvar *current-delegated-agent-worktree* nil)
+
+(defmacro %with-worktree-conflict-handoff-lock (() &body body)
+  `(bordeaux-threads:with-lock-held (*worktree-conflict-handoff-lock*)
+     ,@body))
+
+(defmacro with-delegated-agent-worktree-context ((&key agent-id backend worktree)
+                                                 &body body)
+  `(let ((*current-delegated-agent-id* ,agent-id)
+         (*current-delegated-agent-backend* ,backend)
+         (*current-delegated-agent-worktree*
+           (coerce-worktree-metadata :worktree ,worktree)))
+     ,@body))
+
+(defun current-delegated-agent-id ()
+  *current-delegated-agent-id*)
+
+(defun current-delegated-agent-backend ()
+  *current-delegated-agent-backend*)
+
+(defun current-delegated-agent-worktree ()
+  *current-delegated-agent-worktree*)
+
 (defun %normalize-worktree-string (value)
   (cond
     ((null value) nil)
@@ -71,6 +144,12 @@
       (list :id (worktree-metadata-id resolved)
             :branch (worktree-metadata-branch resolved)
             :path (worktree-metadata-path resolved)))))
+
+(defun current-delegated-agent-push-branch ()
+  (let ((metadata (current-delegated-agent-worktree)))
+    (and metadata
+         (%strip-live-worktree-branch-ref
+          (worktree-metadata-branch metadata)))))
 
 (defun %worktree-project-root (&key project-root config)
   (uiop:ensure-directory-pathname
@@ -147,6 +226,127 @@
         (error "Invalid worktree id ~S." worktree-id))
       component)))
 
+(defun %normalize-worktree-name-segment (value)
+  (let ((normalized (%normalize-worktree-string value)))
+    (when normalized
+      (let ((buffer (make-string-output-stream))
+            (last-was-dash nil))
+        (loop for ch across (string-downcase normalized) do
+          (cond
+            ((or (alphanumericp ch)
+                 (char= ch #\_)
+                 (char= ch #\-)
+                 (char= ch #\.))
+             (write-char ch buffer)
+             (setf last-was-dash nil))
+            (last-was-dash
+             nil)
+            (t
+             (write-char #\- buffer)
+             (setf last-was-dash t))))
+        (let ((segment (string-trim "-." (get-output-stream-string buffer))))
+          (unless (plusp (length segment))
+            (error "Invalid worktree naming segment ~S." value))
+          segment)))))
+
+(defun resolve-worktree-id (&key worktree worktree-id worktree-branch workflow-id node-id)
+  (let* ((base (coerce-worktree-metadata :worktree worktree))
+         (explicit-id (or (%normalize-worktree-string worktree-id)
+                          (and base (worktree-metadata-id base))))
+         (explicit-branch (or (%normalize-worktree-string worktree-branch)
+                              (and base (worktree-metadata-branch base))))
+         (workflow-segment (%normalize-worktree-name-segment workflow-id))
+         (node-segment (%normalize-worktree-name-segment node-id)))
+    (cond
+      (explicit-id
+       (%worktree-id-path-component explicit-id))
+      (explicit-branch
+       (%worktree-id-path-component explicit-branch))
+      ((and workflow-segment node-segment)
+       (%worktree-id-path-component
+        (format nil "sw4rm/~A/~A" workflow-segment node-segment)))
+      (workflow-segment
+       (%worktree-id-path-component
+        (format nil "sw4rm/~A/local" workflow-segment)))
+      (node-segment
+       (%worktree-id-path-component
+        (format nil "sw4rm/local/~A" node-segment)))
+      (t
+       nil))))
+
+(defun resolve-worktree-branch (&key worktree worktree-branch worktree-id workflow-id node-id)
+  (let* ((base (coerce-worktree-metadata :worktree worktree))
+         (explicit-branch (or (%normalize-worktree-string worktree-branch)
+                              (and base (worktree-metadata-branch base))))
+         (workflow-segment (%normalize-worktree-name-segment workflow-id))
+         (node-segment (%normalize-worktree-name-segment node-id))
+         (local-segment (%normalize-worktree-name-segment
+                         (or (%normalize-worktree-string worktree-id)
+                             (and base (worktree-metadata-id base))
+                             (resolve-worktree-id :worktree base
+                                                  :workflow-id workflow-id
+                                                  :node-id node-id)))))
+    (cond
+      (explicit-branch
+       explicit-branch)
+      ((and workflow-segment node-segment)
+       (format nil "sw4rm/~A/~A" workflow-segment node-segment))
+      (workflow-segment
+       (format nil "sw4rm/~A/local" workflow-segment))
+      (node-segment
+       (format nil "sw4rm/local/~A" node-segment))
+      (local-segment
+       (format nil "sw4rm/local/~A" local-segment))
+      (t
+       nil))))
+
+(defun resolve-worktree-workflow-branch (&key worktree worktree-branch)
+  (let* ((base (coerce-worktree-metadata :worktree worktree
+                                         :worktree-branch worktree-branch))
+         (branch (%normalize-worktree-string
+                  (or worktree-branch
+                      (and base (worktree-metadata-branch base))))))
+    (when branch
+      (let ((segments (uiop:split-string branch :separator '(#\/))))
+        (when (and (>= (length segments) 3)
+                   (string= "sw4rm" (first segments)))
+          (cond
+            ((string= "local" (second segments))
+             nil)
+            ((and (string= "workflow" (second segments))
+                  (>= (length segments) 3))
+             (format nil "sw4rm/workflow/~A" (third segments)))
+            (t
+             (format nil "sw4rm/workflow/~A" (second segments)))))))))
+
+(defun resolve-worktree-metadata (&key runtime
+                                       worktree
+                                       worktree-id
+                                       worktree-branch
+                                       worktree-path
+                                       workflow-id
+                                       node-id)
+  (let* ((base (coerce-worktree-metadata :worktree worktree))
+         (resolved-id (resolve-worktree-id :worktree base
+                                           :worktree-id worktree-id
+                                           :worktree-branch worktree-branch
+                                           :workflow-id workflow-id
+                                           :node-id node-id))
+         (resolved-branch (resolve-worktree-branch :worktree base
+                                                   :worktree-branch worktree-branch
+                                                   :worktree-id (or worktree-id resolved-id)
+                                                   :workflow-id workflow-id
+                                                   :node-id node-id))
+         (resolved-path (or (%normalize-worktree-path-string worktree-path)
+                            (and base (worktree-metadata-path base))
+                            (and runtime resolved-id
+                                 (namestring
+                                  (worktree-runtime-path runtime resolved-id))))))
+    (when (or resolved-id resolved-branch resolved-path)
+      (make-worktree-metadata :id resolved-id
+                              :branch resolved-branch
+                              :path resolved-path))))
+
 (defun worktree-runtime-path (runtime worktree-id)
   (check-type runtime worktree-runtime)
   (merge-pathnames
@@ -159,39 +359,1346 @@
                     (string (pathname path)))))
     (namestring (uiop:ensure-directory-pathname pathname))))
 
-(defun spawn-local-worktree (runtime worktree-id branch &key base-ref)
-  (check-type runtime worktree-runtime)
-  (sw4rm-sdk:spawn-worktree
-   (worktree-runtime-coordinator runtime)
-   (princ-to-string worktree-id)
-   (namestring (worktree-runtime-path runtime worktree-id))
-   branch
-   :base-ref (or base-ref "HEAD")))
+(defun %worktree-trim-output (value)
+  (let ((normalized (%normalize-worktree-string value)))
+    (or normalized "")))
 
-(defun collect-local-worktree (runtime worktree-id)
-  (check-type runtime worktree-runtime)
-  (let* ((collected (sw4rm-sdk:collect-worktree
-                     (worktree-runtime-coordinator runtime)
-                     (princ-to-string worktree-id)))
-         (record (getf collected :record))
-         (live (or (getf collected :live)
-                   (let* ((record-path (and record (getf record :path)))
-                          (live-worktrees
-                            (sw4rm-sdk:git-worktree-list
-                             (worktree-runtime-repo-root runtime))))
-                     (and record-path
-                          (find (%worktree-path-namestring record-path)
-                                live-worktrees
-                                :key (lambda (item)
-                                       (%worktree-path-namestring
-                                        (getf item :path)))
-                                :test #'string=))))))
-    (list :record record
-          :live live)))
+(defun %normalize-worktree-status (status)
+  (cond
+    ((keywordp status) status)
+    ((symbolp status)
+     (intern (string-upcase (symbol-name status)) :keyword))
+    ((stringp status)
+     (intern (string-upcase (%worktree-trim-output status)) :keyword))
+    (t nil)))
 
-(defun kill-local-worktree (runtime worktree-id &key force)
+(defun %strip-live-worktree-branch-ref (branch)
+  (let ((normalized (%normalize-worktree-string branch)))
+    (cond
+      ((null normalized) nil)
+      ((uiop:string-prefix-p "refs/heads/" normalized)
+       (subseq normalized (length "refs/heads/")))
+      (t
+       normalized))))
+
+(defun %run-worktree-git (directory args)
+  (let ((working-directory
+          (etypecase directory
+            (pathname directory)
+            (string (pathname directory)))))
+    (multiple-value-bind (stdout stderr status)
+        (uiop:run-program (append (list "git") args)
+                          :directory working-directory
+                          :output :string
+                          :error-output :string
+                          :ignore-error-status t)
+      (values stdout stderr status))))
+
+(defun %git-output-string (directory args)
+  (multiple-value-bind (stdout stderr status)
+      (%run-worktree-git directory args)
+    (if (zerop status)
+        (values (%normalize-worktree-string stdout) nil)
+        (values nil (%normalize-worktree-string stderr)))))
+
+(defun %git-output-lines (directory args)
+  (multiple-value-bind (stdout stderr status)
+      (%run-worktree-git directory args)
+    (if (zerop status)
+        (values (remove-if (lambda (line)
+                             (zerop (length line)))
+                           (uiop:split-string stdout
+                                              :separator '(#\Newline)))
+                nil)
+        (values nil (%normalize-worktree-string stderr)))))
+
+(defun %git-ref-exists-p (directory ref)
+  (when (%normalize-worktree-string ref)
+    (multiple-value-bind (_stdout _stderr status)
+        (%run-worktree-git directory
+                           (list "rev-parse" "--verify" "--quiet" ref))
+      (declare (ignore _stdout _stderr))
+      (zerop status))))
+
+(defun %git-current-head-state (directory)
+  (multiple-value-bind (branch _branch-error)
+      (%git-output-string directory '("rev-parse" "--abbrev-ref" "HEAD"))
+    (declare (ignore _branch-error))
+    (let ((resolved-branch (%normalize-worktree-string branch)))
+      (if (or (null resolved-branch)
+              (string= resolved-branch "HEAD"))
+          (multiple-value-bind (commit _commit-error)
+              (%git-output-string directory '("rev-parse" "HEAD"))
+            (declare (ignore _commit-error))
+            (list :detached-p t
+                  :ref commit))
+          (list :detached-p nil
+                :ref resolved-branch)))))
+
+(defun %restore-git-head-state (directory head-state)
+  (let ((ref (%normalize-worktree-string (getf head-state :ref))))
+    (when ref
+      (%run-worktree-git directory
+                         (if (getf head-state :detached-p)
+                             (list "checkout" "--detach" ref)
+                             (list "checkout" ref))))))
+
+(defun %normalize-worktree-relative-path (value)
+  (let ((normalized (%normalize-worktree-string value)))
+    (when normalized
+      (let* ((slashified (substitute #\/ #\\ normalized))
+             (without-dot (if (uiop:string-prefix-p "./" slashified)
+                              (subseq slashified 2)
+                              slashified))
+             (trimmed (string-right-trim "/" without-dot)))
+        (unless (or (zerop (length trimmed))
+                    (string= trimmed "."))
+          trimmed)))))
+
+(defun %worktree-relative-path-to-root (repo-root path)
+  (when (and repo-root path)
+    (let* ((root (uiop:ensure-directory-pathname (pathname repo-root)))
+           (candidate (uiop:ensure-directory-pathname (pathname path)))
+           (relative (%normalize-worktree-relative-path
+                      (enough-namestring candidate root))))
+      (when (and relative
+                 (not (uiop:string-prefix-p "/" relative))
+                 (not (string= relative ".."))
+                 (not (uiop:string-prefix-p "../" relative)))
+        relative))))
+
+(defun %worktree-relative-path-ancestors (relative-path)
+  (let ((segments (uiop:split-string relative-path :separator '(#\/))))
+    (loop for size from (length segments) downto 1
+          collect (format nil "~{~A~^/~}"
+                          (subseq segments 0 size)))))
+
+(defun %git-status-entry-path (entry)
+  (let* ((start (min 3 (length entry)))
+         (payload (%normalize-worktree-string (subseq entry start)))
+         (arrow-index (and payload
+                           (search " -> " payload :from-end t))))
+    (%normalize-worktree-relative-path
+     (if arrow-index
+         (subseq payload (+ arrow-index 4))
+         payload))))
+
+(defun %git-status-entry-ignored-p (entry ignored-path-prefixes)
+  (let ((path (%git-status-entry-path entry)))
+    (and path
+         (some (lambda (prefix)
+                 (or (string= path prefix)
+                     (uiop:string-prefix-p (format nil "~A/" prefix)
+                                           path)))
+               ignored-path-prefixes))))
+
+(defun %managed-worktree-status-ignored-paths (runtime repo-root)
+  (when (and runtime repo-root)
+    (remove-duplicates
+     (loop for managed-root in (list (worktree-runtime-scratch-root runtime)
+                                     (worktree-runtime-lock-root runtime))
+           for relative = (%worktree-relative-path-to-root repo-root managed-root)
+           when relative
+             append (%worktree-relative-path-ancestors relative))
+     :test #'string=)))
+
+(defun %git-clean-working-tree-p (directory &key ignored-path-prefixes)
+  (multiple-value-bind (entries error-message)
+      (%git-output-lines directory '("status" "--porcelain"))
+    (if error-message
+        (values nil error-message)
+        (let ((relevant-entries
+                (if ignored-path-prefixes
+                    (remove-if (lambda (entry)
+                                 (%git-status-entry-ignored-p
+                                  entry
+                                  ignored-path-prefixes))
+                               entries)
+                    entries)))
+          (values (null relevant-entries) nil)))))
+
+(defun %default-worktree-base-ref (repo-root)
+  (or (multiple-value-bind (branch _error)
+          (%git-output-string repo-root '("rev-parse" "--abbrev-ref" "HEAD"))
+        (declare (ignore _error))
+        (let ((resolved (%normalize-worktree-string branch)))
+          (unless (or (null resolved)
+                      (string= resolved "HEAD"))
+            resolved)))
+      (multiple-value-bind (commit _error)
+          (%git-output-string repo-root '("rev-parse" "HEAD"))
+        (declare (ignore _error))
+        commit)))
+
+(defun %derive-worktree-repo-root (worktree-path)
+  (let* ((resolved-path (%normalize-worktree-path-string worktree-path))
+         (pathname (and resolved-path (pathname resolved-path))))
+    (when (and pathname (probe-file pathname))
+      (or (multiple-value-bind (common-dir _stderr status)
+              (%run-worktree-git pathname
+                                 '("rev-parse"
+                                   "--path-format=absolute"
+                                   "--git-common-dir"))
+            (declare (ignore _stderr))
+            (when (zerop status)
+              (let* ((normalized (%normalize-worktree-path-string common-dir))
+                     (trimmed (and normalized
+                                   (string-right-trim "/" normalized)))
+                     (git-suffix "/.git"))
+                     (when (and trimmed
+                                (uiop:string-suffix-p trimmed git-suffix))
+                  (uiop:ensure-directory-pathname
+                   (pathname
+                    (subseq trimmed
+                            0
+                            (- (length trimmed)
+                               (length git-suffix)))))))))
+      (multiple-value-bind (stdout _stderr status)
+          (%run-worktree-git pathname '("rev-parse" "--show-toplevel"))
+        (declare (ignore _stderr))
+        (when (zerop status)
+          (uiop:ensure-directory-pathname
+           (pathname (%worktree-trim-output stdout)))))))))
+
+(defun %runtime-for-worktree-source (&key runtime repo-root worktree-path)
+  (or runtime
+      (and repo-root
+           (make-worktree-runtime :repo-root repo-root))
+      (let ((derived-root (%derive-worktree-repo-root worktree-path)))
+        (and derived-root
+             (make-worktree-runtime :repo-root derived-root)))))
+
+(defun %resolve-worktree-runtime-and-metadata (&key runtime
+                                                    repo-root
+                                                    worktree
+                                                    worktree-id
+                                                    worktree-path
+                                                    worktree-branch)
+  (let* ((base (coerce-worktree-metadata :worktree worktree
+                                         :worktree-id worktree-id
+                                         :worktree-path worktree-path
+                                         :worktree-branch worktree-branch))
+         (resolved-runtime (%runtime-for-worktree-source
+                            :runtime runtime
+                            :repo-root repo-root
+                            :worktree-path (and base
+                                                (worktree-metadata-path base))))
+         (resolved-metadata (resolve-worktree-metadata
+                             :runtime resolved-runtime
+                             :worktree base
+                             :worktree-id worktree-id
+                             :worktree-path worktree-path
+                             :worktree-branch worktree-branch))
+         (resolved-repo-root (or repo-root
+                                 (and resolved-runtime
+                                      (worktree-runtime-repo-root resolved-runtime))
+                                 (%derive-worktree-repo-root
+                                  (and resolved-metadata
+                                       (worktree-metadata-path resolved-metadata))))))
+    (values resolved-runtime resolved-metadata resolved-repo-root)))
+
+(defun %find-live-local-worktree (repo-root metadata)
+  (when (and repo-root metadata)
+    (let* ((live-worktrees (sw4rm-sdk:git-worktree-list repo-root))
+           (resolved-path (worktree-metadata-path metadata))
+           (resolved-branch (worktree-metadata-branch metadata)))
+      (or (and resolved-path
+               (find (%worktree-path-namestring resolved-path)
+                     live-worktrees
+                     :key (lambda (item)
+                            (%worktree-path-namestring (getf item :path)))
+                     :test #'string=))
+          (and resolved-branch
+               (find resolved-branch
+                     live-worktrees
+                     :key (lambda (item)
+                            (%strip-live-worktree-branch-ref
+                             (getf item :branch)))
+                     :test #'string=))
+          nil))))
+
+(defun %reconstruct-local-worktree-record (metadata live-record)
+  (when (or metadata live-record)
+    (list :worktree-id (or (and metadata (worktree-metadata-id metadata))
+                           (and live-record
+                                (let ((path (getf live-record :path)))
+                                  (and path
+                                       (file-namestring
+                                        (pathname (%worktree-path-namestring path)))))))
+          :path (or (and live-record
+                         (%worktree-path-namestring (getf live-record :path)))
+                    (and metadata (worktree-metadata-path metadata)))
+          :branch (or (and live-record
+                           (%strip-live-worktree-branch-ref
+                            (getf live-record :branch)))
+                      (and metadata (worktree-metadata-branch metadata)))
+          :state (if live-record :spawned :missing)
+          :updated-at (get-universal-time))))
+
+(defun %worktree-abandoned-root (runtime)
+  (merge-pathnames #P"abandoned/"
+                   (worktree-runtime-lock-root runtime)))
+
+(defun %worktree-abandoned-marker-path (runtime worktree-id)
+  (merge-pathnames
+   (format nil "~A.sexp" (%worktree-id-path-component worktree-id))
+   (%worktree-abandoned-root runtime)))
+
+(defun %write-worktree-marker (path payload)
+  (ensure-directories-exist path)
+  (with-open-file (stream path
+                          :direction :output
+                          :if-exists :supersede
+                          :if-does-not-exist :create)
+    (let ((*print-circle* nil)
+          (*print-pretty* nil)
+          (*print-readably* t))
+      (write payload :stream stream :readably t)))
+  payload)
+
+(defun %read-worktree-marker (path)
+  (when (probe-file path)
+    (with-open-file (stream path :direction :input)
+      (let ((*read-eval* nil))
+        (read stream nil nil)))))
+
+(defun %delete-worktree-marker (path)
+  (when (probe-file path)
+    (delete-file path))
+  t)
+
+(defun %worktree-abandoned-marker-files (runtime)
+  (or (ignore-errors
+        (directory (merge-pathnames "*.sexp"
+                                    (%worktree-abandoned-root runtime))))
+      '()))
+
+(defun %worktree-marker-p (value)
+  (and (listp value)
+       (getf value :worktree-id)))
+
+(defun mark-local-worktree-abandoned (&key runtime
+                                           repo-root
+                                           worktree
+                                           worktree-id
+                                           worktree-path
+                                           worktree-branch
+                                           status
+                                           finished-at)
+  (multiple-value-bind (resolved-runtime metadata resolved-repo-root)
+      (%resolve-worktree-runtime-and-metadata
+       :runtime runtime
+       :repo-root repo-root
+       :worktree worktree
+       :worktree-id worktree-id
+       :worktree-path worktree-path
+       :worktree-branch worktree-branch)
+    (let ((resolved-status (%normalize-worktree-status status)))
+      (when (and resolved-runtime
+                 metadata
+                 (worktree-metadata-id metadata)
+                 resolved-status)
+        (%write-worktree-marker
+         (%worktree-abandoned-marker-path resolved-runtime
+                                          (worktree-metadata-id metadata))
+         (list :worktree-id (worktree-metadata-id metadata)
+               :repo-root (and resolved-repo-root
+                               (%worktree-path-namestring resolved-repo-root))
+               :branch (worktree-metadata-branch metadata)
+               :path (worktree-metadata-path metadata)
+               :status resolved-status
+               :finished-at (or finished-at (get-universal-time))
+               :updated-at (get-universal-time)))))))
+
+(defun %read-local-worktree-abandonment (runtime metadata)
+  (when (and runtime metadata (worktree-metadata-id metadata))
+    (let ((marker (%read-worktree-marker
+                   (%worktree-abandoned-marker-path runtime
+                                                    (worktree-metadata-id metadata)))))
+      (and (%worktree-marker-p marker)
+           marker))))
+
+(defun inspect-local-worktree (&key runtime
+                                    repo-root
+                                    worktree
+                                    worktree-id
+                                    worktree-path
+                                    worktree-branch
+                                    base-ref)
+  (multiple-value-bind (resolved-runtime metadata resolved-repo-root)
+      (%resolve-worktree-runtime-and-metadata
+       :runtime runtime
+       :repo-root repo-root
+       :worktree worktree
+       :worktree-id worktree-id
+       :worktree-path worktree-path
+       :worktree-branch worktree-branch)
+    (let* ((live-record (and resolved-repo-root
+                             (%find-live-local-worktree resolved-repo-root
+                                                        metadata)))
+           (record (%reconstruct-local-worktree-record metadata live-record))
+           (resolved-id (or (getf record :worktree-id)
+                            (and metadata (worktree-metadata-id metadata))))
+           (resolved-path (or (getf record :path)
+                              (and metadata (worktree-metadata-path metadata))))
+           (resolved-branch (or (getf record :branch)
+                                (and metadata (worktree-metadata-branch metadata))))
+           (marker (%read-local-worktree-abandonment resolved-runtime metadata))
+           (resolved-base-ref (or (%normalize-worktree-string base-ref)
+                                  (and resolved-repo-root
+                                       (%default-worktree-base-ref
+                                        resolved-repo-root))))
+           (dirty-entries nil)
+           (dirty-error nil)
+           (unique-commit-count nil)
+           (unique-error nil)
+           (live-p (not (null live-record))))
+      (when (and live-p resolved-path (probe-file (pathname resolved-path)))
+        (multiple-value-setq (dirty-entries dirty-error)
+          (%git-output-lines resolved-path '("status" "--porcelain")))
+        (when resolved-base-ref
+          (multiple-value-bind (count-text count-error)
+              (%git-output-string
+               resolved-path
+               (list "rev-list" "--count"
+                     (format nil "~A..HEAD" resolved-base-ref)))
+            (if count-text
+                (setf unique-commit-count
+                      (parse-integer count-text :junk-allowed t))
+                (setf unique-error count-error)))))
+      (let ((cleanup-classification
+              (cond
+                ((null live-p) :missing)
+                ((and dirty-entries (plusp (length dirty-entries))) :dirty)
+                ((and unique-commit-count (> unique-commit-count 0))
+                 :review-required)
+                (t
+                 :safe-to-prune)))
+            (abandoned-p (not (null marker))))
+        (list :id resolved-id
+              :path resolved-path
+              :branch resolved-branch
+              :repo-root (and resolved-repo-root
+                              (%worktree-path-namestring resolved-repo-root))
+              :record record
+              :live live-record
+              :live-p live-p
+              :abandoned-p abandoned-p
+              :lifecycle-state (cond
+                                 (abandoned-p :abandoned)
+                                 (live-p :active)
+                                 (t :missing))
+              :terminal-status (and marker (getf marker :status))
+              :finished-at (and marker (getf marker :finished-at))
+              :base-ref resolved-base-ref
+              :dirty-p (and dirty-entries (plusp (length dirty-entries)))
+              :dirty-entries dirty-entries
+              :unique-commit-count unique-commit-count
+              :cleanup-classification cleanup-classification
+              :error-message (or dirty-error unique-error))))))
+
+(defun cleanup-abandoned-local-worktree (&key runtime
+                                              repo-root
+                                              worktree
+                                              worktree-id
+                                              worktree-path
+                                              worktree-branch
+                                              status
+                                              finished-at
+                                              now
+                                              grace-period-seconds
+                                              base-ref
+                                              force)
+  (multiple-value-bind (resolved-runtime metadata resolved-repo-root)
+      (%resolve-worktree-runtime-and-metadata
+       :runtime runtime
+       :repo-root repo-root
+       :worktree worktree
+       :worktree-id worktree-id
+       :worktree-path worktree-path
+       :worktree-branch worktree-branch)
+    (let* ((inspection (inspect-local-worktree
+                        :runtime resolved-runtime
+                        :repo-root resolved-repo-root
+                        :worktree metadata
+                        :base-ref base-ref))
+           (resolved-id (getf inspection :id))
+           (marker (%read-local-worktree-abandonment resolved-runtime metadata))
+           (timestamp (or now (get-universal-time)))
+           (resolved-status (or (%normalize-worktree-status status)
+                                (and marker (getf marker :status))))
+           (resolved-finished-at (or finished-at
+                                     (and marker (getf marker :finished-at))
+                                     timestamp))
+           (age-seconds (max 0 (- timestamp resolved-finished-at)))
+           (grace-seconds (if (null grace-period-seconds)
+                              *default-worktree-cleanup-grace-period-seconds*
+                              grace-period-seconds))
+           (grace-expired-p (>= age-seconds grace-seconds))
+           (classification (getf inspection :cleanup-classification))
+           (action nil)
+           (reason nil)
+           (error-message nil))
+      (cond
+        ((null resolved-status)
+         (setf action :skip
+               reason :missing-status))
+        ((not (member resolved-status
+                      *worktree-abandoned-terminal-statuses*
+                      :test #'eq))
+         (setf action :skip
+               reason :non-abandoned-status))
+        ((not (getf inspection :live-p))
+         (setf action :already-removed
+               reason :missing))
+        ((not grace-expired-p)
+         (setf action :retain
+               reason :grace-period))
+        ((eq classification :dirty)
+         (setf action :review-required
+               reason :dirty))
+        ((eq classification :review-required)
+         (setf action :review-required
+               reason :unique-commits))
+        ((eq classification :safe-to-prune)
+         (handler-case
+             (progn
+               (kill-local-worktree resolved-runtime
+                                    resolved-id
+                                    :force force
+                                    :worktree metadata)
+               (setf action :deleted
+                     reason :expired-safe))
+           (error (condition)
+             (setf action :error
+                   reason :delete-failed
+                   error-message (princ-to-string condition)))))
+        (t
+         (setf action :retain
+               reason :unknown)))
+      (when (and resolved-runtime
+                 resolved-id
+                 (member action '(:deleted :already-removed) :test #'eq))
+        (%delete-worktree-marker
+         (%worktree-abandoned-marker-path resolved-runtime resolved-id)))
+      (append inspection
+              (list :action action
+                    :reason reason
+                    :terminal-status resolved-status
+                    :finished-at resolved-finished-at
+                    :age-seconds age-seconds
+                    :grace-period-seconds grace-seconds
+                    :grace-expired-p grace-expired-p
+                    :error-message (or error-message
+                                       (getf inspection :error-message)))))))
+
+(defun cleanup-abandoned-local-worktrees (&key runtime
+                                               repo-root
+                                               now
+                                               grace-period-seconds
+                                               base-ref
+                                               force)
+  (let ((resolved-runtime (%runtime-for-worktree-source
+                           :runtime runtime
+                           :repo-root repo-root
+                           :worktree-path nil)))
+    (unless resolved-runtime
+      (return-from cleanup-abandoned-local-worktrees '()))
+    (let ((results '()))
+      (dolist (marker-path (%worktree-abandoned-marker-files resolved-runtime))
+        (let ((marker (%read-worktree-marker marker-path)))
+          (when (%worktree-marker-p marker)
+            (push (cleanup-abandoned-local-worktree
+                   :runtime resolved-runtime
+                   :repo-root (and (getf marker :repo-root)
+                                   (pathname (getf marker :repo-root)))
+                   :worktree (make-worktree-metadata
+                              :id (getf marker :worktree-id)
+                              :branch (getf marker :branch)
+                              :path (getf marker :path))
+                   :status (getf marker :status)
+	                   :finished-at (getf marker :finished-at)
+	                   :now now
+	                   :grace-period-seconds grace-period-seconds
+	                   :base-ref base-ref
+	                   :force force)
+	                  results))))
+	      (nreverse results))))
+
+(defun %next-worktree-conflict-handoff-id ()
+  (%with-worktree-conflict-handoff-lock ()
+    (incf *worktree-conflict-handoff-sequence*)
+    (format nil "worktree-handoff-~4,'0D"
+            *worktree-conflict-handoff-sequence*)))
+
+(defun %ensure-worktree-negotiation-client ()
+  (or *worktree-negotiation-client*
+      (setf *worktree-negotiation-client*
+            (make-instance 'sw4rm-sdk:negotiation-room-client
+                           :address "local://amoebum/worktree-negotiation"))))
+
+(defun %copy-worktree-data (value)
+  (and value (copy-tree value)))
+
+(defun %worktree-conflict-handoff-room-status (handoff)
+  (let ((room-id (and handoff
+                      (worktree-conflict-handoff-negotiation-room-id handoff))))
+    (when room-id
+      (ignore-errors
+        (sw4rm-sdk:get-room-status (%ensure-worktree-negotiation-client)
+                                   room-id)))))
+
+(defun %worktree-conflict-handoff-snapshot (handoff &key include-room-status-p)
+  (when handoff
+    (let ((snapshot
+            (list :handoff-id (worktree-conflict-handoff-id handoff)
+                  :status (worktree-conflict-handoff-status handoff)
+                  :created-at (worktree-conflict-handoff-created-at handoff)
+                  :updated-at (worktree-conflict-handoff-updated-at handoff)
+                  :worktree (worktree-metadata-plist
+                             (worktree-conflict-handoff-worktree handoff))
+                  :target-ref (worktree-conflict-handoff-target-ref handoff)
+                  :preflight (%copy-worktree-data
+                              (worktree-conflict-handoff-preflight handoff))
+                  :agent-id (worktree-conflict-handoff-agent-id handoff)
+                  :backend (worktree-conflict-handoff-backend handoff)
+                  :task (worktree-conflict-handoff-task handoff)
+                  :result (%copy-worktree-data
+                           (worktree-conflict-handoff-result handoff))
+                  :negotiation-room-id
+                  (worktree-conflict-handoff-negotiation-room-id handoff)
+                  :artifact-id (worktree-conflict-handoff-artifact-id handoff)
+                  :note (worktree-conflict-handoff-note handoff))))
+      (if include-room-status-p
+          (append snapshot
+                  (list :negotiation-status
+                        (%worktree-conflict-handoff-room-status handoff)))
+          snapshot))))
+
+(defun %store-worktree-conflict-handoff! (handoff)
+  (%with-worktree-conflict-handoff-lock ()
+    (setf (gethash (worktree-conflict-handoff-id handoff)
+                   *worktree-conflict-handoffs*)
+          handoff))
+  handoff)
+
+(defun clear-worktree-conflict-handoffs ()
+  (%with-worktree-conflict-handoff-lock ()
+    (clrhash *worktree-conflict-handoffs*)
+    (setf *worktree-negotiation-client* nil))
+  t)
+
+(defun list-worktree-conflict-handoffs ()
+  (%with-worktree-conflict-handoff-lock ()
+    (let ((handoffs '()))
+      (maphash (lambda (_id handoff)
+                 (declare (ignore _id))
+                 (push (%worktree-conflict-handoff-snapshot handoff)
+                       handoffs))
+               *worktree-conflict-handoffs*)
+      (sort handoffs #'> :key (lambda (snapshot)
+                                (or (getf snapshot :created-at) 0))))))
+
+(defun find-worktree-conflict-handoff (handoff-id &key include-room-status-p)
+  (%with-worktree-conflict-handoff-lock ()
+    (%worktree-conflict-handoff-snapshot
+     (gethash (%normalize-worktree-string handoff-id)
+              *worktree-conflict-handoffs*)
+     :include-room-status-p include-room-status-p)))
+
+(defun %update-worktree-conflict-handoff! (handoff-id updater)
+  (%with-worktree-conflict-handoff-lock ()
+    (let* ((resolved-id (%normalize-worktree-string handoff-id))
+           (handoff (and resolved-id
+                         (gethash resolved-id *worktree-conflict-handoffs*))))
+      (unless handoff
+        (error "Unknown worktree conflict handoff ~S." handoff-id))
+      (funcall updater handoff)
+      (setf (worktree-conflict-handoff-updated-at handoff)
+            (get-universal-time))
+      (%worktree-conflict-handoff-snapshot handoff
+                                           :include-room-status-p t))))
+
+(defun accept-worktree-conflict-handoff (handoff-id &key note)
+  (%update-worktree-conflict-handoff!
+   handoff-id
+   (lambda (handoff)
+     (setf (worktree-conflict-handoff-status handoff) :accepted
+           (worktree-conflict-handoff-note handoff)
+           (%normalize-worktree-string note)))))
+
+(defun defer-worktree-conflict-handoff (handoff-id &key note)
+  (%update-worktree-conflict-handoff!
+   handoff-id
+   (lambda (handoff)
+     (setf (worktree-conflict-handoff-status handoff) :deferred
+           (worktree-conflict-handoff-note handoff)
+           (%normalize-worktree-string note)))))
+
+(defun %local-worktree-preflight-result (inspection status target-ref
+                                          &key merge-base
+                                               worktree-files
+                                               target-files
+                                               conflicts
+                                               conflict-kind
+                                               error-message)
+  (append inspection
+          (list :status status
+                :target-ref target-ref
+                :merge-base merge-base
+                :worktree-files worktree-files
+                :target-files target-files
+                :conflict-kind conflict-kind
+                :conflict-p (not (null conflicts))
+                :conflicts (or conflicts '())
+                :error-message error-message)))
+
+(defun %git-diff-name-set (directory revision-range)
+  (multiple-value-bind (files error-message)
+      (%git-output-lines directory
+                         (list "diff" "--name-only" revision-range))
+    (if error-message
+        (values nil error-message)
+        (values (sort (remove-duplicates files :test #'string=)
+                      #'string<)
+                nil))))
+
+(defun %compute-local-worktree-preflight-data (repo-root worktree-path target-ref)
+  (multiple-value-bind (head head-error)
+      (%git-output-string worktree-path '("rev-parse" "HEAD"))
+    (if (null head)
+        (values nil head-error)
+        (multiple-value-bind (merge-base merge-base-error)
+            (%git-output-string repo-root
+                                (list "merge-base" target-ref head))
+          (if (null merge-base)
+              (values nil merge-base-error)
+              (multiple-value-bind (worktree-files worktree-error)
+                  (%git-diff-name-set worktree-path
+                                      (format nil "~A..HEAD" merge-base))
+                (if worktree-error
+                    (values nil worktree-error)
+                    (multiple-value-bind (target-files target-error)
+                        (%git-diff-name-set repo-root
+                                            (format nil "~A..~A"
+                                                    merge-base
+                                                    target-ref))
+                      (if target-error
+                          (values nil target-error)
+                          (let ((conflicts (sort (intersection worktree-files
+                                                             target-files
+                                                             :test #'string=)
+                                                 #'string<)))
+                            (values (list :merge-base merge-base
+                                          :worktree-files worktree-files
+                                          :target-files target-files
+                                          :conflicts conflicts
+                                          :conflict-kind (and conflicts
+                                                              :file-overlap))
+                                    nil)))))))))))
+
+(defun resolve-worktree-merge-target (&key runtime
+                                           repo-root
+                                           worktree
+                                           worktree-id
+                                           worktree-path
+                                           worktree-branch
+                                           target-ref)
+  (multiple-value-bind (resolved-runtime metadata resolved-repo-root)
+      (%resolve-worktree-runtime-and-metadata
+       :runtime runtime
+       :repo-root repo-root
+       :worktree worktree
+       :worktree-id worktree-id
+       :worktree-path worktree-path
+       :worktree-branch worktree-branch)
+    (let* ((inspection (inspect-local-worktree
+                        :runtime resolved-runtime
+                        :repo-root resolved-repo-root
+                        :worktree metadata
+                        :base-ref target-ref))
+           (resolved-base-ref (%normalize-worktree-string
+                               (getf inspection :base-ref)))
+           (workflow-target (and (null (%normalize-worktree-string target-ref))
+                                 (resolve-worktree-workflow-branch
+                                  :worktree metadata)))
+           (resolved-target-ref (or (%normalize-worktree-string target-ref)
+                                    workflow-target
+                                    resolved-base-ref))
+           (target-exists-p (and resolved-repo-root
+                                 resolved-target-ref
+                                 (%git-ref-exists-p resolved-repo-root
+                                                    resolved-target-ref)))
+           (preflight-target-ref (or (and target-exists-p resolved-target-ref)
+                                     resolved-base-ref
+                                     resolved-target-ref)))
+      (append inspection
+              (list :target-ref resolved-target-ref
+                    :target-exists-p target-exists-p
+                    :preflight-target-ref preflight-target-ref
+                    :seed-ref resolved-base-ref
+                    :workflow-branch workflow-target
+                    :workflow-target-p (and workflow-target
+                                            resolved-target-ref
+                                            (string= workflow-target
+                                                     resolved-target-ref)))))))
+
+(defun preflight-local-worktree-merge (&key runtime
+                                            repo-root
+                                            worktree
+                                            worktree-id
+                                            worktree-path
+                                            worktree-branch
+                                            target-ref)
+  (multiple-value-bind (resolved-runtime metadata resolved-repo-root)
+      (%resolve-worktree-runtime-and-metadata
+       :runtime runtime
+       :repo-root repo-root
+       :worktree worktree
+       :worktree-id worktree-id
+       :worktree-path worktree-path
+       :worktree-branch worktree-branch)
+    (let* ((inspection (inspect-local-worktree
+                        :runtime resolved-runtime
+                        :repo-root resolved-repo-root
+                        :worktree metadata
+                        :base-ref target-ref))
+           (resolved-target-ref (or (%normalize-worktree-string target-ref)
+                                    (getf inspection :base-ref)))
+           (resolved-path (getf inspection :path)))
+      (cond
+        ((not (getf inspection :live-p))
+         (%local-worktree-preflight-result inspection
+                                           :missing
+                                           resolved-target-ref))
+        ((getf inspection :dirty-p)
+         (%local-worktree-preflight-result inspection
+                                           :dirty
+                                           resolved-target-ref))
+        ((null resolved-target-ref)
+         (%local-worktree-preflight-result
+          inspection
+          :error
+          nil
+          :error-message "Unable to resolve merge target ref."))
+        (t
+         (multiple-value-bind (preflight-data error-message)
+             (%compute-local-worktree-preflight-data
+              resolved-repo-root
+              resolved-path
+              resolved-target-ref)
+           (if error-message
+               (%local-worktree-preflight-result
+                inspection
+                :error
+                resolved-target-ref
+                :error-message error-message)
+               (%local-worktree-preflight-result
+                inspection
+                (if (getf preflight-data :conflicts)
+                    :conflict
+                    :clean)
+                resolved-target-ref
+                :merge-base (getf preflight-data :merge-base)
+                :worktree-files (getf preflight-data :worktree-files)
+                :target-files (getf preflight-data :target-files)
+                :conflicts (getf preflight-data :conflicts)
+                :conflict-kind (getf preflight-data :conflict-kind)))))))))
+
+(defun %local-worktree-merge-result (merge-target merge-status
+                                     &key preflight
+                                          created-target-p
+                                          deleted-worktree-p
+                                          handoff
+                                          error-message
+                                          reason)
+  (append merge-target
+          (list :merge-status merge-status
+                :preflight (%copy-worktree-data preflight)
+                :created-target-p created-target-p
+                :deleted-worktree-p deleted-worktree-p
+                :handoff-id (and handoff (getf handoff :handoff-id))
+                :negotiation-room-id (and handoff
+                                          (getf handoff :negotiation-room-id))
+                :artifact-id (and handoff (getf handoff :artifact-id))
+	                :reason reason
+	                :error-message error-message)))
+
+(defun %worktree-git-error-message (args stderr)
+  (or (%normalize-worktree-string stderr)
+      (format nil "Git command failed: git ~{~A~^ ~}" args)))
+
+(defun %ensure-local-worktree-merge-target! (merge-target preflight
+                                                          repo-root
+                                                          target-ref)
+  (if (getf merge-target :target-exists-p)
+      (values nil nil)
+      (let ((seed-ref (%normalize-worktree-string
+                       (getf merge-target :seed-ref))))
+        (if (null seed-ref)
+            (values nil
+                    (%local-worktree-merge-result
+                     merge-target
+                     :blocked
+                     :preflight preflight
+                     :reason :missing-seed-ref))
+            (multiple-value-bind (_stdout stderr status)
+                (%run-worktree-git repo-root
+                                   (list "branch" target-ref seed-ref))
+              (declare (ignore _stdout))
+              (if (zerop status)
+                  (values t nil)
+                  (values nil
+                          (%local-worktree-merge-result
+                           merge-target
+                           :error
+                           :preflight preflight
+                           :error-message
+                           (%worktree-git-error-message
+                            (list "branch" target-ref seed-ref)
+                            stderr)
+                           :reason :create-target-failed))))))))
+
+(defun %checkout-local-worktree-merge-target! (merge-target preflight
+                                                               repo-root
+                                                               head-state
+                                                               target-ref
+                                                               created-target-p)
+  (if (and (not (getf head-state :detached-p))
+           (string= (getf head-state :ref) target-ref))
+      (values nil nil)
+      (multiple-value-bind (_stdout stderr status)
+          (%run-worktree-git repo-root
+                             (list "checkout" target-ref))
+        (declare (ignore _stdout))
+        (if (zerop status)
+            (values t nil)
+            (values nil
+                    (%local-worktree-merge-result
+                     merge-target
+                     :error
+                     :preflight preflight
+                     :created-target-p created-target-p
+                     :error-message
+                     (%worktree-git-error-message
+                      (list "checkout" target-ref)
+                      stderr)
+                     :reason :checkout-target-failed))))))
+
+(defun %merge-local-worktree-branch-into-target! (merge-target preflight
+                                                                 repo-root
+                                                                 worktree-branch
+                                                                 created-target-p)
+  (let ((args (list "merge" "--no-edit" worktree-branch)))
+    (multiple-value-bind (_stdout stderr status)
+        (%run-worktree-git repo-root args)
+      (declare (ignore _stdout))
+      (when (not (zerop status))
+        (ignore-errors
+          (%run-worktree-git repo-root '("merge" "--abort")))
+        (%local-worktree-merge-result
+         merge-target
+         :error
+         :preflight preflight
+         :created-target-p created-target-p
+         :error-message (%worktree-git-error-message args stderr)
+         :reason :merge-command-failed)))))
+
+(defun %maybe-delete-local-worktree-after-merge (runtime
+                                                 merge-target
+                                                 repo-root
+                                                 worktree
+                                                 worktree-id
+                                                 worktree-path
+                                                 worktree-branch)
+  (eq t (kill-local-worktree
+         (or runtime
+             (make-worktree-runtime :repo-root repo-root))
+         (or worktree-id
+             (getf merge-target :id))
+         :force t
+         :worktree worktree
+         :worktree-path worktree-path
+         :worktree-branch worktree-branch)))
+
+(defun %perform-clean-local-worktree-merge (&key runtime
+                                                 merge-target
+                                                 preflight
+                                                 repo-root
+                                                 target-ref
+                                                 worktree
+                                                 worktree-id
+                                                 worktree-path
+                                                 worktree-branch
+                                                 delete-worktree-p)
+  (let* ((head-state (%git-current-head-state repo-root))
+         (restore-head-p nil)
+         (created-target-p nil)
+         (deleted-worktree-p nil))
+    (unwind-protect
+         (progn
+           (multiple-value-bind (created-target-p* early-result)
+               (%ensure-local-worktree-merge-target! merge-target
+                                                     preflight
+                                                     repo-root
+                                                     target-ref)
+             (when early-result
+               (return-from %perform-clean-local-worktree-merge early-result))
+             (setf created-target-p created-target-p*))
+           (multiple-value-bind (restore-head-p* early-result)
+               (%checkout-local-worktree-merge-target! merge-target
+                                                       preflight
+                                                       repo-root
+                                                       head-state
+                                                       target-ref
+                                                       created-target-p)
+             (when early-result
+               (return-from %perform-clean-local-worktree-merge early-result))
+             (setf restore-head-p restore-head-p*))
+           (let ((merge-error
+                   (%merge-local-worktree-branch-into-target! merge-target
+                                                              preflight
+                                                              repo-root
+                                                              (%normalize-worktree-string
+                                                               (getf merge-target :branch))
+                                                              created-target-p)))
+             (when merge-error
+               (return-from %perform-clean-local-worktree-merge merge-error)))
+           (when delete-worktree-p
+             (setf deleted-worktree-p
+                   (%maybe-delete-local-worktree-after-merge runtime
+                                                             merge-target
+                                                             repo-root
+                                                             worktree
+                                                             worktree-id
+                                                             worktree-path
+                                                             worktree-branch)))
+           (%local-worktree-merge-result
+            merge-target
+            :merged
+            :preflight preflight
+            :created-target-p created-target-p
+            :deleted-worktree-p deleted-worktree-p))
+      (when restore-head-p
+        (ignore-errors
+          (%restore-git-head-state repo-root head-state))))))
+
+(defun create-worktree-conflict-handoff (&key worktree
+                                              target-ref
+                                              preflight
+                                              agent-id
+                                              backend
+                                              task
+                                              result)
+  (let* ((metadata (coerce-worktree-metadata :worktree worktree))
+         (handoff-id (%next-worktree-conflict-handoff-id))
+         (room-id (format nil "~A-room" handoff-id))
+         (artifact-id (format nil "~A-artifact" handoff-id))
+         (created-at (get-universal-time))
+         (room-metadata (list :handoff-id handoff-id
+                              :target-ref (%normalize-worktree-string target-ref)
+                              :worktree (worktree-metadata-plist metadata)
+                              :agent-id (%normalize-worktree-string agent-id)
+                              :backend backend
+                              :conflicts (%copy-worktree-data
+                                          (getf preflight :conflicts))))
+         (artifact (list :type :worktree-merge-conflict
+                         :handoff-id handoff-id
+                         :target-ref (%normalize-worktree-string target-ref)
+                         :worktree (worktree-metadata-plist metadata)
+                         :preflight (%copy-worktree-data preflight)
+                         :task task
+                         :result (%copy-worktree-data result))))
+    (sw4rm-sdk:create-room (%ensure-worktree-negotiation-client)
+                           room-id
+                           :description "Amoebum worktree merge conflict"
+                           :metadata room-metadata)
+    (sw4rm-sdk:submit-artifact
+     (%ensure-worktree-negotiation-client)
+     (list :artifact-id artifact-id
+           :negotiation-room-id room-id
+           :proposer-id (or (%normalize-worktree-string agent-id)
+                            "amoebum/worktree-merger")
+           :artifact artifact
+           :metadata room-metadata
+           :requested-critics '()
+           :aggregation-strategy :confidence-weighted))
+    (%worktree-conflict-handoff-snapshot
+     (%store-worktree-conflict-handoff!
+      (%make-worktree-conflict-handoff
+       :id handoff-id
+       :status :pending
+       :created-at created-at
+       :updated-at created-at
+       :worktree metadata
+       :target-ref (%normalize-worktree-string target-ref)
+       :preflight (%copy-worktree-data preflight)
+       :agent-id (%normalize-worktree-string agent-id)
+       :backend backend
+       :task task
+       :result (%copy-worktree-data result)
+       :negotiation-room-id room-id
+       :artifact-id artifact-id))
+     :include-room-status-p t)))
+
+(defun merge-local-worktree (&key runtime
+                                  repo-root
+                                  worktree
+                                  worktree-id
+                                  worktree-path
+                                  worktree-branch
+                                  target-ref
+                                  (delete-worktree-p t)
+                                  agent-id
+                                  backend
+                                  task
+                                  result)
+  (let* ((merge-target (resolve-worktree-merge-target
+                        :runtime runtime
+                        :repo-root repo-root
+                        :worktree worktree
+                        :worktree-id worktree-id
+                        :worktree-path worktree-path
+                        :worktree-branch worktree-branch
+                        :target-ref target-ref))
+         (resolved-repo-root (and (getf merge-target :repo-root)
+                                  (pathname (getf merge-target :repo-root))))
+         (resolved-target-ref (%normalize-worktree-string
+                               (getf merge-target :target-ref)))
+         (preflight-target-ref (%normalize-worktree-string
+                                (getf merge-target :preflight-target-ref)))
+         (resolved-worktree-branch (%normalize-worktree-string
+                                    (getf merge-target :branch)))
+         (status-runtime (or runtime
+                             (%runtime-for-worktree-source
+                              :repo-root resolved-repo-root
+                              :worktree-path (or worktree-path
+                                                 (getf merge-target :path)))))
+         (ignored-status-path-prefixes
+           (%managed-worktree-status-ignored-paths status-runtime
+                                                   resolved-repo-root)))
+    (cond
+      ((null resolved-target-ref)
+       (%local-worktree-merge-result merge-target
+                                     :blocked
+                                     :reason :missing-target))
+	      ((or (null preflight-target-ref)
+	           (null resolved-repo-root))
+	       (%local-worktree-merge-result merge-target
+	                                     :blocked
+	                                     :reason :missing-preflight-target))
+	      ((null resolved-worktree-branch)
+	       (%local-worktree-merge-result merge-target
+	                                     :blocked
+	                                     :reason :missing-worktree-branch))
+	      ((and resolved-worktree-branch
+	            (string= resolved-worktree-branch resolved-target-ref))
+	       (%local-worktree-merge-result merge-target
+	                                     :skipped
+	                                     :reason :self-target))
+      (t
+       (let ((preflight (preflight-local-worktree-merge
+                         :runtime runtime
+                         :repo-root resolved-repo-root
+                         :worktree worktree
+                         :worktree-id worktree-id
+                         :worktree-path worktree-path
+                         :worktree-branch worktree-branch
+                         :target-ref preflight-target-ref)))
+         (case (getf preflight :status)
+           (:clean
+            (multiple-value-bind (clean-p clean-error)
+                (%git-clean-working-tree-p
+                 resolved-repo-root
+                 :ignored-path-prefixes ignored-status-path-prefixes)
+              (cond
+                (clean-error
+                 (%local-worktree-merge-result merge-target
+                                               :error
+                                               :preflight preflight
+                                               :error-message clean-error
+                                               :reason :target-status-error))
+	                ((not clean-p)
+	                 (%local-worktree-merge-result merge-target
+	                                               :blocked
+	                                               :preflight preflight
+	                                               :reason :target-dirty))
+	                (t
+	                 (%perform-clean-local-worktree-merge
+	                  :runtime runtime
+	                  :merge-target merge-target
+	                  :preflight preflight
+	                  :repo-root resolved-repo-root
+	                  :target-ref resolved-target-ref
+	                  :worktree worktree
+	                  :worktree-id worktree-id
+	                  :worktree-path worktree-path
+	                  :worktree-branch worktree-branch
+	                  :delete-worktree-p delete-worktree-p)))))
+	           (:conflict
+	            (handler-case
+	                (let ((handoff (create-worktree-conflict-handoff
+                                :worktree (or worktree
+                                              (make-worktree-metadata
+                                               :id (getf merge-target :id)
+                                               :branch resolved-worktree-branch
+                                               :path (getf merge-target :path)))
+                                :target-ref resolved-target-ref
+                                :preflight preflight
+                                :agent-id agent-id
+                                :backend backend
+                                :task task
+                                :result result)))
+                  (%local-worktree-merge-result
+                   merge-target
+                   :conflict-handoff
+                   :preflight preflight
+                   :handoff handoff
+                   :reason (or (getf preflight :conflict-kind)
+                               :conflict)))
+              (error (condition)
+                (%local-worktree-merge-result
+                 merge-target
+                 :error
+                 :preflight preflight
+                 :error-message (princ-to-string condition)
+                 :reason :handoff-creation-failed))))
+           (otherwise
+            (%local-worktree-merge-result
+             merge-target
+             :blocked
+             :preflight preflight
+             :reason (getf preflight :status)))))))))
+
+(defun spawn-local-worktree (runtime worktree-id branch &key
+                                                       base-ref
+                                                       worktree
+                                                       workflow-id
+                                                       node-id
+                                                       worktree-path)
   (check-type runtime worktree-runtime)
-  (sw4rm-sdk:kill-worktree
-   (worktree-runtime-coordinator runtime)
-   (princ-to-string worktree-id)
-   :force force))
+  (ignore-errors
+    (cleanup-abandoned-local-worktrees :runtime runtime))
+  (let* ((metadata (resolve-worktree-metadata :runtime runtime
+                                              :worktree worktree
+                                              :worktree-id worktree-id
+                                              :worktree-branch branch
+                                              :worktree-path worktree-path
+                                              :workflow-id workflow-id
+                                              :node-id node-id))
+         (resolved-id (and metadata (worktree-metadata-id metadata)))
+         (resolved-branch (and metadata (worktree-metadata-branch metadata)))
+         (resolved-path (and metadata (worktree-metadata-path metadata))))
+    (unless resolved-id
+      (error "Unable to resolve a local worktree id from ~S."
+             (list :worktree worktree
+                   :worktree-id worktree-id
+                   :worktree-branch branch
+                   :workflow-id workflow-id
+                   :node-id node-id)))
+    (%delete-worktree-marker
+     (%worktree-abandoned-marker-path runtime resolved-id))
+    (unless resolved-branch
+      (error "Unable to resolve a local worktree branch from ~S."
+             (list :worktree worktree
+                   :worktree-id worktree-id
+                   :worktree-branch branch
+                   :workflow-id workflow-id
+                   :node-id node-id)))
+    (sw4rm-sdk:spawn-worktree
+     (worktree-runtime-coordinator runtime)
+     resolved-id
+     resolved-path
+     resolved-branch
+     :base-ref (or base-ref "HEAD"))))
+
+(defun collect-local-worktree (runtime worktree-id &key
+                                               worktree
+                                               worktree-path
+                                               worktree-branch)
+  (check-type runtime worktree-runtime)
+  (ignore-errors
+    (cleanup-abandoned-local-worktrees :runtime runtime))
+  (multiple-value-bind (_ metadata repo-root)
+      (%resolve-worktree-runtime-and-metadata
+       :runtime runtime
+       :worktree worktree
+       :worktree-id worktree-id
+       :worktree-path worktree-path
+       :worktree-branch worktree-branch)
+    (declare (ignore _))
+    (let* ((collected (ignore-errors
+                        (sw4rm-sdk:collect-worktree
+                         (worktree-runtime-coordinator runtime)
+                         (princ-to-string
+                          (or (and metadata (worktree-metadata-id metadata))
+                              worktree-id)))))
+           (record (or (and collected (getf collected :record))
+                       (%reconstruct-local-worktree-record
+                        metadata
+                        nil)))
+           (live (or (and collected (getf collected :live))
+                     (%find-live-local-worktree repo-root metadata))))
+      (when (and live (or (null record)
+                          (eq (getf record :state) :missing)))
+        (setf record (%reconstruct-local-worktree-record metadata live)))
+      (list :record record
+            :live live
+            :status (inspect-local-worktree
+                     :runtime runtime
+                     :repo-root repo-root
+                     :worktree metadata)))))
+
+(defun kill-local-worktree (runtime worktree-id &key
+                                           force
+                                           worktree
+                                           worktree-path
+                                           worktree-branch)
+  (check-type runtime worktree-runtime)
+  (multiple-value-bind (_ metadata repo-root)
+      (%resolve-worktree-runtime-and-metadata
+       :runtime runtime
+       :worktree worktree
+       :worktree-id worktree-id
+       :worktree-path worktree-path
+       :worktree-branch worktree-branch)
+    (declare (ignore _))
+    (let* ((resolved-id (or (and metadata (worktree-metadata-id metadata))
+                            (and worktree-id
+                                 (%normalize-worktree-string worktree-id))))
+           (resolved-path (or (and metadata (worktree-metadata-path metadata))
+                              (and resolved-id
+                                   (%worktree-path-namestring
+                                    (worktree-runtime-path runtime
+                                                           resolved-id))))))
+      (or (ignore-errors
+            (sw4rm-sdk:kill-worktree
+             (worktree-runtime-coordinator runtime)
+             (princ-to-string resolved-id)
+             :force force))
+          (let* ((resolved-pathname (and resolved-path (pathname resolved-path)))
+                 (path-missing-p (and resolved-pathname
+                                      (not (probe-file resolved-pathname))))
+                 (live (and (not path-missing-p)
+                            repo-root
+                            metadata
+                            (%find-live-local-worktree repo-root metadata))))
+            (cond
+              (path-missing-p
+               (when repo-root
+                 (sw4rm-sdk:git-worktree-prune repo-root))
+               (when resolved-id
+                 (%delete-worktree-marker
+                  (%worktree-abandoned-marker-path runtime resolved-id)))
+               t)
+              ((or live resolved-path)
+               (sw4rm-sdk:git-worktree-remove
+                repo-root
+                (or (and live (%worktree-path-namestring (getf live :path)))
+                    resolved-path)
+                :force force)
+               (sw4rm-sdk:git-worktree-prune repo-root)
+               (when resolved-id
+                 (%delete-worktree-marker
+                  (%worktree-abandoned-marker-path runtime resolved-id)))
+               t)))))))

@@ -311,6 +311,9 @@
                              :backend backend
                              :status agent-status
                              :result (runtime-agent-result agent-rec :backend backend)
+                             :merge (runtime-agent-worktree-merge
+                                     agent-rec
+                                     :backend backend)
                              :worktree (worktree-metadata-plist
                                         (runtime-agent-worktree agent-rec
                                                                 :backend backend)))

@@ -474,11 +474,31 @@ Staged diff:~%~A"
                                      "--symbolic-full-name"
                                      "@{u}")))
          (upstream (%git-trim-whitespace (getf result :stdout))))
-    (when (and (zerop (getf result :exit-code))
-               (plusp (length upstream)))
-      upstream)))
+	    (when (and (zerop (getf result :exit-code))
+	               (plusp (length upstream)))
+	      upstream)))
+
+(defun %git-ensure-delegated-push-branch-allowed (branch)
+  (let ((allowed-branch (current-delegated-agent-push-branch))
+        (requested-branch (%git-trim-whitespace branch)))
+    (when (and (plusp (length requested-branch))
+               allowed-branch
+               (not (string= requested-branch allowed-branch)))
+      (let ((reason (format nil
+                            "Delegated agent ~A may only push branch ~A; attempted ~A."
+                            (or (current-delegated-agent-id) "<unknown>")
+                            allowed-branch
+                            requested-branch)))
+        (error 'tool-permission-denied
+               :tool-name :git-push
+               :arguments (list requested-branch)
+               :reason-code :worktree-branch-scope
+               :reason reason
+               :message reason))))
+  branch)
 
 (defun %git-push-set-upstream-if-needed! (root branch)
+  (%git-ensure-delegated-push-branch-allowed branch)
   (let ((upstream (%git-upstream-branch root)))
     (if upstream
         (list :pushed-p nil :upstream upstream)

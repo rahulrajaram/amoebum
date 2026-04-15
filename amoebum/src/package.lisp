@@ -789,10 +789,11 @@
            #:agent-record-finished-ms
            #:agent-record-cancel-requested-p
            #:agent-record-result
-           #:agent-record-stdout
-           #:agent-record-stderr
-           #:agent-record-error-message
-           #:agent-record-worktree
+	           #:agent-record-stdout
+	           #:agent-record-stderr
+	           #:agent-record-error-message
+	           #:agent-record-worktree
+	           #:agent-record-worktree-merge
            ;; Agent personas
            #:persona-definition
            #:persona-definition-p
@@ -819,10 +820,11 @@
            #:runtime-agent-task
            #:runtime-agent-status
            #:runtime-agent-result
-           #:runtime-agent-error-message
-           #:runtime-agent-output
-           #:runtime-agent-worktree
-           #:runtime-agent-terminal-p
+	           #:runtime-agent-error-message
+	           #:runtime-agent-output
+	           #:runtime-agent-worktree
+	           #:runtime-agent-worktree-merge
+	           #:runtime-agent-terminal-p
            #:spawn-agent
            #:cancel-agent
            #:agent-cancel-requested-p
@@ -1935,10 +1937,11 @@
            #:swarm-agent-retry-policy
            #:swarm-agent-timeout-seconds
            ;; NXT-018: stalled-run detection
-           #:swarm-agent-heartbeat-at
-           #:swarm-agent-last-output-at
-           #:swarm-agent-worktree
-           #:*swarm-registry*
+	           #:swarm-agent-heartbeat-at
+	           #:swarm-agent-last-output-at
+	           #:swarm-agent-worktree
+	           #:swarm-agent-worktree-merge
+	           #:*swarm-registry*
            #:*swarm-counter*
            #:spawn-swarm-agent
            #:collect-swarm-result
@@ -1959,6 +1962,10 @@
            #:worktree-metadata-branch
            #:worktree-metadata-path
            #:coerce-worktree-metadata
+	           #:resolve-worktree-id
+	           #:resolve-worktree-branch
+	           #:resolve-worktree-workflow-branch
+	           #:resolve-worktree-metadata
            #:worktree-runtime
            #:worktree-runtime-p
            #:worktree-runtime-repo-root
@@ -1974,7 +1981,20 @@
            #:spawn-local-worktree
            #:collect-local-worktree
            #:kill-local-worktree
-           ;; Inter-user coordination (I253)
+           #:inspect-local-worktree
+           #:mark-local-worktree-abandoned
+	           #:cleanup-abandoned-local-worktree
+	           #:cleanup-abandoned-local-worktrees
+	           #:resolve-worktree-merge-target
+	           #:preflight-local-worktree-merge
+	           #:merge-local-worktree
+	           #:create-worktree-conflict-handoff
+	           #:clear-worktree-conflict-handoffs
+	           #:list-worktree-conflict-handoffs
+	           #:find-worktree-conflict-handoff
+	           #:accept-worktree-conflict-handoff
+	           #:defer-worktree-conflict-handoff
+	           ;; Inter-user coordination (I253)
            #:register-user-session-peer
            #:unregister-user-session-peer
            #:find-user-session-peer

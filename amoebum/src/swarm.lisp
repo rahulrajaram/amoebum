@@ -17,6 +17,7 @@
                       (created-at (get-universal-time))
                       state-machine result thread error-message backing-agent
                       worktree
+                      worktree-merge
                       signal-name
                       (retry-count 0)
                       retry-policy
@@ -34,6 +35,7 @@
   (error-message nil :type (or null string))
   (backing-agent nil)
   (worktree nil)
+  (worktree-merge nil)
   ;; NXT-017: Signal tracking and retry semantics
   (signal-name nil :type (or null string))   ; e.g. "SIGTERM", "SIGKILL"
   (retry-count 0 :type integer)              ; number of times this agent has been retried
@@ -110,30 +112,49 @@
                           :metadata (%swarm-status-metadata :cancelling))
   agent)
 
+(defun %maybe-merge-swarm-worktree (agent status result)
+  (when (and (eq status :completed)
+             (swarm-agent-worktree agent))
+    (handler-case
+        (merge-local-worktree
+         :worktree (swarm-agent-worktree agent)
+         :agent-id (swarm-agent-id agent)
+         :backend :swarm
+         :task (swarm-agent-task agent)
+         :result result)
+      (error (condition)
+        (list :merge-status :error
+              :reason :merge-helper-failed
+              :error-message (princ-to-string condition))))))
+
 (defun %swarm-mark-terminal (agent status result error-message &key timeout-seconds stdout stderr signal-name)
   (let ((backing-agent (swarm-agent-backing-agent agent))
         (metadata (%swarm-status-metadata status
                                           :timeout-seconds timeout-seconds
                                           :error-message error-message))
-        (finished-ms (%agent-now-ms)))
+        (finished-ms (%agent-now-ms))
+        (worktree-merge (%maybe-merge-swarm-worktree agent status result)))
     (when backing-agent
       (setf (agent-record-status backing-agent) status
             (agent-record-finished-ms backing-agent) finished-ms
             (agent-record-result backing-agent) result
             (agent-record-stdout backing-agent) stdout
             (agent-record-stderr backing-agent) stderr
-            (agent-record-error-message backing-agent) error-message))
+            (agent-record-error-message backing-agent) error-message
+            (agent-record-worktree-merge backing-agent) worktree-merge))
     (when (and backing-agent (eq status :cancelled))
       (setf (agent-record-cancel-requested-p backing-agent) t))
   (setf (swarm-agent-status agent) status
         (swarm-agent-result agent) result
         (swarm-agent-error-message agent) error-message
+        (swarm-agent-worktree-merge agent) worktree-merge
         (swarm-agent-finished-at agent) (get-universal-time))
   ;; NXT-017: record signal name and effective timeout-seconds on the struct
   (when signal-name
     (setf (swarm-agent-signal-name agent) signal-name))
   (when timeout-seconds
     (setf (swarm-agent-timeout-seconds agent) timeout-seconds))
+  (%maybe-mark-swarm-worktree-abandoned agent status)
   (case status
     (:completed
      (%swarm-transition-safe agent :completed :metadata metadata))
@@ -151,6 +172,21 @@
   (if (agent-record-cancel-requested-p runner-agent)
       :cancelled
       :completed))
+
+(defun %maybe-mark-swarm-worktree-abandoned (agent status)
+  (when (and (member status '(:failed :cancelled :timeout) :test #'eq)
+             (swarm-agent-worktree agent))
+    (let ((finished-at (get-universal-time)))
+      (ignore-errors
+        (mark-local-worktree-abandoned
+         :worktree (swarm-agent-worktree agent)
+         :status status
+         :finished-at finished-at))
+      (ignore-errors
+        (cleanup-abandoned-local-worktree
+         :worktree (swarm-agent-worktree agent)
+         :status status
+         :finished-at finished-at)))))
 
 ;;; --- Lifecycle ---
 
@@ -216,19 +252,23 @@ NXT-018: Records heartbeat-at and last-output-at timestamps on the agent struct.
                (setf (swarm-agent-heartbeat-at agent) (get-universal-time))
                (%swarm-mark-running agent)
                (handler-case
-                   (let ((*standard-output* stdout-stream)
-                         (*error-output* stderr-stream))
-                     (setf result
-                           #+sbcl
-                           (if (and timeout-seconds
-                                    (numberp timeout-seconds)
-                                    (> timeout-seconds 0))
-                               (sb-ext:with-timeout timeout-seconds
+                   (with-delegated-agent-worktree-context
+                       (:agent-id (swarm-agent-id agent)
+                        :backend :swarm
+                        :worktree (swarm-agent-worktree agent))
+                     (let ((*standard-output* stdout-stream)
+                           (*error-output* stderr-stream))
+                       (setf result
+                             #+sbcl
+                             (if (and timeout-seconds
+                                      (numberp timeout-seconds)
+                                      (> timeout-seconds 0))
+                                 (sb-ext:with-timeout timeout-seconds
+                                   (funcall agent-runner runner-agent))
                                  (funcall agent-runner runner-agent))
-                               (funcall agent-runner runner-agent))
-                           #-sbcl
-                           (funcall agent-runner runner-agent)
-                           status (%swarm-runner-finished-status runner-agent)))
+                             #-sbcl
+                             (funcall agent-runner runner-agent)
+                             status (%swarm-runner-finished-status runner-agent))))
                  (agent-cancelled (condition)
                    (setf status :cancelled
                          terminal-signal-name "SIGTERM"
