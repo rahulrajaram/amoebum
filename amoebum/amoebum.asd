@@ -7,6 +7,7 @@
   :serial t
   :components
   ((:file "src/package")
+   (:file "src/package-domains")
    (:file "src/util")
    ;; NXT-264: Functional/immutable kernel (no internal deps).
    (:file "src/fp/package")
