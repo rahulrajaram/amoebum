@@ -162,8 +162,15 @@ Run from repo root:
 
 1. `./bin/yarli-bootstrap-local-state.sh`
 2. `./bin/yarli-sanitize-continuation.sh`
-3. `yarli run --stream`
-4. If stream rendering is unavailable, Yarli falls back to headless mode and should continue emitting structured stderr progress.
+3. `./bin/yarli-run-risk-audit.sh`
+4. `yarli run --stream`
+5. If stream rendering is unavailable, Yarli falls back to headless mode and should continue emitting structured stderr progress.
+
+Continuation guidance:
+
+1. `./bin/yarli-run-risk-audit.sh` writes repo-local evidence to `.yarli/run-risk-audit.json` and `.agent/yarli-run-risk-audit.md`.
+2. Treat `continuation=safe-single-tranche` as the only case where a straightforward one-tranche continue is calm.
+3. Treat `continuation=single-tranche-only` or `review-before-continue` as a signal to avoid grouped or bursty follow-on runs until token history, file pressure, or recent kill/OOM symptoms improve.
 
 Authority model:
 
