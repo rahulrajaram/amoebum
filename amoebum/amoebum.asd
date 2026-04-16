@@ -31,6 +31,8 @@
    (:file "src/worktrees/cleanup")
    ;; NXT-355: conflict-handoff registry, room-status, and resolution helpers.
    (:file "src/worktrees/handoffs")
+   ;; NXT-357: merge-target resolution plus merge/preflight policy helpers.
+   (:file "src/worktrees/merge")
    (:file "src/provider-factory")
    (:file "src/ui/provider-dashboard")
    (:file "src/context")
