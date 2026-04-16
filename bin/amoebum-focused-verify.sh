@@ -227,6 +227,7 @@ verify_packages() {
 }
 
 verify_state() {
+  run_focused_suites "FP-COLLECTIONS-SUITE" 240 240 120
   run_focused_suites "CONVERSATION-ROUNDTRIP-SUITE,CONVERSATION-UNIT-SUITE,SESSION-RESUME-SUITE" 1200 1200 300
   run_focused_suites "CHECKPOINT-ROTATION-SUITE" 240 240 120
 }
