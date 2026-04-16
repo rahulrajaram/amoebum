@@ -25,6 +25,8 @@
    (:file "src/config")
    (:file "src/config/loader")
    (:file "src/worktrees")
+   ;; NXT-356: runtime construction, naming, and lifecycle dispatch helpers.
+   (:file "src/worktrees/runtime")
    ;; NXT-354: abandonment markers and cleanup policy extracted from worktrees.lisp.
    (:file "src/worktrees/cleanup")
    ;; NXT-355: conflict-handoff registry, room-status, and resolution helpers.
