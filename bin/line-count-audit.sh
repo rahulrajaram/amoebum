@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-PROFILES=(worktrees packages state policy)
+PROFILES=(worktrees packages commands facades state policy)
 STRICT=0
 
 usage() {
@@ -14,8 +14,10 @@ Usage:
   bin/line-count-audit.sh --list-profiles
 
 Profiles:
-  worktrees  Audit worktree/runtime hotspot files.
+  worktrees  Audit split worktree control-plane modules.
   packages   Audit package/load-order hotspot files.
+  commands   Audit residual command hotspot files.
+  facades    Audit facade hotspot files.
   state      Audit conversation/checkpoint hotspot files.
   policy     Audit plan-execution/permissions hotspot files.
   all        Run every profile.
@@ -42,26 +44,39 @@ profile_rules() {
   case "$1" in
     worktrees)
       cat <<'EOF'
-worktrees|amoebum/src/worktrees.lisp|2027
-worktrees|amoebum/src/commands-agents.lisp|1294
+worktrees|amoebum/src/worktrees.lisp|387
+worktrees|amoebum/src/worktrees/runtime.lisp|626
+worktrees|amoebum/src/worktrees/merge.lisp|485
+worktrees|amoebum/src/worktrees/cleanup.lisp|304
+worktrees|amoebum/src/worktrees/handoffs.lisp|279
 EOF
       ;;
     packages)
       cat <<'EOF'
-packages|amoebum/src/package.lisp|2356
+packages|amoebum/src/package.lisp|2357
 packages|amoebum/src/package-domains.lisp|204
+EOF
+      ;;
+    commands)
+      cat <<'EOF'
+commands|amoebum/src/commands-agents.lisp|928
+EOF
+      ;;
+    facades)
+      cat <<'EOF'
+facades|amoebum/src/api-facades.lisp|1729
 EOF
       ;;
     state)
       cat <<'EOF'
-state|amoebum/src/conversation.lisp|1221
-state|amoebum/src/checkpoint.lisp|1660
+state|amoebum/src/conversation.lisp|1236
+state|amoebum/src/checkpoint.lisp|1667
 EOF
       ;;
     policy)
       cat <<'EOF'
-policy|amoebum/src/plan-execution.lisp|1532
-policy|amoebum/src/permissions.lisp|1473
+policy|amoebum/src/plan-execution.lisp|1137
+policy|amoebum/src/permissions.lisp|860
 EOF
       ;;
     *)
@@ -100,7 +115,7 @@ fi
 
 case "${selected_profile}" in
   all) ;;
-  worktrees|packages|state|policy) ;;
+  worktrees|packages|commands|facades|state|policy) ;;
   *)
     usage >&2
     exit 2
