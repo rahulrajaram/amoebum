@@ -27,6 +27,8 @@
    (:file "src/worktrees")
    ;; NXT-354: abandonment markers and cleanup policy extracted from worktrees.lisp.
    (:file "src/worktrees/cleanup")
+   ;; NXT-355: conflict-handoff registry, room-status, and resolution helpers.
+   (:file "src/worktrees/handoffs")
    (:file "src/provider-factory")
    (:file "src/ui/provider-dashboard")
    (:file "src/context")
