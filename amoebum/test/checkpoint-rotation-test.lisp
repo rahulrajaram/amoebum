@@ -189,6 +189,56 @@
             amoebum::*event-bus* old-bus)
       (%delete-directory-tree-safe tmp-root))))
 
+(test checkpoint-listing-limit-preserves-snapshot-metadata
+  "Snapshot and checkpoint listing paths should share the same limited
+session-checkpoint summary semantics."
+  (let* ((old-checkpoint-override amoebum::*checkpoint-directory-override*)
+         (old-snapshot-override amoebum::*session-snapshot-directory-override*)
+         (old-bus amoebum::*event-bus*)
+         (tmp-root (%make-temp-directory "amoebum-nxt-362-checkpoint-list"))
+         (checkpoint-dir (merge-pathnames #P"checkpoints/" tmp-root))
+         (snapshot-dir (merge-pathnames #P"snapshots/" tmp-root))
+         (bus (amoebum:make-event-bus))
+         (project-root (merge-pathnames #P"project/" tmp-root)))
+    (unwind-protect
+         (progn
+           (setf amoebum::*checkpoint-directory-override* checkpoint-dir
+                 amoebum::*session-snapshot-directory-override* snapshot-dir
+                 amoebum::*event-bus* bus)
+           (dotimes (i 3)
+             (amoebum.sessions:checkpoint-session
+              :project-root project-root
+              :event-bus bus
+              :trigger :manual
+              :timestamp (+ 1700000100 i)))
+           (dotimes (i 2)
+             (let ((conversation (amoebum.sessions:make-conversation-state
+                                  :project-root project-root
+                                  :session-id (format nil "snapshot-~D" i))))
+               (amoebum.sessions:conversation-state-add-message
+                conversation
+                (pseudopod:make-message :role "user" :content (format nil "snap-~D" i))
+                :save-p nil)
+               (amoebum.sessions:save-session-snapshot
+                :conversation conversation
+                :project-root project-root
+                :timestamp (+ 1700000200 i))))
+           (let ((checkpoints (amoebum.sessions:list-session-checkpoints
+                               :project-root project-root
+                               :limit 2))
+                 (snapshots (amoebum.sessions:list-session-snapshots :limit 1)))
+             (is (= 2 (length checkpoints)))
+             (is (= 1 (length snapshots)))
+             (is (amoebum::session-checkpoint-p (first checkpoints)))
+             (is (pathnamep (amoebum.sessions:session-checkpoint-path (first checkpoints))))
+             (is (eq :manual (amoebum.sessions:session-checkpoint-trigger (first checkpoints))))
+             (is (eq :snapshot (amoebum.sessions:session-checkpoint-trigger (first snapshots))))
+             (is (not (amoebum.sessions:session-checkpoint-auto-p (first snapshots)))))))
+      (setf amoebum::*checkpoint-directory-override* old-checkpoint-override
+            amoebum::*session-snapshot-directory-override* old-snapshot-override
+            amoebum::*event-bus* old-bus)
+      (%delete-directory-tree-safe tmp-root))))
+
 (test checkpoint-id-from-time-format
   "Checkpoint ID should be formatted as ISO-like timestamp."
   (let ((id (amoebum::%checkpoint-id-from-time)))

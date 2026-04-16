@@ -231,3 +231,34 @@ the matching tool-call-id, regardless of position."
     ;; Spot-check: a synthetic orphan id is still detected.
     (%cu-add-tool c "nobody" "call-c")
     (is (%cu-tool-result-orphan-p c 5) "unmatched call-c must be orphan.")))
+
+(test nxt-362-session-listing-preserves-limit-and-summary-shape
+  "conversation-list-sessions should keep the newest-first order, obey
+LIMIT, and return the expected summary plist shape."
+  (let ((tmp-root (%make-temp-directory "amoebum-nxt-362-conversation-list")))
+    (unwind-protect
+         (progn
+           (dolist (session-spec '(("session-a" "first")
+                                   ("session-b" "second")
+                                   ("session-c" "third")))
+             (destructuring-bind (session-id text) session-spec
+               (let ((conversation (amoebum.sessions:make-conversation-state
+                                    :project-root tmp-root
+                                    :session-id session-id)))
+                 (amoebum.sessions:conversation-state-add-message
+                  conversation
+                  (pseudopod:make-message :role "user" :content text)
+                  :save-p nil)
+                 (sleep 1)
+                 (amoebum.sessions:conversation-save conversation))))
+           (let ((records (amoebum.sessions:conversation-list-sessions
+                           :project-root tmp-root
+                           :limit 2)))
+             (is (= 2 (length records)))
+             (is (string= "session-c" (getf (first records) :session-id)))
+             (is (string= "session-b" (getf (second records) :session-id)))
+             (is (= 1 (getf (first records) :message-count)))
+             (is (eq :idle (getf (first records) :state)))
+             (is (pathnamep (getf (first records) :path)))
+             (is (integerp (getf (first records) :updated-at)))))
+      (%delete-directory-tree-safe tmp-root))))
