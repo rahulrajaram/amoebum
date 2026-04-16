@@ -233,7 +233,7 @@ session-checkpoint summary semantics."
              (is (pathnamep (amoebum.sessions:session-checkpoint-path (first checkpoints))))
              (is (eq :manual (amoebum.sessions:session-checkpoint-trigger (first checkpoints))))
              (is (eq :snapshot (amoebum.sessions:session-checkpoint-trigger (first snapshots))))
-             (is (not (amoebum.sessions:session-checkpoint-auto-p (first snapshots)))))))
+             (is (not (amoebum.sessions:session-checkpoint-auto-p (first snapshots))))))
       (setf amoebum::*checkpoint-directory-override* old-checkpoint-override
             amoebum::*session-snapshot-directory-override* old-snapshot-override
             amoebum::*event-bus* old-bus)
