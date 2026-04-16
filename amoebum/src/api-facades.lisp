@@ -1167,6 +1167,94 @@
     "YORE-CONTEXT-PRESSURE"
     "%CONTEXT-PRESSURE-SUMMARY"))
 
+(defparameter +amoebum-ui-root-reexport-names+
+  '("MAKE-APPROVAL-DIALOG-STATE"
+    "PROVIDER-HEALTH-ENTRIES"
+    "CHAT-UI-BUILD-TREE"
+    "RUN-CHAT-UI"
+    "ENSURE-WORKER-DASHBOARD-STATE")
+  "UI-facing symbols that remain dual-exported from :amoebum for compatibility.")
+
+(defparameter +amoebum-tools-root-reexport-names+
+  '("*CULTIVAR-ADAPTER*"
+    "*IDE-CONTEXT*"
+    "*TOOL-HISTORY*"
+    "*TOOL-METADATA*"
+    "*TOOLSET*"
+    "*YORE-ADAPTER*"
+    "+EVENT-TYPE-IDE-CONTEXT-ATTACHED+"
+    "+EVENT-TYPE-IDE-CONTEXT-DROPPED+"
+    "+EVENT-TYPE-IDE-CONTEXT-TRUNCATED+"
+    "AMOEBUM-CONTEXT"
+    "CACHED-TOOL-RESULT"
+    "CONTEXT-HOOK-REGISTRY"
+    "CONTEXT-METRICS"
+    "CONTEXT-PERMISSION-MODE"
+    "CONTEXT-TOOL-METRICS"
+    "CULTIVAR-ADAPTER-ENABLED-P"
+    "CULTIVAR-ADAPTER-ENDPOINT"
+    "CULTIVAR-ADAPTER-P"
+    "CULTIVAR-CONTEXT-PRESSURE"
+    "CULTIVAR-DAEMON-STATUS"
+    "CULTIVAR-EXPAND"
+    "CULTIVAR-LOCATION-SLICE"
+    "CULTIVAR-PREVIEW"
+    "CULTIVAR-RESOLVE"
+    "CULTIVAR-SLICE"
+    "DISPATCH-SLASH-COMMAND"
+    "EXECUTE-TOOL"
+    "EXECUTE-TOOL-WITH-RESTARTS"
+    "HOOK-EXECUTION-ERROR"
+    "IDE-CONTEXT-ACTIVE-FILE"
+    "IDE-CONTEXT-ATTACHED-PAYLOAD-ACTIVE-FILE"
+    "IDE-CONTEXT-ATTACHED-PAYLOAD-OPEN-FILE-COUNT"
+    "IDE-CONTEXT-ATTACHED-PAYLOAD-P"
+    "IDE-CONTEXT-BUILD-PACKET"
+    "IDE-CONTEXT-DIAGNOSTICS"
+    "CLEAR-IDE-CONTEXT!"
+    "UPDATE-IDE-CONTEXT!"
+    "IDE-CONTEXT-DROPPED-PAYLOAD-ACTIVE-FILE"
+    "IDE-CONTEXT-DROPPED-PAYLOAD-P"
+    "IDE-CONTEXT-OPEN-FILES"
+    "IDE-CONTEXT-P"
+    "IDE-CONTEXT-PROMPT-FRAGMENT"
+    "IDE-CONTEXT-PROMPT-FRAGMENT/BUDGET"
+    "IDE-CONTEXT-SELECTIONS"
+    "IDE-CONTEXT-SUMMARY"
+    "IDE-CONTEXT-TIMESTAMP"
+    "IDE-CONTEXT-TOKEN-ESTIMATE"
+    "IDE-CONTEXT-TRUNCATED-PAYLOAD-DIAGNOSTICS-DROPPED"
+    "IDE-CONTEXT-TRUNCATED-PAYLOAD-P"
+    "IDE-CONTEXT-TRUNCATED-PAYLOAD-TOKEN-BUDGET"
+    "IDE-CONTEXT-TRUNCATED-PAYLOAD-TOKEN-ESTIMATE"
+    "MAKE-AMOEBUM-CONTEXT"
+    "MAKE-CULTIVAR-ADAPTER"
+    "MAKE-IDE-CONTEXT"
+    "MAKE-YORE-ADAPTER"
+    "TOOL-ARGUMENT-ERROR"
+    "TOOL-ERROR"
+    "TOOL-ERROR-REASON"
+    "TOOL-ERROR-REASON-CODE"
+    "TOOL-EXECUTION-CONTEXT"
+    "TOOL-EXECUTION-ERROR"
+    "TOOL-METADATA-CATEGORY"
+    "TOOL-METADATA-MCP-SERVER"
+    "TOOL-METADATA-P"
+    "TOOL-MISSING-ARGUMENT"
+    "TOOL-NOT-FOUND"
+    "TOOL-NOT-FOUND-ERROR"
+    "TOOL-PERMISSION-DENIED"
+    "TOOL-TIMEOUT"
+    "TOOL-TIMEOUT-ERROR"
+    "TOOL-TYPE-MISMATCH"
+    "YORE-ADAPTER-ENABLED-P"
+    "YORE-ADAPTER-ENDPOINT"
+    "YORE-ADAPTER-P"
+    "YORE-CONTEXT-PRESSURE"
+    "YORE-FETCH-CONTEXT"
+    "YORE-SEARCH-CONTEXT")
+  "Tool-facing symbols that remain dual-exported from :amoebum for compatibility.")
+
 (defparameter +amoebum-observability-facade-symbol-names+
   '("SYMBOL-ENTRY"
     "SYMBOL-ENTRY-P"
@@ -1522,6 +1610,49 @@ existing callers using the amoebum: qualifier continue to work."
   "Symbols that are moved to the :amoebum.workers facade but must remain
 accessible via the amoebum: package qualifier to avoid breaking existing
 test-suite code that has not yet been migrated.")
+
+(defparameter +amoebum-root-export-max+
+  1242
+  "No-growth ceiling for the root :amoebum export surface after the package split.")
+
+(defparameter +amoebum-package-surface-groups+
+  (list (list :group :ui
+              :package :amoebum.ui
+              :symbols +amoebum-ui-facade-symbol-names+
+              :root-reexports +amoebum-ui-root-reexport-names+)
+        (list :group :commands
+              :package :amoebum.commands
+              :symbols +amoebum-command-facade-symbol-names+)
+        (list :group :workers
+              :package :amoebum.workers
+              :symbols +amoebum-worker-facade-symbol-names+
+              :root-reexports +amoebum-worker-root-reexport-names+)
+        (list :group :config
+              :package :amoebum.config
+              :symbols +amoebum-config-facade-symbol-names+)
+        (list :group :notifications
+              :package :amoebum.notifications
+              :symbols +amoebum-notification-facade-symbol-names+)
+        (list :group :sessions
+              :package :amoebum.sessions
+              :symbols +amoebum-session-facade-symbol-names+)
+        (list :group :plan
+              :package :amoebum.plan
+              :symbols +amoebum-plan-facade-symbol-names+)
+        (list :group :extensions
+              :package :amoebum.extensions
+              :symbols +amoebum-extension-facade-symbol-names+)
+        (list :group :observability
+              :package :amoebum.observability
+              :symbols +amoebum-observability-facade-symbol-names+)
+        (list :group :safety
+              :package :amoebum.safety
+              :symbols +amoebum-safety-facade-symbol-names+)
+        (list :group :tools
+              :package :amoebum.tools
+              :symbols +amoebum-tools-facade-symbol-names+
+              :root-reexports +amoebum-tools-root-reexport-names+))
+  "Grouped package-surface manifests used by tests and package-surface audits.")
 
 (eval-when (:load-toplevel :execute)
   (%install-facade! :amoebum.ui +amoebum-ui-facade-symbol-names+)

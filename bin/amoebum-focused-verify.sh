@@ -221,6 +221,7 @@ verify_worktrees() {
 
 verify_packages() {
   run_cmd timeout 240 make build
+  run_cmd timeout 180 ./bin/package-surface-audit.sh
   run_focused_suites "WORKTREE-RUNTIME-SUITE,WORKER-SUPERVISOR-SUITE" 1200 1200 300
   run_plan_validate
 }
