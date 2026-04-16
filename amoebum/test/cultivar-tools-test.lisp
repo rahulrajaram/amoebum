@@ -183,6 +183,21 @@ when the tool adapter points at a non-existent binary."
   "The /cultivar slash command should report daemon state and the latest structured slice provenance."
   (%with-cultivar-tools-fake-adapter (adapter)
     (let ((amoebum::*cultivar-tool-adapter* adapter))
+      (let ((report (merge-pathnames
+                     ".agent/cultivar-cl-health.status"
+                     (uiop:ensure-directory-pathname
+                      (amoebum::cultivar-adapter-root-path adapter)))))
+        (ensure-directories-exist report)
+        (%write-text-file
+         report
+         "schema_version=1
+generated_at=2026-04-16
+status=advisory
+reference_mode=structural_only
+index_health_summary=UNHEALTHY
+summary=Common Lisp index degraded but still usable for structural slices.
+navigation_warning=Fresh-symbol navigation is advisory only; fall back to rg plus direct file reads.
+"))
       (amoebum:cultivar-location-slice adapter (list :file "/tmp/fake.lisp" :line 1 :col 2))
       (multiple-value-bind (handled result)
           (amoebum:dispatch-slash-command "/cultivar")
@@ -191,6 +206,10 @@ when the tool adapter points at a non-existent binary."
         (let ((output (or (amoebum.commands:slash-command-result-output result) "")))
           (is (search "Cultivar daemon:" output :test #'char-equal))
           (is (search "mode=prefer" output :test #'char-equal))
+          (is (search "Common Lisp health: advisory" output :test #'char-equal))
+          (is (search "warning=Fresh-symbol navigation is advisory only"
+                      output
+                      :test #'char-equal))
           (is (search "Latest slice: sym_fake" output :test #'char-equal))
           (is (search "origin=location-slice" output :test #'char-equal))
           (is (search "materialized=yes" output :test #'char-equal)))))))

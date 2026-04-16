@@ -257,10 +257,23 @@
               (let ((notes (getf last-slice :notes)))
                 (and (listp notes) notes)))))
 
+(defun %cultivar-status-health-line (health)
+  (if (not (listp health))
+      "Common Lisp health: unknown."
+      (format nil
+              "Common Lisp health: ~(~A~)~@[ mode=~A~]~@[ index=~A~] summary=~A~@[ warning=~A~] report=~A"
+              (or (getf health :status) :unknown)
+              (getf health :reference-mode)
+              (getf health :index-health-summary)
+              (or (getf health :summary) "No Common Lisp Cultivar health report recorded.")
+              (getf health :navigation-warning)
+              (or (getf health :report-path) "unknown"))))
+
 (defun %cultivar-handler (_invocation _arguments _context)
   (declare (ignore _invocation _arguments _context))
   (let* ((adapter (%cultivar-status-adapter))
          (status (cultivar-daemon-status adapter))
+         (health (getf status :cl-health))
          (last-slice (getf status :last-slice)))
     (make-slash-command-result
      :echo-input-p t
@@ -282,6 +295,7 @@
                (%format-cultivar-status-timestamp
                 (getf status :last-start-at))
                (getf status :last-start-reason))
+       (format out "~A~%" (%cultivar-status-health-line health))
        (write-string (%cultivar-status-last-slice-line last-slice) out)))))
 
 (defun %mcp-auth-usage ()

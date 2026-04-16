@@ -2338,6 +2338,7 @@
            #:cultivar-preview
            #:cultivar-expand
            #:cultivar-daemon-status
+           #:cultivar-cl-health-status
            ;; NXT-109: Cultivar context pressure
            #:cultivar-context-pressure
            ;; NXT-107: Yore adapter

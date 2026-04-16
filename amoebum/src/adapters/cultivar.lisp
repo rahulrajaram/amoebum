@@ -143,6 +143,12 @@ NIL means no adapter is configured.")
   "Minimum seconds between daemon start attempts for the same
 adapter when the socket is absent.")
 
+(defparameter *cultivar-cl-health-report-relative-path*
+  ".agent/cultivar-cl-health.status"
+  "Repo-relative status file written by `bin/cultivar-cl-health.sh`.
+The file records whether Common Lisp indexing is healthy, merely
+advisory (`structural_only`), or genuinely blocking.")
+
 (defun %cultivar-root-namestring (adapter)
   (if (null adapter)
       (namestring (%cultivar-default-root-path))
@@ -151,6 +157,78 @@ adapter when the socket is absent.")
           (pathname (namestring (uiop:ensure-directory-pathname root)))
           (string root)
           (t (namestring (%cultivar-default-root-path)))))))
+
+(defun %cultivar-cl-health-report-path (adapter)
+  (merge-pathnames *cultivar-cl-health-report-relative-path*
+                   (uiop:ensure-directory-pathname
+                    (%cultivar-root-namestring adapter))))
+
+(defun %cultivar-cl-health-parse-line (line)
+  (let ((separator (and (stringp line)
+                        (position #\= line))))
+    (when separator
+      (cons (string-downcase (subseq line 0 separator))
+            (subseq line (1+ separator))))))
+
+(defun %cultivar-cl-health-record (adapter)
+  (let ((path (%cultivar-cl-health-report-path adapter)))
+    (when (probe-file path)
+      (let ((record '()))
+        (dolist (line (uiop:split-string (uiop:read-file-string path)
+                                         :separator '(#\Newline)))
+          (let ((entry (%cultivar-cl-health-parse-line line)))
+            (when (and entry (plusp (length (car entry))))
+              (push entry record))))
+        (nreverse record)))))
+
+(defun %cultivar-cl-health-record-get (record key)
+  (cdr (assoc (string-downcase key) record :test #'string=)))
+
+(defun %cultivar-cl-health-status-keyword (value)
+  (let ((normalized (and value
+                         (string-downcase
+                          (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                       value)))))
+    (cond
+      ((or (null normalized) (string= normalized "")) :unknown)
+      ((string= normalized "pass") :pass)
+      ((string= normalized "advisory") :advisory)
+      ((string= normalized "fail") :fail)
+      (t :unknown))))
+
+(defun %cultivar-cl-health-record-int (record key)
+  (let ((value (%cultivar-cl-health-record-get record key)))
+    (and value
+         (ignore-errors
+           (parse-integer value :junk-allowed t)))))
+
+(defun cultivar-cl-health-status (adapter)
+  "Return the latest recorded Common Lisp Cultivar health verdict.
+
+This reads the repo-local status file emitted by
+`bin/cultivar-cl-health.sh`. The status is intentionally fail-open:
+`structural_only` indexing is surfaced as `:ADVISORY` so callers can
+keep using broad slices while avoiding over-trusting fresh-symbol
+navigation."
+  (let* ((report-path (%cultivar-cl-health-report-path adapter))
+         (record (%cultivar-cl-health-record adapter))
+         (report-present-p (and record t)))
+    (list :report-path (namestring report-path)
+          :report-present-p report-present-p
+          :status (if report-present-p
+                      (%cultivar-cl-health-status-keyword
+                       (%cultivar-cl-health-record-get record "status"))
+                      :unknown)
+          :generated-at (%cultivar-cl-health-record-get record "generated_at")
+          :summary (or (%cultivar-cl-health-record-get record "summary")
+                       "No Common Lisp Cultivar health report recorded.")
+          :reference-mode (%cultivar-cl-health-record-get record "reference_mode")
+          :navigation-warning
+          (%cultivar-cl-health-record-get record "navigation_warning")
+          :index-health-summary
+          (%cultivar-cl-health-record-get record "index_health_summary")
+          :doctor-exit-code
+          (%cultivar-cl-health-record-int record "doctor_exit_code"))))
 
 (defun %cultivar-usable-p (adapter)
   "T iff ADAPTER is a non-NIL, enabled adapter whose binary and
@@ -258,6 +336,7 @@ not speak Cultivar's socket protocol directly in v1."
                                   (cultivar-adapter-daemon-last-start-status adapter))
           :last-start-reason (and adapter
                                   (cultivar-adapter-daemon-last-start-reason adapter))
+          :cl-health (cultivar-cl-health-status adapter)
           :last-slice (and adapter
                            (cultivar-adapter-last-slice adapter)))))
 
