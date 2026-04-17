@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-PROFILES=(worktrees packages commands facades state policy)
+PROFILES=(worktrees packages commands facades state policy ui extensions shell macros)
 STRICT=0
 
 usage() {
@@ -20,6 +20,10 @@ Profiles:
   facades    Audit facade hotspot files.
   state      Audit conversation/checkpoint hotspot files.
   policy     Audit plan-execution/permissions hotspot files.
+  ui         Audit oversized UI hotspot files.
+  extensions Audit extension/runtime hotspot files.
+  shell      Audit shell/runtime hotspot files.
+  macros     Audit macro hotspot files.
   all        Run every profile.
 
 Options:
@@ -51,9 +55,9 @@ worktrees|amoebum/src/worktrees/cleanup.lisp|304
 worktrees|amoebum/src/worktrees/handoffs.lisp|279
 EOF
       ;;
-    packages)
+packages)
       cat <<'EOF'
-packages|amoebum/src/package.lisp|2357
+packages|amoebum/src/package.lisp|2362
 packages|amoebum/src/package-domains.lisp|204
 EOF
       ;;
@@ -76,12 +80,36 @@ EOF
       cat <<'EOF'
 state|amoebum/src/conversation.lisp|1236
 state|amoebum/src/checkpoint.lisp|1667
+state|amoebum/src/memory.lisp|1168
 EOF
       ;;
     policy)
       cat <<'EOF'
 policy|amoebum/src/plan-execution.lisp|1137
 policy|amoebum/src/permissions.lisp|860
+EOF
+      ;;
+    ui)
+      cat <<'EOF'
+ui|amoebum/src/ui/streaming.lisp|1888
+ui|amoebum/src/ui/chat-render.lisp|1786
+EOF
+      ;;
+    extensions)
+      cat <<'EOF'
+extensions|amoebum/src/extensions/loader.lisp|1189
+EOF
+      ;;
+    shell)
+      cat <<'EOF'
+shell|amoebum/src/tools/shell.lisp|1094
+EOF
+      ;;
+    macros)
+      cat <<'EOF'
+macros|amoebum/src/macros/defskill.lisp|1001
+macros|amoebum/src/macros/defkeys.lisp|910
+macros|amoebum/src/macros/deftool.lisp|760
 EOF
       ;;
     *)
@@ -120,7 +148,7 @@ fi
 
 case "${selected_profile}" in
   all) ;;
-  worktrees|packages|commands|facades|state|policy) ;;
+  worktrees|packages|commands|facades|state|policy|ui|extensions|shell|macros) ;;
   *)
     usage >&2
     exit 2

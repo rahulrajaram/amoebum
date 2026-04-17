@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-PROFILES=(worktrees packages state policy)
+PROFILES=(worktrees packages state policy ui extensions shell macros)
 
 usage() {
   cat <<'EOF'
@@ -16,6 +16,10 @@ Profiles:
   packages   Package/load-order seam checks.
   state      Conversation/checkpoint seam checks.
   policy     Plan-execution/permissions seam checks.
+  ui         UI streaming/chat-render seam checks.
+  extensions Extension loader/runtime seam checks.
+  shell      Shell runtime/permission seam checks.
+  macros     Macro expansion/validation seam checks.
   all        Run every profile.
 EOF
 }
@@ -237,6 +241,22 @@ verify_policy() {
   run_focused_suites "PLAN-EXECUTION-UNIT-SUITE,PLAN-EXECUTION-TRANSITION-TABLE-SUITE,PERMISSIONS-UNIT-SUITE,PERMISSION-PATH-NORMALIZATION-SUITE,PERMISSION-PATH-MEMORY-SUITE,PERMISSION-ARGUMENT-GRANULARITY-SUITE" 1200 1200 300
 }
 
+verify_ui() {
+  run_focused_suites "STREAMING-STEP-SUITE,STREAMING-BUDGET-SUITE,INCREMENTAL-MARKDOWN-SUITE,CHAT-SNAPSHOT-SUITE,APPROVAL-DIALOG-GUARD-SUITE,KEYBOARD-NAV-SUITE" 1800 1800 300
+}
+
+verify_extensions() {
+  run_focused_suites "EXTENSION-LOADER-SUITE,EXTENSION-LIFECYCLE-SUITE,EXTENSION-DISCOVERY-SUITE,EXTENSION-MANIFEST-SUITE,EXTENSION-SECURITY-SUITE,EXTENSION-CLI-SUITE,ASDF-EXTENSIONS-SUITE" 1800 1800 300
+}
+
+verify_shell() {
+  run_focused_suites "SHELL-ENV-SUITE,SHELL-SAFETY-SUITE,SHELL-BACKGROUND-SUITE,SHELL-RUNAWAY-OUTPUT-SUITE,WRITE-SAFETY-SUITE,EDIT-VALIDATION-SUITE,TOOL-ARGUMENT-PROMPTING-SUITE,PERMISSION-ARGUMENT-GRANULARITY-SUITE" 1800 1800 300
+}
+
+verify_macros() {
+  run_focused_suites "MACROEXPAND-GOLDEN-SUITE,DEFTOOL-TYPE-VALIDATION-SUITE,DEFTOOL-DANGEROUS-PERMISSION-SUITE,COMPILE-VALIDATION-CONDITIONS-SUITE,DEFHOOK-CROSS-REFERENCE-SUITE,ARGUMENT-PATTERN-DISPATCH-SUITE" 1800 1800 300
+}
+
 profile="${1:-}"
 case "${profile}" in
   --help|-h)
@@ -264,11 +284,19 @@ case "${profile}" in
   packages) verify_packages ;;
   state) verify_state ;;
   policy) verify_policy ;;
+  ui) verify_ui ;;
+  extensions) verify_extensions ;;
+  shell) verify_shell ;;
+  macros) verify_macros ;;
   all)
     verify_worktrees
     verify_packages
     verify_state
     verify_policy
+    verify_ui
+    verify_extensions
+    verify_shell
+    verify_macros
     ;;
   *)
     usage >&2
