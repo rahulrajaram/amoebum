@@ -132,6 +132,9 @@
    (:file "src/widgets/tree-browser")
    (:file "src/widgets/perf-dashboard")
    (:file "src/widgets/worker-dashboard")
+   (:file "src/api-facades/operator-domains")
+   (:file "src/api-facades/runtime-domains")
+   (:file "src/api-facades/infrastructure-domains")
    (:file "src/api-facades")
    ;; NXT-263: Test isolation fixture. Must load AFTER api-facades because
    ;; %install-facade! moves *checkpoint-directory-override* from :amoebum
