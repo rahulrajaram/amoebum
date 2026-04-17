@@ -59,7 +59,9 @@ EOF
       ;;
     commands)
       cat <<'EOF'
-commands|amoebum/src/commands-agents.lisp|928
+commands|amoebum/src/commands-agents.lisp|314
+commands|amoebum/src/commands/agents-runtime.lisp|389
+commands|amoebum/src/commands/swarm-runtime.lisp|217
 EOF
       ;;
     facades)

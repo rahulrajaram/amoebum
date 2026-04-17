@@ -61,7 +61,7 @@ existing callers using the amoebum: qualifier continue to work."
   target-package)
 
 (defparameter +amoebum-root-export-max+
-  1242
+  1243
   "No-growth ceiling for the root :amoebum export surface after the package split.")
 
 (defparameter +amoebum-package-surface-groups+

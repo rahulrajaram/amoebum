@@ -926,6 +926,12 @@
                                              file
                                              (%source-file->metadata file)))
 
+(defun %prepare-extension-load-attempt-result (scope file)
+  (handler-case
+      (amoebum.fp:make-ok :value (%prepare-extension-load-attempt scope file))
+    (error (condition)
+      (amoebum.fp:make-err :value condition))))
+
 (defun %recover-extension-load-attempt (scope file)
   (let* ((metadata (%fallback-error-metadata file))
          (extension-package (and (eq (getf metadata :kind) :manifest)
@@ -999,13 +1005,22 @@
     (let ((record (%make-extension-load-record-from-attempt attempt :loaded)))
       (values record record))))
 
-(defun %process-extension-candidate (candidate)
-  (let* ((scope (car candidate))
-         (file (cdr candidate))
-         (attempt (%prepare-extension-load-attempt scope file)))
-    (if (%extension-attempt-disabled-p attempt)
-        (%handle-disabled-extension-attempt attempt)
-        (%load-enabled-extension-attempt attempt))))
+(defun %process-extension-attempt-result (attempt)
+  (if (%extension-attempt-disabled-p attempt)
+      (amoebum.fp:make-ok
+       :value (multiple-value-list (%handle-disabled-extension-attempt attempt)))
+      (handler-case
+          (amoebum.fp:make-ok
+           :value (multiple-value-list (%load-enabled-extension-attempt attempt)))
+        (error (condition)
+          (amoebum.fp:make-err :value condition)))))
+
+(defun %process-extension-candidate-result (candidate)
+  (let ((scope (car candidate))
+        (file (cdr candidate)))
+    (amoebum.fp:result-bind
+     (%prepare-extension-load-attempt-result scope file)
+     #'%process-extension-attempt-result)))
 
 (defun %handle-extension-load-error (candidate condition)
   (let* ((scope (car candidate))
@@ -1024,6 +1039,13 @@
                                                       :error
                                                       :message message)
             nil)))
+
+(defun %process-extension-candidate (candidate)
+  (let ((result (%process-extension-candidate-result candidate)))
+    (if (amoebum.fp:ok-p result)
+        (values-list (amoebum.fp:ok-value result))
+        (%handle-extension-load-error candidate
+                                      (amoebum.fp:err-value result)))))
 
 (defun %reset-extension-loader-state (candidates)
   (clrhash *extension-registry*)

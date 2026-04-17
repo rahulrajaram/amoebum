@@ -67,6 +67,8 @@
    (:file "src/commands-core-builtins")
    (:file "src/commands/handoffs")
    (:file "src/commands/worktree-handoff")
+   (:file "src/commands/agents-runtime")
+   (:file "src/commands/swarm-runtime")
    (:file "src/commands-agents")
    (:file "src/commands-phase5")
    (:file "src/sandbox")
