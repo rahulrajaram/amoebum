@@ -140,7 +140,7 @@
                   (jonathan:to-json
                    (list :kind "capability_gap_recovery"
                          :status "delegated"
-                         :tool (amoebum:tool-error-tool-name condition)
+                         :tool (amoebum::tool-error-tool-name condition)
                          :capability (amoebum:capability-gap-capability-name condition)
                          :options options)))
                 amoebum:*capability-gap-install-function*
@@ -149,7 +149,7 @@
                   (jonathan:to-json
                    (list :kind "capability_gap_recovery"
                          :status "install-requested"
-                         :tool (amoebum:tool-error-tool-name condition)
+                         :tool (amoebum::tool-error-tool-name condition)
                          :capability (amoebum:capability-gap-capability-name condition)
                          :options options))))
 

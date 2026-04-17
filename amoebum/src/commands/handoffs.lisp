@@ -10,10 +10,16 @@
                   (getf handoff :from-agent) "?"))
         (to (or (getf handoff :to-session-id)
                 (getf handoff :to-agent) "?"))
-        (reason (or (getf handoff :reason) "")))
-    (format nil "  ~A | ~A | from: ~A -> to: ~A~@[ | ~A~]"
+        (reason (or (getf handoff :reason) ""))
+        (summary (or (getf handoff :summary)
+                     (getf (getf handoff :conversation-merge) :summary)
+                     ""))
+        (diagnostics (getf handoff :diagnostics)))
+    (format nil "  ~A | ~A | from: ~A -> to: ~A~@[ | ~A~]~@[ | summary: ~A~]~@[ | diagnostics=~D~]"
             handoff-id status from to
-            (when (plusp (length reason)) reason))))
+            (when (plusp (length reason)) reason)
+            (when (plusp (length summary)) summary)
+            (and (listp diagnostics) (length diagnostics)))))
 
 (defun %handoffs-handler (_invocation _arguments context)
   (declare (ignore _invocation _arguments))
@@ -103,9 +109,17 @@
         (let ((result (complete-user-handoff handoff-id)))
           (make-slash-command-result
            :echo-input-p t
-           :output (format nil "Completed handoff ~A. Status: ~A"
+           :output (format nil "Completed handoff ~A. Status: ~A~@[ | summary: ~A~]~@[ | diagnostics=~D~]"
                            handoff-id
-                           (or (getf result :status) :completed))))
+                           (or (getf result :status) :completed)
+                           (let ((summary (or (getf result :summary)
+                                              (getf (getf result :conversation-merge) :summary))))
+                             (and (stringp summary)
+                                  (plusp (length summary))
+                                  summary))
+                           (let ((diagnostics (getf result :diagnostics)))
+                             (and (listp diagnostics)
+                                  (length diagnostics))))))
       (error (condition)
         (make-slash-command-result
          :echo-input-p t

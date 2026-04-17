@@ -94,6 +94,49 @@
                  (%agent-activity-payload-value payload :worker-id))))
     (%normalize-agent-activity-agent-id id)))
 
+(defun %handoff-activity-description (event-type payload)
+  (let* ((handoff-id (or (%agent-activity-payload-value payload :handoff-id)
+                         (%agent-activity-payload-value payload :request-id)))
+         (summary (or (%agent-activity-payload-value payload :summary)
+                      (let ((result (%agent-activity-payload-value payload :result-payload)))
+                        (and (listp result) (getf result :summary)))
+                      (let ((partial (%agent-activity-payload-value payload :partial-result)))
+                        (and (listp partial) (getf partial :summary)))
+                      (%agent-activity-payload-value payload :reason)))
+         (diagnostics (%agent-activity-payload-value payload :diagnostics))
+         (diagnostic-count (if (listp diagnostics) (length diagnostics) 0)))
+    (flet ((base (text)
+             (if handoff-id
+                 (format nil "~A (~A)." text handoff-id)
+                 (format nil "~A." text))))
+      (case event-type
+        (:requested
+         (base "SW4RM handoff requested"))
+        (:accepted
+         (base "SW4RM handoff accepted"))
+        (:rejected
+         (cond
+           ((and summary (> diagnostic-count 0))
+            (format nil "SW4RM handoff rejected (~A): ~A [diagnostics=~D]."
+                    handoff-id summary diagnostic-count))
+           (summary
+            (format nil "SW4RM handoff rejected (~A): ~A."
+                    handoff-id summary))
+           (t
+            (base "SW4RM handoff rejected"))))
+        (:completed
+         (cond
+           ((and summary (> diagnostic-count 0))
+            (format nil "SW4RM handoff completed (~A): ~A [diagnostics=~D]."
+                    handoff-id summary diagnostic-count))
+           (summary
+            (format nil "SW4RM handoff completed (~A): ~A."
+                    handoff-id summary))
+           (t
+            (base "SW4RM handoff completed"))))
+        (otherwise
+         (base "SW4RM handoff updated"))))))
+
 (defun %event->agent-activity (event)
   (let ((event-type (event-type event))
         (payload (event-payload event)))
@@ -124,22 +167,22 @@
       ((eq event-type +event-type-user-handoff-requested+)
        (list :agent-id (%event->agent-id event)
              :activity-type :waiting
-             :description "SW4RM handoff requested."
+             :description (%handoff-activity-description :requested payload)
              :metadata payload))
       ((eq event-type +event-type-user-handoff-accepted+)
        (list :agent-id (%event->agent-id event)
              :activity-type :waiting
-             :description "SW4RM handoff accepted."
+             :description (%handoff-activity-description :accepted payload)
              :metadata payload))
       ((eq event-type +event-type-user-handoff-rejected+)
        (list :agent-id (%event->agent-id event)
              :activity-type :idle
-             :description "SW4RM handoff rejected."
+             :description (%handoff-activity-description :rejected payload)
              :metadata payload))
       ((eq event-type +event-type-user-handoff-completed+)
        (list :agent-id (%event->agent-id event)
              :activity-type :idle
-             :description "SW4RM handoff completed."
+             :description (%handoff-activity-description :completed payload)
              :metadata payload))
       ((eq event-type +event-type-user-negotiation-room-created+)
        (list :agent-id (%event->agent-id event)

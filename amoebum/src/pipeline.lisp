@@ -240,10 +240,12 @@ skip-tool-call, abort-step, or ask-user."
   (let* ((normalized-tool-name (normalize-name tool-name))
          (normalized-arguments (%normalize-restart-arguments arguments))
          (context (%make-restart-context toolset permission-mode))
-         (tool-call (%make-restart-tool-call normalized-tool-name normalized-arguments)))
+         (tool-call (%make-restart-tool-call normalized-tool-name normalized-arguments))
+         (captured-condition nil))
     (handler-bind
         ((tool-error
            (lambda (condition)
+             (setf captured-condition condition)
              (%run-on-error-hooks context condition normalized-tool-name)
              (cond
                ((and (eq (%effective-permission-mode permission-mode) :supervised)
@@ -278,10 +280,20 @@ skip-tool-call, abort-step, or ask-user."
               value))
         (delegate-capability-gap (&optional options)
           :report "Delegate this missing capability while preserving task continuity."
-          (%delegate-capability-gap condition options))
+          (%delegate-capability-gap
+           (or captured-condition
+               (error 'amoebum-error
+                      :message (format nil "Tool ~A has no captured failure context for delegation."
+                                       normalized-tool-name)))
+           options))
         (install-missing-capability (&optional options)
           :report "Install or enable the missing capability before retrying."
-          (%install-missing-capability condition options))
+          (%install-missing-capability
+           (or captured-condition
+               (error 'amoebum-error
+                      :message (format nil "Tool ~A has no captured failure context for installation recovery."
+                                       normalized-tool-name)))
+           options))
         (skip-tool-call ()
           :report "Skip this tool call and continue."
           (format nil "Tool ~A skipped by recovery policy." normalized-tool-name))
@@ -291,9 +303,9 @@ skip-tool-call, abort-step, or ask-user."
                  :message (format nil "Tool ~A aborted current step." normalized-tool-name)))
         (ask-user ()
           :report "Ask user for guidance before retrying."
-          (if (typep condition 'capability-gap)
+          (if (typep captured-condition 'capability-gap)
               (%capability-gap-recovery-result-text
-               condition
+               captured-condition
                "user-guidance-required"
                "ask-user")
               (format nil "Tool ~A requires user guidance to continue."

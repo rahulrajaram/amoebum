@@ -111,7 +111,7 @@
             (fail "Expected unknown tool to signal a capability-gap condition."))
         (amoebum:capability-gap (condition)
           (is (string= "nxt287-nope-not-registered"
-                       (amoebum:tool-error-tool-name condition)))
+                       (amoebum::tool-error-tool-name condition)))
           (is (string= "nxt287-nope-not-registered"
                        (amoebum:capability-gap-capability-name condition)))
           (is (equal "capability_gap"

@@ -16,6 +16,7 @@
          (amoebum::*user-handoff-client* nil)
          (amoebum::*user-negotiation-client* nil)
          (amoebum::*user-handoff-sequence* 0)
+         (amoebum::*user-handoff-details* (make-hash-table :test #'equal))
          (amoebum::*user-coordination-lock*
           (bordeaux-threads:make-lock "user-coordination-test-lock")))
      ,@body))
@@ -63,6 +64,80 @@
         (is (eq :completed (getf completed :status))))
       (let ((status (amoebum:user-handoff-status handoff-id)))
         (is (eq :completed (getf status :status)))))))
+
+(test completed-handoff-status-carries-mergeable-result-and-provenance
+  "Completed handoffs should expose structured result, trace, and conversation-merge payloads."
+  (with-fresh-user-coordination ()
+    (amoebum:register-user-session-peer "session-from" :user-id "alice")
+    (amoebum:register-user-session-peer "session-to" :user-id "bob")
+    (let* ((response (amoebum:handoff-between-users
+                      "session-from"
+                      "session-to"
+                      "Need a delegate reviewer"
+                      :context '(:notes "preserve provenance")))
+           (handoff-id (getf response :handoff-id))
+           (_accepted (amoebum:accept-user-handoff handoff-id))
+           (completed (amoebum:complete-user-handoff
+                       handoff-id
+                       :summary "Delegate landed a review plan."
+                       :result-payload '(:summary "Delegate landed a review plan."
+                                         :artifacts ("plan.md"))
+                       :diagnostics '((:severity :warning :message "One flaky check remains"))
+                       :budget-spent '(:tokens 42 :wall-time-ms 900)
+                       :provenance '(:worker-id "delegate-7" :backend :codex)))
+           (status (amoebum:user-handoff-status handoff-id))
+           (merge (getf status :conversation-merge))
+           (trace (getf status :delegation-trace)))
+      (declare (ignore _accepted))
+      (is (eq :completed (getf completed :status)))
+      (is (string= "Delegate landed a review plan." (getf status :summary)))
+      (is (equal '(:summary "Delegate landed a review plan."
+                   :artifacts ("plan.md"))
+                 (getf status :result-payload)))
+      (is (= 1 (length (getf status :diagnostics))))
+      (is (= 42 (getf (getf status :budget-spent) :tokens)))
+      (is (listp trace))
+      (is (= 3 (length trace)))
+      (is (eq :completed (getf merge :status)))
+      (is (string= "Delegate landed a review plan." (getf merge :summary)))
+      (is (= 1 (length (getf merge :messages))))
+      (is (string= "assistant"
+                   (getf (first (getf merge :messages)) :role)))
+      (is (string= "delegate-7"
+                   (getf (getf (getf status :delegation-provenance) :outcome)
+                         :worker-id))))))
+
+(test rejected-handoff-status-carries-partial-result-diagnostics
+  "Rejected handoffs should keep partial results and diagnostics for fallback handling."
+  (with-fresh-user-coordination ()
+    (amoebum:register-user-session-peer "session-from" :user-id "alice")
+    (amoebum:register-user-session-peer "session-to" :user-id "bob")
+    (let* ((response (amoebum:handoff-between-users
+                      "session-from"
+                      "session-to"
+                      "Need a fallback reviewer"))
+           (handoff-id (getf response :handoff-id))
+           (rejected (amoebum:reject-user-handoff
+                      handoff-id
+                      "overloaded"
+                      :rejection-code sw4rm-sdk:+overloaded+
+                      :partial-result '(:summary "Collected partial notes."
+                                        :notes ("failing-spec"))
+                      :diagnostics '((:severity :error :message "delegate overloaded"))
+                      :provenance '(:worker-id "delegate-9")))
+           (status (amoebum:user-handoff-status handoff-id))
+           (merge (getf status :conversation-merge)))
+      (is (eq :rejected (getf rejected :status)))
+      (is (equal '(:summary "Collected partial notes."
+                   :notes ("failing-spec"))
+                 (getf status :partial-result)))
+      (is (= 1 (length (getf status :diagnostics))))
+      (is (eq :rejected (getf merge :status)))
+      (is (equal (getf status :partial-result)
+                 (getf merge :partial-result)))
+      (is (string= "delegate-9"
+                   (getf (getf (getf status :delegation-provenance) :outcome)
+                         :worker-id))))))
 
 (test handoff-rejection-preserves-sw4rm-metadata
   "Rejected handoffs should keep rejection metadata and clear the pending queue."
@@ -172,7 +247,7 @@
                      :project-root project-root
                      :global-path global-memory
                      :project-path project-memory))
-           (conversation (amoebum:make-conversation-state
+           (conversation (amoebum::make-conversation-state
                           :project-root project-root
                           :session-id "session-author"))
            (worktree (amoebum:make-worktree-metadata
@@ -190,12 +265,12 @@
               :diagnostics '((:severity "warning" :message "context packet missing")))))
       (unwind-protect
            (progn
-             (amoebum:conversation-state-add-message
+             (amoebum::conversation-state-add-message
               conversation
               (pseudopod:make-message :role "user"
                                       :content "Please review the handoff seam.")
               :save-p nil)
-             (amoebum:conversation-state-add-message
+             (amoebum::conversation-state-add-message
               conversation
               (pseudopod:make-message :role "assistant"
                                       :content "I am collecting git, memory, and worktree context.")
@@ -255,7 +330,7 @@
                      :project-root project-root
                      :global-path global-memory
                      :project-path project-memory))
-           (conversation (amoebum:make-conversation-state
+           (conversation (amoebum::make-conversation-state
                           :project-root project-root
                           :session-id "session-author"))
            (amoebum:*ide-context*
@@ -274,7 +349,7 @@
            (progn
              (loop repeat 10
                    for index from 1 do
-                     (amoebum:conversation-state-add-message
+                     (amoebum::conversation-state-add-message
                       conversation
                       (pseudopod:make-message
                        :role (if (oddp index) "user" "assistant")
