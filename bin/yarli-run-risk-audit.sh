@@ -34,6 +34,16 @@ require_cmd() {
   command -v "${cmd}" >/dev/null 2>&1 || fail "missing required command: ${cmd}"
 }
 
+numeric_or_default() {
+  local raw="${1:-}"
+  local fallback="$2"
+  if [[ "${raw}" =~ ^-?[0-9]+$ ]]; then
+    printf '%s\n' "${raw}"
+  else
+    printf '%s\n' "${fallback}"
+  fi
+}
+
 toml_get_run_value() {
   local key="$1"
   awk -v key="${key}" '
@@ -173,21 +183,23 @@ exit_state="$(jq -r '.exit_state // "unknown"' "${CONTINUATION_FILE}")"
 exit_reason="$(jq -r '.exit_reason // "unknown"' "${CONTINUATION_FILE}")"
 max_auto_advance_raw="$(toml_get_run_value max_auto_advance_tranches || true)"
 max_auto_advance="${max_auto_advance_raw//\"/}"
-[[ -n "${max_auto_advance}" ]] || max_auto_advance="1"
+max_auto_advance="$(numeric_or_default "${max_auto_advance}" 1)"
 
-target_threshold="$(jq -r '.tranche_token_thresholds.target_tokens // 70000' "${CONTINUATION_FILE}")"
-max_threshold="$(jq -r '.tranche_token_thresholds.max_recommended_tokens // 100000' "${CONTINUATION_FILE}")"
-tranche_count="$(jq -r '(.tranche_token_usage // []) | length' "${CONTINUATION_FILE}")"
-max_total_tokens="$(jq -r '(.tranche_token_usage // []) | map(.total_tokens // 0) | max // 0' "${CONTINUATION_FILE}")"
+target_threshold="$(numeric_or_default "$(jq -r '.tranche_token_thresholds.target_tokens // 70000' "${CONTINUATION_FILE}")" 70000)"
+max_threshold="$(numeric_or_default "$(jq -r '.tranche_token_thresholds.max_recommended_tokens // 100000' "${CONTINUATION_FILE}")" 100000)"
+tranche_count="$(numeric_or_default "$(jq -r '(.tranche_token_usage // []) | length' "${CONTINUATION_FILE}")" 0)"
+max_total_tokens="$(numeric_or_default "$(jq -r '(.tranche_token_usage // []) | map(.total_tokens // 0) | max // 0' "${CONTINUATION_FILE}")" 0)"
 target_breaches="$(jq -r --argjson target "${target_threshold}" '(.tranche_token_usage // []) | map(select((.total_tokens // 0) >= $target)) | length' "${CONTINUATION_FILE}")"
 max_breaches="$(jq -r --argjson target "${max_threshold}" '(.tranche_token_usage // []) | map(select((.total_tokens // 0) >= $target)) | length' "${CONTINUATION_FILE}")"
 latest_tranche_key="$(jq -r '(.tranche_token_usage // []) | last | .tranche_key // "unknown"' "${CONTINUATION_FILE}")"
-latest_total_tokens="$(jq -r '(.tranche_token_usage // []) | last | .total_tokens // 0' "${CONTINUATION_FILE}")"
+latest_total_tokens="$(numeric_or_default "$(jq -r '(.tranche_token_usage // []) | last | .total_tokens // 0' "${CONTINUATION_FILE}")" 0)"
 latest_warning="$(jq -r '(.tranche_token_usage // []) | last | .warning // ""' "${CONTINUATION_FILE}")"
+target_breaches="$(numeric_or_default "${target_breaches}" 0)"
+max_breaches="$(numeric_or_default "${max_breaches}" 0)"
 token_pressure="$(classify_token_pressure "${tranche_count}" "${target_breaches}" "${max_breaches}" "${max_total_tokens}")"
 
 line_count_output="$("${LINE_COUNT_AUDIT}" all 2>&1 || true)"
-line_count_fail_count="$(printf '%s\n' "${line_count_output}" | rg -c 'status=FAIL' || true)"
+line_count_fail_count="$(numeric_or_default "$(printf '%s\n' "${line_count_output}" | rg -c 'status=FAIL' || true)" 0)"
 line_count_near_limit_count="$(printf '%s\n' "${line_count_output}" | awk '
 /^LINE_COUNT_AUDIT / {
   lines = ""
@@ -209,6 +221,7 @@ line_count_near_limit_count="$(printf '%s\n' "${line_count_output}" | awk '
 END {
   print count + 0
 }')"
+line_count_near_limit_count="$(numeric_or_default "${line_count_near_limit_count}" 0)"
 file_pressure="$(classify_file_pressure "${line_count_fail_count}" "${line_count_near_limit_count}")"
 line_count_failures="$(printf '%s\n' "${line_count_output}" | rg '^LINE_COUNT_AUDIT .*status=FAIL' || true)"
 
