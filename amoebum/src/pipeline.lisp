@@ -5,6 +5,10 @@
 (defparameter *pipeline-current-tool-name* nil)
 (defparameter *pipeline-current-arguments* nil)
 (defparameter *pipeline-current-request-id* nil)
+(defvar *capability-gap-delegation-function* nil
+  "When non-nil, called with (condition action options) to delegate a capability gap.")
+(defvar *capability-gap-install-function* nil
+  "When non-nil, called with (condition action options) to request/install a missing capability.")
 (defvar *tool-error-llm-recovery-function* nil
   "When non-nil, a function called with (condition tool-name arguments) to attempt LLM-driven recovery from tool errors.")
 (defparameter +missing-tool-argument-recovery-modes+
@@ -109,6 +113,82 @@
      (list :use-value (%missing-tool-argument-result-text condition)))
     (otherwise nil)))
 
+(defun %capability-gap-action-specs ()
+  (list (list :restart "delegate-capability-gap"
+              :action "delegate"
+              :description "Delegate the missing capability to a peer or specialized agent.")
+        (list :restart "install-missing-capability"
+              :action "install"
+              :description "Install or enable the missing capability before retrying.")
+        (list :restart "ask-user"
+              :action "ask-user"
+              :description "Ask the user which recovery path to take.")))
+
+(defun %capability-gap-contract (tool-name arguments &key capability-name reason-code)
+  (list :kind "capability_gap"
+        :tool-name (or tool-name "")
+        :capability-name (or capability-name tool-name "")
+        :reason-code (string-downcase (symbol-name (or reason-code :capability-gap)))
+        :arguments (%copy-arguments-to-hash-table arguments)
+        :available-actions (%capability-gap-action-specs)))
+
+(defun %capability-gap-recovery-payload (condition status action options)
+  (let ((payload (%make-equal-hash-table))
+        (contract (capability-gap-recovery-contract condition)))
+    (setf (gethash "kind" payload) "capability_gap_recovery"
+          (gethash "status" payload) status
+          (gethash "action" payload) action
+          (gethash "tool" payload) (or (tool-error-tool-name condition) "")
+          (gethash "capability" payload)
+          (or (capability-gap-capability-name condition)
+              (tool-error-tool-name condition)
+              "")
+          (gethash "message" payload)
+          (princ-to-string condition))
+    (when contract
+      (setf (gethash "contract" payload) contract))
+    (when options
+      (setf (gethash "options" payload) options))
+    payload))
+
+(defun %capability-gap-recovery-result-text (condition status action &optional options)
+  (%encode-json-arguments
+   (%capability-gap-recovery-payload condition status action options)))
+
+(defun %delegate-capability-gap (condition &optional options)
+  (if (functionp *capability-gap-delegation-function*)
+      (or (funcall *capability-gap-delegation-function*
+                   condition
+                   :delegate
+                   options)
+          (%capability-gap-recovery-result-text
+           condition
+           "delegated"
+           "delegate"
+           options))
+      (%capability-gap-recovery-result-text
+       condition
+       "delegation-requested"
+       "delegate"
+       options)))
+
+(defun %install-missing-capability (condition &optional options)
+  (if (functionp *capability-gap-install-function*)
+      (or (funcall *capability-gap-install-function*
+                   condition
+                   :install
+                   options)
+          (%capability-gap-recovery-result-text
+           condition
+           "install-requested"
+           "install"
+           options))
+      (%capability-gap-recovery-result-text
+       condition
+       "install-requested"
+       "install"
+       options)))
+
 (defun context-toolset (context)
   (pseudopod:context-toolset context))
 
@@ -196,6 +276,12 @@ skip-tool-call, abort-step, or ask-user."
             (use-value (value)
               :report "Compatibility alias that returns a replacement value."
               value))
+        (delegate-capability-gap (&optional options)
+          :report "Delegate this missing capability while preserving task continuity."
+          (%delegate-capability-gap condition options))
+        (install-missing-capability (&optional options)
+          :report "Install or enable the missing capability before retrying."
+          (%install-missing-capability condition options))
         (skip-tool-call ()
           :report "Skip this tool call and continue."
           (format nil "Tool ~A skipped by recovery policy." normalized-tool-name))
@@ -205,8 +291,13 @@ skip-tool-call, abort-step, or ask-user."
                  :message (format nil "Tool ~A aborted current step." normalized-tool-name)))
         (ask-user ()
           :report "Ask user for guidance before retrying."
-          (format nil "Tool ~A requires user guidance to continue."
-                  normalized-tool-name))
+          (if (typep condition 'capability-gap)
+              (%capability-gap-recovery-result-text
+               condition
+               "user-guidance-required"
+               "ask-user")
+              (format nil "Tool ~A requires user guidance to continue."
+                      normalized-tool-name)))
         (skip-tool ()
           :report "Compatibility alias for skip-tool-call."
           (invoke-restart 'skip-tool-call))
@@ -592,9 +683,14 @@ skip-tool-call, abort-step, or ask-user."
 
 (defun %ensure-tool-registered (context tool-name arguments)
   (unless (pseudopod:find-tool (context-toolset context) tool-name)
-    (error 'tool-not-found
+    (error 'capability-gap
            :tool-name tool-name
            :arguments arguments
+           :capability-name tool-name
+           :recovery-contract (%capability-gap-contract tool-name arguments
+                                                        :capability-name tool-name
+                                                        :reason-code :capability-gap)
+           :reason-code :capability-gap
            :message (format nil "No registered tool named ~S." tool-name)
            :reason "tool not found")))
 

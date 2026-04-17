@@ -123,6 +123,84 @@
             amoebum:*hook-registry* original-hooks
             amoebum:*event-bus* original-event-bus))))
 
+(test i377-capability-gap-restarts-delegate-install-and-ask-user
+  (let ((original-toolset amoebum:*toolset*)
+        (original-hooks amoebum:*hook-registry*)
+        (original-event-bus amoebum:*event-bus*)
+        (original-delegate amoebum:*capability-gap-delegation-function*)
+        (original-install amoebum:*capability-gap-install-function*))
+    (unwind-protect
+        (let ((toolset (pseudopod:make-toolset)))
+          (setf amoebum:*toolset* toolset
+                amoebum:*hook-registry* (make-hash-table :test #'equal)
+                amoebum:*event-bus* (amoebum:make-event-bus :capacity 16)
+                amoebum:*capability-gap-delegation-function*
+                (lambda (condition action options)
+                  (declare (ignore action))
+                  (jonathan:to-json
+                   (list :kind "capability_gap_recovery"
+                         :status "delegated"
+                         :tool (amoebum:tool-error-tool-name condition)
+                         :capability (amoebum:capability-gap-capability-name condition)
+                         :options options)))
+                amoebum:*capability-gap-install-function*
+                (lambda (condition action options)
+                  (declare (ignore action))
+                  (jonathan:to-json
+                   (list :kind "capability_gap_recovery"
+                         :status "install-requested"
+                         :tool (amoebum:tool-error-tool-name condition)
+                         :capability (amoebum:capability-gap-capability-name condition)
+                         :options options))))
+
+          (let ((delegate-result
+                  (handler-bind
+                      ((amoebum:capability-gap
+                         (lambda (condition)
+                           (invoke-restart 'amoebum::delegate-capability-gap
+                                           '(:session-id "session-bob")))))
+                    (amoebum:execute-tool-with-restarts
+                     "missing-capability-tool"
+                     (%i210-make-args)
+                     :toolset toolset
+                     :permission-mode :full-auto))))
+            (is-true (search "\"status\":\"delegated\"" delegate-result :test #'char-equal))
+            (is-true (search "missing-capability-tool" delegate-result :test #'char-equal)))
+
+          (let ((install-result
+                  (handler-bind
+                      ((amoebum:capability-gap
+                         (lambda (condition)
+                           (invoke-restart 'amoebum::install-missing-capability
+                                           '(:package "rg")))))
+                    (amoebum:execute-tool-with-restarts
+                     "missing-capability-tool"
+                     (%i210-make-args)
+                     :toolset toolset
+                     :permission-mode :full-auto))))
+            (is-true (search "\"status\":\"install-requested\"" install-result :test #'char-equal))
+            (is-true (search "\"package\":\"rg\"" install-result :test #'char-equal)))
+
+          (let ((ask-user-result
+                  (handler-bind
+                      ((amoebum:capability-gap
+                         (lambda (_condition)
+                           (invoke-restart 'amoebum::ask-user))))
+                    (amoebum:execute-tool-with-restarts
+                     "missing-capability-tool"
+                     (%i210-make-args)
+                     :toolset toolset
+                     :permission-mode :full-auto))))
+            (is-true (search "\"status\":\"user-guidance-required\"" ask-user-result
+                             :test #'char-equal))
+            (is-true (search "\"kind\":\"capability_gap_recovery\"" ask-user-result
+                             :test #'char-equal))))
+      (setf amoebum:*toolset* original-toolset
+            amoebum:*hook-registry* original-hooks
+            amoebum:*event-bus* original-event-bus
+            amoebum:*capability-gap-delegation-function* original-delegate
+            amoebum:*capability-gap-install-function* original-install))))
+
 (test i216-parse-recovery-decision
   (let ((decision
           (amoebum:parse-recovery-decision

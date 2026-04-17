@@ -49,6 +49,11 @@
                  (make-condition 'amoebum:tool-not-found :tool-name "missing-tool"))
            (list "tool-not-found-error"
                  (make-condition 'amoebum:tool-not-found-error :tool-name "missing-tool"))
+           (list "capability-gap"
+                 (make-condition 'amoebum:capability-gap
+                                 :tool-name "missing-tool"
+                                 :capability-name "missing-tool"
+                                 :recovery-contract '(:kind "capability_gap")))
            (list "tool-argument-error"
                  (make-condition 'amoebum:tool-argument-error
                                  :tool-name "i209-tool"
@@ -105,7 +110,13 @@
                    value))
              (abort-tool ()
                :report "Abort tool."
-               nil))))
+               nil))
+           (delegate-capability-gap ()
+             :report "Delegate capability gap."
+             nil)
+           (install-missing-capability ()
+             :report "Install missing capability."
+             nil)))
     (is-true (search "[retry-tool]" context :test #'char-equal)
              "Expected retry-tool restart listed in context: ~S"
              context)
@@ -117,4 +128,10 @@
              context)
     (is-true (search "[abort-tool]" context :test #'char-equal)
              "Expected abort-tool restart listed in context: ~S"
+             context)
+    (is-true (search "[delegate-capability-gap]" context :test #'char-equal)
+             "Expected delegate-capability-gap restart listed in context: ~S"
+             context)
+    (is-true (search "[install-missing-capability]" context :test #'char-equal)
+             "Expected install-missing-capability restart listed in context: ~S"
              context)))

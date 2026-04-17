@@ -1162,6 +1162,9 @@
            #:tool-permission-denied
            #:tool-not-found
            #:tool-not-found-error
+           #:capability-gap
+           #:capability-gap-capability-name
+           #:capability-gap-recovery-contract
            #:tool-argument-error
            #:tool-argument-error-argument-name
            #:tool-missing-argument
@@ -1348,6 +1351,8 @@
            #:+budget-restart-names+
            #:*supervised-restart-selector*
            #:*budget-exhaustion-restart-selector*
+           #:*capability-gap-delegation-function*
+           #:*capability-gap-install-function*
            #:default-supervised-restart-selector
            #:default-budget-exhaustion-restart-selector
            #:parse-recovery-decision

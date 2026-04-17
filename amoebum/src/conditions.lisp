@@ -3,6 +3,8 @@
 (defparameter +tool-restart-names+
   '(retry-with-modified-args
     use-alternative-tool
+    delegate-capability-gap
+    install-missing-capability
     skip-tool-call
     abort-step
     ask-user
@@ -274,6 +276,19 @@
 
 (define-condition tool-not-found-error (tool-not-found) ())
 
+(define-condition capability-gap (tool-not-found-error)
+  ((capability-name :initarg :capability-name
+                    :initform nil
+                    :reader capability-gap-capability-name)
+   (recovery-contract :initarg :recovery-contract
+                      :initform nil
+                      :reader capability-gap-recovery-contract))
+  (:report (lambda (condition stream)
+             (format stream "Capability gap for ~S~@[ (~A)~]."
+                     (tool-error-tool-name condition)
+                     (or (capability-gap-capability-name condition)
+                         "missing capability")))))
+
 (define-condition tool-argument-error (tool-error)
   ((argument-name :initarg :argument-name
                   :initform nil
@@ -435,6 +450,14 @@
    condition
    (format nil "Tool '~A' is unavailable; use an alternate capability and preserve task continuity."
            (tool-error-tool-name condition))))
+
+(defmethod condition-to-llm-context ((condition capability-gap))
+  (%format-llm-condition-context
+   condition
+   (format nil
+           "Capability '~A' is unavailable; prefer [delegate-capability-gap] or [install-missing-capability], then [ask-user] if delegation policy is unclear."
+           (or (capability-gap-capability-name condition)
+               (tool-error-tool-name condition)))))
 
 (defmethod condition-to-llm-context ((condition tool-timeout))
   (%format-llm-condition-context

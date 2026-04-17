@@ -103,10 +103,20 @@
    :before phase, before permission or validation phases run."
   (%nxt287-with-isolated-globals
     (let ((context (%nxt287-make-context amoebum:*toolset*)))
-      (signals amoebum:tool-error
-        (amoebum:execute-tool
-         (%nxt287-call "nxt287-nope-not-registered")
-         context)))))
+      (handler-case
+          (progn
+            (amoebum:execute-tool
+             (%nxt287-call "nxt287-nope-not-registered")
+             context)
+            (fail "Expected unknown tool to signal a capability-gap condition."))
+        (amoebum:capability-gap (condition)
+          (is (string= "nxt287-nope-not-registered"
+                       (amoebum:tool-error-tool-name condition)))
+          (is (string= "nxt287-nope-not-registered"
+                       (amoebum:capability-gap-capability-name condition)))
+          (is (equal "capability_gap"
+                     (getf (amoebum:capability-gap-recovery-contract condition)
+                           :kind))))))))
 
 ;;; --------------------------------------------------------------------
 ;;; Phase 3 boundary: argument validation rejects missing required args
