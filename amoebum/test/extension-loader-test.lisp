@@ -28,6 +28,22 @@
              marker))
     (values extension-root manifest-path entry-path)))
 
+(defun %i232-write-broken-extension (root name version)
+  (multiple-value-bind (extension-root manifest-path entry-path)
+      (%i232-write-extension root name version "broken-placeholder")
+    (when (probe-file entry-path)
+      (delete-file entry-path))
+    (values extension-root manifest-path entry-path)))
+
+(defun %reset-i232-extension-state ()
+  (setf *i232-extension-log* '()
+        amoebum.extensions:*extension-load-report* '()
+        amoebum.extensions:*loaded-extensions* '()
+        amoebum.extensions:*extension-last-discovered* '())
+  (clrhash amoebum.extensions:*disabled-extensions*)
+  (clrhash amoebum.extensions:*extension-registry*)
+  (clrhash amoebum.extensions:*extension-watch-snapshot*))
+
 (test extension-loader-discovers-registry-and-hot-reload
   (let* ((tmp-root (%make-temp-directory "amoebum-i232"))
          (global-root (merge-pathnames #P"global/" tmp-root))
@@ -126,6 +142,53 @@
       (clrhash amoebum.extensions:*disabled-extensions*)
       (clrhash amoebum.extensions:*extension-registry*)
       (clrhash amoebum.extensions:*extension-watch-snapshot*)
+      (%delete-directory-tree-safe tmp-root))))
+
+(test extension-loader-result-pipeline-wraps-successful-candidate
+  (let* ((tmp-root (%make-temp-directory "amoebum-i232-result-ok"))
+         (project-root (merge-pathnames #P"project/" tmp-root))
+         (project-local-root (merge-pathnames #P".amoebum/extensions/" project-root)))
+    (unwind-protect
+         (progn
+           (%reset-i232-extension-state)
+           (ensure-directories-exist (merge-pathnames #P".keep" project-local-root))
+           (multiple-value-bind (_root manifest-path _entry-path)
+               (%i232-write-extension project-local-root "result-ok" "1.0.0" "result-ok-loaded")
+             (declare (ignore _root _entry-path))
+             (let* ((result (amoebum::%process-extension-candidate-result
+                             (cons :project manifest-path)))
+                    (records (amoebum.fp:ok-value result))
+                    (record (first records))
+                    (loaded-record (second records)))
+               (is-true (amoebum.fp:ok-p result))
+               (is (string= "result-ok"
+                            (amoebum.extensions:extension-load-record-name record)))
+               (is-true loaded-record)
+               (is (string= "result-ok"
+                            (amoebum.extensions:extension-load-record-name loaded-record)))
+               (is (member "result-ok-loaded" *i232-extension-log* :test #'string=)))))
+      (%reset-i232-extension-state)
+      (%delete-directory-tree-safe tmp-root))))
+
+(test extension-loader-result-pipeline-wraps-load-errors
+  (let* ((tmp-root (%make-temp-directory "amoebum-i232-result-err"))
+         (project-root (merge-pathnames #P"project/" tmp-root))
+         (project-local-root (merge-pathnames #P".amoebum/extensions/" project-root)))
+    (unwind-protect
+         (progn
+           (%reset-i232-extension-state)
+           (ensure-directories-exist (merge-pathnames #P".keep" project-local-root))
+           (multiple-value-bind (_root manifest-path _entry-path)
+               (%i232-write-broken-extension project-local-root "result-err" "1.0.0")
+             (declare (ignore _root _entry-path))
+             (let ((result (amoebum::%process-extension-candidate-result
+                            (cons :project manifest-path))))
+               (is-true (amoebum.fp:err-p result))
+               (is-true (typep (amoebum.fp:err-value result) 'error))
+               (is (search "entry-point not found"
+                           (princ-to-string (amoebum.fp:err-value result))
+                           :test #'char-equal)))))
+      (%reset-i232-extension-state)
       (%delete-directory-tree-safe tmp-root))))
 
 (test extension-loader-smoke-sentinel

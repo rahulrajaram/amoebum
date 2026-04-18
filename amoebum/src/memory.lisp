@@ -572,12 +572,14 @@
          (matches
            (if (zerop (length needle))
                (memory-list backend :scope scope)
-               (loop for entry in (memory-list backend :scope scope)
-                     for haystack-key = (string-downcase (or (memory-entry-key entry) ""))
-                     for haystack-value = (string-downcase (or (memory-entry-value entry) ""))
-                     when (or (search needle haystack-key :test #'char=)
+               (amoebum.fp:filter-map
+                (lambda (entry)
+                  (let ((haystack-key (string-downcase (or (memory-entry-key entry) "")))
+                        (haystack-value (string-downcase (or (memory-entry-value entry) ""))))
+                    (when (or (search needle haystack-key :test #'char=)
                               (search needle haystack-value :test #'char=))
-                       collect entry))))
+                      entry)))
+                (memory-list backend :scope scope)))))
     (if (and (integerp limit) (>= limit 0))
         (subseq matches 0 (min limit (length matches)))
         matches)))
@@ -925,15 +927,19 @@
 
 (defun %state-topic-scope-name (scope)
   (when (and (consp scope) (eq (first scope) :topic))
-    (%trim-text (princ-to-string (second scope)))))
+    (let ((topic (second scope)))
+      (when topic
+        (%trim-text (princ-to-string topic))))))
 
 (defun %import-state-topic-names (state)
   (sort (remove-duplicates
-         (loop for entry in (or (getf state :imports) '())
-               for scope = (and (listp entry) (getf entry :scope))
-               for topic = (%state-topic-scope-name scope)
-               when (and topic (plusp (length topic)))
-                 collect topic)
+         (amoebum.fp:filter-map
+          (lambda (entry)
+            (let* ((scope (and (listp entry) (getf entry :scope)))
+                   (topic (%state-topic-scope-name scope)))
+              (when (and topic (plusp (length topic)))
+                topic)))
+          (or (getf state :imports) '()))
          :test #'string-equal)
         #'string< :key #'string-downcase))
 

@@ -39,27 +39,42 @@
       (error "Git project root does not exist: ~A." (coerce-path-string directory)))
     directory))
 
+(defun %git-delegated-process-env ()
+  (when (current-delegated-agent-id)
+    (%coerce-process-env
+     (shell-env-to-string-list
+      (assemble-shell-env
+       (merge-shell-environment
+        (%default-shell-environment)
+        :env-overrides (current-delegated-agent-secret-env-overrides)
+        :inherit-env-p t
+        :filter-sensitive-p t))))))
+
 (defun %git-run-command (root args)
-  (multiple-value-bind (stdout stderr exit-code)
-      (uiop:run-program (append (list "git") args)
-                        :directory root
-                        :ignore-error-status t
-                        :output :string
-                        :error-output :string)
+  (let ((process-env (%git-delegated-process-env)))
+    (multiple-value-bind (stdout stderr exit-code)
+        (uiop:run-program (append (list "git") args)
+                          :directory root
+                          :ignore-error-status t
+                          :output :string
+                          :error-output :string
+                          :env process-env)
     (list :stdout (or stdout "")
           :stderr (or stderr "")
-          :exit-code (or exit-code 0))))
+          :exit-code (or exit-code 0)))))
 
 (defun %git-run-bash-command (root command)
-  (multiple-value-bind (stdout stderr exit-code)
-      (uiop:run-program (list "bash" "-lc" command)
-                        :directory root
-                        :ignore-error-status t
-                        :output :string
-                        :error-output :string)
+  (let ((process-env (%git-delegated-process-env)))
+    (multiple-value-bind (stdout stderr exit-code)
+        (uiop:run-program (list "bash" "-lc" command)
+                          :directory root
+                          :ignore-error-status t
+                          :output :string
+                          :error-output :string
+                          :env process-env)
     (list :stdout (or stdout "")
           :stderr (or stderr "")
-          :exit-code (or exit-code 0))))
+          :exit-code (or exit-code 0)))))
 
 (defun %git-publish-lifecycle-event (event-type payload &key (severity :info))
   (handler-case
@@ -474,11 +489,31 @@ Staged diff:~%~A"
                                      "--symbolic-full-name"
                                      "@{u}")))
          (upstream (%git-trim-whitespace (getf result :stdout))))
-    (when (and (zerop (getf result :exit-code))
-               (plusp (length upstream)))
-      upstream)))
+	    (when (and (zerop (getf result :exit-code))
+	               (plusp (length upstream)))
+	      upstream)))
+
+(defun %git-ensure-delegated-push-branch-allowed (branch)
+  (let ((allowed-branch (current-delegated-agent-push-branch))
+        (requested-branch (%git-trim-whitespace branch)))
+    (when (and (plusp (length requested-branch))
+               allowed-branch
+               (not (string= requested-branch allowed-branch)))
+      (let ((reason (format nil
+                            "Delegated agent ~A may only push branch ~A; attempted ~A."
+                            (or (current-delegated-agent-id) "<unknown>")
+                            allowed-branch
+                            requested-branch)))
+        (error 'tool-permission-denied
+               :tool-name :git-push
+               :arguments (list requested-branch)
+               :reason-code :worktree-branch-scope
+               :reason reason
+               :message reason))))
+  branch)
 
 (defun %git-push-set-upstream-if-needed! (root branch)
+  (%git-ensure-delegated-push-branch-allowed branch)
   (let ((upstream (%git-upstream-branch root)))
     (if upstream
         (list :pushed-p nil :upstream upstream)

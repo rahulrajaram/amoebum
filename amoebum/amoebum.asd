@@ -7,6 +7,7 @@
   :serial t
   :components
   ((:file "src/package")
+   (:file "src/package-domains")
    (:file "src/util")
    ;; NXT-264: Functional/immutable kernel (no internal deps).
    (:file "src/fp/package")
@@ -15,6 +16,7 @@
    (:file "src/fp/update")
    (:file "src/fp/match")
    (:file "src/fp/plist")
+   (:file "src/fp/collections")
    (:file "src/fp/transition")
    (:file "src/fp/frozen")
    (:file "src/runtime-log")
@@ -24,6 +26,15 @@
    (:file "src/events/filters")
    (:file "src/config")
    (:file "src/config/loader")
+   (:file "src/worktrees")
+   ;; NXT-356: runtime construction, naming, and lifecycle dispatch helpers.
+   (:file "src/worktrees/runtime")
+   ;; NXT-354: abandonment markers and cleanup policy extracted from worktrees.lisp.
+   (:file "src/worktrees/cleanup")
+   ;; NXT-355: conflict-handoff registry, room-status, and resolution helpers.
+   (:file "src/worktrees/handoffs")
+   ;; NXT-357: merge-target resolution plus merge/preflight policy helpers.
+   (:file "src/worktrees/merge")
    (:file "src/provider-factory")
    (:file "src/ui/provider-dashboard")
    (:file "src/context")
@@ -33,6 +44,9 @@
    (:file "src/plan-mode")
    (:file "src/policy-types")
    (:file "src/plan-execution")
+   (:file "src/plan-execution-output")
+   (:file "src/plan-execution-context")
+   (:file "src/plan-execution-effects")
    (:file "src/agents")
    (:file "src/agents/personas")
    (:file "src/agent-activity")
@@ -48,8 +62,13 @@
    (:file "src/permissions-command")
    (:file "src/permissions-path")
    (:file "src/permissions")
+   (:file "src/permissions-rules")
    (:file "src/permissions-evaluation")
    (:file "src/commands-core-builtins")
+   (:file "src/commands/handoffs")
+   (:file "src/commands/worktree-handoff")
+   (:file "src/commands/agents-runtime")
+   (:file "src/commands/swarm-runtime")
    (:file "src/commands-agents")
    (:file "src/commands-phase5")
    (:file "src/sandbox")
@@ -115,6 +134,9 @@
    (:file "src/widgets/tree-browser")
    (:file "src/widgets/perf-dashboard")
    (:file "src/widgets/worker-dashboard")
+   (:file "src/api-facades/operator-domains")
+   (:file "src/api-facades/runtime-domains")
+   (:file "src/api-facades/infrastructure-domains")
    (:file "src/api-facades")
    ;; NXT-263: Test isolation fixture. Must load AFTER api-facades because
    ;; %install-facade! moves *checkpoint-directory-override* from :amoebum
@@ -177,6 +199,7 @@
    (:file "test/fp-kernel-test")
    (:file "test/fp-match-test")
    (:file "test/fp-plist-test")
+   (:file "test/fp-collections-test")
    (:file "test/fp-transition-test")
    (:file "test/fp-frozen-test")
    (:file "test/globals-fixture-test")
@@ -249,12 +272,14 @@
    (:file "test/session-resume-test")
    (:file "test/lifecycle-events-test")
    (:file "test/agent-activity-test")
+   (:file "test/worktree-handoff-command-test")
    (:file "test/hailer-adapter-test")
    (:file "test/worker-supervisor-test")
    (:file "test/overwatch-backend-test")
    (:file "test/event-journal-test")
    (:file "test/worker-retry-test")
    (:file "test/worker-fanout-test")
+   (:file "test/worktree-runtime-test")
    (:file "test/swarm-execution-semantics-test")
    (:file "test/swarm-unit-test")
    (:file "test/event-replay-test")

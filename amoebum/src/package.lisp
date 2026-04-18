@@ -789,9 +789,11 @@
            #:agent-record-finished-ms
            #:agent-record-cancel-requested-p
            #:agent-record-result
-           #:agent-record-stdout
-           #:agent-record-stderr
-           #:agent-record-error-message
+	           #:agent-record-stdout
+	           #:agent-record-stderr
+	           #:agent-record-error-message
+	           #:agent-record-worktree
+	           #:agent-record-worktree-merge
            ;; Agent personas
            #:persona-definition
            #:persona-definition-p
@@ -818,9 +820,11 @@
            #:runtime-agent-task
            #:runtime-agent-status
            #:runtime-agent-result
-           #:runtime-agent-error-message
-           #:runtime-agent-output
-           #:runtime-agent-terminal-p
+	           #:runtime-agent-error-message
+	           #:runtime-agent-output
+	           #:runtime-agent-worktree
+	           #:runtime-agent-worktree-merge
+	           #:runtime-agent-terminal-p
            #:spawn-agent
            #:cancel-agent
            #:agent-cancel-requested-p
@@ -1158,6 +1162,9 @@
            #:tool-permission-denied
            #:tool-not-found
            #:tool-not-found-error
+           #:capability-gap
+           #:capability-gap-capability-name
+           #:capability-gap-recovery-contract
            #:tool-argument-error
            #:tool-argument-error-argument-name
            #:tool-missing-argument
@@ -1344,6 +1351,8 @@
            #:+budget-restart-names+
            #:*supervised-restart-selector*
            #:*budget-exhaustion-restart-selector*
+           #:*capability-gap-delegation-function*
+           #:*capability-gap-install-function*
            #:default-supervised-restart-selector
            #:default-budget-exhaustion-restart-selector
            #:parse-recovery-decision
@@ -1933,9 +1942,11 @@
            #:swarm-agent-retry-policy
            #:swarm-agent-timeout-seconds
            ;; NXT-018: stalled-run detection
-           #:swarm-agent-heartbeat-at
-           #:swarm-agent-last-output-at
-           #:*swarm-registry*
+	           #:swarm-agent-heartbeat-at
+	           #:swarm-agent-last-output-at
+	           #:swarm-agent-worktree
+	           #:swarm-agent-worktree-merge
+	           #:*swarm-registry*
            #:*swarm-counter*
            #:spawn-swarm-agent
            #:collect-swarm-result
@@ -1948,7 +1959,57 @@
            #:update-swarm-agent-heartbeat
            #:update-swarm-agent-last-output
            #:detect-stalled-agents
-           ;; Inter-user coordination (I253)
+           ;; NXT-336: local SW4RM worktree runtime wrapper
+           #:worktree-metadata
+           #:worktree-metadata-p
+           #:make-worktree-metadata
+           #:worktree-metadata-id
+           #:worktree-metadata-branch
+           #:worktree-metadata-path
+           #:coerce-worktree-metadata
+	           #:resolve-worktree-id
+	           #:resolve-worktree-branch
+	           #:resolve-worktree-workflow-branch
+	           #:resolve-worktree-metadata
+           #:worktree-runtime
+           #:worktree-runtime-p
+           #:worktree-runtime-repo-root
+           #:worktree-runtime-scratch-root
+           #:worktree-runtime-lock-root
+           #:worktree-runtime-coordinator
+           #:worktree-runtime-backend
+           #:worktree-runtime-local-p
+           #:worktree-runtime-remote-p
+           #:make-worktree-runtime
+           #:current-worktree-runtime
+           #:default-worktree-repo-root
+           #:default-worktree-scratch-root
+           #:default-worktree-lock-root
+           #:worktree-runtime-path
+           #:spawn-worktree
+           #:collect-worktree
+           #:inspect-worktree
+           #:merge-worktree
+           #:kill-worktree
+           #:spawn-local-worktree
+           #:collect-local-worktree
+           #:kill-local-worktree
+           #:inspect-local-worktree
+           #:mark-local-worktree-abandoned
+	           #:cleanup-abandoned-local-worktree
+	           #:cleanup-abandoned-local-worktrees
+	           #:resolve-worktree-merge-target
+	           #:preflight-local-worktree-merge
+	           #:merge-local-worktree
+	           #:create-worktree-conflict-handoff
+	           #:clear-worktree-conflict-handoffs
+	           #:list-worktree-conflict-handoffs
+	           #:find-worktree-conflict-handoff
+	           #:accept-worktree-conflict-handoff
+	           #:defer-worktree-conflict-handoff
+	           #:resolve-worktree-conflict-handoff
+	           #:abandon-worktree-conflict-handoff
+	           ;; Inter-user coordination (I253)
            #:register-user-session-peer
            #:unregister-user-session-peer
            #:find-user-session-peer
@@ -2085,6 +2146,7 @@
            #:worker-record-max-retries
            #:worker-record-backend
            #:worker-record-inner-id
+           #:worker-record-worktree
            #:+event-type-worker-spawned+
            #:+event-type-worker-started+
            #:+event-type-worker-completed+
@@ -2281,6 +2343,7 @@
            #:cultivar-preview
            #:cultivar-expand
            #:cultivar-daemon-status
+           #:cultivar-cl-health-status
            ;; NXT-109: Cultivar context pressure
            #:cultivar-context-pressure
            ;; NXT-107: Yore adapter
@@ -2297,208 +2360,3 @@
            #:%context-pressure-summary
            ;; NXT-108: IDE context packet builder
            #:ide-context-build-packet))
-
-(defpackage :amoebum.sandbox
-  (:use)
-  (:import-from :cl
-                #:+
-                #:-
-                #:*
-                #:/
-                #:<
-                #:<=
-                #:=
-                #:>
-                #:>=
-                #:1+
-                #:1-
-                #:abs
-                #:and
-                #:append
-                #:aref
-                #:car
-                #:cdr
-                #:cadr
-                #:caddr
-                #:case
-                #:coerce
-                #:cond
-                #:cons
-                #:copy-list
-                #:copy-seq
-                #:defparameter
-                #:defun
-                #:destructuring-bind
-                #:dolist
-                #:dotimes
-                #:eq
-                #:equal
-                #:eql
-                #:error
-                #:evenp
-                #:every
-                #:find
-                #:first
-                #:format
-                #:fourth
-                #:funcall
-                #:if
-                #:incf
-                #:labels
-                #:lambda
-                #:last
-                #:length
-                #:let
-                #:list
-                #:list*
-                #:loop
-                #:mapcar
-                #:max
-                #:member
-                #:min
-                #:mod
-                #:nconc
-                #:not
-                #:nth
-                #:null
-                #:numberp
-                #:oddp
-                #:or
-                #:pop
-                #:position
-                #:progn
-                #:push
-                #:reduce
-                #:remove
-                #:rest
-                #:reverse
-                #:second
-                #:setf
-                #:some
-                #:sort
-                #:string
-                #:string-downcase
-                #:string-upcase
-                #:string=
-                #:subseq
-                #:svref
-                #:third
-                #:unless
-                #:values
-                #:vector
-                #:when)
-  (:import-from :amoebum
-                #:+sandbox-max-output-size+
-                #:+sandbox-max-read-size+
-                #:safe-open
-                #:safe-run-program
-                #:truncate-sandbox-output)
-  (:export #:+sandbox-max-output-size+
-           #:+sandbox-max-read-size+
-           #:safe-open
-           #:safe-run-program
-           #:truncate-sandbox-output
-           ;; Read orchestration (I105)
-           #:read-orchestration-error
-           #:validate-read-arguments
-           #:orchestrate-read
-           #:orchestrate-read-via-pipeline
-           #:format-read-error-for-user
-           #:+event-type-read-orchestration-cache+
-           #:clear-read-orchestration-cache
-           #:read-orchestration-cache-metrics
-           #:*read-orchestration-max-line-limit*
-           #:*read-orchestration-max-file-size-bytes*
-           #:*read-orchestration-supported-extensions*))
-
-(defpackage :amoebum.tools
-  (:use :cl))
-
-(defpackage :amoebum.config
-  (:use :cl))
-
-(defpackage :amoebum.notifications
-  (:use :cl))
-
-(defpackage :amoebum.sessions
-  (:use :cl))
-
-(defpackage :amoebum.plan
-  (:use :cl))
-
-(defpackage :amoebum.extensions
-  (:use :cl))
-
-(defpackage :amoebum.observability
-  (:use :cl))
-
-(defpackage :amoebum.commands
-  (:use :cl)
-  (:import-from :amoebum
-                #:make-slash-command-result)
-  (:export #:make-slash-command-result))
-
-(defpackage :amoebum.commands.plan
-  (:use :cl)
-  (:import-from :amoebum
-                #:approve-plan-steps
-                #:clear-plan-step-approvals
-                #:current-plan-mode-state
-                #:enter-plan-mode
-                #:exit-plan-mode
-                #:make-slash-command-result
-                #:plan-input-gating-snapshot
-                #:plan-mode-active-p
-                #:plan-mode-state-approved-step-indexes
-                #:plan-mode-state-last-output-path
-                #:plan-mode-state-last-plan-markdown
-                #:plan-mode-state-review-decision
-                #:plan-mode-state-review-last-presented-at
-                #:plan-mode-state-review-notes
-                #:plan-mode-state-review-pending-p
-                #:plan-mode-state-steps
-                #:plan-step-indexes
-                #:refresh-plan-review-markdown
-                #:reorder-plan-step
-                #:set-plan-review-decision
-                #:set-plan-step-approvals
-                #:setconfig
-                #:toggle-plan-mode)
-  (:export #:%plan-command-handler))
-
-(defpackage :amoebum.commands.history
-  (:use :cl)
-  (:import-from :amoebum.commands
-                #:make-slash-command-result)
-  (:export #:%history-handler))
-
-(defpackage :amoebum.commands.index
-  (:use :cl)
-  (:import-from :amoebum.commands
-                #:make-slash-command-result)
-  (:export #:%index-handler))
-
-(defpackage :amoebum.commands.self-modify
-  (:use :cl)
-  (:import-from :amoebum.commands
-                #:make-slash-command-result)
-  (:export #:%self-modify-handler))
-
-(defpackage :amoebum.commands.permissions
-  (:use :cl)
-  (:import-from :amoebum.commands
-                #:make-slash-command-result)
-  (:export #:%permissions-handler
-           #:%permissions-arg-completer))
-
-(defpackage :amoebum.ui
-  (:use :cl))
-
-(defpackage :amoebum.workers
-  (:use :cl))
-
-(defpackage :amoebum.safety
-  (:use :cl))
-
-(defpackage :amoebum.internal
-  (:use :cl))

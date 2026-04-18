@@ -37,6 +37,13 @@
    #:plist-merge
    #:plist-get-in
    #:plist-select-keys
+   ;; collection helpers
+   #:filter-map
+   #:group-by
+   #:index-by
+   #:first-some
+   #:partition
+   #:map-values
    ;; declarative transition table
    #:make-transition-table
    #:transition-table-lookup

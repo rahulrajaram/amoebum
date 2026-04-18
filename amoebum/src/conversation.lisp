@@ -345,13 +345,15 @@
 
 (defun %conversation-fork-record (name &key branch-point message-count created-at updated-at)
   (let ((now (%conversation-now)))
-    (list :name (%conversation-normalize-fork-name name)
-          :branch-point (%conversation-sanitize-branch-point branch-point)
-          :message-count (if (and (integerp message-count) (>= message-count 0))
-                             message-count
-                             0)
-          :created-at (if (integerp created-at) created-at now)
-          :updated-at (if (integerp updated-at) updated-at now))))
+    (amoebum.fp:update
+     '()
+     (:name (%conversation-normalize-fork-name name))
+     (:branch-point (%conversation-sanitize-branch-point branch-point))
+     (:message-count (if (and (integerp message-count) (>= message-count 0))
+                         message-count
+                         0))
+     (:created-at (if (integerp created-at) created-at now))
+     (:updated-at (if (integerp updated-at) updated-at now)))))
 
 (defun %conversation-fork-record-name (record)
   (%conversation-normalize-fork-name (getf record :name)))
@@ -369,19 +371,33 @@
                             :message-count (getf record :message-count)
                             :created-at (getf record :created-at)
                             :updated-at (getf record :updated-at))))
-    (if (null forks)
-        (list normalized-record)
-        (let ((existing (find normalized-record forks
-                              :test #'%conversation-fork-name-equal
-                              :key #'%conversation-fork-record-name)))
-          (if existing
-              (loop for item in forks
-                    collect (if (%conversation-fork-name-equal
-                                 (%conversation-fork-record-name item)
-                                 (%conversation-fork-record-name normalized-record))
-                                normalized-record
-                                item))
-              (append forks (list normalized-record)))))))
+    (if (%conversation-find-fork-record forks
+                                        (%conversation-fork-record-name normalized-record))
+        (mapcar (lambda (item)
+                  (if (%conversation-fork-name-equal
+                       (%conversation-fork-record-name item)
+                       (%conversation-fork-record-name normalized-record))
+                      normalized-record
+                      item))
+                forks)
+        (append forks (list normalized-record)))))
+
+(defun %conversation-serialize-entries (entries)
+  (mapcar #'%conversation-entry->sexp entries))
+
+(defun %conversation-session-record (session-id path updated-at state message-count)
+  (amoebum.fp:update
+   '()
+   (:session-id session-id)
+   (:path path)
+   (:updated-at updated-at)
+   (:state (or state :idle))
+   (:message-count message-count)))
+
+(defun %conversation-limit-records (records limit)
+  (if (and (integerp limit) (>= limit 0))
+      (subseq records 0 (min limit (length records)))
+      records))
 
 (defun %conversation-normalize-forks (forks active-fork entries)
   (let ((normalized '())
@@ -534,16 +550,18 @@
     record))
 
 (defun %conversation-state-payload (conversation)
-  (list :version 2
-        :session-id (conversation-state-session-id conversation)
-        :state (conversation-state-state conversation)
-        :created-at (conversation-state-created-at conversation)
-        :updated-at (conversation-state-updated-at conversation)
-        :active-fork (conversation-state-active-fork conversation)
-        :fork-branch-point (conversation-state-fork-branch-point conversation)
-        :forks (copy-tree (conversation-state-forks conversation))
-        :entries (mapcar #'%conversation-entry->sexp
-                         (conversation-state-entries conversation))))
+  (amoebum.fp:update
+   '()
+   (:version 2)
+   (:session-id (conversation-state-session-id conversation))
+   (:state (conversation-state-state conversation))
+   (:created-at (conversation-state-created-at conversation))
+   (:updated-at (conversation-state-updated-at conversation))
+   (:active-fork (conversation-state-active-fork conversation))
+   (:fork-branch-point (conversation-state-fork-branch-point conversation))
+   (:forks (copy-tree (conversation-state-forks conversation)))
+   (:entries (%conversation-serialize-entries
+              (conversation-state-entries conversation)))))
 
 (defun conversation-save (conversation
                           &key
@@ -956,16 +974,13 @@
              (state (and (listp payload) (%conversation-normalize-state (getf payload :state))))
              (entry-count (length (or (and (listp payload) (getf payload :entries))
                                       '()))))
-        (push (list :session-id session-id
-                    :path path
-                    :updated-at updated-at
-                    :state (or state :idle)
-                    :message-count entry-count)
+        (push (%conversation-session-record session-id
+                                            path
+                                            updated-at
+                                            state
+                                            entry-count)
               records)))
-    (let ((sorted (nreverse records)))
-      (if (and (integerp limit) (>= limit 0))
-          (subseq sorted 0 (min limit (length sorted)))
-          sorted))))
+    (%conversation-limit-records (nreverse records) limit)))
 
 (defun conversation-load-latest (&key project-root)
   (let* ((sessions (conversation-list-sessions :project-root project-root :limit 1))

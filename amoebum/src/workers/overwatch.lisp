@@ -142,7 +142,7 @@
 
 (defmethod supervisor-spawn ((supervisor overwatch-supervisor) type command
                              &key label timeout-seconds max-output-chars
-                                  cwd max-retries)
+                                  cwd max-retries worktree)
   (declare (ignore max-output-chars))
   ;; Only shell and process types delegate to overwatch
   (unless (member type '(:shell :process) :test #'eq)
@@ -150,7 +150,8 @@
     (return-from supervisor-spawn
       (supervisor-spawn (ensure-overwatch-fallback supervisor) type command
                         :label label :timeout-seconds timeout-seconds
-                        :cwd cwd :max-retries max-retries)))
+                        :cwd cwd :max-retries max-retries
+                        :worktree worktree)))
   ;; Try to submit to overwatch
   (let* ((worker-id (%next-worker-id type))
          (now (%worker-now))

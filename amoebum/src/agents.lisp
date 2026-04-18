@@ -36,6 +36,8 @@
                    stdout
                    stderr
                    error-message
+                   worktree
+                   worktree-merge
                    thread)))
   id
   (type :task)
@@ -50,6 +52,8 @@
   stdout
   stderr
   error-message
+  worktree
+  worktree-merge
   thread)
 
 (defparameter *agent-registry* (make-hash-table :test #'equal))
@@ -61,6 +65,11 @@
   (ptui.runtime.queue:make-event-queue))
 
 (defparameter *next-agent-sequence* 0)
+
+(defparameter *delegated-worktree-runtime-factory* nil
+  "Optional callback that returns a worktree runtime for delegated terminal flows.
+Called with keyword arguments `:backend` and `:worktree`. When NIL, delegated
+completion falls back to the landed local worktree runtime seam.")
 
 (defmacro %with-agent-registry-lock (() &body body)
   `(bordeaux-threads:with-lock-held (*agent-registry-lock*)
@@ -94,21 +103,30 @@
             *next-agent-sequence*)))
 
 (defun %agent-payload (agent)
-  (list :id (agent-record-id agent)
-        :type (agent-record-type agent)
-        :task (agent-record-task agent)
-        :status (agent-record-status agent)
-        :created-ms (agent-record-created-ms agent)
-        :started-ms (agent-record-started-ms agent)
-        :finished-ms (agent-record-finished-ms agent)
-        :duration-ms (max 0 (- (agent-record-finished-ms agent)
-                               (agent-record-started-ms agent)))
-        :cancel-requested-p (agent-record-cancel-requested-p agent)
-        :result (agent-record-result agent)
-        :stdout (agent-record-stdout agent)
-        :stderr (agent-record-stderr agent)
-        :error-message (agent-record-error-message agent)
-        :parent-message-id (agent-record-parent-message-id agent)))
+  (let ((payload
+          (list :id (agent-record-id agent)
+                :type (agent-record-type agent)
+                :task (agent-record-task agent)
+                :status (agent-record-status agent)
+                :created-ms (agent-record-created-ms agent)
+                :started-ms (agent-record-started-ms agent)
+                :finished-ms (agent-record-finished-ms agent)
+                :duration-ms (max 0 (- (agent-record-finished-ms agent)
+                                       (agent-record-started-ms agent)))
+                :cancel-requested-p (agent-record-cancel-requested-p agent)
+                :result (agent-record-result agent)
+                :stdout (agent-record-stdout agent)
+                :stderr (agent-record-stderr agent)
+                :error-message (agent-record-error-message agent)
+                :parent-message-id (agent-record-parent-message-id agent))))
+    (let ((worktree (worktree-metadata-plist (agent-record-worktree agent))))
+      (when worktree
+        (setf payload (append payload (list :worktree worktree)))))
+    (let ((worktree-merge (agent-record-worktree-merge agent)))
+      (if worktree-merge
+          (append payload
+                  (list :worktree-merge (copy-tree worktree-merge)))
+          payload))))
 
 (defun %publish-agent-event (event-type payload &key (severity :info))
   (publish (current-event-bus)
@@ -295,10 +313,114 @@
                  (write-string error-message out))))))
       (t nil))))
 
+(defun runtime-agent-worktree (agent-or-id &key (backend :auto))
+  (let ((agent (%resolve-runtime-agent agent-or-id backend)))
+    (cond
+      ((agent-record-p agent) (agent-record-worktree agent))
+      ((%swarm-agent-present-p agent) (swarm-agent-worktree agent))
+      (t nil))))
+
+(defun runtime-agent-worktree-merge (agent-or-id &key (backend :auto))
+  (let ((agent (%resolve-runtime-agent agent-or-id backend)))
+    (cond
+      ((agent-record-p agent) (agent-record-worktree-merge agent))
+      ((%swarm-agent-present-p agent) (swarm-agent-worktree-merge agent))
+      (t nil))))
+
 (defun runtime-agent-terminal-p (agent-or-id &key (backend :auto))
   (member (runtime-agent-status agent-or-id :backend backend)
           '(:completed :failed :cancelled :timeout)
           :test #'eq))
+
+(defun %maybe-delegated-worktree-runtime (&key backend worktree)
+  (let* ((metadata (coerce-worktree-metadata :worktree worktree))
+         (runtime
+           (and *delegated-worktree-runtime-factory*
+                (funcall *delegated-worktree-runtime-factory*
+                         :backend backend
+                         :worktree metadata))))
+    (when runtime
+      (check-type runtime worktree-runtime))
+    runtime))
+
+(defun %cleanup-terminal-worktree (runtime worktree status finished-at)
+  (if (worktree-runtime-local-p runtime)
+      (progn
+        (ignore-errors
+          (mark-local-worktree-abandoned
+           :runtime runtime
+           :worktree worktree
+           :status status
+           :finished-at finished-at))
+        (ignore-errors
+          (cleanup-abandoned-local-worktree
+           :runtime runtime
+           :worktree worktree
+           :status status
+           :finished-at finished-at)))
+      (ignore-errors
+        (kill-worktree runtime nil :force t :worktree worktree))))
+
+(defun %maybe-finalize-runtime-worktree (worktree status &key agent-id backend task result)
+  (let ((metadata (coerce-worktree-metadata :worktree worktree)))
+    (when metadata
+      (let ((runtime (%maybe-delegated-worktree-runtime :backend backend
+                                                        :worktree metadata)))
+        (if runtime
+            (case status
+              (:completed
+               (handler-case
+                   (merge-worktree
+                    :runtime runtime
+                    :worktree metadata
+                    :worktree-id (worktree-metadata-id metadata)
+                    :worktree-path (worktree-metadata-path metadata)
+                    :worktree-branch (worktree-metadata-branch metadata)
+                    :target-ref (resolve-worktree-workflow-branch :worktree metadata)
+                    :agent-id agent-id
+                    :backend backend
+                    :task task
+                    :result result)
+                 (error (condition)
+                   (list :merge-status :error
+                         :reason :merge-helper-failed
+                         :error-message (princ-to-string condition)))))
+              ((:failed :cancelled :timeout)
+               (%cleanup-terminal-worktree runtime
+                                           metadata
+                                           status
+                                           (get-universal-time))
+               nil)
+              (otherwise
+               nil))
+            (case status
+              (:completed
+               (handler-case
+                   (merge-local-worktree
+                    :worktree metadata
+                    :agent-id agent-id
+                    :backend backend
+                    :task task
+                    :result result)
+                 (error (condition)
+                   (list :merge-status :error
+                         :reason :merge-helper-failed
+                         :error-message (princ-to-string condition)))))
+              ((:failed :cancelled :timeout)
+               (let ((finished-at (get-universal-time)))
+                 (ignore-errors
+                   (mark-local-worktree-abandoned
+                    :worktree metadata
+                    :status status
+                    :finished-at finished-at))
+                 (ignore-errors
+                   (cleanup-abandoned-local-worktree
+                    :worktree metadata
+                    :status status
+                    :finished-at finished-at)))
+               nil)
+              (otherwise
+               nil)))))))
 
 (defun %default-agent-runner (agent)
   (format t "Running ~A agent ~A~%"
@@ -332,7 +454,8 @@
     (:swarm (swarm-agent-id record))))
 
 (defun %spawn-task-via-configured-backend (task-text &key config agent-type parent-message-id
-                                                     persona system-prompt timeout-seconds)
+                                                     persona system-prompt timeout-seconds
+                                                     worktree)
   "Route TASK-TEXT through the configured local/SW4RM delegation backend.
 Returns two values: the spawned record and the backend keyword (:local or :swarm).
 
@@ -363,13 +486,17 @@ lifecycle fully inspectable within the same runtime."
   (let ((mode (%configured-swarm-delegation-mode config)))
     (case mode
       (:networked
-       (values (spawn-swarm-agent task-text :timeout-seconds timeout-seconds) :swarm))
+       (values (spawn-swarm-agent task-text
+                                  :timeout-seconds timeout-seconds
+                                  :worktree worktree)
+               :swarm))
       (otherwise
        (values (spawn-agent task-text
                             :agent-type (or agent-type :task)
                             :parent-message-id parent-message-id
                             :persona persona
-                            :system-prompt system-prompt)
+                            :system-prompt system-prompt
+                            :worktree worktree)
                :local)))))
 
 (defun %agent-status->probe-phase (status)
@@ -388,6 +515,16 @@ lifecycle fully inspectable within the same runtime."
             (agent-record-stdout agent) stdout
             (agent-record-stderr agent) stderr
             (agent-record-error-message agent) error-message))
+    (let ((worktree-merge (%maybe-finalize-runtime-worktree
+                           (agent-record-worktree agent)
+                           status
+                           :agent-id (agent-record-id agent)
+                           :backend :local
+                           :task (agent-record-task agent)
+                           :result result)))
+      (when worktree-merge
+        (%with-agent-registry-lock ()
+          (setf (agent-record-worktree-merge agent) worktree-merge))))
     (let ((elapsed-ms (if (plusp (agent-record-started-ms agent))
                           (max 0 (- now (agent-record-started-ms agent)))
                           0)))
@@ -421,10 +558,14 @@ lifecycle fully inspectable within the same runtime."
         (status :completed)
         (error-message nil))
     (handler-case
-        (let ((*standard-output* stdout-stream)
-              (*error-output* stderr-stream))
-          (setf result (funcall runner agent)
-                status (%agent-runner-finished-status agent)))
+        (with-delegated-agent-worktree-context
+            (:agent-id (agent-record-id agent)
+             :backend :local
+             :worktree (agent-record-worktree agent))
+          (let ((*standard-output* stdout-stream)
+                (*error-output* stderr-stream))
+            (setf result (funcall runner agent)
+                  status (%agent-runner-finished-status agent))))
       (agent-cancelled (condition)
         (setf status :cancelled
               error-message (princ-to-string condition)))
@@ -446,23 +587,29 @@ lifecycle fully inspectable within the same runtime."
                            runner
                            parent-message-id
                            persona
-                           system-prompt)
+                           system-prompt
+                           worktree)
   "Spawn a background agent. PERSONA is a persona-definition struct.
    SYSTEM-PROMPT is an ad-hoc string override. Persona takes precedence."
   (let* ((normalized-type (%normalize-agent-type agent-type))
          (agent-id (%next-agent-id normalized-type))
+         (worktree-runtime-factory *delegated-worktree-runtime-factory*)
+         (worktree-metadata (coerce-worktree-metadata :worktree worktree))
          (agent (%make-agent-record
                  :id agent-id
                  :type normalized-type
                  :task task
                  :parent-message-id parent-message-id
                  :status :queued
-                 :created-ms (%agent-now-ms)))
+                 :created-ms (%agent-now-ms)
+                 :worktree worktree-metadata))
          (agent-runner (or runner #'%default-agent-runner))
          (thread
            (bordeaux-threads:make-thread
             (lambda ()
-              (%run-agent-worker agent agent-runner))
+              (let ((*delegated-worktree-runtime-factory*
+                      worktree-runtime-factory))
+                (%run-agent-worker agent agent-runner)))
             :name (format nil "amoebum-agent-~A" agent-id))))
     (declare (ignore persona system-prompt))
     (%with-agent-registry-lock ()

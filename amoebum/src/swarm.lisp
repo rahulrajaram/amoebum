@@ -16,6 +16,8 @@
                 (&key id task (status :initializing)
                       (created-at (get-universal-time))
                       state-machine result thread error-message backing-agent
+                      worktree
+                      worktree-merge
                       signal-name
                       (retry-count 0)
                       retry-policy
@@ -32,6 +34,8 @@
   (thread nil)
   (error-message nil :type (or null string))
   (backing-agent nil)
+  (worktree nil)
+  (worktree-merge nil)
   ;; NXT-017: Signal tracking and retry semantics
   (signal-name nil :type (or null string))   ; e.g. "SIGTERM", "SIGKILL"
   (retry-count 0 :type integer)              ; number of times this agent has been retried
@@ -113,19 +117,28 @@
         (metadata (%swarm-status-metadata status
                                           :timeout-seconds timeout-seconds
                                           :error-message error-message))
-        (finished-ms (%agent-now-ms)))
+        (finished-ms (%agent-now-ms))
+        (worktree-merge (%maybe-finalize-runtime-worktree
+                         (swarm-agent-worktree agent)
+                         status
+                         :agent-id (swarm-agent-id agent)
+                         :backend :swarm
+                         :task (swarm-agent-task agent)
+                         :result result)))
     (when backing-agent
       (setf (agent-record-status backing-agent) status
             (agent-record-finished-ms backing-agent) finished-ms
             (agent-record-result backing-agent) result
             (agent-record-stdout backing-agent) stdout
             (agent-record-stderr backing-agent) stderr
-            (agent-record-error-message backing-agent) error-message))
+            (agent-record-error-message backing-agent) error-message
+            (agent-record-worktree-merge backing-agent) worktree-merge))
     (when (and backing-agent (eq status :cancelled))
       (setf (agent-record-cancel-requested-p backing-agent) t))
   (setf (swarm-agent-status agent) status
         (swarm-agent-result agent) result
         (swarm-agent-error-message agent) error-message
+        (swarm-agent-worktree-merge agent) worktree-merge
         (swarm-agent-finished-at agent) (get-universal-time))
   ;; NXT-017: record signal name and effective timeout-seconds on the struct
   (when signal-name
@@ -157,6 +170,7 @@
                                (event-bus (current-event-bus))
                                runner
                                timeout-seconds
+                               worktree
                                (retry-count 0)
                                retry-policy)
   "Spawn a new swarm sub-agent for TASK. Returns a swarm-agent.
@@ -165,16 +179,20 @@ NXT-017: Accepts RETRY-COUNT (number of prior retries) and RETRY-POLICY
 NXT-018: Records heartbeat-at and last-output-at timestamps on the agent struct."
   (let* ((agent-id (or id (%next-swarm-id)))
          (spawn-time (get-universal-time))
+         (worktree-runtime-factory *delegated-worktree-runtime-factory*)
+         (worktree-metadata (coerce-worktree-metadata :worktree worktree))
          (runner-agent (%make-agent-record
                         :id agent-id
                         :type :swarm
                         :task task
                         :status :queued
-                        :created-ms (%agent-now-ms)))
+                        :created-ms (%agent-now-ms)
+                        :worktree worktree-metadata))
          (agent (make-swarm-agent :id agent-id
                                   :task task
                                   :status :initializing
                                   :backing-agent runner-agent
+                                  :worktree worktree-metadata
                                   :retry-count retry-count
                                   :retry-policy retry-policy
                                   :timeout-seconds timeout-seconds
@@ -182,89 +200,100 @@ NXT-018: Records heartbeat-at and last-output-at timestamps on the agent struct.
                                   :last-output-at spawn-time))
          (agent-runner (or runner #'%default-agent-runner)))
     (setf (gethash agent-id *swarm-registry*) agent)
-    ;; Create a state machine for the agent
     (handler-case
         (let ((sm (make-instance 'sw4rm-sdk::agent-state-machine)))
           (setf (swarm-agent-state-machine agent) sm)
-          ;; Transition to RUNNABLE
           (%swarm-transition-safe agent :runnable
                                   :metadata (%swarm-status-metadata :queued)))
       (error () nil))
-    ;; Publish spawn event
     (publish event-bus
              (make-event :type +event-type-agent-spawn+
                          :source "swarm"
-                         :payload (list :id agent-id :task task)))
-    ;; Run task in background thread
+                         :payload (append (list :id agent-id
+                                                :task task)
+                                          (let ((metadata
+                                                  (worktree-metadata-plist
+                                                   worktree-metadata)))
+                                            (when metadata
+                                              (list :worktree metadata))))))
     (setf (swarm-agent-thread agent)
           (bt:make-thread
            (lambda ()
-             (let ((stdout-stream (make-string-output-stream))
-                   (stderr-stream (make-string-output-stream))
-                   (result nil)
-                   (status :completed)
-                   (error-message nil)
-                   (terminal-signal-name nil))
-               ;; NXT-018: update heartbeat when thread starts running
-               (setf (swarm-agent-heartbeat-at agent) (get-universal-time))
-               (%swarm-mark-running agent)
-               (handler-case
-                   (let ((*standard-output* stdout-stream)
-                         (*error-output* stderr-stream))
-                     (setf result
-                           #+sbcl
-                           (if (and timeout-seconds
-                                    (numberp timeout-seconds)
-                                    (> timeout-seconds 0))
-                               (sb-ext:with-timeout timeout-seconds
-                                 (funcall agent-runner runner-agent))
-                               (funcall agent-runner runner-agent))
-                           #-sbcl
-                           (funcall agent-runner runner-agent)
-                           status (%swarm-runner-finished-status runner-agent)))
-                 (agent-cancelled (condition)
-                   (setf status :cancelled
-                         ;; NXT-017: record SIGTERM as the signal that
-                         ;; caused cooperative cancellation
-                         terminal-signal-name "SIGTERM"
-                         error-message (princ-to-string condition)))
-                 #+sbcl
-                 (sb-ext:timeout (_condition)
-                   (setf status :timeout
-                         ;; NXT-017: timeout is a SIGALRM-like expiry
-                         terminal-signal-name "SIGALRM"
-                         error-message (format nil "Swarm agent ~A timed out after ~A seconds."
-                                               agent-id
-                                               timeout-seconds)))
-                 (error (condition)
-                   (if (agent-record-cancel-requested-p runner-agent)
-                       (setf status :cancelled
-                             terminal-signal-name "SIGTERM"
-                             error-message (princ-to-string condition))
-                       (setf status :failed
-                             error-message (princ-to-string condition)))))
-               ;; NXT-018: update last-output-at if any output was produced
-               (let ((stdout-text (get-output-stream-string stdout-stream))
-                     (stderr-text (get-output-stream-string stderr-stream)))
-                 (when (or (plusp (length stdout-text))
-                           (plusp (length stderr-text)))
-                   (setf (swarm-agent-last-output-at agent) (get-universal-time)))
-                 (%swarm-mark-terminal agent status result error-message
-                                       :timeout-seconds timeout-seconds
-                                       :signal-name terminal-signal-name
-                                       :stdout stdout-text
-                                       :stderr stderr-text))
-               (publish event-bus
-                        (make-event :type (if (eq status :cancelled)
-                                              +event-type-agent-cancelled+
-                                              +event-type-agent-complete+)
-                                    :source "swarm"
-                                    :payload (list :id agent-id
-                                                   :status status
-                                                   :task task
-                                                   :signal-name terminal-signal-name
-                                                   :retry-count (swarm-agent-retry-count agent)
-                                                   :error-message error-message)))))
+             (let ((*delegated-worktree-runtime-factory*
+                     worktree-runtime-factory))
+               (let ((stdout-stream (make-string-output-stream))
+                     (stderr-stream (make-string-output-stream))
+                     (result nil)
+                     (status :completed)
+                     (error-message nil)
+                     (terminal-signal-name nil))
+                 (setf (swarm-agent-heartbeat-at agent) (get-universal-time))
+                 (%swarm-mark-running agent)
+                 (handler-case
+                     (with-delegated-agent-worktree-context
+                         (:agent-id (swarm-agent-id agent)
+                          :backend :swarm
+                          :worktree (swarm-agent-worktree agent))
+                       (let ((*standard-output* stdout-stream)
+                             (*error-output* stderr-stream))
+                         (setf result
+                               #+sbcl
+                               (if (and timeout-seconds
+                                        (numberp timeout-seconds)
+                                        (> timeout-seconds 0))
+                                   (sb-ext:with-timeout timeout-seconds
+                                     (funcall agent-runner runner-agent))
+                                   (funcall agent-runner runner-agent))
+                               #-sbcl
+                               (funcall agent-runner runner-agent)
+                               status (%swarm-runner-finished-status runner-agent))))
+                   (agent-cancelled (condition)
+                     (setf status :cancelled
+                           terminal-signal-name "SIGTERM"
+                           error-message (princ-to-string condition)))
+                   #+sbcl
+                   (sb-ext:timeout (_condition)
+                     (setf status :timeout
+                           terminal-signal-name "SIGALRM"
+                           error-message (format nil
+                                                 "Swarm agent ~A timed out after ~A seconds."
+                                                 agent-id
+                                                 timeout-seconds)))
+                   (error (condition)
+                     (if (agent-record-cancel-requested-p runner-agent)
+                         (setf status :cancelled
+                               terminal-signal-name "SIGTERM"
+                               error-message (princ-to-string condition))
+                         (setf status :failed
+                               error-message (princ-to-string condition)))))
+                 (let ((stdout-text (get-output-stream-string stdout-stream))
+                       (stderr-text (get-output-stream-string stderr-stream)))
+                   (when (or (plusp (length stdout-text))
+                             (plusp (length stderr-text)))
+                     (setf (swarm-agent-last-output-at agent) (get-universal-time)))
+                   (%swarm-mark-terminal agent status result error-message
+                                         :timeout-seconds timeout-seconds
+                                         :signal-name terminal-signal-name
+                                         :stdout stdout-text
+                                         :stderr stderr-text))
+                 (publish event-bus
+                          (make-event :type (if (eq status :cancelled)
+                                                +event-type-agent-cancelled+
+                                                +event-type-agent-complete+)
+                                      :source "swarm"
+                                      :payload (append
+                                                (list :id agent-id
+                                                      :status status
+                                                      :task task
+                                                      :signal-name terminal-signal-name
+                                                      :retry-count
+                                                      (swarm-agent-retry-count agent)
+                                                      :error-message error-message)
+                                                (let ((metadata
+                                                        (worktree-metadata-plist
+                                                         (swarm-agent-worktree agent))))
+                                                  (when metadata
+                                                    (list :worktree metadata)))))))))
            :name (format nil "swarm-~A" agent-id)))
     agent))
 
@@ -296,9 +325,13 @@ NXT-017: SIGNAL-NAME records which signal caused termination (default SIGKILL)."
       (publish event-bus
                (make-event :type +event-type-agent-cancelled+
                            :source "swarm"
-                           :payload (list :id agent-id
-                                          :status :cancelled
-                                          :signal-name signal-name))))
+                           :payload (append (list :id agent-id
+                                                  :status :cancelled
+                                                  :signal-name signal-name)
+                                             (let ((metadata (worktree-metadata-plist
+                                                              (swarm-agent-worktree agent))))
+                                               (when metadata
+                                                 (list :worktree metadata)))))))
     agent))
 
 ;;; --- Registry Queries ---
@@ -441,6 +474,9 @@ Each returned element is a plist:
 (defvar *user-handoff-sequence* 0
   "Monotonic handoff sequence counter for generated request IDs.")
 
+(defvar *user-handoff-details* (make-hash-table :test #'equal)
+  "Map handoff-id -> Amoebum-native result/provenance details.")
+
 (defvar *user-coordination-lock* (bt:make-lock "amoebum-user-coordination-lock")
   "Lock protecting user coordination registry state.")
 
@@ -488,6 +524,12 @@ Each returned element is a plist:
     "anthropic_api_key"
     "openai_api_key"
     "moonshot_api_key"))
+
+(defconstant +handoff-context-default-max-bytes+ 65536
+  "Default serialized size ceiling for coding-task handoff context packets.")
+
+(defconstant +handoff-context-min-max-bytes+ 1024
+  "Smallest supported serialized size ceiling for handoff context packets.")
 
 (defun %provider-secret-key-id (raw-key)
   (let* ((text (%coordination-require-string raw-key "provider secret key"))
@@ -561,6 +603,301 @@ Each returned element is a plist:
      (mapcar #'%sanitize-delegation-context context))
     (t context)))
 
+(defun %take-list-prefix (items limit)
+  "Return up to LIMIT elements from ITEMS."
+  (if (and (integerp limit) (>= limit 0))
+      (loop for item in items
+            for index from 0
+            while (< index limit)
+            collect item)
+      (copy-list items)))
+
+(defun %safe-git-status-snapshot (&optional project-root)
+  "Return a compact git status snapshot or NIL on failure."
+  (handler-case
+      (let* ((status (%git-status-data :project-root project-root))
+             (tracking (copy-tree (or (getf status :tracking) '())))
+             (staged (copy-list (or (getf status :staged) '())))
+             (unstaged (copy-list (or (getf status :unstaged) '())))
+             (untracked (copy-list (or (getf status :untracked) '()))))
+        (list :project-root (getf status :project-root)
+              :branch (getf status :branch)
+              :tracking tracking
+              :staged staged
+              :unstaged unstaged
+              :untracked untracked))
+    (error ()
+      nil)))
+
+(defun %trim-git-status-snapshot (snapshot limit)
+  "Return SNAPSHOT with file lists capped to LIMIT entries each."
+  (if (null snapshot)
+      nil
+      (list :project-root (getf snapshot :project-root)
+            :branch (getf snapshot :branch)
+            :tracking (copy-tree (or (getf snapshot :tracking) '()))
+            :staged (%take-list-prefix (or (getf snapshot :staged) '()) limit)
+            :unstaged (%take-list-prefix (or (getf snapshot :unstaged) '()) limit)
+            :untracked (%take-list-prefix (or (getf snapshot :untracked) '()) limit))))
+
+(defun %take-last-list-items (items limit)
+  "Return the trailing LIMIT elements from ITEMS."
+  (let* ((values (copy-list (or items '())))
+         (count (length values)))
+    (cond
+      ((or (null limit) (>= limit count))
+       values)
+      ((<= limit 0)
+       '())
+      (t
+       (nthcdr (- count limit) values)))))
+
+(defun %conversation-handoff-snapshot (conversation &key (entry-limit 12))
+  "Return a bounded conversation snapshot suitable for delegation."
+  (let ((snapshot (and (typep conversation 'conversation-state)
+                       (%conversation->snapshot conversation))))
+    (when snapshot
+      (list :session-id (getf snapshot :session-id)
+            :state (getf snapshot :state)
+            :created-at (getf snapshot :created-at)
+            :updated-at (getf snapshot :updated-at)
+            :active-fork (getf snapshot :active-fork)
+            :fork-branch-point (getf snapshot :fork-branch-point)
+            :forks (copy-tree (or (getf snapshot :forks) '()))
+            :entry-count (length (or (getf snapshot :entries) '()))
+            :entries (%take-last-list-items (or (getf snapshot :entries) '())
+                                            entry-limit)))))
+
+(defun %trim-memory-snapshot-scope (entries limit)
+  "Return up to LIMIT serialized memory entries."
+  (%take-list-prefix (or entries '()) limit))
+
+(defun %memory-handoff-snapshot (backend &key (entry-limit 8))
+  "Return a bounded memory snapshot suitable for delegation."
+  (let ((snapshot (and backend (%memory->snapshot backend))))
+    (when snapshot
+      (list :backend-kind (getf snapshot :backend-kind)
+            :effective-count (length (or (getf snapshot :effective) '()))
+            :global-count (length (or (getf snapshot :global) '()))
+            :project-count (length (or (getf snapshot :project) '()))
+            :session-count (length (or (getf snapshot :session) '()))
+            :effective (%trim-memory-snapshot-scope (getf snapshot :effective)
+                                                    entry-limit)
+            :global (%trim-memory-snapshot-scope (getf snapshot :global)
+                                                 entry-limit)
+            :project (%trim-memory-snapshot-scope (getf snapshot :project)
+                                                  entry-limit)
+            :session (%trim-memory-snapshot-scope (getf snapshot :session)
+                                                  entry-limit)))))
+
+(defun %resolve-handoff-project-root (sanitized-context)
+  "Resolve the project root hinted by SANITIZED-CONTEXT, if any."
+  (let ((project-root (and (listp sanitized-context)
+                           (getf sanitized-context :project-root))))
+    (cond
+      ((pathnamep project-root)
+       (uiop:ensure-directory-pathname project-root))
+      ((and (stringp project-root) (plusp (length project-root)))
+       (uiop:ensure-directory-pathname (pathname project-root)))
+      (t
+       nil))))
+
+(defun %handoff-context-max-bytes (budget)
+  "Return the serialized size ceiling implied by BUDGET."
+  (let* ((explicit (or (and (listp budget) (getf budget :context-max-bytes))
+                       (and (listp budget) (getf budget :max-context-bytes))))
+         (token-budget (and (listp budget)
+                            (getf budget :token-budget-remaining))))
+    (cond
+      ((and (integerp explicit) (> explicit 0))
+       (max +handoff-context-min-max-bytes+
+            (min explicit +handoff-context-default-max-bytes+)))
+      ((and (integerp token-budget) (> token-budget 0))
+       (max +handoff-context-min-max-bytes+
+            (min +handoff-context-default-max-bytes+
+                 (* 4 token-budget))))
+      (t
+       +handoff-context-default-max-bytes+))))
+
+(defun %handoff-context-budget-mode (max-bytes)
+  "Pick a detail mode for MAX-BYTES."
+  (cond
+    ((<= max-bytes 4096) :compact)
+    ((<= max-bytes 12288) :operator)
+    (t :verbose)))
+
+(defun %current-ide-context ()
+  "Return the globally attached IDE context when available."
+  (let ((symbol (find-symbol "*IDE-CONTEXT*" :amoebum)))
+    (when (and symbol (boundp symbol))
+      (symbol-value symbol))))
+
+(defun %handoff-ide-packet (sanitized-context max-bytes)
+  "Return a bounded IDE/file context packet."
+  (let* ((ctx (or (and (listp sanitized-context)
+                       (getf sanitized-context :ide-context))
+                  (%current-ide-context)))
+         (mode (%handoff-context-budget-mode max-bytes))
+         (budget (max 1 (floor max-bytes 4))))
+    (when (ide-context-p ctx)
+      (ide-context-build-packet ctx :mode mode :budget budget))))
+
+(defun %extract-handoff-context-extras (sanitized-context)
+  "Return stable extra keys from SANITIZED-CONTEXT not promoted into the packet."
+  (cond
+    ((not (listp sanitized-context))
+     sanitized-context)
+    (t
+     (let ((extras '()))
+       (loop for (key value) on sanitized-context by #'cddr do
+         (unless (member key '(:conversation :memory-backend :worktree :ide-context :project-root)
+                         :test #'eq)
+           (setf extras (append extras (list key value)))))
+       extras))))
+
+(defun %coding-task-context-packet (sanitized-context budget)
+  "Build a stable structured packet for coding-task delegation."
+  (let* ((max-bytes (%handoff-context-max-bytes budget))
+         (mode (%handoff-context-budget-mode max-bytes))
+         (conversation (and (listp sanitized-context)
+                            (getf sanitized-context :conversation)))
+         (memory-backend (and (listp sanitized-context)
+                              (getf sanitized-context :memory-backend)))
+         (worktree (or (and (listp sanitized-context)
+                            (getf sanitized-context :worktree))
+                       (current-delegated-agent-worktree)))
+         (project-root (%resolve-handoff-project-root sanitized-context))
+         (entry-limit (ecase mode
+                        (:compact 4)
+                        (:operator 8)
+                        (:verbose 16)))
+         (memory-limit (ecase mode
+                         (:compact 3)
+                         (:operator 6)
+                         (:verbose 10)))
+         (git-limit (ecase mode
+                      (:compact 3)
+                      (:operator 6)
+                      (:verbose 12))))
+    (list :schema-version 1
+          :packet-kind "coding-task-context"
+          :compression-mode mode
+          :max-bytes max-bytes
+          :generated-at (get-universal-time)
+          :conversation (%conversation-handoff-snapshot conversation
+                                                    :entry-limit entry-limit)
+          :files (%handoff-ide-packet sanitized-context max-bytes)
+          :git (%trim-git-status-snapshot (%safe-git-status-snapshot project-root)
+                                          git-limit)
+          :memory (%memory-handoff-snapshot memory-backend
+                                            :entry-limit memory-limit)
+          :worktree (worktree-metadata-plist worktree)
+          :extras (%extract-handoff-context-extras sanitized-context))))
+
+(defun %coding-task-context-packet-size (packet)
+  "Return the serialized size of PACKET in bytes."
+  (length (jonathan:to-json packet)))
+
+(defun %fit-coding-task-context-packet (packet)
+  "Shrink PACKET until it fits its declared :MAX-BYTES ceiling."
+  (let* ((max-bytes (or (getf packet :max-bytes)
+                        +handoff-context-default-max-bytes+))
+         (fitted (copy-tree packet)))
+    (labels ((size-fits-p ()
+               (<= (%coding-task-context-packet-size fitted) max-bytes))
+             (conversation-entries ()
+               (and (getf fitted :conversation)
+                    (getf (getf fitted :conversation) :entries)))
+             (memory-scope (scope)
+               (and (getf fitted :memory)
+                    (getf (getf fitted :memory) scope)))
+             (halve-list (items)
+               (%take-last-list-items items (max 1 (floor (length items) 2)))))
+      (loop repeat 12
+            until (size-fits-p)
+            do (cond
+                 ((and (listp (getf fitted :extras))
+                       (plusp (length (getf fitted :extras))))
+                  (setf (getf fitted :extras) '()))
+                 ((and (listp (conversation-entries))
+                       (> (length (conversation-entries)) 1))
+                  (setf (getf (getf fitted :conversation) :entries)
+                        (halve-list (conversation-entries))))
+                 ((and (listp (memory-scope :effective))
+                       (> (length (memory-scope :effective)) 1))
+                  (setf (getf (getf fitted :memory) :effective)
+                        (%take-list-prefix (memory-scope :effective)
+                                           (max 1 (floor (length (memory-scope :effective)) 2)))))
+                 ((and (listp (memory-scope :project))
+                       (> (length (memory-scope :project)) 1))
+                  (setf (getf (getf fitted :memory) :project)
+                        (%take-list-prefix (memory-scope :project)
+                                           (max 1 (floor (length (memory-scope :project)) 2)))))
+                 ((and (listp (memory-scope :global))
+                       (> (length (memory-scope :global)) 1))
+                  (setf (getf (getf fitted :memory) :global)
+                        (%take-list-prefix (memory-scope :global)
+                                           (max 1 (floor (length (memory-scope :global)) 2)))))
+                 ((and (listp (memory-scope :session))
+                       (> (length (memory-scope :session)) 1))
+                  (setf (getf (getf fitted :memory) :session)
+                        (%take-list-prefix (memory-scope :session)
+                                           (max 1 (floor (length (memory-scope :session)) 2)))))
+                 ((and (getf fitted :files)
+                       (eq (getf (getf fitted :files) :mode) :verbose))
+                  (setf (getf fitted :files)
+                        (let ((files (copy-tree (getf fitted :files))))
+                          (setf (getf files :mode) :operator
+                                (getf files :selections)
+                                (%take-list-prefix (or (getf files :selections) '()) 5))
+                          files)))
+                 ((and (getf fitted :files)
+                       (eq (getf (getf fitted :files) :mode) :operator))
+                  (setf (getf fitted :files)
+                        (let ((files (copy-tree (getf fitted :files))))
+                          (setf (getf files :mode) :compact
+                                (getf files :selections) '()
+                                (getf files :diagnostics)
+                                (%take-list-prefix (or (getf files :diagnostics) '()) 3))
+                          files)))
+                 ((getf fitted :git)
+                  (setf (getf fitted :git)
+                        (%trim-git-status-snapshot (getf fitted :git) 1)))
+                 (t
+                  (return))))
+      fitted)))
+
+(defun %serialize-coding-task-context (sanitized-context budget)
+  "Serialize SANITIZED-CONTEXT as a bounded structured handoff packet."
+  (let* ((packet (%coding-task-context-packet sanitized-context budget))
+         (fitted (%fit-coding-task-context-packet packet))
+         (max-bytes (or (getf fitted :max-bytes)
+                        +handoff-context-default-max-bytes+)))
+    (sw4rm-sdk:serialize-handoff-context fitted :max-bytes max-bytes)))
+
+(defun %deserialize-handoff-context-safely (snapshot)
+  "Best-effort decode for a handoff context snapshot."
+  (cond
+    ((or (null snapshot)
+         (and (stringp snapshot) (zerop (length snapshot))))
+     nil)
+    ((stringp snapshot)
+     (ignore-errors (sw4rm-sdk:deserialize-handoff-context snapshot)))
+    ((listp snapshot)
+     snapshot)
+    (t
+     nil)))
+
+(defun %annotate-handoff-payload-context (payload)
+  "Attach parsed context metadata to PAYLOAD when present."
+  (let* ((snapshot (and (listp payload) (getf payload :context-snapshot)))
+         (packet (%deserialize-handoff-context-safely snapshot)))
+    (append payload
+            (when packet
+              (list :context-packet packet))
+            (when (stringp snapshot)
+              (list :context-snapshot-size-bytes (length snapshot))))))
+
 (defun %apply-agent-provider-secrets! (agent-id provider-secrets)
   (let ((registry *user-session-registry*))
     (unless (typep registry 'sw4rm-sdk:local-registry)
@@ -617,6 +954,143 @@ Each returned element is a plist:
            :payload payload)
   payload)
 
+(defun %coordination-copy-value (value)
+  (cond
+    ((hash-table-p value)
+     (let ((copy (make-hash-table :test (hash-table-test value))))
+       (maphash (lambda (key inner-value)
+                  (setf (gethash key copy)
+                        (%coordination-copy-value inner-value)))
+                value)
+       copy))
+    ((consp value)
+     (copy-tree value))
+    ((vectorp value)
+     (copy-seq value))
+    (t
+     value)))
+
+(defun %coordination-plist-put (plist key value)
+  (let ((result (copy-list (or plist '()))))
+    (loop for cell on result by #'cddr
+          when (eq (car cell) key) do
+            (setf (cadr cell) value)
+            (return-from %coordination-plist-put result))
+    (append result (list key value))))
+
+(defun %coordination-plist-merge (&rest plists)
+  (let ((result '()))
+    (dolist (plist plists result)
+      (loop for (key value) on plist by #'cddr do
+        (setf result (%coordination-plist-put result key value))))))
+
+(defun %copy-user-handoff-details (details)
+  (if (listp details)
+      (%coordination-copy-value details)
+      '()))
+
+(defun %user-handoff-details (handoff-id)
+  (bt:with-lock-held (*user-coordination-lock*)
+    (%copy-user-handoff-details
+     (gethash (%coordination-require-string handoff-id "handoff-id")
+              *user-handoff-details*))))
+
+(defun %store-user-handoff-details! (handoff-id details)
+  (let ((resolved-id (%coordination-require-string handoff-id "handoff-id")))
+    (bt:with-lock-held (*user-coordination-lock*)
+      (setf (gethash resolved-id *user-handoff-details*)
+            (%copy-user-handoff-details details))))
+  details)
+
+(defun %update-user-handoff-details! (handoff-id updater)
+  (let ((resolved-id (%coordination-require-string handoff-id "handoff-id")))
+    (bt:with-lock-held (*user-coordination-lock*)
+      (let* ((existing (%copy-user-handoff-details
+                        (gethash resolved-id *user-handoff-details*)))
+             (updated (funcall updater existing)))
+        (setf (gethash resolved-id *user-handoff-details*)
+              (%copy-user-handoff-details updated))
+        (%copy-user-handoff-details updated)))))
+
+(defun %handoff-context-summary (packet)
+  (when (listp packet)
+    (let* ((conversation (getf packet :conversation))
+           (files (getf packet :files))
+           (git (getf packet :git))
+           (memory (getf packet :memory))
+           (worktree (getf packet :worktree))
+           (summary '()))
+      (when (getf packet :packet-kind)
+        (setf summary (append summary (list :packet-kind (getf packet :packet-kind)))))
+      (when (getf packet :budget-mode)
+        (setf summary (append summary (list :budget-mode (getf packet :budget-mode)))))
+      (when (and (listp conversation) (getf conversation :entry-count))
+        (setf summary (append summary (list :conversation-entry-count
+                                            (getf conversation :entry-count)))))
+      (when (and (listp files) (getf files :active-file))
+        (setf summary (append summary (list :active-file (getf files :active-file)))))
+      (when (and (listp git) (getf git :branch))
+        (setf summary (append summary (list :branch (getf git :branch)))))
+      (when (and (listp memory)
+                 (or (getf memory :project-count)
+                     (getf memory :session-count)))
+        (setf summary (append summary
+                              (list :project-memory-count (or (getf memory :project-count) 0)
+                                    :session-memory-count (or (getf memory :session-count) 0)))))
+      (when (and (listp worktree) (getf worktree :id))
+        (setf summary (append summary (list :worktree-id (getf worktree :id)))))
+      summary)))
+
+(defun %handoff-summary-text (status handoff-id payload)
+  (let* ((result (getf payload :result-payload))
+         (partial-result (getf payload :partial-result))
+         (summary (or (getf payload :summary)
+                      (and (listp result) (getf result :summary))
+                      (and (listp partial-result) (getf partial-result :summary))
+                      (and (stringp result) result)
+                      (and (stringp partial-result) partial-result)
+                      (getf payload :reason))))
+    (or summary
+        (case status
+          (:completed (format nil "Delegated handoff ~A completed." handoff-id))
+          (:rejected (format nil "Delegated handoff ~A was rejected." handoff-id))
+          (:accepted (format nil "Delegated handoff ~A accepted." handoff-id))
+          (otherwise (format nil "Delegated handoff ~A updated." handoff-id))))))
+
+(defun %handoff-conversation-merge (handoff-id payload)
+  (let* ((status (or (getf payload :status) :pending))
+         (summary (%handoff-summary-text status handoff-id payload))
+         (diagnostics (getf payload :diagnostics))
+         (message (list :role "assistant"
+                        :name (format nil "handoff/~A" handoff-id)
+                        :content summary
+                        :partial (eq status :rejected))))
+    (list :schema-version 1
+          :handoff-id handoff-id
+          :status status
+          :summary summary
+          :result-payload (%coordination-copy-value (getf payload :result-payload))
+          :partial-result (%coordination-copy-value (getf payload :partial-result))
+          :diagnostics (%coordination-copy-value diagnostics)
+          :artifacts (%coordination-copy-value (getf payload :artifacts))
+          :budget-spent (%coordination-copy-value (getf payload :budget-spent))
+          :delegation-trace (%coordination-copy-value (getf payload :delegation-trace))
+          :delegation-provenance (%coordination-copy-value
+                                  (getf payload :delegation-provenance))
+          :messages (list message))))
+
+(defun %compose-user-handoff-payload (handoff-id status &rest extra-plists)
+  (let* ((details (%user-handoff-details handoff-id))
+         (merged (apply #'%coordination-plist-merge
+                        (append (list status details)
+                                extra-plists)))
+         (with-merge (%coordination-plist-put merged
+                                              :conversation-merge
+                                              (%handoff-conversation-merge
+                                               handoff-id
+                                               merged))))
+    (%annotate-handoff-payload-context with-merge)))
+
 (defun clear-user-coordination-state ()
   "Clear user session registration, delegation, and negotiation state."
   (bt:with-lock-held (*user-coordination-lock*)
@@ -624,6 +1098,7 @@ Each returned element is a plist:
     (clrhash *user-session->agent-id*)
     (clrhash *user-session->user-id*)
     (clrhash *user-agent->session-id*)
+    (clrhash *user-handoff-details*)
     (clrhash *user-negotiation-room-participants*)
     (setf *user-handoff-client* nil
           *user-negotiation-client* nil
@@ -716,11 +1191,13 @@ Each returned element is a plist:
          (from-agent-id (%registered-agent-id-for-session from-session-id))
          (to-agent-id (%registered-agent-id-for-session to-session-id))
          (sanitized-context (%sanitize-delegation-context context))
+         (serialized-context (%serialize-coding-task-context sanitized-context budget))
+         (context-packet (%deserialize-handoff-context-safely serialized-context))
          (request (list :request-id (or request-id (%next-user-handoff-id))
                         :from-agent from-agent-id
                         :to-agent to-agent-id
                         :reason resolved-reason
-                        :context-snapshot (or sanitized-context "")
+                        :context-snapshot (or serialized-context "")
                         :capabilities-required (copy-list capabilities-required)
                         :priority priority)))
     (when budget
@@ -730,19 +1207,52 @@ Each returned element is a plist:
     (when timeout-ms
       (setf (getf request :timeout-ms) timeout-ms))
     (let ((response (sw4rm-sdk:initiate-handoff (%ensure-user-handoff-client) request)))
-      (let ((payload
-              (append response
-                      (list :from-session-id (%coordination-require-string from-session-id "from-session-id")
-                            :to-session-id (%coordination-require-string to-session-id "to-session-id")
-                            :agent-id from-agent-id
-                            :from-agent-id from-agent-id
-                            :to-agent-id to-agent-id
-                            :reason resolved-reason
-                            :context-snapshot (or sanitized-context "")
-                            :capabilities-required (copy-list capabilities-required)
-                            :priority priority))))
+      (let* ((handoff-id (or (getf response :handoff-id)
+                             (getf response :request-id)
+                             (getf request :request-id)))
+             (trace-entry (list :event :requested
+                                :from-session-id (%coordination-require-string
+                                                  from-session-id
+                                                  "from-session-id")
+                                :to-session-id (%coordination-require-string
+                                                to-session-id
+                                                "to-session-id")
+                                :from-agent-id from-agent-id
+                                :to-agent-id to-agent-id
+                                :reason resolved-reason
+                                :capabilities-required (copy-list capabilities-required)
+                                :priority priority
+                                :requested-at (getf (getf response :metadata) :created-at)
+                                :context (%handoff-context-summary context-packet))))
+        (%store-user-handoff-details!
+         handoff-id
+         (list :handoff-id handoff-id
+               :from-session-id (%coordination-require-string
+                                 from-session-id
+                                 "from-session-id")
+               :to-session-id (%coordination-require-string
+                               to-session-id
+                               "to-session-id")
+               :agent-id from-agent-id
+               :from-agent-id from-agent-id
+               :to-agent-id to-agent-id
+               :reason resolved-reason
+               :context-snapshot (or serialized-context "")
+               :context-packet context-packet
+               :context-snapshot-size-bytes (length (or serialized-context ""))
+               :capabilities-required (copy-list capabilities-required)
+               :priority priority
+               :delegation-trace (list trace-entry)
+               :delegation-provenance
+               (list :schema-version 1
+                     :request-id handoff-id
+                     :context (%handoff-context-summary context-packet)
+                     :trace (list trace-entry))))
+        (let ((payload (%compose-user-handoff-payload
+                        handoff-id
+                        response)))
         (%publish-user-coordination-event +event-type-user-handoff-requested+ payload)
-        payload))))
+          payload)))))
 
 (defun get-user-pending-handoffs (session-id)
   "Return pending handoff requests routed to SESSION-ID."
@@ -750,31 +1260,68 @@ Each returned element is a plist:
          (pending (sw4rm-sdk:get-pending-handoffs (%ensure-user-handoff-client) agent-id)))
     (mapcar (lambda (request)
               (let ((from-agent (getf request :from-agent))
-                    (to-agent (getf request :to-agent)))
-                (append request
-                        (list :from-session-id (%session-id-for-agent from-agent)
-                              :to-session-id (%session-id-for-agent to-agent)))))
+                    (to-agent (getf request :to-agent))
+                    (handoff-id (or (getf request :handoff-id)
+                                    (getf request :request-id))))
+                (%compose-user-handoff-payload
+                 handoff-id
+                 request
+                 (list :from-session-id (%session-id-for-agent from-agent)
+                       :to-session-id (%session-id-for-agent to-agent)))))
             pending)))
 
 (defun user-handoff-status (handoff-id)
   "Return handoff status plist for HANDOFF-ID."
-  (sw4rm-sdk:get-handoff-status (%ensure-user-handoff-client) handoff-id))
+  (%compose-user-handoff-payload
+   handoff-id
+   (sw4rm-sdk:get-handoff-status (%ensure-user-handoff-client) handoff-id)))
 
 (defun accept-user-handoff (handoff-id)
   "Accept HANDOFF-ID on the local coordination bus."
   (let* ((response (sw4rm-sdk:accept-handoff (%ensure-user-handoff-client) handoff-id))
          (status (or (ignore-errors (user-handoff-status handoff-id))
-                     response))
-         (payload (append status
-                          (list :handoff-id handoff-id
-                                :agent-id (or (getf status :to-agent)
-                                              (getf status :to-agent-id)
-                                              (getf response :to-agent)
-                                              (getf response :to-agent-id))))))
-    (%publish-user-coordination-event +event-type-user-handoff-accepted+ payload)
-    payload))
+                     response)))
+    (%update-user-handoff-details!
+     handoff-id
+     (lambda (details)
+       (let* ((accepted-at (getf (getf response :metadata) :accepted-at))
+              (event (list :event :accepted
+                           :accepted-at accepted-at
+                           :accepting-agent (or (getf status :accepting-agent)
+                                                (getf response :accepting-agent)))))
+         (%coordination-plist-merge
+          details
+          (list :delegation-trace
+                (append (copy-list (or (getf details :delegation-trace) '()))
+                        (list event))
+                :delegation-provenance
+                (list :schema-version 1
+                      :request-id handoff-id
+                      :context (%handoff-context-summary (getf details :context-packet))
+                      :trace (append (copy-list (or (getf details :delegation-trace) '()))
+                                     (list event))))))))
+    (let ((payload (%compose-user-handoff-payload
+                    handoff-id
+                    status
+                    (list :handoff-id handoff-id
+                          :agent-id (or (getf status :to-agent)
+                                        (getf status :to-agent-id)
+                                        (getf response :to-agent)
+                                        (getf response :to-agent-id))))))
+      (%publish-user-coordination-event +event-type-user-handoff-accepted+ payload)
+      payload)))
 
-(defun reject-user-handoff (handoff-id reason &key rejection-code retry-after-ms redirect-to-agent-id)
+(defun reject-user-handoff (handoff-id reason
+                             &key rejection-code
+                               retry-after-ms
+                               redirect-to-agent-id
+                               result-payload
+                               partial-result
+                               diagnostics
+                               provenance
+                               budget-spent
+                               artifacts
+                               summary)
   "Reject HANDOFF-ID with optional protocol metadata."
   (let* ((resolved-code (or rejection-code sw4rm-sdk:+error-code-unspecified+))
          (response (sw4rm-sdk:reject-handoff-with-options (%ensure-user-handoff-client)
@@ -784,35 +1331,103 @@ Each returned element is a plist:
                                                           :retry-after-ms retry-after-ms
                                                           :redirect-to-agent-id redirect-to-agent-id))
          (status (or (ignore-errors (user-handoff-status handoff-id))
-                     response))
-         (payload (append status
-                          (list :handoff-id handoff-id
-                                :reason reason
-                                :rejection-code resolved-code
-                                :retry-after-ms retry-after-ms
-                                :redirect-to-agent-id redirect-to-agent-id
-                                :agent-id (or (getf status :to-agent)
-                                              (getf status :to-agent-id)
-                                              (getf response :to-agent)
-                                              (getf response :to-agent-id))))))
-    (%publish-user-coordination-event +event-type-user-handoff-rejected+
-                                      payload
-                                      :severity :warning)
-    payload))
+                     response)))
+    (%update-user-handoff-details!
+     handoff-id
+     (lambda (details)
+       (let* ((rejected-at (getf (getf response :metadata) :rejected-at))
+              (event (list :event :rejected
+                           :rejected-at rejected-at
+                           :reason reason
+                           :rejection-code resolved-code
+                           :partial-result-present-p (not (null partial-result))
+                           :diagnostic-count (length (or diagnostics '()))))
+              (trace (append (copy-list (or (getf details :delegation-trace) '()))
+                             (list event)))
+              (provenance-record (list :schema-version 1
+                                       :request-id handoff-id
+                                       :context (%handoff-context-summary
+                                                 (getf details :context-packet))
+                                       :trace trace
+                                       :outcome (%coordination-copy-value provenance))))
+         (%coordination-plist-merge
+          details
+          (list :summary summary
+                :reason reason
+                :result-payload (%coordination-copy-value result-payload)
+                :partial-result (%coordination-copy-value partial-result)
+                :diagnostics (%coordination-copy-value diagnostics)
+                :budget-spent (%coordination-copy-value budget-spent)
+                :artifacts (%coordination-copy-value artifacts)
+                :delegation-trace trace
+                :delegation-provenance provenance-record)))))
+    (let ((payload (%compose-user-handoff-payload
+                    handoff-id
+                    status
+                    (list :handoff-id handoff-id
+                          :summary summary
+                          :reason reason
+                          :rejection-code resolved-code
+                          :retry-after-ms retry-after-ms
+                          :redirect-to-agent-id redirect-to-agent-id
+                          :agent-id (or (getf status :to-agent)
+                                        (getf status :to-agent-id)
+                                        (getf response :to-agent)
+                                        (getf response :to-agent-id))))))
+      (%publish-user-coordination-event +event-type-user-handoff-rejected+
+                                        payload
+                                        :severity :warning)
+      payload)))
 
-(defun complete-user-handoff (handoff-id)
+(defun complete-user-handoff (handoff-id
+                              &key result-payload
+                                partial-result
+                                diagnostics
+                                provenance
+                                budget-spent
+                                artifacts
+                                summary)
   "Mark HANDOFF-ID as complete."
   (let* ((response (sw4rm-sdk:complete-handoff (%ensure-user-handoff-client) handoff-id))
          (status (or (ignore-errors (user-handoff-status handoff-id))
-                     response))
-         (payload (append status
-                          (list :handoff-id handoff-id
-                                :agent-id (or (getf status :to-agent)
-                                              (getf status :to-agent-id)
-                                              (getf response :to-agent)
-                                              (getf response :to-agent-id))))))
-    (%publish-user-coordination-event +event-type-user-handoff-completed+ payload)
-    payload))
+                     response)))
+    (%update-user-handoff-details!
+     handoff-id
+     (lambda (details)
+       (let* ((completed-at (getf (getf response :metadata) :completed-at))
+              (event (list :event :completed
+                           :completed-at completed-at
+                           :partial-result-present-p (not (null partial-result))
+                           :diagnostic-count (length (or diagnostics '()))))
+              (trace (append (copy-list (or (getf details :delegation-trace) '()))
+                             (list event)))
+              (provenance-record (list :schema-version 1
+                                       :request-id handoff-id
+                                       :context (%handoff-context-summary
+                                                 (getf details :context-packet))
+                                       :trace trace
+                                       :outcome (%coordination-copy-value provenance))))
+         (%coordination-plist-merge
+          details
+          (list :summary summary
+                :result-payload (%coordination-copy-value result-payload)
+                :partial-result (%coordination-copy-value partial-result)
+                :diagnostics (%coordination-copy-value diagnostics)
+                :budget-spent (%coordination-copy-value budget-spent)
+                :artifacts (%coordination-copy-value artifacts)
+                :delegation-trace trace
+                :delegation-provenance provenance-record)))))
+    (let ((payload (%compose-user-handoff-payload
+                    handoff-id
+                    status
+                    (list :handoff-id handoff-id
+                          :summary summary
+                          :agent-id (or (getf status :to-agent)
+                                        (getf status :to-agent-id)
+                                        (getf response :to-agent)
+                                        (getf response :to-agent-id))))))
+      (%publish-user-coordination-event +event-type-user-handoff-completed+ payload)
+      payload)))
 
 (defun create-user-negotiation-room (room-id participant-session-ids
                                      &key description metadata)

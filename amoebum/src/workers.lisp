@@ -16,7 +16,7 @@
                       created-at started-at finished-at
                       result output-buffer exit-code
                       error-message retry-count max-retries
-                      backend inner-id)))
+                      backend inner-id worktree)))
   (id nil :type (or null string))
   (type :shell :type keyword)             ; :shell, :agent, :process
   (label "" :type string)                 ; human-readable description
@@ -32,7 +32,8 @@
   (retry-count 0 :type integer)
   (max-retries 0 :type integer)
   (backend :in-process :type keyword)     ; :in-process, :overwatch, :swarm
-  (inner-id nil :type (or null string)))  ; underlying shell-task-id or agent-id
+  (inner-id nil :type (or null string))   ; underlying shell-task-id or agent-id
+  (worktree nil))
 
 ;;; --- Worker event types ---
 
@@ -129,18 +130,23 @@
 (defun %worker-snapshot (worker)
   "Return a plist snapshot of a worker-record."
   (%with-worker-lock
-    (list :id (worker-record-id worker)
-          :type (worker-record-type worker)
-          :label (worker-record-label worker)
-          :status (worker-record-status worker)
-          :backend (worker-record-backend worker)
-          :created-at (worker-record-created-at worker)
-          :started-at (worker-record-started-at worker)
-          :finished-at (worker-record-finished-at worker)
-          :exit-code (worker-record-exit-code worker)
-          :error-message (worker-record-error-message worker)
-          :retry-count (worker-record-retry-count worker)
-          :inner-id (worker-record-inner-id worker))))
+    (let ((snapshot
+            (list :id (worker-record-id worker)
+                  :type (worker-record-type worker)
+                  :label (worker-record-label worker)
+                  :status (worker-record-status worker)
+                  :backend (worker-record-backend worker)
+                  :created-at (worker-record-created-at worker)
+                  :started-at (worker-record-started-at worker)
+                  :finished-at (worker-record-finished-at worker)
+                  :exit-code (worker-record-exit-code worker)
+                  :error-message (worker-record-error-message worker)
+                  :retry-count (worker-record-retry-count worker)
+                  :inner-id (worker-record-inner-id worker))))
+      (let ((worktree (worktree-metadata-plist (worker-record-worktree worker))))
+        (if worktree
+            (append snapshot (list :worktree worktree))
+            snapshot)))))
 
 (defun %publish-worker-event (event-type worker &key (severity :info))
   (ignore-errors
@@ -161,9 +167,11 @@
 (defmethod supervisor-spawn ((supervisor in-process-supervisor) type command
                              &key label timeout-seconds max-output-chars
                                   cwd max-retries
-                                  persona system-prompt-override)
+                                  persona system-prompt-override
+                                  worktree)
   (let* ((worker-id (%next-worker-id type))
          (now (%worker-now))
+         (worktree-metadata (coerce-worktree-metadata :worktree worktree))
          (worker (%make-worker-record
                   :id worker-id
                   :type type
@@ -176,7 +184,8 @@
                   :status :pending
                   :created-at now
                   :backend :in-process
-                  :max-retries (or max-retries 0))))
+                  :max-retries (or max-retries 0)
+                  :worktree worktree-metadata)))
     (%store-worker worker)
     (%publish-worker-event +event-type-worker-spawned+ worker)
     (ecase type
@@ -189,7 +198,8 @@
        (%spawn-agent-worker worker command
                             :persona persona
                             :system-prompt-override system-prompt-override
-                            :timeout-seconds timeout-seconds))
+                            :timeout-seconds timeout-seconds
+                            :worktree worktree-metadata))
       (:process
        (%spawn-shell-worker worker command
                             :cwd cwd
@@ -259,7 +269,8 @@
     (:timeout :timeout)
     (otherwise :failed)))
 
-(defun %spawn-agent-worker (worker command &key persona system-prompt-override timeout-seconds)
+(defun %spawn-agent-worker (worker command &key persona system-prompt-override timeout-seconds
+                                          worktree)
   (multiple-value-bind (record backend)
       (%spawn-task-via-configured-backend
        (if (stringp command)
@@ -269,11 +280,15 @@
        :agent-type :task
        :persona persona
        :system-prompt (or system-prompt-override nil)
-       :timeout-seconds timeout-seconds)
+       :timeout-seconds timeout-seconds
+       :worktree worktree)
     (let ((agent-id (%spawned-delegation-record-id record backend)))
       (%with-worker-lock
         (setf (worker-record-inner-id worker) agent-id
               (worker-record-backend worker) (%worker-agent-backend-keyword backend)
+              (worker-record-worktree worker)
+              (or (runtime-agent-worktree record :backend backend)
+                  (coerce-worktree-metadata :worktree worktree))
               (worker-record-status worker) :running
               (worker-record-started-at worker) (%worker-now)))
       (%publish-worker-event +event-type-worker-started+ worker)
@@ -295,7 +310,13 @@
                        (list :agent-id agent-id
                              :backend backend
                              :status agent-status
-                             :result (runtime-agent-result agent-rec :backend backend))
+                             :result (runtime-agent-result agent-rec :backend backend)
+                             :merge (runtime-agent-worktree-merge
+                                     agent-rec
+                                     :backend backend)
+                             :worktree (worktree-metadata-plist
+                                        (runtime-agent-worktree agent-rec
+                                                                :backend backend)))
                        (worker-record-output-buffer worker)
                        (runtime-agent-output agent-rec :backend backend)
                        (worker-record-error-message worker)
@@ -369,14 +390,15 @@
 
 (defun spawn-worker (type command &rest args &key label timeout-seconds
                                                    max-output-chars cwd max-retries
-                                                   persona system-prompt-override)
+                                                   persona system-prompt-override
+                                                   worktree)
   "Spawn a background worker through the active supervisor.
    TYPE: :shell, :agent, or :process.
    COMMAND: shell command string or agent task description.
    For :agent type, accepts :persona and :system-prompt-override.
    Returns a worker-record."
   (declare (ignore label timeout-seconds max-output-chars cwd max-retries
-                   persona system-prompt-override))
+                   persona system-prompt-override worktree))
   (apply #'supervisor-spawn (ensure-worker-supervisor) type command args))
 
 (defun worker-status (worker-id)

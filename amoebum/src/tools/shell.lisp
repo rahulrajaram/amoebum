@@ -149,6 +149,48 @@
   (when env-vars
     (mapcar #'%coerce-process-env-entry env-vars)))
 
+(defun %process-env-entry-keyword (entry)
+  (car entry))
+
+(defun %process-env-override-pair (entry)
+  (cond
+    ((and (consp entry) (keywordp (car entry)))
+     (cons (string-upcase (symbol-name (car entry)))
+           (or (cdr entry) "")))
+    ((and (consp entry) (stringp (car entry)))
+     (cons (car entry) (or (cdr entry) "")))
+    ((stringp entry)
+     (multiple-value-bind (name value)
+         (%split-env-assignment entry)
+       (cons name value)))
+    (t
+     (error "Unsupported environment entry ~S." entry))))
+
+(defun %dedupe-process-env (entries)
+  (let ((seen (make-hash-table :test #'eq))
+        (result '()))
+    (dolist (entry (reverse entries) (nreverse result))
+      (let ((key (%process-env-entry-keyword entry)))
+        (unless (gethash key seen)
+          (setf (gethash key seen) t)
+          (push entry result))))))
+
+(defun %effective-process-env (env-vars)
+  (if (current-delegated-agent-id)
+      (let* ((scoped-overrides (current-delegated-agent-secret-env-overrides))
+             (shell-env (merge-shell-environment
+                         (%default-shell-environment)
+                         :env-overrides (append (mapcar #'%process-env-override-pair
+                                                        (or env-vars '()))
+                                                scoped-overrides)
+                         :inherit-env-p t
+                         :filter-sensitive-p t))
+             (scoped-env
+               (%coerce-process-env
+                (shell-env-to-string-list (assemble-shell-env shell-env)))))
+        (%dedupe-process-env scoped-env))
+      (%coerce-process-env env-vars)))
+
 (defun %utf8-char-size (char)
   (let ((code (char-code char)))
     (cond
@@ -267,7 +309,7 @@
                                 max-output-chars max-output-bytes max-output-lines
                                 &key shell-executable profile-files env-vars)
   (let* ((resolved-shell (or shell-executable "bash"))
-         (process-env (%coerce-process-env env-vars))
+         (process-env (%effective-process-env env-vars))
          (prepared-command (if profile-files
                                (wrap-command-with-shell-profile-init
                                 command profile-files)
@@ -341,6 +383,119 @@
                             :bash-exec
                             reason))))
 
+(defun %git-push-option-consumes-next-p (token)
+  (member token '("--repo" "--receive-pack" "--exec" "-o" "--push-option")
+          :test #'string=))
+
+(defun %parse-git-push-segment (segment)
+  (when (and (listp segment)
+             (>= (length segment) 2)
+             (string= "git" (string-downcase (or (first segment) "")))
+             (string= "push" (string-downcase (or (second segment) ""))))
+    (let ((remaining (cddr segment))
+          (options '())
+          (positionals '())
+          (end-of-options-p nil))
+      (loop while remaining do
+        (let ((token (first remaining)))
+          (cond
+            ((and (not end-of-options-p) (string= token "--"))
+             (setf end-of-options-p t)
+             (setf remaining (rest remaining)))
+            ((and (not end-of-options-p)
+                  (stringp token)
+                  (> (length token) 1)
+                  (char= (char token 0) #\-))
+             (push token options)
+             (setf remaining (rest remaining))
+             (when (and remaining
+                        (%git-push-option-consumes-next-p token)
+                        (not (search "=" token)))
+               (setf remaining (rest remaining))))
+            (t
+             (push token positionals)
+             (setf remaining (rest remaining))))))
+      (let* ((ordered-positionals (nreverse positionals))
+             (remote (first ordered-positionals))
+             (refspecs (rest ordered-positionals)))
+        (list :remote remote
+              :refspecs refspecs
+              :options (nreverse options)
+              :implicit-p (null refspecs))))))
+
+(defun %normalize-git-push-refspec-branch (refspec)
+  (let* ((raw (%normalize-worktree-string refspec))
+         (clean (and raw
+                     (if (and (> (length raw) 0)
+                              (char= #\+ (char raw 0)))
+                         (subseq raw 1)
+                         raw))))
+    (when clean
+      (let ((colon (position #\: clean :from-end t)))
+        (cond
+          (colon
+           (let ((destination (subseq clean (1+ colon))))
+             (cond
+               ((zerop (length destination)) :delete)
+               ((string= destination "HEAD") nil)
+               (t (%strip-live-worktree-branch-ref destination)))))
+          ((string= clean "HEAD")
+           nil)
+          (t
+           (%strip-live-worktree-branch-ref clean)))))))
+
+(defun %shell-worktree-branch-denial-text (allowed-branch requested-branches)
+  (let ((requested (remove-duplicates
+                    (remove nil requested-branches)
+                    :test #'string=)))
+    (format nil
+            "Delegated agent ~A may only push branch ~A~@[; attempted ~{~A~^, ~}~]."
+            (or (current-delegated-agent-id) "<unknown>")
+            allowed-branch
+            requested)))
+
+(defun %shell-signal-worktree-branch-denial (allowed-branch requested-branches)
+  (let ((reason (%shell-worktree-branch-denial-text
+                 allowed-branch
+                 requested-branches)))
+    (error 'tool-permission-denied
+           :tool-name :bash-exec
+           :arguments nil
+           :reason-code :worktree-branch-scope
+           :reason reason
+           :message reason)))
+
+(defun %shell-enforce-worktree-branch-scope (context)
+  (let ((allowed-branch (current-delegated-agent-push-branch)))
+    (when allowed-branch
+      (let* ((canonical (canonicalize-permission-command
+                         (shell-run-context-policy-command-text context)))
+             (segments (and canonical
+                            (command-canonical-form-commands canonical))))
+        (dolist (segment segments)
+          (let ((push-request (%parse-git-push-segment segment)))
+            (when push-request
+              (let* ((options (getf push-request :options))
+                     (refspecs (getf push-request :refspecs))
+                     (requested-branches
+                       (mapcar #'%normalize-git-push-refspec-branch refspecs)))
+                (when (or (getf push-request :implicit-p)
+                          (find-if (lambda (option)
+                                     (member option
+                                             '("--all" "--mirror" "--tags"
+                                               "--delete" "-d")
+                                             :test #'string=))
+                                   options)
+                          (null requested-branches)
+                          (find :delete requested-branches)
+                          (find nil requested-branches)
+                          (not (every (lambda (branch)
+                                        (string= branch allowed-branch))
+                                      requested-branches)))
+                  (%shell-signal-worktree-branch-denial
+                   allowed-branch
+                   requested-branches))))))))))
+
 #+sbcl
 (defun %shell-permission-decision (policy-command-text)
   (check-permission :tool :bash-exec
@@ -350,18 +505,19 @@
 #+sbcl
 (defun %shell-ensure-execution-permitted (context)
   (let ((policy-command-text (shell-run-context-policy-command-text context)))
-    (when (sandbox-read-only-p)
-      (error 'sandbox-violation
-             :operation :bash-exec
-             :reason "sandbox mode read-only denies shell execution"
-             :details (shell-run-context-invocation-text context)))
-    (let ((decision (%shell-permission-decision policy-command-text)))
-      (when (and (eq decision :prompt)
-                 (not (%bash-exec-running-under-pipeline-p)))
-        (%shell-signal-prompt-denial decision)))
-    (%assert-permission-allowed :tool :bash-exec
-                                :command policy-command-text
-                                :dangerous-p (dangerous-command-p policy-command-text))))
+	(when (sandbox-read-only-p)
+	      (error 'sandbox-violation
+	             :operation :bash-exec
+	             :reason "sandbox mode read-only denies shell execution"
+	             :details (shell-run-context-invocation-text context)))
+	    (%shell-enforce-worktree-branch-scope context)
+	    (let ((decision (%shell-permission-decision policy-command-text)))
+	      (when (and (eq decision :prompt)
+	                 (not (%bash-exec-running-under-pipeline-p)))
+	        (%shell-signal-prompt-denial decision)))
+	    (%assert-permission-allowed :tool :bash-exec
+	                                :command policy-command-text
+	                                :dangerous-p (dangerous-command-p policy-command-text))))
 
 #+sbcl
 (defun %shell-spawn-process (context state)
@@ -579,7 +735,7 @@
                                    :env-vars env-vars)
     #-sbcl
     (let* ((resolved-shell (or shell-executable "bash"))
-           (process-env (%coerce-process-env env-vars))
+           (process-env (%effective-process-env env-vars))
            (prepared-command (if profile-files
                                  (wrap-command-with-shell-profile-init
                                   command profile-files)

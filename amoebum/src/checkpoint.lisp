@@ -122,6 +122,19 @@
      ((symbolp value) (symbol-name value))
      (t (princ-to-string value)))))
 
+(defun %checkpoint-limit-records (records limit)
+  (if (and (integerp limit) (>= limit 0))
+      (subseq records 0 (min limit (length records)))
+      records))
+
+(defun %checkpoint-session-record (id path created-at &key auto-p (trigger :manual))
+  (make-session-checkpoint
+   :id id
+   :path path
+   :created-at created-at
+   :auto-p (not (null auto-p))
+   :trigger trigger))
+
 (defun %checkpoint-encode-value (value)
   (cond
     ((stringp value)
@@ -533,15 +546,17 @@ Each entry that fails to start is logged but does not abort the restore."
 
 (defun %conversation->snapshot (conversation)
   (when (typep conversation 'conversation-state)
-    (list :session-id (conversation-state-session-id conversation)
-          :state (conversation-state-state conversation)
-          :created-at (conversation-state-created-at conversation)
-          :updated-at (conversation-state-updated-at conversation)
-          :active-fork (conversation-state-active-fork conversation)
-          :fork-branch-point (conversation-state-fork-branch-point conversation)
-          :forks (copy-tree (conversation-state-forks conversation))
-          :entries (mapcar #'%conversation-entry->sexp
-                           (conversation-state-entries conversation)))))
+    (amoebum.fp:update
+     '()
+     (:session-id (conversation-state-session-id conversation))
+     (:state (conversation-state-state conversation))
+     (:created-at (conversation-state-created-at conversation))
+     (:updated-at (conversation-state-updated-at conversation))
+     (:active-fork (conversation-state-active-fork conversation))
+     (:fork-branch-point (conversation-state-fork-branch-point conversation))
+     (:forks (copy-tree (conversation-state-forks conversation)))
+     (:entries (mapcar #'%conversation-entry->sexp
+                       (conversation-state-entries conversation))))))
 
 (defun %conversation-from-snapshot (snapshot project-root)
   (let* ((root (uiop:ensure-directory-pathname project-root))
@@ -757,17 +772,13 @@ Each entry that fails to start is logged but does not abort the restore."
              (snapshot-id (or (and (listp payload) (getf payload :snapshot-id))
                               (pathname-name path)))
              (created-at (%checkpoint-created-at payload path)))
-        (push (make-session-checkpoint
-               :id snapshot-id
-               :path path
-               :created-at created-at
-               :auto-p nil
-               :trigger :snapshot)
+        (push (%checkpoint-session-record snapshot-id
+                                          path
+                                          created-at
+                                          :auto-p nil
+                                          :trigger :snapshot)
               records)))
-    (let ((sorted (nreverse records)))
-      (if (and (integerp limit) (>= limit 0))
-          (subseq sorted 0 (min limit (length sorted)))
-          sorted))))
+    (%checkpoint-limit-records (nreverse records) limit)))
 
 (defun %resolve-session-snapshot-path (&key snapshot-id snapshot-path)
   (when snapshot-path
@@ -821,17 +832,13 @@ Each entry that fails to start is logged but does not abort the restore."
              (trigger (if (and (listp payload) (keywordp (getf payload :trigger)))
                           (getf payload :trigger)
                           :manual)))
-        (push (make-session-checkpoint
-               :id checkpoint-id
-               :path path
-               :created-at created-at
-               :auto-p auto-p
-               :trigger trigger)
+        (push (%checkpoint-session-record checkpoint-id
+                                          path
+                                          created-at
+                                          :auto-p auto-p
+                                          :trigger trigger)
               records)))
-    (let ((sorted (nreverse records)))
-      (if (and (integerp limit) (>= limit 0))
-          (subseq sorted 0 (min limit (length sorted)))
-          sorted))))
+    (%checkpoint-limit-records (nreverse records) limit)))
 
 (defun %resolve-checkpoint-path (&key checkpoint-id checkpoint-path project-root config)
   (when checkpoint-path

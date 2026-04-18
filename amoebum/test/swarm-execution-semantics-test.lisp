@@ -38,6 +38,34 @@
            (progn ,@body)
          (%restore-swarm-fixture ,saved)))))
 
+(defmacro with-isolated-swarm-secret-registry ((agent-id) &body body)
+  (let ((saved-registry (gensym "SAVED-REGISTRY"))
+        (registry (gensym "REGISTRY"))
+        (resolved-agent-id (gensym "AGENT-ID")))
+    `(let ((,saved-registry amoebum::*user-session-registry*)
+           (,resolved-agent-id ,agent-id))
+       (unwind-protect
+           (let ((,registry (sw4rm-sdk:make-local-registry)))
+             (setf amoebum::*user-session-registry* ,registry)
+             (sw4rm-sdk:local-registry-register
+              ,registry
+              (sw4rm-sdk:make-agent-config
+               :agent-id ,resolved-agent-id
+               :name ,resolved-agent-id))
+             ,@body)
+         (setf amoebum::*user-session-registry* ,saved-registry)))))
+
+(defmacro with-full-auto-permission-mode (&body body)
+  (let ((config (gensym "CONFIG"))
+        (old-mode (gensym "OLD-MODE")))
+    `(let* ((,config (amoebum.config:current-config))
+            (,old-mode (amoebum.config:config-permission-mode ,config)))
+       (unwind-protect
+            (progn
+              (amoebum.config:setconfig :permission-mode :full-auto)
+              ,@body)
+         (amoebum.config:setconfig :permission-mode ,old-mode)))))
+
 (defun %wait-swarm-terminal (agent-id &key (timeout-ms 3000))
   "Wait up to TIMEOUT-MS ms for swarm agent AGENT-ID to reach a terminal status.
 Returns the final status keyword or NIL on timeout."
@@ -55,6 +83,16 @@ Returns the final status keyword or NIL on timeout."
           (return nil))
         (sleep 0.02)))))
 
+(defun %swarm-test-commit-file! (directory relative-path contents message)
+  (%write-text-file (merge-pathnames relative-path directory) contents)
+  (unless (%worktree-test-run-program-ok directory
+                                         (list "git" "add" relative-path))
+    (error "Failed to stage ~A in ~A." relative-path directory))
+  (unless (%worktree-test-run-program-ok directory
+                                         (list "git" "commit" "-m" message))
+    (error "Failed to commit ~A in ~A." relative-path directory))
+  t)
+
 ;;; ============================================================
 ;;; NXT-017: struct accessor smoke tests
 ;;; ============================================================
@@ -64,7 +102,8 @@ Returns the final status keyword or NIL on timeout."
   (is (fboundp 'amoebum:swarm-agent-signal-name))
   (is (fboundp 'amoebum:swarm-agent-retry-count))
   (is (fboundp 'amoebum:swarm-agent-retry-policy))
-  (is (fboundp 'amoebum:swarm-agent-timeout-seconds)))
+  (is (fboundp 'amoebum:swarm-agent-timeout-seconds))
+  (is (fboundp 'amoebum:swarm-agent-worktree)))
 
 (test swarm-agent-nxt017-defaults
   "Fresh swarm-agent has sensible NXT-017 defaults."
@@ -107,6 +146,26 @@ Returns the final status keyword or NIL on timeout."
                   :timeout-seconds 30
                   :runner (lambda (_a) (declare (ignore _a)) "done"))))
       (is (= 30 (amoebum:swarm-agent-timeout-seconds agent)))
+      (amoebum:collect-swarm-result (amoebum:swarm-agent-id agent)))))
+
+(test swarm-agent-spawn-propagates-worktree-metadata
+  "spawn-swarm-agent stores worktree ownership metadata for SW4RM routing."
+  (with-isolated-swarm
+    (let* ((worktree (amoebum:make-worktree-metadata
+                      :id "wt-337"
+                      :branch "sw4rm/wf/node"
+                      :path "/tmp/wt-337/"))
+           (agent (amoebum:spawn-swarm-agent
+                   "nxt337 worktree metadata"
+                   :worktree worktree
+                   :runner (lambda (_a) (declare (ignore _a)) "done"))))
+      (let ((metadata (amoebum:swarm-agent-worktree agent)))
+        (is (typep metadata 'amoebum:worktree-metadata))
+        (is (string= "wt-337" (amoebum:worktree-metadata-id metadata)))
+        (is (string= "sw4rm/wf/node"
+                     (amoebum:worktree-metadata-branch metadata)))
+        (is (string= "/tmp/wt-337/"
+                     (amoebum:worktree-metadata-path metadata))))
       (amoebum:collect-swarm-result (amoebum:swarm-agent-id agent)))))
 
 ;;; ============================================================
@@ -416,3 +475,273 @@ Returns the final status keyword or NIL on timeout."
           (is (member :seconds-since-output entry))))
       (amoebum:kill-swarm-agent agent-id)
       (%wait-swarm-terminal agent-id :timeout-ms 2000))))
+
+(test swarm-agent-completed-worktree-conflict-creates-manual-handoff
+  "A completed swarm agent with overlapping worktree edits should preserve completion while surfacing a manual merge handoff."
+  (with-isolated-swarm
+    (let* ((tmp-root (%make-temp-directory "amoebum-swarm-worktree"))
+           (repo-root (merge-pathnames #P"repo/" tmp-root))
+           (runtime nil)
+           (path nil))
+      (unwind-protect
+          (progn
+            (%init-worktree-test-repo repo-root)
+            (setf runtime (amoebum:make-worktree-runtime :project-root repo-root))
+            (amoebum:clear-worktree-conflict-handoffs)
+            (amoebum:spawn-local-worktree runtime
+                                          "wt-swarm-handoff"
+                                          "sw4rm/swarm-flow/node-1"
+                                          :base-ref "HEAD")
+            (setf path (amoebum:worktree-runtime-path runtime "wt-swarm-handoff"))
+            (%worktree-test-commit-file repo-root
+                                        "README.md"
+                                        (format nil "# worktree runtime~%main branch edit~%")
+                                        "main readme change")
+            (let* ((worktree (amoebum:make-worktree-metadata
+                              :id "wt-swarm-handoff"
+                              :branch "sw4rm/swarm-flow/node-1"
+                              :path (namestring path)))
+                   (agent (amoebum:spawn-swarm-agent
+                           "swarm merge conflict task"
+                           :worktree worktree
+                           :runner (lambda (_agent)
+                                     (declare (ignore _agent))
+                                     (%swarm-test-commit-file!
+                                     path
+                                     "README.md"
+                                     (format nil
+                                             "# worktree runtime~%feature branch edit~%")
+                                     "feature readme change")
+                                     "swarm work done")))
+                   (agent-id (amoebum:swarm-agent-id agent)))
+              (multiple-value-bind (result status)
+                  (amoebum:collect-swarm-result agent-id)
+                (is (eq :completed status))
+                (is (string= "swarm work done" result)))
+              (let* ((merge (amoebum:runtime-agent-worktree-merge
+                             agent-id
+                             :backend :swarm))
+                     (handoff-id (getf merge :handoff-id))
+                     (snapshot (and handoff-id
+                                    (amoebum:find-worktree-conflict-handoff
+                                     handoff-id
+                                     :include-room-status-p t))))
+                (is (eq :completed
+                        (amoebum:runtime-agent-status agent-id :backend :swarm)))
+                (is (eq :conflict-handoff (getf merge :merge-status)))
+                (is (string= "sw4rm/workflow/swarm-flow" (getf merge :target-ref)))
+                (is (stringp handoff-id))
+                (is (stringp (getf merge :negotiation-room-id)))
+                (is (eq :pending (getf snapshot :status)))
+                (is-true (member "README.md"
+                                 (getf (getf snapshot :preflight) :conflicts)
+                                 :test #'string=))
+                (is (probe-file path)))))
+        (ignore-errors
+          (when (and runtime (probe-file path))
+            (amoebum:kill-local-worktree runtime "wt-swarm-handoff" :force t)))
+        (amoebum:clear-worktree-conflict-handoffs)
+        (%delete-directory-tree-safe tmp-root)))))
+
+(test swarm-agent-completed-remote-worktree-uses-backend-neutral-merge-runtime
+  "A completed swarm agent should route merge follow-through through the injected remote runtime seam."
+  (with-isolated-swarm
+    (let* ((tmp-root (%make-temp-directory "amoebum-swarm-remote-runtime"))
+           (merge-call nil)
+           (coordinator
+             (sw4rm-sdk:make-remote-worktree-coordinator
+              :spawn-fn (lambda (&rest args)
+                          (declare (ignore args))
+                          nil)
+              :collect-fn (lambda (&rest args)
+                            (declare (ignore args))
+                            nil)
+              :merge-fn (lambda (request)
+                          (setf merge-call request)
+                          (list :merge-status :remote-merged
+                                :target-ref (getf request :target-ref)
+                                :backend :remote))
+              :kill-fn (lambda (&rest args)
+                         (declare (ignore args))
+                         t))))
+      (unwind-protect
+           (let* ((amoebum::*delegated-worktree-runtime-factory*
+                    (lambda (&key backend worktree)
+                      (declare (ignore backend worktree))
+                      (amoebum:make-worktree-runtime
+                       :project-root tmp-root
+                       :backend :remote
+                       :coordinator coordinator)))
+                  (worktree (amoebum:make-worktree-metadata
+                             :id "wt-remote-merge"
+                             :branch "sw4rm/remote-flow/node-1"
+                             :path "/remote/wt-remote-merge/"))
+                  (agent (amoebum:spawn-swarm-agent
+                          "swarm remote merge task"
+                          :worktree worktree
+                          :runner (lambda (_agent)
+                                    (declare (ignore _agent))
+                                    "remote merge ok")))
+                  (agent-id (amoebum:swarm-agent-id agent)))
+             (multiple-value-bind (result status)
+                 (amoebum:collect-swarm-result agent-id)
+               (is (string= "remote merge ok" result))
+               (is (eq :completed status)))
+             (let ((merge (amoebum:runtime-agent-worktree-merge
+                           agent-id
+                           :backend :swarm)))
+               (is (eq :remote-merged (getf merge :merge-status)))
+               (is (string= "sw4rm/workflow/remote-flow"
+                            (getf merge :target-ref))))
+             (is (string= "wt-remote-merge" (getf merge-call :worktree-id)))
+             (is (string= "sw4rm/remote-flow/node-1"
+                          (getf merge-call :worktree-branch)))
+             (is (string= "sw4rm/workflow/remote-flow"
+                          (getf merge-call :target-ref)))
+             (is (eq :swarm (getf merge-call :backend))))
+        (%delete-directory-tree-safe tmp-root)))))
+
+(test swarm-agent-failed-remote-worktree-uses-backend-neutral-cleanup-runtime
+  "A failed swarm agent should route cleanup through the injected remote runtime seam."
+  (with-isolated-swarm
+    (let* ((tmp-root (%make-temp-directory "amoebum-swarm-remote-runtime"))
+           (kill-call nil)
+           (coordinator
+             (sw4rm-sdk:make-remote-worktree-coordinator
+              :spawn-fn (lambda (&rest args)
+                          (declare (ignore args))
+                          nil)
+              :collect-fn (lambda (&rest args)
+                            (declare (ignore args))
+                            nil)
+              :kill-fn (lambda (worktree-id &key force)
+                         (setf kill-call (list :id worktree-id :force force))
+                         t))))
+      (unwind-protect
+           (let* ((amoebum::*delegated-worktree-runtime-factory*
+                    (lambda (&key backend worktree)
+                      (declare (ignore backend worktree))
+                      (amoebum:make-worktree-runtime
+                       :project-root tmp-root
+                       :backend :remote
+                       :coordinator coordinator)))
+                  (worktree (amoebum:make-worktree-metadata
+                             :id "wt-remote-kill"
+                             :branch "sw4rm/remote-flow/node-2"
+                             :path "/remote/wt-remote-kill/"))
+                  (agent (amoebum:spawn-swarm-agent
+                          "swarm remote cleanup task"
+                          :worktree worktree
+                          :runner (lambda (_agent)
+                                    (declare (ignore _agent))
+                                    (error "remote cleanup sentinel"))))
+                  (agent-id (amoebum:swarm-agent-id agent)))
+             (multiple-value-bind (result status)
+                 (amoebum:collect-swarm-result agent-id)
+               (is (null result))
+               (is (eq :failed status)))
+             (is (string= "wt-remote-kill" (getf kill-call :id)))
+             (is (eq t (getf kill-call :force))))
+        (%delete-directory-tree-safe tmp-root)))))
+
+(test swarm-agent-shell-execution-uses-agent-scoped-secret-env
+  "Swarm delegated shell execution should receive scoped secret env overrides that win over caller-supplied sensitive vars."
+  (with-full-auto-permission-mode
+    (with-isolated-swarm
+      (with-isolated-swarm-secret-registry ("swarm-secret-shell")
+        (sw4rm-sdk:local-registry-set-provider-secret
+         amoebum::*user-session-registry*
+         "swarm-secret-shell"
+         "OPENAI_API_KEY"
+         "scoped-openai-key")
+        (let* ((worktree (amoebum:make-worktree-metadata
+                          :id "wt-swarm-secret-shell"
+                          :branch "sw4rm/secret-flow/node-shell"
+                          :path "/tmp/wt-swarm-secret-shell/"))
+               (agent (amoebum:spawn-swarm-agent
+                       "swarm secret shell task"
+                       :id "swarm-secret-shell"
+                       :worktree worktree
+                       :runner (lambda (_agent)
+                                 (declare (ignore _agent))
+                                 (getf (amoebum::%run-shell-command
+                                        "printf '%s' \"$OPENAI_API_KEY\""
+                                        "/tmp"
+                                        10
+                                        4096
+                                        :env-vars '(("OPENAI_API_KEY" . "attempted-override")))
+                                       :stdout))))
+               (agent-id (amoebum:swarm-agent-id agent)))
+          (multiple-value-bind (result status)
+              (amoebum:collect-swarm-result agent-id)
+            (let ((message (or (amoebum:runtime-agent-error-message
+                                agent-id
+                                :backend :swarm)
+                               "")))
+              (is (eq :completed status) message))
+            (is (string= "scoped-openai-key" result))))))))
+
+(test swarm-agent-git-helper-uses-agent-scoped-secret-env
+  "Swarm delegated git helpers should run with agent-scoped secret env injected through the shared registry seam."
+    (with-isolated-swarm
+      (with-isolated-swarm-secret-registry ("swarm-secret-git")
+        (let ((tmp-root (%make-temp-directory "amoebum-swarm-secret-git")))
+          (unwind-protect
+               (progn
+                 (ensure-directories-exist
+                  (merge-pathnames #P"probe.txt" tmp-root))
+                 (sw4rm-sdk:local-registry-set-provider-secret
+                  amoebum::*user-session-registry*
+                  "swarm-secret-git"
+                  "GITHUB_TOKEN"
+                "scoped-github-token")
+               (let* ((worktree (amoebum:make-worktree-metadata
+                                 :id "wt-swarm-secret-git"
+                                 :branch "sw4rm/secret-flow/node-git"
+                                 :path "/tmp/wt-swarm-secret-git/"))
+                      (agent (amoebum:spawn-swarm-agent
+                              "swarm secret git task"
+                              :id "swarm-secret-git"
+                              :worktree worktree
+                              :runner (lambda (_agent)
+                                        (declare (ignore _agent))
+                                        (getf (amoebum::%git-run-bash-command
+                                               tmp-root
+                                               "printf '%s' \"$GITHUB_TOKEN\"")
+                                              :stdout))))
+                      (agent-id (amoebum:swarm-agent-id agent)))
+                 (multiple-value-bind (result status)
+                     (amoebum:collect-swarm-result agent-id)
+                   (let ((message (or (amoebum:runtime-agent-error-message
+                                       agent-id
+                                       :backend :swarm)
+                                      "")))
+                     (is (eq :completed status) message))
+                   (is (string= "scoped-github-token" result)))))
+          (%delete-directory-tree-safe tmp-root))))))
+
+(test swarm-agent-shell-push-guard-blocks-wrong-worktree-branch
+  "Swarm-backed delegated agents should fail immediately when a shell command pushes a branch outside their assigned worktree."
+  (with-isolated-swarm
+    (let* ((worktree (amoebum:make-worktree-metadata
+                      :id "wt-swarm-scope"
+                      :branch "sw4rm/demo/node"
+                      :path "/tmp/wt-swarm-scope/"))
+           (agent (amoebum:spawn-swarm-agent
+                   "swarm branch scope task"
+                   :worktree worktree
+                   :runner (lambda (_agent)
+                             (declare (ignore _agent))
+                             (amoebum::%run-shell-command
+                              "git push origin sw4rm/demo/other"
+                              "/tmp"
+                              10
+                              4096))))
+           (agent-id (amoebum:swarm-agent-id agent)))
+      (is (eq :failed (%wait-swarm-terminal agent-id :timeout-ms 4000)))
+      (let ((message (or (amoebum:runtime-agent-error-message
+                          agent-id
+                          :backend :swarm)
+                         "")))
+        (is (search "may only push branch sw4rm/demo/node" message))
+        (is (search "sw4rm/demo/other" message))))))

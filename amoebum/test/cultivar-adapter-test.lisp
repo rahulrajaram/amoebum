@@ -41,6 +41,37 @@
     (is (stringp (getf status :socket-path)))
     (is (null (getf status :last-slice)))))
 
+(test cultivar-daemon-status-reads-common-lisp-health-report
+  "Daemon status should expose the latest recorded Common Lisp Cultivar health verdict."
+  (let* ((root (%make-temp-directory "amoebum-cultivar-health"))
+         (report (merge-pathnames ".agent/cultivar-cl-health.status" root)))
+    (unwind-protect
+         (progn
+           (ensure-directories-exist report)
+           (%write-text-file
+            report
+            "schema_version=1
+generated_at=2026-04-16
+status=advisory
+reference_mode=structural_only
+index_health_summary=UNHEALTHY
+doctor_exit_code=1
+summary=Common Lisp index degraded but still usable for structural slices.
+navigation_warning=Fresh-symbol navigation is advisory only; fall back to rg plus direct file reads.
+")
+           (let* ((adapter (amoebum:make-cultivar-adapter
+                            :root-path root))
+                  (status (amoebum:cultivar-daemon-status adapter))
+                  (health (getf status :cl-health)))
+             (is (eq :advisory (getf health :status)))
+             (is (equal "structural_only" (getf health :reference-mode)))
+             (is (equal "UNHEALTHY" (getf health :index-health-summary)))
+             (is (= 1 (getf health :doctor-exit-code)))
+             (is (search "Fresh-symbol navigation is advisory only"
+                         (or (getf health :navigation-warning) "")
+                         :test #'char-equal))))
+      (%delete-directory-tree-safe root))))
+
 ;;; ------------------------------------------------------------------
 ;;; Global parameter
 ;;; ------------------------------------------------------------------

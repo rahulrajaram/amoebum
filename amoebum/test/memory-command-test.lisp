@@ -101,3 +101,32 @@
            (is (search (namestring project-memory) output :test #'char-equal))
            (is (search "[source: " output :test #'char-equal)))
       (%delete-directory-tree-safe tmp-root))))
+
+(test import-state-topic-names-sorts-dedupes-and-skips-non-topics
+  (is (equal '("alpha" "tools" "Zeta")
+             (amoebum::%import-state-topic-names
+              '(:imports ((:scope (:topic "tools"))
+                          (:scope (:topic "Zeta"))
+                          (:scope (:project))
+                          (:scope (:topic "alpha"))
+                          (:scope (:topic "tools"))
+                          (:scope (:topic ""))
+                          (:scope (:topic nil))
+                          not-a-plist))))))
+
+(test memory-query-matches-key-and-value-substrings
+  (let* ((fixture (%make-memory-import-fixture))
+         (tmp-root (getf fixture :tmp-root))
+         (backend (getf fixture :backend)))
+    (unwind-protect
+         (let ((timeout-match (amoebum:memory-query backend "timeout" :scope :effective))
+               (bun-match (amoebum:memory-query backend "bun" :scope :effective)))
+           (is (= 1 (length timeout-match)))
+           (is (string= "tool-timeout"
+                        (amoebum:memory-entry-key (first timeout-match))))
+           (is (= 1 (length bun-match)))
+           (is (string= "package-manager"
+                        (amoebum:memory-entry-key (first bun-match))))
+           (is (string= "Use bun for this repo"
+                        (amoebum:memory-entry-value (first bun-match)))))
+      (%delete-directory-tree-safe tmp-root))))

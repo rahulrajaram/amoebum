@@ -1433,7 +1433,8 @@
   "Phase 5 slash commands should be registered."
   (dolist (cmd-name '("models" "cost" "index" "self-modify" "image"
                       "cultivar"
-                      "extensions-asdf" "perf" "spawn" "approvals"))
+                      "extensions-asdf" "perf" "spawn" "approvals"
+                      "worktree-handoff"))
     (is-true (amoebum:find-slash-command cmd-name)
              "Expected slash command /~A to be registered." cmd-name)))
 
@@ -1505,6 +1506,9 @@
     (let ((agent
             (amoebum:spawn-swarm-agent
              "long swarm task"
+             :worktree (amoebum:make-worktree-metadata
+                        :id "wt-swarm-1"
+                        :branch "sw4rm/demo/node-1")
              :runner (lambda (runner-agent)
                        (loop repeat 200 do
                          (sleep 0.01)
@@ -1519,6 +1523,8 @@
               (is (search "Running agents (1):" output))
               (is (search "swarm-1" output))
               (is (search "sw4rm" output))
+              (is (search "wt-swarm-1" output))
+              (is (search "sw4rm/demo/node-1" output))
               (is (search "long swarm task" output))))
         (amoebum:kill-swarm-agent (amoebum:swarm-agent-id agent))))))
 

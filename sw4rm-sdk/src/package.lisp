@@ -507,8 +507,12 @@ See documentation/protocol/spec.md for the canonical protocol specification.")
    #:git-worktree-list
    #:git-worktree-coordinator
    #:make-git-worktree-coordinator
+   #:remote-worktree-coordinator
+   #:make-remote-worktree-coordinator
    #:spawn-worktree
    #:collect-worktree
+   #:inspect-worktree
+   #:merge-worktree
    #:kill-worktree))
 
 (defpackage #:sw4rm-sdk.handoff

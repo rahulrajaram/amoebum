@@ -16,6 +16,7 @@
          (amoebum::*user-handoff-client* nil)
          (amoebum::*user-negotiation-client* nil)
          (amoebum::*user-handoff-sequence* 0)
+         (amoebum::*user-handoff-details* (make-hash-table :test #'equal))
          (amoebum::*user-coordination-lock*
           (bordeaux-threads:make-lock "user-coordination-test-lock")))
      ,@body))
@@ -63,6 +64,80 @@
         (is (eq :completed (getf completed :status))))
       (let ((status (amoebum:user-handoff-status handoff-id)))
         (is (eq :completed (getf status :status)))))))
+
+(test completed-handoff-status-carries-mergeable-result-and-provenance
+  "Completed handoffs should expose structured result, trace, and conversation-merge payloads."
+  (with-fresh-user-coordination ()
+    (amoebum:register-user-session-peer "session-from" :user-id "alice")
+    (amoebum:register-user-session-peer "session-to" :user-id "bob")
+    (let* ((response (amoebum:handoff-between-users
+                      "session-from"
+                      "session-to"
+                      "Need a delegate reviewer"
+                      :context '(:notes "preserve provenance")))
+           (handoff-id (getf response :handoff-id))
+           (_accepted (amoebum:accept-user-handoff handoff-id))
+           (completed (amoebum:complete-user-handoff
+                       handoff-id
+                       :summary "Delegate landed a review plan."
+                       :result-payload '(:summary "Delegate landed a review plan."
+                                         :artifacts ("plan.md"))
+                       :diagnostics '((:severity :warning :message "One flaky check remains"))
+                       :budget-spent '(:tokens 42 :wall-time-ms 900)
+                       :provenance '(:worker-id "delegate-7" :backend :codex)))
+           (status (amoebum:user-handoff-status handoff-id))
+           (merge (getf status :conversation-merge))
+           (trace (getf status :delegation-trace)))
+      (declare (ignore _accepted))
+      (is (eq :completed (getf completed :status)))
+      (is (string= "Delegate landed a review plan." (getf status :summary)))
+      (is (equal '(:summary "Delegate landed a review plan."
+                   :artifacts ("plan.md"))
+                 (getf status :result-payload)))
+      (is (= 1 (length (getf status :diagnostics))))
+      (is (= 42 (getf (getf status :budget-spent) :tokens)))
+      (is (listp trace))
+      (is (= 3 (length trace)))
+      (is (eq :completed (getf merge :status)))
+      (is (string= "Delegate landed a review plan." (getf merge :summary)))
+      (is (= 1 (length (getf merge :messages))))
+      (is (string= "assistant"
+                   (getf (first (getf merge :messages)) :role)))
+      (is (string= "delegate-7"
+                   (getf (getf (getf status :delegation-provenance) :outcome)
+                         :worker-id))))))
+
+(test rejected-handoff-status-carries-partial-result-diagnostics
+  "Rejected handoffs should keep partial results and diagnostics for fallback handling."
+  (with-fresh-user-coordination ()
+    (amoebum:register-user-session-peer "session-from" :user-id "alice")
+    (amoebum:register-user-session-peer "session-to" :user-id "bob")
+    (let* ((response (amoebum:handoff-between-users
+                      "session-from"
+                      "session-to"
+                      "Need a fallback reviewer"))
+           (handoff-id (getf response :handoff-id))
+           (rejected (amoebum:reject-user-handoff
+                      handoff-id
+                      "overloaded"
+                      :rejection-code sw4rm-sdk:+overloaded+
+                      :partial-result '(:summary "Collected partial notes."
+                                        :notes ("failing-spec"))
+                      :diagnostics '((:severity :error :message "delegate overloaded"))
+                      :provenance '(:worker-id "delegate-9")))
+           (status (amoebum:user-handoff-status handoff-id))
+           (merge (getf status :conversation-merge)))
+      (is (eq :rejected (getf rejected :status)))
+      (is (equal '(:summary "Collected partial notes."
+                   :notes ("failing-spec"))
+                 (getf status :partial-result)))
+      (is (= 1 (length (getf status :diagnostics))))
+      (is (eq :rejected (getf merge :status)))
+      (is (equal (getf status :partial-result)
+                 (getf merge :partial-result)))
+      (is (string= "delegate-9"
+                   (getf (getf (getf status :delegation-provenance) :outcome)
+                         :worker-id))))))
 
 (test handoff-rejection-preserves-sw4rm-metadata
   "Rejected handoffs should keep rejection metadata and clear the pending queue."
@@ -153,11 +228,166 @@
                   :notes "safe"))
       (let* ((pending (amoebum:get-user-pending-handoffs "session-bob"))
              (request (first pending))
-             (context (getf request :context-snapshot)))
+             (context (getf request :context-packet)))
         (is (= 1 (length pending)))
         (is (listp context))
-        (is (null (getf context :provider-secrets)))
-        (is (string= "safe" (getf context :notes)))))))
+        (is (string= "coding-task-context" (getf context :packet-kind)))
+        (is (null (getf (getf context :extras) :provider-secrets)))
+        (is (string= "safe" (getf (getf context :extras) :notes)))))))
+
+(test handoff-context-packet-captures-structured-coding-state
+  "Delegated coding handoffs should ship a structured context packet."
+  (with-fresh-user-coordination ()
+    (let* ((tmp-root (%make-temp-directory "handoff-context-packet"))
+           (project-root (uiop:ensure-directory-pathname
+                          (merge-pathnames #P"project/" tmp-root)))
+           (global-memory (merge-pathnames #P"home/.amoebum/memory/MEMORY.md" tmp-root))
+           (project-memory (merge-pathnames #P".amoebum/MEMORY.md" project-root))
+           (backend (amoebum:make-file-memory-backend
+                     :project-root project-root
+                     :global-path global-memory
+                     :project-path project-memory))
+           (conversation (amoebum::make-conversation-state
+                          :project-root project-root
+                          :session-id "session-author"))
+           (worktree (amoebum:make-worktree-metadata
+                      :id "wt-378"
+                      :branch "sw4rm/nxt-378/context-packet"
+                      :path (namestring project-root)))
+           (amoebum:*ide-context*
+             (amoebum:make-ide-context
+              :active-file "amoebum/src/swarm.lisp"
+              :open-files '("amoebum/src/swarm.lisp" "amoebum/test/user-coordination-test.lisp")
+              :selections '((:file "amoebum/src/swarm.lisp"
+                             :start 740
+                             :end 810
+                             :text "handoff-between-users"))
+              :diagnostics '((:severity "warning" :message "context packet missing")))))
+      (unwind-protect
+           (progn
+             (amoebum::conversation-state-add-message
+              conversation
+              (pseudopod:make-message :role "user"
+                                      :content "Please review the handoff seam.")
+              :save-p nil)
+             (amoebum::conversation-state-add-message
+              conversation
+              (pseudopod:make-message :role "assistant"
+                                      :content "I am collecting git, memory, and worktree context.")
+              :save-p nil)
+             (amoebum:memory-store backend "handoff-policy" "Ship structured packets." :scope :project :source :test)
+             (amoebum:memory-store backend "verification" "Run focused suites first." :scope :session :source :test)
+             (amoebum:register-user-session-peer "session-author" :user-id "author")
+             (amoebum:register-user-session-peer "session-reviewer" :user-id "reviewer")
+             (amoebum:handoff-between-users
+              "session-author"
+              "session-reviewer"
+              "Review the delegation packet"
+              :context (list :conversation conversation
+                             :memory-backend backend
+                             :worktree worktree
+                             :project-root project-root
+                             :notes "keep context structured")
+              :budget (list :deadline-epoch-ms (+ (sw4rm-sdk::current-time-ms) 10000)
+                            :context-max-bytes 8192))
+             (let* ((pending (amoebum:get-user-pending-handoffs "session-reviewer"))
+                    (request (first pending))
+                    (snapshot (getf request :context-snapshot))
+                    (packet (getf request :context-packet))
+                    (conversation-packet (getf packet :conversation))
+                    (files-packet (getf packet :files))
+                    (git-packet (getf packet :git))
+                    (memory-packet (getf packet :memory))
+                    (worktree-packet (getf packet :worktree)))
+               (is (= 1 (length pending)))
+               (is (stringp snapshot))
+               (is (listp packet))
+               (is (= 1 (getf packet :schema-version)))
+               (is (string= "coding-task-context" (getf packet :packet-kind)))
+               (is (listp conversation-packet))
+               (is (= 2 (getf conversation-packet :entry-count)))
+               (is (= 2 (length (getf conversation-packet :entries))))
+               (is (string= "amoebum/src/swarm.lisp"
+                            (getf files-packet :active-file)))
+               (is (stringp (getf git-packet :branch)))
+               (is (listp memory-packet))
+               (is (>= (getf memory-packet :project-count) 1))
+               (is (>= (getf memory-packet :session-count) 1))
+               (is (string= "wt-378" (getf worktree-packet :id)))
+               (is (string= "keep context structured"
+                            (getf (getf packet :extras) :notes)))))
+        (%delete-directory-tree-safe tmp-root)))))
+
+(test handoff-context-packet-stays-deserializable-under-tight-budget
+  "Budget-aware compression should keep the handoff packet structured and parseable."
+  (with-fresh-user-coordination ()
+    (let* ((tmp-root (%make-temp-directory "handoff-context-tight"))
+           (project-root (uiop:ensure-directory-pathname
+                          (merge-pathnames #P"project/" tmp-root)))
+           (global-memory (merge-pathnames #P"home/.amoebum/memory/MEMORY.md" tmp-root))
+           (project-memory (merge-pathnames #P".amoebum/MEMORY.md" project-root))
+           (backend (amoebum:make-file-memory-backend
+                     :project-root project-root
+                     :global-path global-memory
+                     :project-path project-memory))
+           (conversation (amoebum::make-conversation-state
+                          :project-root project-root
+                          :session-id "session-author"))
+           (amoebum:*ide-context*
+             (amoebum:make-ide-context
+              :active-file "amoebum/src/swarm.lisp"
+              :open-files '("amoebum/src/swarm.lisp")
+              :selections (loop repeat 8
+                                collect (list :file "amoebum/src/swarm.lisp"
+                                              :start 1
+                                              :end 20
+                                              :text (make-string 160 :initial-element #\S)))
+              :diagnostics (loop repeat 8
+                                 collect (list :severity "warning"
+                                               :message (make-string 160 :initial-element #\D))))))
+      (unwind-protect
+           (progn
+             (loop repeat 10
+                   for index from 1 do
+                     (amoebum::conversation-state-add-message
+                      conversation
+                      (pseudopod:make-message
+                       :role (if (oddp index) "user" "assistant")
+                       :content (make-string 220 :initial-element
+                                             (if (oddp index) #\U #\A)))
+                      :save-p nil))
+             (loop repeat 8
+                   for index from 1 do
+                     (amoebum:memory-store backend
+                                           (format nil "entry-~D" index)
+                                           (make-string 120 :initial-element #\M)
+                                           :scope :project
+                                           :source :test))
+             (amoebum:register-user-session-peer "session-author" :user-id "author")
+             (amoebum:register-user-session-peer "session-reviewer" :user-id "reviewer")
+             (amoebum:handoff-between-users
+              "session-author"
+              "session-reviewer"
+              "Compress this handoff"
+              :context (list :conversation conversation
+                             :memory-backend backend
+                             :project-root project-root
+                             :notes (make-string 400 :initial-element #\N))
+              :budget (list :deadline-epoch-ms (+ (sw4rm-sdk::current-time-ms) 10000)
+                            :context-max-bytes 1400))
+             (let* ((request (first (amoebum:get-user-pending-handoffs "session-reviewer")))
+                    (snapshot (getf request :context-snapshot))
+                    (packet (getf request :context-packet))
+                    (conversation-packet (getf packet :conversation)))
+               (is (stringp snapshot))
+               (is (<= (length snapshot) 1400))
+               (is (listp packet))
+               (is (string= "coding-task-context" (getf packet :packet-kind)))
+               (is (<= (length (or (getf conversation-packet :entries) '()))
+                       (getf conversation-packet :entry-count)))
+               (is (<= (length (getf (getf packet :memory) :project))
+                       (getf (getf packet :memory) :project-count)))))
+        (%delete-directory-tree-safe tmp-root)))))
 
 (test negotiation-room-supports-multi-user-code-review
   "Negotiation room flow should support artifact submission and critique."
