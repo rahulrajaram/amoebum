@@ -1569,6 +1569,8 @@
            #:token-stream-request-cancel
            #:token-stream-force-reset-if-stuck
            #:token-stream-check-cancel
+           #:token-stream-transition
+           #:token-stream-set-target-message-index
            ;; YAML Theme System
            #:load-yaml-theme
            #:reload-yaml-theme-if-changed

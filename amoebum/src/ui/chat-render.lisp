@@ -722,9 +722,9 @@ Displays a truecolor gradient ASCII art logo for amoebum with color fills."
         (%invalidate-styled-lines-cache)
         (%sync-chat-context-usage! chat-state :allow-auto-compress-p nil)
         (when shifted-target-index
-          (setf (token-stream-state-target-message-index
-                 (chat-ui-state-stream-state chat-state))
-                shifted-target-index))
+          (token-stream-set-target-message-index
+           (chat-ui-state-stream-state chat-state)
+           shifted-target-index))
         shifted-target-index))))
 
 (defun %message-line-entries-for-one (chat-state message index safe-width is-last-p)

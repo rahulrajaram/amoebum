@@ -154,6 +154,8 @@
    (:file "src/tools/cultivar-tools")
    (:file "src/ui/approval-dialog")
    (:file "src/ui/style-table")
+   (:file "src/ui/streaming/token-stream")
+   (:file "src/ui/streaming/provider-runtime")
    (:file "src/ui/streaming")
    (:file "src/ui/theme-amoebum")
    (:file "src/ui/layout-yaml")
