@@ -177,6 +177,8 @@
    ;; tracking/execution, budget enforcement) extracted from chat.lisp.
    ;; Must load immediately after src/ui/chat-state and before src/ui/chat.
    (:file "src/ui/chat-stream")
+   (:file "src/ui/chat-render/transcript")
+   (:file "src/ui/chat-render/stream-overlays")
    ;; NXT-280: chat rendering subsystem extracted from chat.lisp.
    ;; Must load immediately after src/ui/chat-stream and before src/ui/chat.
    (:file "src/ui/chat-render")
