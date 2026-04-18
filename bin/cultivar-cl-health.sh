@@ -3,8 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-DEFAULT_CULTIVAR_BINARY="/home/rahul/Documents/cultivar/target/release/cultivar"
-CULTIVAR_BINARY_PATH="${CULTIVAR_BINARY:-${DEFAULT_CULTIVAR_BINARY}}"
+DEFAULT_CULTIVAR_BINARY="${HOME}/Documents/cultivar/target/release/cultivar"
+CULTIVAR_BINARY_PATH="${CULTIVAR_BINARY:-$(command -v cultivar 2>/dev/null || echo "${DEFAULT_CULTIVAR_BINARY}")}"
 
 find_health_root() {
   local candidate

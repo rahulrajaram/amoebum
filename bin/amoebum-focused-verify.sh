@@ -73,7 +73,7 @@ run_focused_suites() {
   local soft_timeout="$3"
   local silent_timeout="$4"
   local quicklisp_setup="${QUICKLISP_SETUP:-${HOME}/quicklisp/setup.lisp}"
-  local overwatch_bin="/home/rahul/.local/bin/overwatch"
+  local overwatch_bin="${OVERWATCH_BIN:-${HOME}/.local/bin/overwatch}"
   local -a runner
 
   if [[ -f "${REPO_ROOT}/ptui/.tools/quicklisp/setup.lisp" ]]; then
