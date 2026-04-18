@@ -156,6 +156,10 @@
    (:file "src/ui/style-table")
    (:file "src/ui/streaming/token-stream")
    (:file "src/ui/streaming/provider-runtime")
+   ;; NXT-383 fallback split: markdown renderer and event journal now own
+   ;; the independent ui/streaming clusters that chat-state/chat-stream use.
+   (:file "src/ui/streaming/markdown")
+   (:file "src/ui/streaming/event-journal")
    (:file "src/ui/streaming")
    (:file "src/ui/theme-amoebum")
    (:file "src/ui/layout-yaml")
