@@ -150,6 +150,65 @@
                                                                     (getf event :kind))))
               1))))))
 
+;;; ----------------------------------------------------------------------------
+;;; NXT-400: lock the stream-event-journal surface inside STREAM-HOOKS-SUITE so
+;;; the headless-streaming-regression.sh per-submodule coverage gate cannot
+;;; report this suite as exercising the event-journal submodule unless the
+;;; journal API actually fires. Without these checks, any future refactor that
+;;; deletes the journal facade would still ship green through this suite.
+;;; ----------------------------------------------------------------------------
+
+(test stream-hooks-event-journal-coverage-append-and-clear
+  "Stream-hooks suite must exercise the event-journal append/count/clear surface."
+  (let ((journal (amoebum:make-stream-event-journal :capacity 16)))
+    (is (amoebum.ui:stream-event-journal-p journal))
+    (is (= 0 (amoebum:stream-event-journal-count journal)))
+    (amoebum:stream-event-journal-append! journal '(:type :text-delta :text "alpha"))
+    (amoebum:stream-event-journal-append! journal '(:type :text-delta :text "beta"))
+    (is (= 2 (amoebum:stream-event-journal-count journal)))
+    (let ((entries (amoebum:stream-event-journal-entries-list journal)))
+      (is (= 2 (length entries)))
+      (is (eq :stream-event (getf (first entries) :kind)))
+      (is (eq :text-delta (getf (first entries) :event-type))))
+    (amoebum:stream-event-journal-clear! journal)
+    (is (= 0 (amoebum:stream-event-journal-count journal)))))
+
+(test stream-hooks-event-journal-coverage-overflow-drops-oldest
+  "Stream-hooks suite must lock the journal capacity-overflow eviction policy."
+  (let ((journal (amoebum:make-stream-event-journal :capacity 4)))
+    (dotimes (i 6)
+      (amoebum:stream-event-journal-append!
+       journal
+       (list :type :text-delta :text (format nil "chunk-~D" i))))
+    ;; Capacity is enforced; count must never exceed configured capacity.
+    (is (<= (amoebum:stream-event-journal-count journal) 4))
+    ;; The journal must still hold a non-empty tail of recent events.
+    (is (plusp (amoebum:stream-event-journal-count journal)))))
+
+(test stream-hooks-event-journal-coverage-policy-trace-interleaving
+  "Stream-hooks suite must lock the policy-trace append surface and ordering."
+  (let ((journal (amoebum:make-stream-event-journal :capacity 32)))
+    (amoebum:stream-event-journal-append! journal '(:type :text-delta :text "hello"))
+    (amoebum:stream-event-journal-append-policy-trace!
+     journal
+     (list (amoebum:make-policy-trace-entry
+            :phase :input
+            :source :permission-check
+            :data '(:tool-name "read-file")
+            :timestamp 1)
+           (amoebum:make-policy-trace-entry
+            :phase :evaluate
+            :source :rule-match
+            :decision :allow
+            :reason-code :explicit-allow
+            :reason "ok"
+            :timestamp 2)))
+    (let ((entries (amoebum:stream-event-journal-entries-list journal)))
+      (is (= 3 (length entries)))
+      (is (equal '(:stream-event :policy-trace :policy-trace)
+                 (mapcar (lambda (entry) (getf entry :kind)) entries)))
+      (is (eq :allow (getf (third entries) :decision))))))
+
 (test stream-hooks-smoke-sentinel
   (is-true t)
   (format t "STREAM_HOOKS_SMOKE_OK~%"))

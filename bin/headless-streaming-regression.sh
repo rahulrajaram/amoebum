@@ -353,12 +353,181 @@ run_mode() {
   return "$status"
 }
 
+## ---------------------------------------------------------------------------
+## NXT-400: per-submodule streaming coverage gates
+##
+## Each ui/streaming/* submodule produced by NXT-382/NXT-383 must exercise its
+## intended surface before the wave can close. We invoke one FiveAM suite per
+## submodule, parse the "Did N checks. Pass: N" line emitted by `run!`, and
+## emit a machine-greppable verdict per submodule. The top-level
+## `I333_HEADLESS_HARNESS_SELF_TEST_OK` marker only fires if every submodule
+## verdict is OK; otherwise we emit a `..._FAIL` marker and exit non-zero so
+## downstream callers (yarli verify, focused-verify, CI) fail loudly.
+##
+## Suite mapping (intentionally pinned — do not silently re-route):
+##   token-state      -> TOKEN-STREAM-TRANSITION-TABLE-SUITE
+##   markdown         -> INCREMENTAL-MARKDOWN-SUITE
+##   provider-runtime -> STREAMING-STEP-SUITE
+##   event-journal    -> STREAM-HOOKS-SUITE
+## ---------------------------------------------------------------------------
+
+resolve_quicklisp_setup() {
+  local default_path="${HOME}/quicklisp/setup.lisp"
+  if [[ -n "${QUICKLISP_SETUP:-}" && -f "${QUICKLISP_SETUP}" ]]; then
+    printf '%s\n' "${QUICKLISP_SETUP}"
+    return 0
+  fi
+  if [[ -f "${REPO_ROOT}/ptui/.tools/quicklisp/setup.lisp" ]]; then
+    printf '%s\n' "${REPO_ROOT}/ptui/.tools/quicklisp/setup.lisp"
+    return 0
+  fi
+  if [[ -f "${default_path}" ]]; then
+    printf '%s\n' "${default_path}"
+    return 0
+  fi
+  return 1
+}
+
+run_focused_streaming_suite() {
+  # Args: <suite-name> <log-file>
+  # Runs a single AMOEBUM/TEST FiveAM suite via a temp .lisp helper.
+  # Avoids `--script /dev/stdin` which silently no-ops on Debian SBCL 2.2.9.
+  # Exits with the SBCL process exit code (0 if all checks pass, 1 otherwise).
+  local suite_name="$1"
+  local log_file="$2"
+  local quicklisp_setup
+  quicklisp_setup="$(resolve_quicklisp_setup)" || die "quicklisp setup not found (set QUICKLISP_SETUP=...)"
+  command -v sbcl >/dev/null 2>&1 || die "sbcl not found on PATH"
+
+  local helper_lisp
+  helper_lisp="$(mktemp -t headless-streaming-suite-XXXXXX.lisp)"
+  cat >"${helper_lisp}" <<LISP
+(let* ((argv (or #+sbcl sb-ext:*posix-argv* #-sbcl nil))
+       (suite-spec (or (and argv (second argv)) ""))
+       (repo-root-arg (or (and argv (third argv)) ""))
+       (quicklisp-arg (or (and argv (fourth argv)) ""))
+       (repo-root (and (plusp (length repo-root-arg))
+                       (truename repo-root-arg))))
+  (unless repo-root
+    (error "Unable to resolve repository root from ~S" repo-root-arg))
+  (unless (plusp (length suite-spec))
+    (error "Suite name argument required."))
+  (load quicklisp-arg)
+  (require :asdf)
+  (let* ((asdf-pkg (or (find-package "ASDF")
+                       (error "Missing package ASDF")))
+         (load-asd-fn (symbol-function (or (find-symbol "LOAD-ASD" asdf-pkg)
+                                           (error "Missing ASDF LOAD-ASD"))))
+         (load-system-fn (symbol-function (or (find-symbol "LOAD-SYSTEM" asdf-pkg)
+                                              (error "Missing ASDF LOAD-SYSTEM"))))
+         (warn-sym (or (find-symbol "*COMPILE-FILE-WARNINGS-BEHAVIOUR*" asdf-pkg)
+                       (find-symbol "*COMPILE-FILE-WARNINGS-BEHAVIOR*" asdf-pkg))))
+    (when warn-sym
+      (setf (symbol-value warn-sym) :ignore))
+    (dolist (asd-path '("pseudopod/pseudopod.asd"
+                        "sw4rm-sdk/sw4rm-sdk.asd"
+                        "ptui/ptui.asd"
+                        "amoebum/amoebum.asd"))
+      (funcall load-asd-fn (merge-pathnames asd-path repo-root)))
+    (funcall load-system-fn :amoebum/test))
+  (let* ((run-fn (symbol-function (or (find-symbol "RUN!" "IT.BESE.FIVEAM")
+                                      (error "Missing FiveAM RUN!"))))
+         (suite-symbol (or (find-symbol suite-spec "AMOEBUM/TEST")
+                           (error "Missing AMOEBUM/TEST suite ~S" suite-spec)))
+         (status (funcall run-fn suite-symbol)))
+    (unless status
+      (sb-ext:exit :code 1))))
+LISP
+
+  local exit_code=0
+  set +e
+  sbcl --noinform --non-interactive --load "${helper_lisp}" \
+    "${suite_name}" "${REPO_ROOT}" "${quicklisp_setup}" \
+    >"${log_file}" 2>&1
+  exit_code=$?
+  set -e
+
+  rm -f "${helper_lisp}"
+  return "${exit_code}"
+}
+
+extract_suite_check_count() {
+  # Parse "Did N check(s)." line emitted by FiveAM detailed-text-explainer.
+  local log_file="$1"
+  if [[ ! -s "${log_file}" ]]; then
+    echo "0"
+    return
+  fi
+  awk '/Did[[:space:]]+[0-9]+[[:space:]]+check/ {
+         for (i = 1; i <= NF; i++) {
+           if ($i == "Did") {
+             gsub(/[^0-9]/, "", $(i+1))
+             print $(i+1)
+             exit
+           }
+         }
+       }' "${log_file}"
+}
+
+extract_suite_pass_status() {
+  # Verify "Pass: N (100%)" appears AND no "Fail: <nonzero>" appears.
+  # Returns 0 if suite passed cleanly, 1 otherwise.
+  local log_file="$1"
+  [[ -s "${log_file}" ]] || return 1
+  local fail_count
+  fail_count="$(awk '/Fail:[[:space:]]+[0-9]+/ {
+                       for (i = 1; i <= NF; i++) {
+                         if ($i == "Fail:") { gsub(/[^0-9]/, "", $(i+1)); print $(i+1); exit }
+                       }
+                     }' "${log_file}")"
+  if [[ -n "${fail_count}" && "${fail_count}" != "0" ]]; then
+    return 1
+  fi
+  grep -Eq 'Pass:[[:space:]]+[0-9]+[[:space:]]+\(100' "${log_file}"
+}
+
+run_submodule_coverage_gate() {
+  # Args: <submodule-label> <suite-name> <verdict-marker-prefix>
+  # Emits one verdict line on success or failure. Returns 0/1.
+  local submodule="$1"
+  local suite_name="$2"
+  local marker_prefix="$3"
+  local log_file
+  log_file="$(mktemp -t headless-streaming-${submodule}-XXXXXX.log)"
+
+  local sbcl_status=0
+  run_focused_streaming_suite "${suite_name}" "${log_file}" || sbcl_status=$?
+
+  local checks
+  checks="$(extract_suite_check_count "${log_file}")"
+  : "${checks:=0}"
+
+  if [[ "${sbcl_status}" -ne 0 ]] || ! extract_suite_pass_status "${log_file}"; then
+    echo "${marker_prefix}_FAIL submodule=${submodule} suite=${suite_name} checks=${checks} sbcl_exit=${sbcl_status}"
+    echo "---- last 40 lines of ${log_file} ----" >&2
+    tail -n 40 "${log_file}" >&2 || true
+    return 1
+  fi
+
+  if [[ "${checks}" -eq 0 ]]; then
+    # A suite that passes with zero checks is the exact failure mode this
+    # gate is built to catch — refuse to call it green.
+    echo "${marker_prefix}_FAIL submodule=${submodule} suite=${suite_name} checks=0 reason=zero-checks-passed"
+    return 1
+  fi
+
+  echo "${marker_prefix}_OK submodule=${submodule} suite=${suite_name} checks=${checks}"
+  rm -f "${log_file}"
+  return 0
+}
+
 self_test_mode() {
   local fixture_dir out_dir
   fixture_dir="${REPO_ROOT}/tests/fixtures/streaming-regression"
   out_dir="${REPO_ROOT}/tmp/i333-self-test-$$"
   mkdir -p "$out_dir"
 
+  ## --- Existing fixture-based verdict checks (preserved) -------------------
   "$0" --analyze \
     --journal-file "${fixture_dir}/silent-completion.jsonl" \
     --verdict-out "${out_dir}/silent.json" \
@@ -374,6 +543,30 @@ self_test_mode() {
     --journal-file "${fixture_dir}/explicit-error.jsonl" \
     --verdict-out "${out_dir}/error.json" >/dev/null
   jq -e '.outcome == "explicit-error" and .contract_valid == true' "${out_dir}/error.json" >/dev/null
+
+  ## --- NXT-400: per-submodule streaming coverage gates ---------------------
+  ## Suite mapping is intentionally pinned. Adding a new ui/streaming/*
+  ## submodule should grow this list, never silently re-route an existing one.
+  local submodule_specs=(
+    "token-state|TOKEN-STREAM-TRANSITION-TABLE-SUITE|STREAMING_COVERAGE_TOKEN_STATE"
+    "markdown|INCREMENTAL-MARKDOWN-SUITE|STREAMING_COVERAGE_MARKDOWN"
+    "provider-runtime|STREAMING-STEP-SUITE|STREAMING_COVERAGE_PROVIDER_RUNTIME"
+    "event-journal|STREAM-HOOKS-SUITE|STREAMING_COVERAGE_EVENT_JOURNAL"
+  )
+
+  local any_failed=0
+  local spec submodule suite marker
+  for spec in "${submodule_specs[@]}"; do
+    IFS='|' read -r submodule suite marker <<<"${spec}"
+    if ! run_submodule_coverage_gate "${submodule}" "${suite}" "${marker}"; then
+      any_failed=1
+    fi
+  done
+
+  if [[ "${any_failed}" -ne 0 ]]; then
+    echo "I333_HEADLESS_HARNESS_SELF_TEST_FAIL reason=submodule-coverage-gate"
+    return 1
+  fi
 
   echo "I333_HEADLESS_HARNESS_SELF_TEST_OK"
 }

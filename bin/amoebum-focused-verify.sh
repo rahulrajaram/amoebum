@@ -266,6 +266,11 @@ verify_policy() {
 verify_ui() {
   run_cmd timeout 120 ./bin/check-import-cycles.sh
   run_focused_suites "STREAMING-STEP-SUITE,STREAMING-BUDGET-SUITE,INCREMENTAL-MARKDOWN-SUITE,CHAT-SNAPSHOT-SUITE,APPROVAL-DIALOG-GUARD-SUITE,KEYBOARD-NAV-SUITE" 1800 1800 300
+  # NXT-400: per-submodule streaming coverage gate. The harness emits one
+  # STREAMING_COVERAGE_<MODULE>_OK verdict per intended ui/streaming submodule
+  # (token-state, markdown, provider-runtime, event-journal) and only then
+  # emits the top-level I333_HEADLESS_HARNESS_SELF_TEST_OK marker.
+  run_cmd timeout 600 ./bin/headless-streaming-regression.sh --self-test
 }
 
 verify_extensions() {
