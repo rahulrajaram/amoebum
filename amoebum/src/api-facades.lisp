@@ -70,7 +70,7 @@ existing callers using the amoebum: qualifier continue to work."
   target-package)
 
 (defparameter +amoebum-root-export-max+
-  1248
+  1250
   "No-growth ceiling for the root :amoebum export surface after the package split.
 
 NXT-414 ratchet rationale: pre-reconciliation the declared export list in
@@ -81,9 +81,14 @@ time) AND the ceiling was tighter than reality. Reconciling package.lisp
 against the facade manifests does not change the live surface (verified
 byte-identical pre/post via diff of `external-symbols of :amoebum`); it only
 deletes ~1000 ghost `#:` lines. We therefore ratchet the ceiling to the
-honest live count (1248) — this both reflects ground truth and re-enables
-the audit script which was previously misconfigured to a count below
-reality.")
+honest live count.
+
+2026-04-22 follow-on bump (1248 → 1250): NXT-382's prior streaming.lisp
+extraction (token-stream submodule with the new `Result`-returning pure
+reducer) landed two new public symbols on root — `token-stream-transition`
+and `token-stream-set-target-message-index` — that NXT-414's worktree
+(based on the pre-NXT-382 baseline) did not measure. Bumped to 1250 to
+match the post-merge live count.")
 
 (defparameter +amoebum-package-surface-groups+
   (list (list :group :ui

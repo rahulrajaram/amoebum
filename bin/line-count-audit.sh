@@ -70,7 +70,7 @@ EOF
       ;;
     facades)
       cat <<'EOF'
-facades|amoebum/src/api-facades.lisp|192
+facades|amoebum/src/api-facades.lisp|197
 facades|amoebum/src/api-facades/operator-domains.lisp|546
 facades|amoebum/src/api-facades/runtime-domains.lisp|492
 facades|amoebum/src/api-facades/infrastructure-domains.lisp|459
