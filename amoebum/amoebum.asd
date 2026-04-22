@@ -116,8 +116,30 @@
    (:file "src/compile-validation")
    (:file "src/macros/deftool")
    (:file "src/macros/defhook")
+   ;; NXT-393: defkeys module split. Submodules load in dependency order
+   ;; (parser/registry/dispatch/expansion) before the residual
+   ;; `macros/defkeys` facade and the builtin keymap definitions, so the
+   ;; `defkeys` macroexpansion sees every helper (%parse-key-spec,
+   ;; register-key-binding, register-keymap) at load time.
+   (:file "src/macros/defkeys/parser")
+   (:file "src/macros/defkeys/registry")
+   (:file "src/macros/defkeys/dispatch")
+   (:file "src/macros/defkeys/expansion")
    (:file "src/macros/defkeys")
+   (:file "src/macros/defkeys/builtins")
+   ;; NXT-392: defskill module split. Submodules load in dependency order
+   ;; (registry/runtime/tool-invocation/review/expansion) before the residual
+   ;; `macros/defskill` facade and the builtin skill definitions, so the
+   ;; `defskill` macroexpansion sees every helper (register-skill,
+   ;; %skill-missing-required-arguments, %skill-default-completer, ...) at
+   ;; load time.
+   (:file "src/macros/defskill/registry")
+   (:file "src/macros/defskill/runtime")
+   (:file "src/macros/defskill/tool-invocation")
+   (:file "src/macros/defskill/review")
+   (:file "src/macros/defskill/expansion")
    (:file "src/macros/defskill")
+   (:file "src/macros/defskill/builtins")
    (:file "src/indexer")
    (:file "src/conditions")
    (:file "src/mcp/jsonrpc")

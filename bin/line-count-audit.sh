@@ -124,8 +124,19 @@ EOF
       ;;
     macros)
       cat <<'EOF'
-macros|amoebum/src/macros/defskill.lisp|1001
-macros|amoebum/src/macros/defkeys.lisp|910
+macros|amoebum/src/macros/defskill.lisp|50
+macros|amoebum/src/macros/defskill/registry.lisp|150
+macros|amoebum/src/macros/defskill/runtime.lisp|120
+macros|amoebum/src/macros/defskill/tool-invocation.lisp|140
+macros|amoebum/src/macros/defskill/review.lisp|420
+macros|amoebum/src/macros/defskill/expansion.lisp|320
+macros|amoebum/src/macros/defskill/builtins.lisp|180
+macros|amoebum/src/macros/defkeys.lisp|60
+macros|amoebum/src/macros/defkeys/parser.lisp|440
+macros|amoebum/src/macros/defkeys/registry.lisp|300
+macros|amoebum/src/macros/defkeys/dispatch.lisp|240
+macros|amoebum/src/macros/defkeys/expansion.lisp|150
+macros|amoebum/src/macros/defkeys/builtins.lisp|70
 macros|amoebum/src/macros/deftool.lisp|760
 EOF
       ;;
