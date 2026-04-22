@@ -150,6 +150,14 @@
    (:file "src/tools/search")
    (:file "src/tools/search-orchestration")
    (:file "src/tools/web")
+   ;; NXT-390: shell module split — env/runtime/background submodules load
+   ;; before the residual `tools/shell` facade so the deftool form can call
+   ;; the extracted helpers (%normalize-*, %prepare-shell-runtime, %persist-
+   ;; shell-directory, %run-shell-command, %start-background-shell-task,
+   ;; %list/cleanup/fetch-shell-tasks).
+   (:file "src/tools/shell/env")
+   (:file "src/tools/shell/runtime")
+   (:file "src/tools/shell/background")
    (:file "src/tools/shell")
    (:file "src/tools/write-safety")
    (:file "src/tools/edit-validation")

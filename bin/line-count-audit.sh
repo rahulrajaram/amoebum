@@ -115,7 +115,10 @@ EOF
       ;;
     shell)
       cat <<'EOF'
-shell|amoebum/src/tools/shell.lisp|1094
+shell|amoebum/src/tools/shell.lisp|300
+shell|amoebum/src/tools/shell/env.lisp|260
+shell|amoebum/src/tools/shell/runtime.lisp|650
+shell|amoebum/src/tools/shell/background.lisp|260
 EOF
       ;;
     macros)
