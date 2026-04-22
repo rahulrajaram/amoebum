@@ -13,7 +13,7 @@ Usage:
 
 Profiles:
   worktrees  Worktree/runtime and operator dashboard seam checks.
-  packages   Package/load-order seam checks.
+  packages   Package/load-order seam checks (incl. NXT-398 export goldens).
   state      Conversation/checkpoint seam checks.
   policy     Plan-execution/permissions seam checks.
   ui         UI streaming/chat-render seam checks.
@@ -228,12 +228,28 @@ verify_packages() {
   run_cmd timeout 120 ./bin/check-import-cycles.sh
   run_cmd timeout 240 make build
   run_cmd timeout 180 ./bin/package-surface-audit.sh
+  run_package_export_goldens
   run_focused_suites "WORKTREE-RUNTIME-SUITE,WORKER-SUPERVISOR-SUITE" 1200 1200 300
   run_plan_validate
 }
 
 verify_cycles() {
   run_cmd timeout 120 ./bin/check-import-cycles.sh
+}
+
+run_package_export_goldens() {
+  # NXT-398: subsystem-level public-symbol stability fixture.
+  # The script is standalone — it bootstraps Quicklisp + ASDF, loads :amoebum,
+  # then compares each target package's external symbols against a checked-in
+  # golden under amoebum/test/snapshots/package-exports/. Set
+  # AMOEBUM_UPDATE_SNAPSHOTS=1 in the environment to refresh goldens after a
+  # deliberate facade change.
+  echo "==> package-export goldens (NXT-398)"
+  (
+    cd "${REPO_ROOT}"
+    timeout 600 sbcl --noinform \
+      --script amoebum/test/package-export-golden-test.lisp
+  )
 }
 
 verify_state() {

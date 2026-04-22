@@ -1,0 +1,6 @@
+;; package-exports golden: amoebum.memory
+;; status: empty (intentional stub)
+;; reason: Subsystem package not yet registered; placeholder for future split.
+;; If a future subsystem split registers this package, this golden
+;; will fail and the implementer must rerun with
+;; AMOEBUM_UPDATE_SNAPSHOTS=1 to capture the new public surface.

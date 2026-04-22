@@ -1,0 +1,2 @@
+amoebum.commands.permissions:%PERMISSIONS-ARG-COMPLETER
+amoebum.commands.permissions:%PERMISSIONS-HANDLER

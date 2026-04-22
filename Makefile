@@ -1,4 +1,4 @@
-.PHONY: build test test-ptui test-amoebum yarli-bootstrap-validate install-wrapper-validate check check-parens check-dist-ignore check-import-cycles prepare-quicklisp-compat clean
+.PHONY: build test test-ptui test-amoebum yarli-bootstrap-validate install-wrapper-validate check check-parens check-dist-ignore check-import-cycles check-package-export-goldens prepare-quicklisp-compat clean
 
 REPO_ROOT := $(CURDIR)
 QUICKLISP_SETUP ?= $(HOME)/quicklisp/setup.lisp
@@ -79,11 +79,22 @@ check-parens:
 check-dist-ignore:
 	bash ./bin/check-dist-ignore.sh
 
+# NXT-398: Subsystem-level public-symbol stability fixture. Runs the
+# standalone package-export golden script which loads :amoebum, gathers the
+# external symbols of each registered subsystem package, and diffs them
+# against the checked-in goldens under amoebum/test/snapshots/package-exports/.
+# Run with AMOEBUM_UPDATE_SNAPSHOTS=1 to refresh the goldens after a
+# deliberate facade change.
+check-package-export-goldens:
+	timeout 600 sbcl --noinform \
+	  --script amoebum/test/package-export-golden-test.lisp
+
 check:
 	$(MAKE) check-parens
 	$(MAKE) check-dist-ignore
 	$(MAKE) check-import-cycles
 	$(MAKE) test
+	$(MAKE) check-package-export-goldens
 	$(MAKE) build
 
 clean:
