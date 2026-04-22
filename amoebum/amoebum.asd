@@ -88,6 +88,10 @@
    (:file "src/extensions/manifest")
    (:file "src/extensions/permissions-prep")
    (:file "src/extensions/loader")
+   ;; NXT-387: hot-reload watch-thread runtime extracted from loader.lisp.
+   ;; Must load AFTER loader because the watch loop calls
+   ;; reload-user-extensions and reads loader-owned discovery helpers.
+   (:file "src/extensions/hot-reload")
    (:file "src/checkpoint")
    (:file "src/sounds")
    (:file "src/sounds/backend")

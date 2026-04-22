@@ -537,24 +537,10 @@
     (append (loop for file in global-files collect (cons :global file))
             (loop for file in project-files collect (cons :project file)))))
 
-(defun %rebuild-extension-watch-snapshot (&optional (paths *extension-last-discovered*))
-  (clrhash *extension-watch-snapshot*)
-  (dolist (entry *extension-load-report*)
-    (let ((manifest-path (extension-load-record-manifest-path entry))
-          (entry-point (extension-load-record-entry-point entry)))
-      (when (and (stringp manifest-path) (plusp (length (%extension-trim manifest-path))))
-        (push manifest-path paths))
-      (when (and (stringp entry-point)
-                 (plusp (length (%extension-trim entry-point)))
-                 (or (search ".lisp" entry-point :test #'char-equal)
-                     (search "/" entry-point :test #'char=)
-                     (search "\\" entry-point :test #'char=)))
-        (push entry-point paths))))
-  (dolist (path-text paths)
-    (when (plusp (length (%extension-trim path-text)))
-      (setf (gethash path-text *extension-watch-snapshot*)
-            (%safe-file-write-date path-text))))
-  *extension-watch-snapshot*)
+;; %REBUILD-EXTENSION-WATCH-SNAPSHOT moved to extensions/hot-reload.lisp
+;; (NXT-387). It owns *EXTENSION-WATCH-SNAPSHOT* alongside the watch
+;; thread; %FINALIZE-EXTENSION-LOADER-STATE invokes it as a forward
+;; reference (resolved at runtime when load-user-extensions runs).
 
 (defun load-user-extensions (&key project-root global-directory project-directory
                                   (start-hot-reload *extension-hot-reload-enabled-p*))
@@ -587,70 +573,8 @@
                         :project-directory project-directory
                         :start-hot-reload start-hot-reload))
 
-;;;; ---------------------------------------------------------------------
-;;;; Hot-reload watch loop. NXT-387 will extract the runtime watch thread
-;;;; into its own module; preserved here under NXT-386 so the seam stays
-;;;; small.
-
-(defun check-extension-hot-reload (&key project-root global-directory project-directory
-                                        (reload-on-change t)
-                                        (start-hot-reload *extension-hot-reload-enabled-p*))
-  (let* ((candidates (%collect-extension-candidates :project-root project-root
-                                                    :global-directory global-directory
-                                                    :project-directory project-directory))
-         (current-paths (mapcar (lambda (entry)
-                                  (%canonical-extension-path (cdr entry)))
-                                candidates))
-         (changed-p nil))
-    (dolist (path-text current-paths)
-      (let ((current (%safe-file-write-date path-text))
-            (previous (gethash path-text *extension-watch-snapshot* :__missing__)))
-        (when (or (eq previous :__missing__)
-                  (not (eql previous current)))
-          (setf changed-p t))))
-    (maphash (lambda (path-text _value)
-               (declare (ignore _value))
-               (unless (member path-text current-paths :test #'string-equal)
-                 (setf changed-p t)))
-             *extension-watch-snapshot*)
-    (when changed-p
-      (if reload-on-change
-          (progn
-            (reload-user-extensions :project-root project-root
-                                    :global-directory global-directory
-                                    :project-directory project-directory
-                                    :start-hot-reload start-hot-reload)
-            t)
-          (progn
-            (%rebuild-extension-watch-snapshot current-paths)
-            t)))))
-
-(defun start-extension-hot-reload (&key project-root global-directory project-directory)
-  (when (and *extension-hot-reload-thread*
-             (bordeaux-threads:thread-alive-p *extension-hot-reload-thread*))
-    (return-from start-extension-hot-reload *extension-hot-reload-thread*))
-  (setf *extension-hot-reload-running-p* t)
-  (setf *extension-hot-reload-thread*
-        (bordeaux-threads:make-thread
-         (lambda ()
-           (loop while *extension-hot-reload-running-p* do
-             (ignore-errors
-               (check-extension-hot-reload :project-root project-root
-                                           :global-directory global-directory
-                                           :project-directory project-directory
-                                           :reload-on-change t
-                                           :start-hot-reload nil))
-             (sleep (max 0.1d0 *extension-hot-reload-interval-seconds*))))
-         :name "amoebum-extension-hot-reload"))
-  *extension-hot-reload-thread*)
-
-(defun stop-extension-hot-reload ()
-  (let ((thread *extension-hot-reload-thread*))
-    (setf *extension-hot-reload-running-p* nil
-          *extension-hot-reload-thread* nil)
-    (when (and thread
-               (bordeaux-threads:thread-alive-p thread)
-               (not (eq thread (bordeaux-threads:current-thread))))
-      (ignore-errors
-        (bordeaux-threads:join-thread thread)))
-    t))
+;; CHECK-EXTENSION-HOT-RELOAD, START-EXTENSION-HOT-RELOAD, and
+;; STOP-EXTENSION-HOT-RELOAD moved to extensions/hot-reload.lisp
+;; (NXT-387). Public API is preserved; the watch-thread runtime now
+;; lives in its own module so loader.lisp can stay focused on the
+;; registry, load-orchestration, and Result pilot.
