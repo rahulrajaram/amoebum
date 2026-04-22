@@ -80,7 +80,12 @@ EOF
       cat <<'EOF'
 state|amoebum/src/conversation.lisp|1236
 state|amoebum/src/checkpoint.lisp|1667
-state|amoebum/src/memory.lisp|1168
+state|amoebum/src/memory.lisp|33
+state|amoebum/src/memory/backend.lisp|261
+state|amoebum/src/memory/file-store.lisp|429
+state|amoebum/src/memory/haake-adapter.lisp|425
+state|amoebum/src/memory/haake-transfer.lisp|287
+state|amoebum/src/memory/commands.lisp|239
 EOF
       ;;
     policy)

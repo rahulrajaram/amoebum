@@ -39,8 +39,14 @@
    (:file "src/ui/provider-dashboard")
    (:file "src/context")
    (:file "src/conversation")
-   (:file "src/memory")
+   ;; NXT-388: memory.lisp decomposed into backend / file-store /
+   ;; haake-adapter / haake-transfer / commands behind the residual facade.
+   (:file "src/memory/backend")
+   (:file "src/memory/file-store")
    (:file "src/memory/haake-adapter")
+   (:file "src/memory/haake-transfer")
+   (:file "src/memory/commands")
+   (:file "src/memory")
    (:file "src/plan-mode")
    (:file "src/policy-types")
    (:file "src/plan-execution")
