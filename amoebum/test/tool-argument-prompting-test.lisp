@@ -56,15 +56,21 @@
   (let ((original-toolset amoebum:*toolset*)
         (original-metadata (%i366-copy-hash-table amoebum::*tool-metadata*))
         (original-mode amoebum::*missing-tool-argument-recovery-mode*)
-        (tool-name "i366-required-interactive"))
+        (tool-name "i366-required-interactive")
+        (config (amoebum.config:current-config))
+        (original-project-root (amoebum.config:config-project-root
+                                (amoebum.config:current-config))))
     (unwind-protect
         (let* ((toolset (pseudopod:make-toolset))
+               (system-root (or (ignore-errors (truename (%amoebum-system-root)))
+                                (%amoebum-system-root)))
                (path (namestring
                       (merge-pathnames #P".tmp-test-work/i366-interactive.txt"
-                                       (%amoebum-system-root))))
+                                       system-root)))
               (input (make-string-input-stream
                       (format nil "~A~%" path)))
               (output (make-string-output-stream)))
+          (setf (amoebum.config:config-project-root config) system-root)
           (setf amoebum:*toolset* toolset
                 amoebum::*tool-metadata* (make-hash-table :test #'equal)
                 amoebum::*missing-tool-argument-recovery-mode* :prompt)
@@ -85,7 +91,8 @@
             (is-true (search "Enter value for path" prompt-text :test #'char-equal))))
       (setf amoebum:*toolset* original-toolset
             amoebum::*tool-metadata* original-metadata
-            amoebum::*missing-tool-argument-recovery-mode* original-mode))))
+            amoebum::*missing-tool-argument-recovery-mode* original-mode
+            (amoebum.config:config-project-root config) original-project-root))))
 
 (test i366-headless-missing-argument-returns-structured-error
   (let ((original-toolset amoebum:*toolset*)
