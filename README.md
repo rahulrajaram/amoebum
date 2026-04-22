@@ -210,10 +210,12 @@ Post-run memory sync:
 2. `make test-amoebum` runs Amoebum tests through ASDF.
 3. `make test` runs `test-ptui` then `test-amoebum`.
 4. `make check-dist-ignore` verifies `dist/` is ignored and still gitignored.
-5. `make check` runs `make check-dist-ignore`, then `make test`, then `make build`.
-6. `make build` uses `bin/build-binary.sh` and resolves `QUICKLISP_SETUP` with fallback.
-7. `make yarli-bootstrap-validate` recreates local `.yarli/tranches.toml` when needed and validates it with Yarli.
-8. `./bin/yarli-local-state-regression.sh` exercises the missing-tranches bootstrap and repo-wrapper help-path smoke cases.
+5. `make check-import-cycles` runs `bin/check-import-cycles.sh` (NXT-397) and refuses to build if any directed cycle exists in the amoebum package import graph. Also runs automatically as a `make build` prerequisite.
+6. `make check-package-export-goldens` (NXT-398) diffs the live `:amoebum` and per-subsystem external-symbol lists against the checked-in goldens under `amoebum/test/snapshots/package-exports/`. Run with `AMOEBUM_UPDATE_SNAPSHOTS=1` to refresh the goldens after a deliberate facade change.
+7. `make check` runs `check-parens`, `check-dist-ignore`, `check-import-cycles`, `test`, `check-package-export-goldens`, and `build`, in that order.
+8. `make build` uses `bin/build-binary.sh` and resolves `QUICKLISP_SETUP` with fallback.
+9. `make yarli-bootstrap-validate` recreates local `.yarli/tranches.toml` when needed and validates it with Yarli.
+10. `./bin/yarli-local-state-regression.sh` exercises the missing-tranches bootstrap and repo-wrapper help-path smoke cases.
 
 Guard script:
 
