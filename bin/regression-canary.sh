@@ -89,6 +89,15 @@ echo ""
 
 START_TS=$(date +%s)
 
+# NXT-416: capture stdout to a tee'd log so we can grep-assert the
+# REGRESSION_CANARY_OK sentinel below. This is belt-and-suspenders on top
+# of the existing exit-code check — if some future SBCL/heredoc/script
+# regression starts silently exiting 0 without running tests (the f-0730
+# / f-0731 / f-0732 friction pattern), the missing sentinel will catch
+# it.
+OUT_LOG="$(mktemp -t regression-canary-out-XXXXXX.log)"
+trap 'rm -f "${OUT_LOG}"' EXIT INT TERM
+
 set +e
 sbcl --noinform --non-interactive \
   --eval "(require :asdf)" \
@@ -138,9 +147,18 @@ sbcl --noinform --non-interactive \
               (fiveam:explain! results)
               (format t \"~&regression-canary: ran ~D test(s), ~D failure(s)~%\"
                       (length results) (length failed))
-              (uiop:quit (if ok 0 1))))"
-RC=$?
+              (when ok
+                (format t \"~&REGRESSION_CANARY_OK ran=~D failed=0~%\"
+                        (length results))
+                (finish-output))
+              (uiop:quit (if ok 0 1))))" 2>&1 | tee "${OUT_LOG}"
+RC=${PIPESTATUS[0]}
 set -e
+
+if [ "$RC" -eq 0 ] && ! grep -q '^REGRESSION_CANARY_OK ran=' "${OUT_LOG}"; then
+    echo "regression-canary: FAIL reason=sentinel-missing (tests did not actually execute)" >&2
+    RC=1
+fi
 
 END_TS=$(date +%s)
 ELAPSED=$((END_TS - START_TS))
