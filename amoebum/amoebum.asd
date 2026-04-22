@@ -357,7 +357,9 @@
    ;; NXT-232: Keyboard accessibility / focus navigation tests
    (:file "test/keyboard-nav-test")
    ;; NXT-233: TUI scale / stress tests
-   (:file "test/scroll-scale-test"))
+   (:file "test/scroll-scale-test")
+   ;; NXT-397: Package-import-cycle guardrail mirror in FiveAM.
+   (:file "test/import-cycles-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (unless (uiop:symbol-call :amoebum/test :run-all)

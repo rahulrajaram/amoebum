@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-PROFILES=(worktrees packages state policy ui extensions shell macros)
+PROFILES=(worktrees packages state policy ui extensions shell macros cycles)
 
 usage() {
   cat <<'EOF'
@@ -20,6 +20,7 @@ Profiles:
   extensions Extension loader/runtime seam checks.
   shell      Shell runtime/permission seam checks.
   macros     Macro expansion/validation seam checks.
+  cycles     Package-import-cycle guardrail (NXT-397).
   all        Run every profile.
 EOF
 }
@@ -224,10 +225,15 @@ verify_worktrees() {
 }
 
 verify_packages() {
+  run_cmd timeout 120 ./bin/check-import-cycles.sh
   run_cmd timeout 240 make build
   run_cmd timeout 180 ./bin/package-surface-audit.sh
   run_focused_suites "WORKTREE-RUNTIME-SUITE,WORKER-SUPERVISOR-SUITE" 1200 1200 300
   run_plan_validate
+}
+
+verify_cycles() {
+  run_cmd timeout 120 ./bin/check-import-cycles.sh
 }
 
 verify_state() {
@@ -242,10 +248,12 @@ verify_policy() {
 }
 
 verify_ui() {
+  run_cmd timeout 120 ./bin/check-import-cycles.sh
   run_focused_suites "STREAMING-STEP-SUITE,STREAMING-BUDGET-SUITE,INCREMENTAL-MARKDOWN-SUITE,CHAT-SNAPSHOT-SUITE,APPROVAL-DIALOG-GUARD-SUITE,KEYBOARD-NAV-SUITE" 1800 1800 300
 }
 
 verify_extensions() {
+  run_cmd timeout 120 ./bin/check-import-cycles.sh
   run_focused_suites "EXTENSION-LOADER-SUITE,EXTENSION-LIFECYCLE-SUITE,EXTENSION-DISCOVERY-SUITE,EXTENSION-MANIFEST-SUITE,EXTENSION-SECURITY-SUITE,EXTENSION-CLI-SUITE,ASDF-EXTENSIONS-SUITE" 1800 1800 300
 }
 
@@ -288,7 +296,9 @@ case "${profile}" in
   extensions) verify_extensions ;;
   shell) verify_shell ;;
   macros) verify_macros ;;
+  cycles) verify_cycles ;;
   all)
+    verify_cycles
     verify_worktrees
     verify_packages
     verify_state

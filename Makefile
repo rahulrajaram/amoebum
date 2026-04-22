@@ -1,4 +1,4 @@
-.PHONY: build test test-ptui test-amoebum yarli-bootstrap-validate install-wrapper-validate check check-parens check-dist-ignore prepare-quicklisp-compat clean
+.PHONY: build test test-ptui test-amoebum yarli-bootstrap-validate install-wrapper-validate check check-parens check-dist-ignore check-import-cycles prepare-quicklisp-compat clean
 
 REPO_ROOT := $(CURDIR)
 QUICKLISP_SETUP ?= $(HOME)/quicklisp/setup.lisp
@@ -13,8 +13,15 @@ endif
 QUICKLISP_COMPAT_SETUP := $(REPO_ROOT)/ptui/.tools/quicklisp/setup.lisp
 AMOEBUM_TEST_FAILURE_SUMMARY ?= $(REPO_ROOT)/tmp/amoebum-test-failures.log
 
-build:
+build: check-import-cycles
 	bash bin/build-binary.sh
+
+# NXT-397: Fail-fast guardrail. Refuses to build if any directed
+# cycle exists in the amoebum package import graph. Runs before the
+# heavyweight SBCL build so a stray :use/:import-from cycle introduced
+# by the post-delegation facade splits is caught in seconds.
+check-import-cycles:
+	bash bin/check-import-cycles.sh
 
 test:
 	$(MAKE) test-ptui
@@ -75,6 +82,7 @@ check-dist-ignore:
 check:
 	$(MAKE) check-parens
 	$(MAKE) check-dist-ignore
+	$(MAKE) check-import-cycles
 	$(MAKE) test
 	$(MAKE) build
 
