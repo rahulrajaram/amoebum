@@ -1,0 +1,1 @@
+amoebum.commands.history:%HISTORY-HANDLER

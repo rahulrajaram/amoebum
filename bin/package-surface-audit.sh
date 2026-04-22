@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# package-surface-audit.sh
+#
+# NXT-416: previously this wrapper invoked SBCL with
+# `sbcl --noinform --non-interactive --script /dev/stdin <<EOF ... EOF`.
+# On Debian SBCL 2.2.9, that pattern silently swallows the script body
+# and exits 0, meaning the audit script never actually executed and the
+# wrapper appeared to pass.
+#
+# The fix in this file:
+#   1. Replace `--script /dev/stdin <<EOF` with the working
+#      `--eval '(load "<tmpfile>")' --quit -- <args>` pattern.
+#   2. The Lisp body emits a sentinel:
+#        PACKAGE_SURFACE_AUDIT_OK groups=<n> root_exports=<n>
+#      after every group has been audited and passed.
+#   3. The bash wrapper greps stdout for that sentinel before exiting 0.
+#      If the sentinel is missing the wrapper exits non-zero with
+#        PACKAGE_SURFACE_AUDIT_FAIL reason=audit-did-not-execute
+#      so silent-pass cannot recur.
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 QUICKLISP_SETUP="${QUICKLISP_SETUP:-${HOME}/quicklisp/setup.lisp}"
@@ -17,7 +36,11 @@ fi
 [[ -f "${QUICKLISP_SETUP}" ]] || fail "quicklisp setup not found at ${QUICKLISP_SETUP}"
 command -v sbcl >/dev/null 2>&1 || fail "sbcl not found on PATH"
 
-timeout 180 sbcl --noinform --non-interactive --script /dev/stdin "${REPO_ROOT}" "${QUICKLISP_SETUP}" <<'EOF'
+RUNNER_SCRIPT="$(mktemp -t package-surface-audit-XXXXXX.lisp)"
+OUT_LOG="$(mktemp -t package-surface-audit-out-XXXXXX.log)"
+trap 'rm -f "${RUNNER_SCRIPT}" "${OUT_LOG}"' EXIT INT TERM
+
+cat > "${RUNNER_SCRIPT}" <<'LISP'
 (labels ((sorted-unique-symbol-names (symbol-names)
            (sort (remove-duplicates (copy-list symbol-names) :test #'string=) #'string<))
          (external-symbol-p (package-name symbol-name)
@@ -29,6 +52,11 @@ timeout 180 sbcl --noinform --non-interactive --script /dev/stdin "${REPO_ROOT}"
              (do-external-symbols (_ (find-package package-name) count)
                (declare (ignore _))
                (incf count))))
+         (script-arg (index)
+           (let* ((argv (or #+sbcl sb-ext:*posix-argv* #-sbcl nil))
+                  (sep (position "--" argv :test #'string=))
+                  (tail (when sep (nthcdr (1+ sep) argv))))
+             (and tail (nth index tail))))
          (load-system-tree (repo-root quicklisp-setup)
            (load quicklisp-setup)
            (require :asdf)
@@ -83,28 +111,61 @@ timeout 180 sbcl --noinform --non-interactive --script /dev/stdin "${REPO_ROOT}"
                (format t "PACKAGE_SURFACE_AUDIT_DETAIL group=~(~A~) unexpected_root_symbols=~S~%"
                        group unexpected-root-symbols))
              (string= status "PASS"))))
-  (let* ((argv (or #+sbcl sb-ext:*posix-argv* #-sbcl nil))
-         (repo-root-arg (or (and argv (second argv)) ""))
-         (quicklisp-arg (or (and argv (third argv)) ""))
+  (let* ((repo-root-arg (or (script-arg 0) ""))
+         (quicklisp-arg (or (script-arg 1) ""))
          (repo-root (and (plusp (length repo-root-arg))
                          (truename repo-root-arg))))
     (unless repo-root
-      (error "Unable to resolve repository root from ~S" repo-root-arg))
+      (format *error-output*
+              "PACKAGE_SURFACE_AUDIT_FAIL reason=missing-repo-root arg=~S~%"
+              repo-root-arg)
+      (sb-ext:exit :code 2))
     (load-system-tree repo-root quicklisp-arg)
-    (let* ((root-count (external-symbol-count :amoebum))
-           (root-max amoebum.internal::+amoebum-root-export-max+)
+    ;; AMOEBUM.INTERNAL symbols are looked up dynamically via FIND-SYMBOL
+    ;; rather than read at compile time. Without this, LOAD on the audit
+    ;; source file fails with "Package AMOEBUM.INTERNAL does not exist"
+    ;; because the reader processes all forms before any of them execute.
+    ;; (NXT-416: this only became visible once the wrapper actually ran
+    ;; SBCL — the prior --script /dev/stdin path silently no-op'd.)
+    (let* ((internal-pkg (or (find-package "AMOEBUM.INTERNAL")
+                             (error "Package AMOEBUM.INTERNAL not found after load-system :amoebum")))
+           (root-max-sym (or (find-symbol "+AMOEBUM-ROOT-EXPORT-MAX+" internal-pkg)
+                             (error "Symbol +AMOEBUM-ROOT-EXPORT-MAX+ not found in AMOEBUM.INTERNAL")))
+           (groups-sym (or (find-symbol "+AMOEBUM-PACKAGE-SURFACE-GROUPS+" internal-pkg)
+                           (error "Symbol +AMOEBUM-PACKAGE-SURFACE-GROUPS+ not found in AMOEBUM.INTERNAL")))
+           (root-count (external-symbol-count :amoebum))
+           (root-max (symbol-value root-max-sym))
+           (groups (symbol-value groups-sym))
            (root-status (if (<= root-count root-max) "PASS" "FAIL"))
-           (groups-ok
-             (every #'identity
-                    (mapcar #'audit-group
-                            amoebum.internal::+amoebum-package-surface-groups+))))
+           (groups-ok (every #'identity (mapcar #'audit-group groups))))
       (format t "PACKAGE_SURFACE_AUDIT root_package=:amoebum exports=~D max=~D status=~A~%"
               root-count root-max root-status)
       (finish-output)
       (unless (and groups-ok (string= root-status "PASS"))
+        (format t "PACKAGE_SURFACE_AUDIT_FAIL reason=group-or-root-failure groups_ok=~A root_status=~A~%"
+                groups-ok root-status)
+        (finish-output)
         (sb-ext:exit :code 1))
       (format t "PACKAGE_SURFACE_AUDIT_OK groups=~D root_exports=~D~%"
-              (length amoebum.internal::+amoebum-package-surface-groups+)
-              root-count)
+              (length groups) root-count)
       (finish-output))))
-EOF
+LISP
+
+set +e
+timeout 180 sbcl --noinform --non-interactive \
+  --eval "(load \"${RUNNER_SCRIPT}\")" \
+  --quit \
+  -- "${REPO_ROOT}" "${QUICKLISP_SETUP}" 2>&1 | tee "${OUT_LOG}"
+RC=${PIPESTATUS[0]}
+set -e
+
+if (( RC != 0 )); then
+  echo "PACKAGE_SURFACE_AUDIT_FAIL reason=sbcl-exit-${RC}" >&2
+  exit 1
+fi
+
+if ! grep -q '^PACKAGE_SURFACE_AUDIT_OK groups=' "${OUT_LOG}"; then
+  echo "PACKAGE_SURFACE_AUDIT_FAIL reason=audit-did-not-execute" >&2
+  echo "  (expected sentinel 'PACKAGE_SURFACE_AUDIT_OK groups=...' was not present in stdout)" >&2
+  exit 1
+fi

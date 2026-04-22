@@ -263,6 +263,184 @@
         (setf (gethash name table) manifest)))
     table))
 
+;;;; -----------------------------------------------------------------------
+;;;; Metadata builders (NXT-386 extraction).
+;;;;
+;;;; The functions below convert discovered extension files into the loose
+;;;; metadata plists consumed by extensions/loader.lisp. They depend on
+;;;; helpers defined in extensions/discovery.lisp (path normalization,
+;;;; %safe-file-write-date, %manifest-parent-directory, %ensure-string,
+;;;; %parse-nonnegative-integer, %canonical-extension-path) and on the
+;;;; manifest parser declared above.
+
+(defun %read-manifest-form (manifest-path)
+  (with-open-file (stream manifest-path :direction :input :external-format :utf-8)
+    (let ((form (read stream nil nil)))
+      (unless form
+        (error "Manifest ~A is empty." manifest-path))
+      form)))
+
+(defun %manifest-dependency-names (manifest)
+  (loop for dependency in (extension-manifest-dependencies manifest)
+        for name = (car dependency)
+        when (and (stringp name)
+                  (plusp (length (%extension-trim name))))
+          collect name))
+
+(defun %normalize-dependencies (value)
+  (cond
+    ((null value) '())
+    ((listp value)
+     (loop for dep in value
+           for dep-name = (%ensure-string dep)
+           when (and dep-name (plusp (length (%extension-trim dep-name))))
+             collect dep-name))
+    (t
+     (let ((dep-name (%ensure-string value)))
+       (if (and dep-name (plusp (length (%extension-trim dep-name))))
+           (list dep-name)
+           '())))))
+
+(defun %extension-form-definition-counts (form)
+  (let ((tool-count 0)
+        (hook-count 0))
+    (labels ((walk (node)
+               (when (consp node)
+                 (when (symbolp (car node))
+                   (let ((head (symbol-name (car node))))
+                     (cond
+                       ((string-equal head "DEFTOOL")
+                        (incf tool-count))
+                       ((string-equal head "DEFHOOK")
+                        (incf hook-count)))))
+                 (walk (car node))
+                 (walk (cdr node)))))
+      (walk form))
+    (values tool-count hook-count)))
+
+(defun %scan-definition-counts (path)
+  (handler-case
+      (let ((tool-count 0)
+            (hook-count 0))
+        (when (and path (probe-file path))
+          (with-open-file (stream path :direction :input :external-format :utf-8)
+            (loop for form = (read stream nil :__eof__)
+                  until (eq form :__eof__)
+                  do (multiple-value-bind (tools hooks)
+                         (%extension-form-definition-counts form)
+                       (incf tool-count tools)
+                       (incf hook-count hooks)))))
+        (values tool-count hook-count))
+    (error ()
+      (values 0 0))))
+
+(defun %resolve-definition-counts (metadata entry-point)
+  (let* ((manifest-tool-count (%parse-nonnegative-integer (getf metadata :tool-count)))
+         (manifest-hook-count (%parse-nonnegative-integer (getf metadata :hook-count)))
+         (entry-path (and (pathnamep entry-point)
+                          (or (ignore-errors (truename entry-point))
+                              entry-point)))
+         (scanned-tool-count nil)
+         (scanned-hook-count nil))
+    (when (and entry-path
+               (or (null manifest-tool-count)
+                   (null manifest-hook-count)))
+      (multiple-value-setq (scanned-tool-count scanned-hook-count)
+        (%scan-definition-counts entry-path)))
+    (values (or manifest-tool-count scanned-tool-count 0)
+            (or manifest-hook-count scanned-hook-count 0))))
+
+(defun %manifest-extension-file-p (file)
+  (and (string-equal (pathname-name file) "extension")
+       (string-equal (pathname-type file) "lisp")))
+
+(defun %resolve-entry-point (metadata)
+  (let* ((entry-point (getf metadata :entry-point))
+         (root (or (getf metadata :extension-root)
+                   *default-pathname-defaults*))
+         (entry-text (%ensure-string entry-point)))
+    (cond
+      ((or (search "/" entry-text :test #'char=)
+           (search "\\" entry-text :test #'char=)
+           (search ".lisp" entry-text :test #'char-equal)
+           (search ".asd" entry-text :test #'char-equal))
+       (merge-pathnames (pathname entry-text)
+                        (uiop:ensure-directory-pathname root)))
+      (t
+       entry-text))))
+
+(defun %metadata-record-path (metadata)
+  (or (and (getf metadata :manifest-path)
+           (%canonical-extension-path (getf metadata :manifest-path)))
+      (%canonical-extension-path (getf metadata :path))))
+
+(defun %manifest->metadata (manifest-path)
+  (let* ((manifest-form (%read-manifest-form manifest-path))
+         (manifest (parse-extension-manifest-sexp manifest-form :source-path manifest-path))
+         (plist (%normalize-manifest-form manifest-form))
+         (permissions (%normalize-extension-permissions (getf plist :permissions)))
+         (tools-value (getf plist :tools :__missing__))
+         (hooks-value (getf plist :hooks :__missing__))
+         (tool-count (or (%parse-nonnegative-integer (getf plist :tool-count))
+                         (%parse-nonnegative-integer (getf plist :tools-count))
+                         (and (not (eq tools-value :__missing__))
+                              (listp tools-value)
+                              (length tools-value))))
+         (hook-count (or (%parse-nonnegative-integer (getf plist :hook-count))
+                         (%parse-nonnegative-integer (getf plist :hooks-count))
+                         (and (not (eq hooks-value :__missing__))
+                              (listp hooks-value)
+                              (length hooks-value)))))
+    (list :kind :manifest
+          :name (extension-manifest-name manifest)
+          :version (extension-manifest-version manifest)
+          :dependencies (%manifest-dependency-names manifest)
+          :permissions permissions
+          :entry-point (extension-manifest-entry-point manifest)
+          :tool-count tool-count
+          :hook-count hook-count
+          :manifest-path manifest-path
+          :extension-root (%manifest-parent-directory manifest-path)
+          :path manifest-path
+          :last-write-date (%safe-file-write-date manifest-path))))
+
+(defun %legacy-file->metadata (file)
+  (list :kind :legacy
+        :name (pathname-name file)
+        :version "0.0.0"
+        :dependencies '()
+        :permissions '()
+        :entry-point (%canonical-extension-path file)
+        :manifest-path nil
+        :extension-root (uiop:pathname-directory-pathname file)
+        :path file
+        :last-write-date (%safe-file-write-date file)))
+
+(defun %source-file->metadata (file)
+  (if (%manifest-extension-file-p file)
+      (%manifest->metadata file)
+      (%legacy-file->metadata file)))
+
+(defun %fallback-error-metadata (file)
+  (if (%manifest-extension-file-p file)
+      (or (ignore-errors (%manifest->metadata file))
+          (list :kind :manifest
+                :name (let* ((parts (pathname-directory (%manifest-parent-directory file)))
+                             (last-part (and (listp parts) (car (last parts)))))
+                        (%ensure-string (or last-part "unknown-extension")))
+                :version "0.0.0"
+                :dependencies '()
+                :permissions '()
+                :entry-point (namestring file)
+                :manifest-path file
+                :extension-root (%manifest-parent-directory file)
+                :path file
+                :last-write-date (%safe-file-write-date file)))
+      (%legacy-file->metadata file)))
+
+;;;; -----------------------------------------------------------------------
+;;;; Multi-manifest dependency resolver (existing public entry point).
+
 (defun resolve-extension-manifests (manifests &key (errorp t))
   (let* ((registry (%manifest-by-name manifests))
          (dependents (make-hash-table :test #'equal))

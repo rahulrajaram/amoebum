@@ -39,20 +39,59 @@
    (:file "src/ui/provider-dashboard")
    (:file "src/context")
    (:file "src/conversation")
-   (:file "src/memory")
+   ;; NXT-388: memory.lisp decomposed into backend / file-store /
+   ;; haake-adapter / haake-transfer / commands behind the residual facade.
+   (:file "src/memory/backend")
+   (:file "src/memory/file-store")
    (:file "src/memory/haake-adapter")
+   (:file "src/memory/haake-transfer")
+   (:file "src/memory/commands")
+   (:file "src/memory")
    (:file "src/plan-mode")
    (:file "src/policy-types")
    (:file "src/plan-execution")
    (:file "src/plan-execution-output")
+   ;; NXT-415: helpers (status normalization, step lookup, git runner)
+   ;; extracted from src/plan-execution.lisp. Must load after the structs
+   ;; defined in src/plan-execution.lisp and before the modules that use
+   ;; %find-plan-execution-step / %safe-plan-execution-string.
+   (:file "src/plan-execution-helpers")
    (:file "src/plan-execution-context")
    (:file "src/plan-execution-effects")
+   ;; NXT-415: git rollback baseline + restore helpers extracted from
+   ;; src/plan-execution.lisp. Loaded after helpers (uses %plan-execution-run-git).
+   (:file "src/plan-execution-rollback")
+   ;; NXT-415: declarative (status, event) -> transition table extracted
+   ;; from src/plan-execution.lisp. Loaded after context/effects which
+   ;; provide %build-plan-transition-decision-context and the effect
+   ;; constructors used by transition handlers.
+   (:file "src/plan-execution-state-machine")
+   ;; NXT-415: public lifecycle entry points (start/pause/resume/abort/
+   ;; reset/initialize/elapsed/progress) extracted from src/plan-execution.lisp.
+   ;; Loaded after the state-machine and effects modules they delegate to.
+   (:file "src/plan-execution-lifecycle")
+   ;; NXT-415: restart-preserving execution loop + execute-approved-plan-steps
+   ;; coordinator extracted from src/plan-execution.lisp. Loaded last so
+   ;; lifecycle, state-machine, rollback, helpers, and effects are all
+   ;; available when the coordinator delegates into them.
+   (:file "src/plan-execution-loop")
    (:file "src/agents")
    (:file "src/agents/personas")
    (:file "src/agent-activity")
-   (:file "src/extensions/manifest")
+   ;; NXT-386: extension subsystem split. Discovery loads first because
+   ;; manifest-metadata builders, permissions-prep, and the residual loader
+   ;; all consume its path/key helpers. The legacy extensions.lisp file owns
+   ;; the EXTENSION-LOAD-RECORD struct that the loader registers and that
+   ;; checkpoint.lisp reads.
    (:file "src/extensions")
+   (:file "src/extensions/discovery")
+   (:file "src/extensions/manifest")
+   (:file "src/extensions/permissions-prep")
    (:file "src/extensions/loader")
+   ;; NXT-387: hot-reload watch-thread runtime extracted from loader.lisp.
+   ;; Must load AFTER loader because the watch loop calls
+   ;; reload-user-extensions and reads loader-owned discovery helpers.
+   (:file "src/extensions/hot-reload")
    (:file "src/checkpoint")
    (:file "src/sounds")
    (:file "src/sounds/backend")
@@ -77,8 +116,30 @@
    (:file "src/compile-validation")
    (:file "src/macros/deftool")
    (:file "src/macros/defhook")
+   ;; NXT-393: defkeys module split. Submodules load in dependency order
+   ;; (parser/registry/dispatch/expansion) before the residual
+   ;; `macros/defkeys` facade and the builtin keymap definitions, so the
+   ;; `defkeys` macroexpansion sees every helper (%parse-key-spec,
+   ;; register-key-binding, register-keymap) at load time.
+   (:file "src/macros/defkeys/parser")
+   (:file "src/macros/defkeys/registry")
+   (:file "src/macros/defkeys/dispatch")
+   (:file "src/macros/defkeys/expansion")
    (:file "src/macros/defkeys")
+   (:file "src/macros/defkeys/builtins")
+   ;; NXT-392: defskill module split. Submodules load in dependency order
+   ;; (registry/runtime/tool-invocation/review/expansion) before the residual
+   ;; `macros/defskill` facade and the builtin skill definitions, so the
+   ;; `defskill` macroexpansion sees every helper (register-skill,
+   ;; %skill-missing-required-arguments, %skill-default-completer, ...) at
+   ;; load time.
+   (:file "src/macros/defskill/registry")
+   (:file "src/macros/defskill/runtime")
+   (:file "src/macros/defskill/tool-invocation")
+   (:file "src/macros/defskill/review")
+   (:file "src/macros/defskill/expansion")
    (:file "src/macros/defskill")
+   (:file "src/macros/defskill/builtins")
    (:file "src/indexer")
    (:file "src/conditions")
    (:file "src/mcp/jsonrpc")
@@ -115,6 +176,14 @@
    (:file "src/tools/search")
    (:file "src/tools/search-orchestration")
    (:file "src/tools/web")
+   ;; NXT-390: shell module split — env/runtime/background submodules load
+   ;; before the residual `tools/shell` facade so the deftool form can call
+   ;; the extracted helpers (%normalize-*, %prepare-shell-runtime, %persist-
+   ;; shell-directory, %run-shell-command, %start-background-shell-task,
+   ;; %list/cleanup/fetch-shell-tasks).
+   (:file "src/tools/shell/env")
+   (:file "src/tools/shell/runtime")
+   (:file "src/tools/shell/background")
    (:file "src/tools/shell")
    (:file "src/tools/write-safety")
    (:file "src/tools/edit-validation")
@@ -154,6 +223,12 @@
    (:file "src/tools/cultivar-tools")
    (:file "src/ui/approval-dialog")
    (:file "src/ui/style-table")
+   (:file "src/ui/streaming/token-stream")
+   (:file "src/ui/streaming/provider-runtime")
+   ;; NXT-383 fallback split: markdown renderer and event journal now own
+   ;; the independent ui/streaming clusters that chat-state/chat-stream use.
+   (:file "src/ui/streaming/markdown")
+   (:file "src/ui/streaming/event-journal")
    (:file "src/ui/streaming")
    (:file "src/ui/theme-amoebum")
    (:file "src/ui/layout-yaml")
@@ -171,6 +246,8 @@
    ;; tracking/execution, budget enforcement) extracted from chat.lisp.
    ;; Must load immediately after src/ui/chat-state and before src/ui/chat.
    (:file "src/ui/chat-stream")
+   (:file "src/ui/chat-render/transcript")
+   (:file "src/ui/chat-render/stream-overlays")
    ;; NXT-280: chat rendering subsystem extracted from chat.lisp.
    ;; Must load immediately after src/ui/chat-stream and before src/ui/chat.
    (:file "src/ui/chat-render")
@@ -342,7 +419,9 @@
    ;; NXT-232: Keyboard accessibility / focus navigation tests
    (:file "test/keyboard-nav-test")
    ;; NXT-233: TUI scale / stress tests
-   (:file "test/scroll-scale-test"))
+   (:file "test/scroll-scale-test")
+   ;; NXT-397: Package-import-cycle guardrail mirror in FiveAM.
+   (:file "test/import-cycles-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (unless (uiop:symbol-call :amoebum/test :run-all)

@@ -57,7 +57,7 @@ EOF
       ;;
 packages)
       cat <<'EOF'
-packages|amoebum/src/package.lisp|2362
+packages|amoebum/src/package.lisp|1319
 packages|amoebum/src/package-domains.lisp|204
 EOF
       ;;
@@ -70,7 +70,7 @@ EOF
       ;;
     facades)
       cat <<'EOF'
-facades|amoebum/src/api-facades.lisp|171
+facades|amoebum/src/api-facades.lisp|197
 facades|amoebum/src/api-facades/operator-domains.lisp|546
 facades|amoebum/src/api-facades/runtime-domains.lisp|492
 facades|amoebum/src/api-facades/infrastructure-domains.lisp|459
@@ -80,12 +80,22 @@ EOF
       cat <<'EOF'
 state|amoebum/src/conversation.lisp|1236
 state|amoebum/src/checkpoint.lisp|1667
-state|amoebum/src/memory.lisp|1168
+state|amoebum/src/memory.lisp|33
+state|amoebum/src/memory/backend.lisp|261
+state|amoebum/src/memory/file-store.lisp|429
+state|amoebum/src/memory/haake-adapter.lisp|425
+state|amoebum/src/memory/haake-transfer.lisp|287
+state|amoebum/src/memory/commands.lisp|239
 EOF
       ;;
     policy)
       cat <<'EOF'
-policy|amoebum/src/plan-execution.lisp|1137
+policy|amoebum/src/plan-execution.lisp|200
+policy|amoebum/src/plan-execution-helpers.lisp|220
+policy|amoebum/src/plan-execution-rollback.lisp|130
+policy|amoebum/src/plan-execution-state-machine.lisp|400
+policy|amoebum/src/plan-execution-lifecycle.lisp|180
+policy|amoebum/src/plan-execution-loop.lisp|300
 policy|amoebum/src/permissions.lisp|860
 EOF
       ;;
@@ -97,18 +107,36 @@ EOF
       ;;
     extensions)
       cat <<'EOF'
-extensions|amoebum/src/extensions/loader.lisp|1189
+extensions|amoebum/src/extensions/loader.lisp|580
+extensions|amoebum/src/extensions/discovery.lisp|151
+extensions|amoebum/src/extensions/manifest.lisp|511
+extensions|amoebum/src/extensions/permissions-prep.lisp|310
+extensions|amoebum/src/extensions/hot-reload.lisp|133
 EOF
       ;;
     shell)
       cat <<'EOF'
-shell|amoebum/src/tools/shell.lisp|1094
+shell|amoebum/src/tools/shell.lisp|300
+shell|amoebum/src/tools/shell/env.lisp|260
+shell|amoebum/src/tools/shell/runtime.lisp|650
+shell|amoebum/src/tools/shell/background.lisp|260
 EOF
       ;;
     macros)
       cat <<'EOF'
-macros|amoebum/src/macros/defskill.lisp|1001
-macros|amoebum/src/macros/defkeys.lisp|910
+macros|amoebum/src/macros/defskill.lisp|50
+macros|amoebum/src/macros/defskill/registry.lisp|150
+macros|amoebum/src/macros/defskill/runtime.lisp|120
+macros|amoebum/src/macros/defskill/tool-invocation.lisp|140
+macros|amoebum/src/macros/defskill/review.lisp|420
+macros|amoebum/src/macros/defskill/expansion.lisp|320
+macros|amoebum/src/macros/defskill/builtins.lisp|180
+macros|amoebum/src/macros/defkeys.lisp|60
+macros|amoebum/src/macros/defkeys/parser.lisp|440
+macros|amoebum/src/macros/defkeys/registry.lisp|300
+macros|amoebum/src/macros/defkeys/dispatch.lisp|240
+macros|amoebum/src/macros/defkeys/expansion.lisp|150
+macros|amoebum/src/macros/defkeys/builtins.lisp|70
 macros|amoebum/src/macros/deftool.lisp|760
 EOF
       ;;

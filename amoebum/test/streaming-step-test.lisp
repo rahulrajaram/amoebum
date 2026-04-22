@@ -336,6 +336,48 @@
     (amoebum::%token-stream-reset! state)
     (is (null (amoebum::token-stream-state-stream-turn-snapshot state)))))
 
+;;; ----------------------------------------------------------------------------
+;;; NXT-400: lock the provider-runtime surface inside STREAMING-STEP-SUITE so
+;;; the headless-streaming-regression.sh per-submodule coverage gate can map
+;;; provider-runtime -> STREAMING-STEP-SUITE without relying on the
+;;; stream-hooks suite. Exercises `stream-pseudopod-chat` against a stubbed
+;;; `pseudopod:stream-chat-completion*`, validating that provider-runtime
+;;; orchestration funnels chunks into the token-stream state.
+;;; ----------------------------------------------------------------------------
+
+(test streaming-step-provider-runtime-coverage-stream-pseudopod-chat
+  "STREAMING-STEP-SUITE must exercise the provider-runtime stream-pseudopod-chat surface."
+  (let ((stream-state (amoebum:make-token-stream-state))
+        (events '()))
+    (let ((original-stream-chat-completion
+            (symbol-function 'pseudopod:stream-chat-completion*)))
+      (unwind-protect
+          (progn
+            (setf (symbol-function 'pseudopod:stream-chat-completion*)
+                  (lambda (client prompt &key on-content on-reasoning &allow-other-keys)
+                    (declare (ignore client prompt on-reasoning))
+                    (funcall on-content "alpha ")
+                    (funcall on-content "beta")
+                    nil))
+            (amoebum.ui:stream-pseudopod-chat
+             stream-state
+             "prompt"
+             '()
+             :client (pseudopod::%make-client :api-key "test-key")))
+        (setf (symbol-function 'pseudopod:stream-chat-completion*)
+              original-stream-chat-completion)))
+    (amoebum:token-stream-drain-events
+     stream-state
+     (lambda (event) (push event events)))
+    ;; Provider-runtime must funnel chunks into the token-stream as :text-delta
+    ;; events and bump the chunk count via token-stream-emit-chunk.
+    (is (>= (length events) 2))
+    (is (every (lambda (event)
+                 (or (eq :text-delta (getf event :type))
+                     (eq :text-delta (getf event :kind))))
+               events))
+    (is (>= (amoebum::token-stream-state-chunk-count stream-state) 2))))
+
 (test stream-cancel-recovery-restores-input-focus-and-status
   "Cancelling a live stream should return control to the chat input and publish a cancelled status."
   (let ((*default-pathname-defaults*

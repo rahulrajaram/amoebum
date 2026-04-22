@@ -1,33 +1,34 @@
 (in-package :amoebum)
 
-(defparameter *extension-load-report* '())
-(defparameter *loaded-extensions* '())
-(defparameter *extension-last-discovered* '())
-(defparameter *disabled-extensions* (make-hash-table :test #'equal))
+;;;; Extension loader runtime — registry state, load orchestration, and
+;;;; hot-reload watch loop.
+;;;;
+;;;; This file holds the residual orchestration after NXT-386 split out the
+;;;; discovery, manifest-metadata, and permissions/sandbox-prep clusters into
+;;;; sibling submodules:
+;;;;   extensions/discovery.lisp        — file enumeration & path helpers
+;;;;   extensions/manifest.lisp         — manifest parsing + metadata builders
+;;;;   extensions/permissions-prep.lisp — permissions, sandbox, validation
+;;;;
+;;;; Public entry points (re-exported via :amoebum.extensions facade) preserved:
+;;;;   load-user-extensions / reload-user-extensions
+;;;;   check-extension-hot-reload / start-extension-hot-reload / stop-extension-hot-reload
+;;;;   list-extensions / list-extension-registry / describe-extension
+;;;;   enable-user-extension / disable-user-extension / extension-disabled-p
+;;;;   list-extension-report / list-loaded-extensions / extension-report-summary
+;;;;   known-user-extension-paths / known-user-extension-names
+;;;;
+;;;; The NXT-375 Result-pilot (%prepare-extension-load-attempt-result,
+;;;; %process-extension-attempt-result, %process-extension-candidate-result)
+;;;; is preserved verbatim — load-bearing for the second-seam Hulisti decision
+;;;; in NXT-389.
+
 (defparameter *extension-registry* (make-hash-table :test #'equal))
 (defparameter *extension-watch-snapshot* (make-hash-table :test #'equal))
 (defparameter *extension-hot-reload-enabled-p* t)
 (defparameter *extension-hot-reload-interval-seconds* 1.0d0)
 (defparameter *extension-hot-reload-thread* nil)
 (defparameter *extension-hot-reload-running-p* nil)
-(defparameter +extension-supported-permissions+ '(:filesystem :network :shell))
-(defparameter *extension-permission-approvals* (make-hash-table :test #'equal))
-(defparameter *extension-permission-prompt-function* nil)
-(defparameter *extension-safe-operations*
-  '("deftool" "defhook"
-    "defun" "defmacro" "defparameter" "defvar"
-    "progn" "let" "let*" "setf" "setq" "incf" "decf"
-    "if" "when" "unless" "cond" "case" "ecase" "typecase"
-    "handler-case" "ignore-errors" "unwind-protect"
-    "multiple-value-bind" "dolist" "dotimes" "loop"
-    "values" "quote" "function" "lambda"
-    "list" "append" "cons" "car" "cdr"
-    "and" "or" "not"
-    "+" "-" "*" "/" "1+" "1-" "=" "<" ">" "<=" ">="))
-
-;; Test and smoke harnesses can bind these to avoid mutating real user paths.
-(defparameter *extensions-global-directory-override* nil)
-(defparameter *extensions-project-directory-override* nil)
 
 (defstruct (extension-registry-entry
             (:constructor make-extension-registry-entry
@@ -83,512 +84,8 @@
   extension-package
   package-name)
 
-(defun %symbol-token (symbol)
-  (and (symbolp symbol)
-       (string-downcase (symbol-name symbol))))
-
-(defun %symbol-qualified-token (symbol)
-  (when (symbolp symbol)
-    (let ((pkg (symbol-package symbol)))
-      (if pkg
-          (format nil "~A:~A"
-                  (string-downcase (package-name pkg))
-                  (string-downcase (symbol-name symbol)))
-          (%symbol-token symbol)))))
-
-(defun %normalize-extension-permission (value &key (errorp t))
-  (let ((normalized
-          (cond
-            ((keywordp value) value)
-            ((symbolp value) (intern (string-upcase (symbol-name value)) :keyword))
-            ((stringp value) (intern (string-upcase (%extension-trim value)) :keyword))
-            (t nil))))
-    (cond
-      ((member normalized +extension-supported-permissions+ :test #'eq)
-       normalized)
-      (errorp
-       (error "Unsupported extension permission ~S. Expected one of ~S."
-              value
-              +extension-supported-permissions+))
-      (t nil))))
-
-(defun %normalize-extension-permissions (value &key (errorp t))
-  (let ((raw
-          (cond
-            ((null value) '())
-            ((listp value) value)
-            (t (list value)))))
-    (remove-duplicates
-     (loop for permission in raw
-           for normalized = (%normalize-extension-permission permission :errorp errorp)
-           when normalized collect normalized)
-     :test #'eq)))
-
-(defun clear-extension-permission-approvals ()
-  (clrhash *extension-permission-approvals*)
-  t)
-
-(defun %normalize-extension-permission-decision (value)
-  (cond
-    ((or (eq value :allow)
-         (eq value t)
-         (and (stringp value)
-              (member (string-downcase (%extension-trim value))
-                      '("allow" "approved" "approve" "yes" "y")
-                      :test #'string=)))
-     :allow)
-    (t :deny)))
-
-(defun %default-extension-permission-prompt (extension-name permission scope _metadata)
-  (declare (ignore _metadata))
-  (let ((prompt
-          (format nil
-                  "Extension ~A requests ~A permission (~A scope). Approve? [y/N]: "
-                  extension-name
-                  permission
-                  scope)))
-    (if (and (streamp *query-io*)
-             (interactive-stream-p *query-io*))
-        (progn
-          (format *query-io* "~A" prompt)
-          (finish-output *query-io*)
-          (%normalize-extension-permission-decision
-           (read-line *query-io* nil "")))
-        (progn
-          (format *error-output* "~Adenied (non-interactive).~%" prompt)
-          :deny))))
-
-(unless *extension-permission-prompt-function*
-  (setf *extension-permission-prompt-function*
-        #'%default-extension-permission-prompt))
-
-(defun %extension-permission-approval-key (extension-name permission)
-  (format nil "~A::~A"
-          (string-downcase (%extension-trim extension-name))
-          (string-downcase (symbol-name permission))))
-
-(defun %ensure-extension-permissions-approved (metadata scope)
-  (let* ((extension-name (or (getf metadata :name) "unknown-extension"))
-         (permissions (or (getf metadata :permissions) '()))
-         (prompt-fn (or *extension-permission-prompt-function*
-                        #'%default-extension-permission-prompt)))
-    (dolist (permission permissions)
-      (let ((key (%extension-permission-approval-key extension-name permission)))
-        (unless (gethash key *extension-permission-approvals*)
-          (let ((decision
-                  (%normalize-extension-permission-decision
-                   (funcall prompt-fn extension-name permission scope metadata))))
-            (unless (eq decision :allow)
-              (error "Extension ~A permission ~S denied by user."
-                     extension-name
-                     permission))
-            (setf (gethash key *extension-permission-approvals*) t))))))
-  t)
-
-(defun %sanitize-extension-package-fragment (value)
-  (let* ((raw (%extension-trim (or value "")))
-         (upper (string-upcase raw)))
-    (if (zerop (length upper))
-        "UNNAMED"
-        (with-output-to-string (stream)
-          (loop for char across upper do
-                (if (or (alphanumericp char)
-                        (char= char #\-)
-                        (char= char #\_))
-                    (write-char char stream)
-                    (write-char #\- stream)))))))
-
-(defun %extension-package-name (metadata)
-  (format nil "AMOEBUM.EXT.~A"
-          (%sanitize-extension-package-fragment (getf metadata :name))))
-
-(defun %ensure-extension-package (metadata)
-  (let* ((package-name (%extension-package-name metadata))
-         (package (or (find-package package-name)
-                      (make-package package-name :use '(:cl :amoebum)))))
-    (dolist (dependency '(:cl :amoebum))
-      (let ((dep-package (find-package dependency)))
-        (when (and dep-package
-                   (not (member dep-package (package-use-list package))))
-          (use-package dep-package package))))
-    package))
-
-(defun %walk-extension-form-symbols (form visitor)
-  (cond
-    ((symbolp form)
-     (funcall visitor form))
-    ((consp form)
-     (let ((head (car form)))
-       (if (and (symbolp head)
-                (member (%symbol-token head)
-                        '("quote" "function")
-                        :test #'string=))
-           nil
-           (dolist (item form)
-             (%walk-extension-form-symbols item visitor)))))
-    (t nil)))
-
-(defun %extension-denied-operation (symbol)
-  (let* ((token (%symbol-token symbol))
-         (qualified (%symbol-qualified-token symbol))
-         (pkg-name (and (symbol-package symbol)
-                        (string-downcase (package-name (symbol-package symbol))))))
-    (cond
-      ((or (string= qualified "sb-ext:run-program")
-           (string= qualified "uiop:run-program")
-           (string= token "run-program"))
-       (list :operation (or qualified token)
-             :permission :shell
-             :message "Shell execution is blocked without :shell permission."))
-      ((or (string= token "open")
-           (string= token "with-open-file"))
-       (list :operation (or qualified token)
-             :permission :filesystem
-             :message "Filesystem access is blocked without :filesystem permission."))
-      ((member pkg-name '("sb-alien" "cffi" "cffi-sys") :test #'string=)
-       (list :operation (or qualified token)
-             :permission :ffi
-             :message "FFI operations are not allowed in extensions."))
-      (t nil))))
-
-(defun %scan-extension-form-for-denylist (form)
-  (let ((violations '())
-        (seen (make-hash-table :test #'equal)))
-    (%walk-extension-form-symbols
-     form
-     (lambda (symbol)
-       (let ((violation (%extension-denied-operation symbol)))
-         (when violation
-           (let* ((operation (or (getf violation :operation) "unknown"))
-                  (permission (or (getf violation :permission) :unknown))
-                  (key (format nil "~A|~A" operation permission)))
-             (unless (gethash key seen)
-               (setf (gethash key seen) t)
-               (push violation violations)))))))
-    (nreverse violations)))
-
-(defun %extension-top-level-allowlisted-p (operator extension-package)
-  (cond
-    ((null operator) t)
-    ((not (symbolp operator)) nil)
-    ((and extension-package
-          (eq (symbol-package operator) extension-package))
-     t)
-    ((member (%symbol-token operator)
-             *extension-safe-operations*
-             :test #'string=)
-     t)
-    (t nil)))
-
-(defun %validate-extension-form (form metadata extension-package)
-  (when (consp form)
-    (let* ((operator (car form))
-           (extension-name (or (getf metadata :name) "unknown-extension"))
-           (permissions (or (getf metadata :permissions) '()))
-           (violations (%scan-extension-form-for-denylist form)))
-      (when (and (symbolp operator)
-                 (string= (%symbol-token operator) "in-package")
-                 (not (%extension-in-package-allowed-p form extension-package)))
-        (error "Extension ~A cannot call IN-PACKAGE; it is isolated in package ~A."
-               extension-name
-               (package-name extension-package)))
-      (unless (or (%extension-top-level-allowlisted-p operator extension-package)
-                  (and (symbolp operator)
-                       (string= (%symbol-token operator) "in-package")
-                       (%extension-in-package-allowed-p form extension-package))
-                  (plusp (length violations)))
-        (error "Extension ~A uses non-allowlisted top-level operation ~S."
-               extension-name
-               operator))
-      (dolist (violation violations)
-        (let ((permission (getf violation :permission))
-              (operation (getf violation :operation))
-              (message (getf violation :message)))
-          (cond
-            ((eq permission :ffi)
-             (error "Extension ~A blocked: ~A (~A)."
-                    extension-name
-                    operation
-                    message))
-            ((not (member permission permissions :test #'eq))
-             (error "Extension ~A blocked: operation ~A requires permission ~S."
-                    extension-name
-                    operation
-                    permission)))))))
-  t)
-
-(defun %extension-trim (value)
-  (if (stringp value)
-      (string-trim '(#\Space #\Tab #\Newline #\Return) value)
-      ""))
-
-(defun %normalize-pathname (value)
-  (cond
-    ((pathnamep value) value)
-    ((stringp value) (pathname value))
-    (t nil)))
-
-(defun %ensure-directory (value)
-  (let ((pathname (%normalize-pathname value)))
-    (and pathname
-         (uiop:ensure-directory-pathname pathname))))
-
-(defun %resolve-project-root (&optional project-root)
-  (let* ((cfg (ignore-errors (current-config)))
-         (candidate (or project-root
-                        (and (config-p cfg) (config-project-root cfg))
-                        (ignore-errors (uiop:getcwd))
-                        *default-pathname-defaults*))
-         (directory (%ensure-directory candidate)))
-    (or (and directory
-             (or (ignore-errors (uiop:ensure-directory-pathname (truename directory)))
-                 directory))
-        (uiop:ensure-directory-pathname *default-pathname-defaults*))))
-
-(defun %global-extension-directory (&key global-directory)
-  (or (%ensure-directory global-directory)
-      (%ensure-directory *extensions-global-directory-override*)
-      (uiop:ensure-directory-pathname
-       (merge-pathnames #P".amoebum/extensions/" (user-homedir-pathname)))))
-
-(defun %project-extension-directory (&key project-root project-directory)
-  (or (%ensure-directory project-directory)
-      (%ensure-directory *extensions-project-directory-override*)
-      (uiop:ensure-directory-pathname
-       (merge-pathnames #P".amoebum/extensions/"
-                        (%resolve-project-root project-root)))))
-
-(defun %extension-sort-key (path)
-  (string-downcase
-   (or (file-namestring path)
-       (namestring path))))
-
-(defun %canonical-extension-path (path)
-  (let* ((pathname (%normalize-pathname path))
-         (resolved (and pathname
-                        (or (ignore-errors (truename pathname))
-                            pathname))))
-    (if resolved
-        (namestring resolved)
-        "")))
-
-(defun %extension-key (path)
-  (string-downcase (%canonical-extension-path path)))
-
-(defun %extension-registry-key (name)
-  (string-downcase (%extension-trim name)))
-
-(defun %extension-match-target-p (target path-text)
-  (let* ((needle (string-downcase (%extension-trim target)))
-         (haystack (string-downcase path-text))
-         (pathname (%normalize-pathname path-text))
-         (filename (and pathname (file-namestring pathname)))
-         (stem (and pathname (pathname-name pathname))))
-    (and (plusp (length needle))
-         (or (string= needle haystack)
-             (and filename (string= needle (string-downcase filename)))
-             (and stem (string= needle (string-downcase stem)))
-             (search needle haystack :test #'char=)))))
-
-(defun %list-extension-manifest-files (directory)
-  (if (and directory (probe-file directory))
-      (let ((files '()))
-        (dolist (candidate (directory (merge-pathnames #P"*/extension.lisp" directory)))
-          (unless (uiop:directory-pathname-p candidate)
-            (push candidate files)))
-        (sort files #'string< :key #'%extension-sort-key))
-      '()))
-
-(defun %list-legacy-extension-files (directory)
-  (if (and directory (probe-file directory))
-      (sort
-       (remove-if
-        (lambda (path)
-          (or (uiop:directory-pathname-p path)
-              (string-equal (pathname-name path) "extension")))
-        (directory (merge-pathnames #P"*.lisp" directory)))
-       #'string<
-       :key #'%extension-sort-key)
-      '()))
-
-(defun %safe-file-write-date (path)
-  (ignore-errors
-    (file-write-date path)))
-
-(defun %manifest-parent-directory (manifest-path)
-  (uiop:pathname-directory-pathname manifest-path))
-
-(defun %ensure-string (value)
-  (cond
-    ((null value) nil)
-    ((stringp value) value)
-    ((symbolp value) (string-downcase (symbol-name value)))
-    (t (princ-to-string value))))
-
-(defun %parse-nonnegative-integer (value)
-  (cond
-    ((and (integerp value) (>= value 0))
-     value)
-    ((stringp value)
-     (let* ((trimmed (%extension-trim value))
-            (parsed (and (plusp (length trimmed))
-                         (ignore-errors (parse-integer trimmed)))))
-       (and (integerp parsed)
-            (>= parsed 0)
-            parsed)))
-    (t nil)))
-
-(defun %extension-form-definition-counts (form)
-  (let ((tool-count 0)
-        (hook-count 0))
-    (labels ((walk (node)
-               (when (consp node)
-                 (when (symbolp (car node))
-                   (let ((head (symbol-name (car node))))
-                     (cond
-                       ((string-equal head "DEFTOOL")
-                        (incf tool-count))
-                       ((string-equal head "DEFHOOK")
-                        (incf hook-count)))))
-                 (walk (car node))
-                 (walk (cdr node)))))
-      (walk form))
-    (values tool-count hook-count)))
-
-(defun %scan-definition-counts (path)
-  (handler-case
-      (let ((tool-count 0)
-            (hook-count 0))
-        (when (and path (probe-file path))
-          (with-open-file (stream path :direction :input :external-format :utf-8)
-            (loop for form = (read stream nil :__eof__)
-                  until (eq form :__eof__)
-                  do (multiple-value-bind (tools hooks)
-                         (%extension-form-definition-counts form)
-                       (incf tool-count tools)
-                       (incf hook-count hooks)))))
-        (values tool-count hook-count))
-    (error ()
-      (values 0 0))))
-
-(defun %resolve-definition-counts (metadata entry-point)
-  (let* ((manifest-tool-count (%parse-nonnegative-integer (getf metadata :tool-count)))
-         (manifest-hook-count (%parse-nonnegative-integer (getf metadata :hook-count)))
-         (entry-path (and (pathnamep entry-point)
-                          (or (ignore-errors (truename entry-point))
-                              entry-point)))
-         (scanned-tool-count nil)
-         (scanned-hook-count nil))
-    (when (and entry-path
-               (or (null manifest-tool-count)
-                   (null manifest-hook-count)))
-      (multiple-value-setq (scanned-tool-count scanned-hook-count)
-        (%scan-definition-counts entry-path)))
-    (values (or manifest-tool-count scanned-tool-count 0)
-            (or manifest-hook-count scanned-hook-count 0))))
-
-(defun %normalize-dependencies (value)
-  (cond
-    ((null value) '())
-    ((listp value)
-     (loop for dep in value
-           for dep-name = (%ensure-string dep)
-           when (and dep-name (plusp (length (%extension-trim dep-name))))
-             collect dep-name))
-    (t
-     (let ((dep-name (%ensure-string value)))
-       (if (and dep-name (plusp (length (%extension-trim dep-name))))
-           (list dep-name)
-           '())))))
-
-(defun %read-manifest-form (manifest-path)
-  (with-open-file (stream manifest-path :direction :input :external-format :utf-8)
-    (let ((form (read stream nil nil)))
-      (unless form
-        (error "Manifest ~A is empty." manifest-path))
-      form)))
-
-(defun %manifest-dependency-names (manifest)
-  (loop for dependency in (extension-manifest-dependencies manifest)
-        for name = (car dependency)
-        when (and (stringp name)
-                  (plusp (length (%extension-trim name))))
-          collect name))
-
-(defun %manifest->metadata (manifest-path)
-  (let* ((manifest-form (%read-manifest-form manifest-path))
-         (manifest (parse-extension-manifest-sexp manifest-form :source-path manifest-path))
-         (plist (%normalize-manifest-form manifest-form))
-         (permissions (%normalize-extension-permissions (getf plist :permissions)))
-         (tools-value (getf plist :tools :__missing__))
-         (hooks-value (getf plist :hooks :__missing__))
-         (tool-count (or (%parse-nonnegative-integer (getf plist :tool-count))
-                         (%parse-nonnegative-integer (getf plist :tools-count))
-                         (and (not (eq tools-value :__missing__))
-                              (listp tools-value)
-                              (length tools-value))))
-         (hook-count (or (%parse-nonnegative-integer (getf plist :hook-count))
-                         (%parse-nonnegative-integer (getf plist :hooks-count))
-                         (and (not (eq hooks-value :__missing__))
-                              (listp hooks-value)
-                              (length hooks-value)))))
-    (list :kind :manifest
-          :name (extension-manifest-name manifest)
-          :version (extension-manifest-version manifest)
-          :dependencies (%manifest-dependency-names manifest)
-          :permissions permissions
-          :entry-point (extension-manifest-entry-point manifest)
-          :tool-count tool-count
-          :hook-count hook-count
-          :manifest-path manifest-path
-          :extension-root (%manifest-parent-directory manifest-path)
-          :path manifest-path
-          :last-write-date (%safe-file-write-date manifest-path))))
-
-(defun %extension-in-package-target (form)
-  (when (and (consp form)
-             (symbolp (car form))
-             (string= (%symbol-token (car form)) "in-package")
-             (consp (cdr form)))
-    (let ((target (cadr form)))
-      (cond
-        ((symbolp target) (string-upcase (symbol-name target)))
-        ((stringp target) (string-upcase target))
-        (t nil)))))
-
-(defun %extension-in-package-allowed-p (form extension-package)
-  (let* ((target (%extension-in-package-target form))
-         (target-package (and target (find-package target))))
-    (or (null target)
-        (and extension-package
-             target-package
-             (string-equal (package-name target-package)
-                           (package-name extension-package)))
-        ;; Test fixtures use AMOEBUM/TEST globals to assert hot-reload behavior.
-        (and target-package
-             (string-equal (package-name target-package) "AMOEBUM/TEST")))))
-
-(defun %legacy-file->metadata (file)
-  (list :kind :legacy
-        :name (pathname-name file)
-        :version "0.0.0"
-        :dependencies '()
-        :permissions '()
-        :entry-point (%canonical-extension-path file)
-        :manifest-path nil
-        :extension-root (uiop:pathname-directory-pathname file)
-        :path file
-        :last-write-date (%safe-file-write-date file)))
-
-(defun discover-user-extension-files (&key project-root global-directory project-directory)
-  (let* ((global-path (%global-extension-directory :global-directory global-directory))
-         (project-path (%project-extension-directory :project-root project-root
-                                                     :project-directory project-directory))
-         (global-files (append (%list-extension-manifest-files global-path)
-                               (%list-legacy-extension-files global-path)))
-         (project-files (append (%list-extension-manifest-files project-path)
-                                (%list-legacy-extension-files project-path))))
-    (values global-files project-files)))
+;;;; ---------------------------------------------------------------------
+;;;; Read-side queries over registry / load report.
 
 (defun extension-disabled-p (path)
   (not (null (gethash (%extension-key path) *disabled-extensions*))))
@@ -704,6 +201,9 @@
         (remember (extension-load-record-name entry))))
     (nreverse names)))
 
+;;;; ---------------------------------------------------------------------
+;;;; Enable/disable.
+
 (defun %disable-extension-path (path-text)
   (setf (gethash (%extension-key path-text) *disabled-extensions*) t))
 
@@ -780,6 +280,9 @@
        (let ((result (remove-duplicates (nreverse enabled) :test #'string-equal)))
          (values result (length result)))))))
 
+;;;; ---------------------------------------------------------------------
+;;;; Event publication helpers.
+
 (defun %publish-extension-loaded (path scope)
   (publish (current-event-bus)
            (make-extension-loaded-event :path path :scope scope)))
@@ -790,20 +293,8 @@
                                        :scope scope
                                        :condition condition-text)))
 
-(defun %resolve-entry-point (metadata)
-  (let* ((entry-point (getf metadata :entry-point))
-         (root (or (getf metadata :extension-root)
-                   *default-pathname-defaults*))
-         (entry-text (%ensure-string entry-point)))
-    (cond
-      ((or (search "/" entry-text :test #'char=)
-           (search "\\" entry-text :test #'char=)
-           (search ".lisp" entry-text :test #'char-equal)
-           (search ".asd" entry-text :test #'char-equal))
-       (merge-pathnames (pathname entry-text)
-                        (uiop:ensure-directory-pathname root)))
-      (t
-       entry-text))))
+;;;; ---------------------------------------------------------------------
+;;;; Entry-point loading & registry write.
 
 (defun %load-extension-file-isolated (resolved-entry-point metadata extension-package)
   (let ((extension-name (or (getf metadata :name) "unknown-extension")))
@@ -872,40 +363,8 @@
     (setf (gethash key *extension-registry*) entry)
     entry))
 
-(defun %metadata-record-path (metadata)
-  (or (and (getf metadata :manifest-path)
-           (%canonical-extension-path (getf metadata :manifest-path)))
-      (%canonical-extension-path (getf metadata :path))))
-
-(defun %manifest-extension-file-p (file)
-  (and (string-equal (pathname-name file) "extension")
-       (string-equal (pathname-type file) "lisp")))
-
-(defun %source-file->metadata (file)
-  (if (%manifest-extension-file-p file)
-      (%manifest->metadata file)
-      (%legacy-file->metadata file)))
-
-(defun %fallback-error-metadata (file)
-  (if (%manifest-extension-file-p file)
-      (or (ignore-errors (%manifest->metadata file))
-          (list :kind :manifest
-                :name (let* ((parts (pathname-directory (%manifest-parent-directory file)))
-                             (last-part (and (listp parts) (car (last parts)))))
-                        (%ensure-string (or last-part "unknown-extension")))
-                :version "0.0.0"
-                :dependencies '()
-                :permissions '()
-                :entry-point (namestring file)
-                :manifest-path file
-                :extension-root (%manifest-parent-directory file)
-                :path file
-                :last-write-date (%safe-file-write-date file)))
-      (%legacy-file->metadata file)))
-
-(defun %metadata-extension-package (metadata)
-  (and (eq (getf metadata :kind) :manifest)
-       (%ensure-extension-package metadata)))
+;;;; ---------------------------------------------------------------------
+;;;; Per-candidate orchestration (NXT-375 Result pilot lives here).
 
 (defun %make-extension-load-attempt-for-metadata (scope file metadata)
   (let* ((entry-point (%resolve-entry-point metadata))
@@ -1047,6 +506,9 @@
         (%handle-extension-load-error candidate
                                       (amoebum.fp:err-value result)))))
 
+;;;; ---------------------------------------------------------------------
+;;;; Top-level coordinator state machine.
+
 (defun %reset-extension-loader-state (candidates)
   (clrhash *extension-registry*)
   (setf *extension-last-discovered*
@@ -1075,24 +537,10 @@
     (append (loop for file in global-files collect (cons :global file))
             (loop for file in project-files collect (cons :project file)))))
 
-(defun %rebuild-extension-watch-snapshot (&optional (paths *extension-last-discovered*))
-  (clrhash *extension-watch-snapshot*)
-  (dolist (entry *extension-load-report*)
-    (let ((manifest-path (extension-load-record-manifest-path entry))
-          (entry-point (extension-load-record-entry-point entry)))
-      (when (and (stringp manifest-path) (plusp (length (%extension-trim manifest-path))))
-        (push manifest-path paths))
-      (when (and (stringp entry-point)
-                 (plusp (length (%extension-trim entry-point)))
-                 (or (search ".lisp" entry-point :test #'char-equal)
-                     (search "/" entry-point :test #'char=)
-                     (search "\\" entry-point :test #'char=)))
-        (push entry-point paths))))
-  (dolist (path-text paths)
-    (when (plusp (length (%extension-trim path-text)))
-      (setf (gethash path-text *extension-watch-snapshot*)
-            (%safe-file-write-date path-text))))
-  *extension-watch-snapshot*)
+;; %REBUILD-EXTENSION-WATCH-SNAPSHOT moved to extensions/hot-reload.lisp
+;; (NXT-387). It owns *EXTENSION-WATCH-SNAPSHOT* alongside the watch
+;; thread; %FINALIZE-EXTENSION-LOADER-STATE invokes it as a forward
+;; reference (resolved at runtime when load-user-extensions runs).
 
 (defun load-user-extensions (&key project-root global-directory project-directory
                                   (start-hot-reload *extension-hot-reload-enabled-p*))
@@ -1125,65 +573,8 @@
                         :project-directory project-directory
                         :start-hot-reload start-hot-reload))
 
-(defun check-extension-hot-reload (&key project-root global-directory project-directory
-                                        (reload-on-change t)
-                                        (start-hot-reload *extension-hot-reload-enabled-p*))
-  (let* ((candidates (%collect-extension-candidates :project-root project-root
-                                                    :global-directory global-directory
-                                                    :project-directory project-directory))
-         (current-paths (mapcar (lambda (entry)
-                                  (%canonical-extension-path (cdr entry)))
-                                candidates))
-         (changed-p nil))
-    (dolist (path-text current-paths)
-      (let ((current (%safe-file-write-date path-text))
-            (previous (gethash path-text *extension-watch-snapshot* :__missing__)))
-        (when (or (eq previous :__missing__)
-                  (not (eql previous current)))
-          (setf changed-p t))))
-    (maphash (lambda (path-text _value)
-               (declare (ignore _value))
-               (unless (member path-text current-paths :test #'string-equal)
-                 (setf changed-p t)))
-             *extension-watch-snapshot*)
-    (when changed-p
-      (if reload-on-change
-          (progn
-            (reload-user-extensions :project-root project-root
-                                    :global-directory global-directory
-                                    :project-directory project-directory
-                                    :start-hot-reload start-hot-reload)
-            t)
-          (progn
-            (%rebuild-extension-watch-snapshot current-paths)
-            t)))))
-
-(defun start-extension-hot-reload (&key project-root global-directory project-directory)
-  (when (and *extension-hot-reload-thread*
-             (bordeaux-threads:thread-alive-p *extension-hot-reload-thread*))
-    (return-from start-extension-hot-reload *extension-hot-reload-thread*))
-  (setf *extension-hot-reload-running-p* t)
-  (setf *extension-hot-reload-thread*
-        (bordeaux-threads:make-thread
-         (lambda ()
-           (loop while *extension-hot-reload-running-p* do
-             (ignore-errors
-               (check-extension-hot-reload :project-root project-root
-                                           :global-directory global-directory
-                                           :project-directory project-directory
-                                           :reload-on-change t
-                                           :start-hot-reload nil))
-             (sleep (max 0.1d0 *extension-hot-reload-interval-seconds*))))
-         :name "amoebum-extension-hot-reload"))
-  *extension-hot-reload-thread*)
-
-(defun stop-extension-hot-reload ()
-  (let ((thread *extension-hot-reload-thread*))
-    (setf *extension-hot-reload-running-p* nil
-          *extension-hot-reload-thread* nil)
-    (when (and thread
-               (bordeaux-threads:thread-alive-p thread)
-               (not (eq thread (bordeaux-threads:current-thread))))
-      (ignore-errors
-        (bordeaux-threads:join-thread thread)))
-    t))
+;; CHECK-EXTENSION-HOT-RELOAD, START-EXTENSION-HOT-RELOAD, and
+;; STOP-EXTENSION-HOT-RELOAD moved to extensions/hot-reload.lisp
+;; (NXT-387). Public API is preserved; the watch-thread runtime now
+;; lives in its own module so loader.lisp can stay focused on the
+;; registry, load-orchestration, and Result pilot.

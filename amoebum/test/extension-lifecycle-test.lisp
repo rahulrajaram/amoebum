@@ -407,6 +407,136 @@
       (%i239-restore-hash-table amoebum::*asdf-extension-registry* old-registry)
       (%delete-directory-tree-safe tmp-root))))
 
+;;; ============================================================
+;;; NXT-387: Hot-reload watch-thread lifecycle regression.
+;;;
+;;; Asserts that start/stop are race-free across the loader ->
+;;; hot-reload module boundary: starting twice yields one thread,
+;;; stopping joins cleanly, and a file change while the watcher is
+;;; running is observable via the next CHECK-EXTENSION-HOT-RELOAD
+;;; (which the watch loop polls on the configured interval).
+;;; ============================================================
+
+(test extension-hot-reload-watch-thread-start-stop-cycle
+  "start-extension-hot-reload spawns one alive thread; stop joins and clears it."
+  (let* ((old-enabled amoebum.extensions:*extension-hot-reload-enabled-p*)
+         (old-interval amoebum.extensions:*extension-hot-reload-interval-seconds*)
+         (old-thread amoebum::*extension-hot-reload-thread*)
+         (old-running amoebum::*extension-hot-reload-running-p*)
+         (tmp-dir (%make-temp-directory "amoebum-ext-hotreload-thread"))
+         (global-dir (merge-pathnames #P"global/" tmp-dir))
+         (project-dir (merge-pathnames #P"project/" tmp-dir)))
+    (unwind-protect
+         (progn
+           ;; Make sure no stale watcher is running before we start.
+           (amoebum.extensions:stop-extension-hot-reload)
+           (setf amoebum.extensions:*extension-hot-reload-interval-seconds* 0.05d0)
+           (ensure-directories-exist (merge-pathnames #P".keep" global-dir))
+           (ensure-directories-exist (merge-pathnames #P".keep" project-dir))
+           (let ((thread-a (amoebum.extensions:start-extension-hot-reload
+                            :project-root tmp-dir
+                            :global-directory global-dir
+                            :project-directory project-dir)))
+             (is-true thread-a "start-extension-hot-reload returned nil")
+             (is-true (bordeaux-threads:thread-alive-p thread-a)
+                      "watch thread is not alive after start")
+             ;; Idempotent: a second start returns the same live thread.
+             (let ((thread-b (amoebum.extensions:start-extension-hot-reload
+                              :project-root tmp-dir
+                              :global-directory global-dir
+                              :project-directory project-dir)))
+               (is (eq thread-a thread-b)
+                   "second start spawned a new thread instead of reusing the live one")))
+           (is-true amoebum::*extension-hot-reload-running-p*
+                    "running flag should be true while watcher is alive")
+           ;; Stop joins the thread and clears the registry slot.
+           (is-true (amoebum.extensions:stop-extension-hot-reload)
+                    "stop-extension-hot-reload should return t")
+           (is (null amoebum::*extension-hot-reload-thread*)
+               "stop should null out the thread reference")
+           (is (null amoebum::*extension-hot-reload-running-p*)
+               "stop should clear the running flag"))
+      (amoebum.extensions:stop-extension-hot-reload)
+      (setf amoebum.extensions:*extension-hot-reload-enabled-p* old-enabled
+            amoebum.extensions:*extension-hot-reload-interval-seconds* old-interval
+            amoebum::*extension-hot-reload-thread* old-thread
+            amoebum::*extension-hot-reload-running-p* old-running)
+      (%delete-directory-tree-safe tmp-dir))))
+
+(test extension-hot-reload-watch-thread-detects-file-change
+  "A file change while the watcher is running triggers a reload via the polling loop."
+  (let* ((old-report amoebum.extensions:*extension-load-report*)
+         (old-loaded amoebum.extensions:*loaded-extensions*)
+         (old-discovered amoebum.extensions:*extension-last-discovered*)
+         (old-global amoebum.extensions:*extensions-global-directory-override*)
+         (old-project amoebum.extensions:*extensions-project-directory-override*)
+         (old-enabled amoebum.extensions:*extension-hot-reload-enabled-p*)
+         (old-interval amoebum.extensions:*extension-hot-reload-interval-seconds*)
+         (disabled-keys (%hash-table-keys amoebum.extensions:*disabled-extensions*))
+         (tmp-dir (%make-temp-directory "amoebum-ext-hotreload-change"))
+         (global-dir (merge-pathnames #P"global/" tmp-dir))
+         (project-dir (merge-pathnames #P"project/" tmp-dir))
+         (ext-root (merge-pathnames #P"watch-ext/" project-dir))
+         (manifest-path (merge-pathnames #P"extension.lisp" ext-root))
+         (entry-path (merge-pathnames #P"main.lisp" ext-root)))
+    (unwind-protect
+         (progn
+           (amoebum.extensions:stop-extension-hot-reload)
+           (setf amoebum.extensions:*extensions-global-directory-override* global-dir
+                 amoebum.extensions:*extensions-project-directory-override* project-dir
+                 amoebum.extensions:*extension-hot-reload-interval-seconds* 0.05d0)
+           (clrhash amoebum.extensions:*disabled-extensions*)
+           (clrhash amoebum.extensions:*extension-watch-snapshot*)
+           (%write-text-file manifest-path
+                             "(:name \"watch-ext\" :version \"1.0.0\" :dependencies () :entry-point \"main.lisp\")")
+           (%write-text-file entry-path "(values)")
+           (let ((report (amoebum.extensions:load-user-extensions
+                          :project-root tmp-dir
+                          :start-hot-reload nil)))
+             (is (= 1 (length report)))
+             (let ((entry (first (amoebum.extensions:list-extension-registry))))
+               (is (string= "1.0.0"
+                            (amoebum.extensions:extension-registry-entry-version entry)))))
+           ;; Sleep > 1s so the next manifest write has a strictly later
+           ;; file-write-date (CL granularity is 1 second). Then start
+           ;; the watcher and bump the version.
+           (sleep 1.1)
+           (amoebum.extensions:start-extension-hot-reload
+            :project-root tmp-dir
+            :global-directory global-dir
+            :project-directory project-dir)
+           (%write-text-file manifest-path
+                             "(:name \"watch-ext\" :version \"1.1.0\" :dependencies () :entry-point \"main.lisp\")")
+           ;; Poll up to ~10s for the version bump (interval is 50ms; CI variance buffer).
+           (loop with deadline = (+ (get-internal-real-time)
+                                    (* 10 internal-time-units-per-second))
+                 for entry = (first (amoebum.extensions:list-extension-registry))
+                 while (and entry
+                            (string= "1.0.0"
+                                     (amoebum.extensions:extension-registry-entry-version entry))
+                            (< (get-internal-real-time) deadline))
+                 do (sleep 0.1))
+           (let ((entry (first (amoebum.extensions:list-extension-registry))))
+             (is-true entry "registry entry vanished")
+             (is (string= "1.1.0"
+                          (amoebum.extensions:extension-registry-entry-version entry))
+                 "watch thread did not pick up the manifest change"))
+           (amoebum.extensions:stop-extension-hot-reload)
+           (is (null amoebum::*extension-hot-reload-thread*)
+               "thread reference should be cleared after stop"))
+      (amoebum.extensions:stop-extension-hot-reload)
+      (setf amoebum.extensions:*extension-load-report* old-report
+            amoebum.extensions:*loaded-extensions* old-loaded
+            amoebum.extensions:*extension-last-discovered* old-discovered
+            amoebum.extensions:*extensions-global-directory-override* old-global
+            amoebum.extensions:*extensions-project-directory-override* old-project
+            amoebum.extensions:*extension-hot-reload-enabled-p* old-enabled
+            amoebum.extensions:*extension-hot-reload-interval-seconds* old-interval)
+      (clrhash amoebum.extensions:*disabled-extensions*)
+      (dolist (key disabled-keys)
+        (setf (gethash key amoebum.extensions:*disabled-extensions*) t))
+      (%delete-directory-tree-safe tmp-dir))))
+
 (test extension-lifecycle-smoke-sentinel
   (is-true t)
   (format t "EXTENSION_LIFECYCLE_SMOKE_OK~%"))

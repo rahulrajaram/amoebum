@@ -132,6 +132,19 @@
                     :budget-abort-threshold-percent 80)))
     (is (eq :running (getf updates :status)))))
 
+(test pure-reducer-returns-result-with-new-state
+  (let* ((state (amoebum:make-token-stream-state))
+         (result (amoebum:token-stream-transition
+                  state
+                  '(:type :start
+                    :target-message-index 3
+                    :budget-warning-threshold-percent 90
+                    :budget-abort-threshold-percent 80))))
+    (is-true (amoebum.fp:ok-p result))
+    (is (eq :idle (amoebum::token-stream-state-status state)))
+    (is (eq :running
+            (amoebum::token-stream-state-status (amoebum.fp:ok-value result))))))
+
 (test compute-transition-invalid-signals-error
   (let ((state (amoebum:make-token-stream-state)))
     ;; :idle + :complete is not in the table

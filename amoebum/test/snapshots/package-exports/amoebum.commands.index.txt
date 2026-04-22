@@ -1,0 +1,1 @@
+amoebum.commands.index:%INDEX-HANDLER

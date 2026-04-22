@@ -9,6 +9,17 @@
 
 (in-suite write-safety-suite)
 
+(defmacro %with-write-safety-project-root ((project-root) &body body)
+  `(let* ((config (amoebum.config:current-config))
+          (original-project-root (amoebum.config:config-project-root config))
+          (resolved-project-root (or (ignore-errors (truename ,project-root))
+                                     ,project-root)))
+     (unwind-protect
+         (progn
+           (setf (amoebum.config:config-project-root config) resolved-project-root)
+           ,@body)
+       (setf (amoebum.config:config-project-root config) original-project-root))))
+
 ;;; --- Forbidden system path tests -------------------------------------------
 
 (test write-safety-blocks-etc-path
@@ -143,12 +154,13 @@
 (test write-safety-allows-tmp-path
   "Writing to /tmp should succeed (not in forbidden list)."
   (let ((amoebum:*permission-rules* nil))
-    (is-true (amoebum:check-write-safety
-              (namestring (merge-pathnames #P".tmp-test-work/scratch.txt"
-                                           (%amoebum-system-root)))
-                                          :tool "write-file"
-                                          :permission-mode :full-auto
-                                          :rules amoebum:*permission-rules*))))
+    (%with-write-safety-project-root ((%amoebum-system-root))
+      (is-true (amoebum:check-write-safety
+                (namestring (merge-pathnames #P".tmp-test-work/scratch.txt"
+                                             (%amoebum-system-root)))
+                :tool "write-file"
+                :permission-mode :full-auto
+                :rules amoebum:*permission-rules*)))))
 
 ;;; --- Non-signaling variant tests -------------------------------------------
 
@@ -165,14 +177,15 @@
 (test write-safety-check-p-returns-t-for-allowed
   "write-safety-check-p returns T for allowed paths."
   (let ((amoebum:*permission-rules* nil))
-    (multiple-value-bind (ok reason)
-        (amoebum:write-safety-check-p
-         (namestring (merge-pathnames #P".tmp-test-work/safe-file.txt"
-                                      (%amoebum-system-root)))
-                                       :tool "write-file"
-                                       :permission-mode :full-auto)
-      (is-true ok)
-      (is (null reason)))))
+    (%with-write-safety-project-root ((%amoebum-system-root))
+      (multiple-value-bind (ok reason)
+          (amoebum:write-safety-check-p
+           (namestring (merge-pathnames #P".tmp-test-work/safe-file.txt"
+                                        (%amoebum-system-root)))
+           :tool "write-file"
+           :permission-mode :full-auto)
+        (is-true ok)
+        (is (null reason))))))
 
 ;;; --- Error message clarity tests -------------------------------------------
 
