@@ -57,7 +57,7 @@ EOF
       ;;
 packages)
       cat <<'EOF'
-packages|amoebum/src/package.lisp|2362
+packages|amoebum/src/package.lisp|1319
 packages|amoebum/src/package-domains.lisp|204
 EOF
       ;;
@@ -70,7 +70,7 @@ EOF
       ;;
     facades)
       cat <<'EOF'
-facades|amoebum/src/api-facades.lisp|171
+facades|amoebum/src/api-facades.lisp|192
 facades|amoebum/src/api-facades/operator-domains.lisp|546
 facades|amoebum/src/api-facades/runtime-domains.lisp|492
 facades|amoebum/src/api-facades/infrastructure-domains.lisp|459
