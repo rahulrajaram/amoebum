@@ -3,27 +3,38 @@
 #
 # PURPOSE
 #   Fast canary that catches the most common agent-introduced regressions
-#   before a commit lands. It loads the amoebum system and runs five
+#   before a commit lands. It loads the amoebum system and runs six
 #   load-bearing FiveAM tests picked to cover the interaction surfaces
 #   most often broken by automated edits:
 #
-#     1. chat-snapshot-message-area              (chat UI render path)
-#     2. conversation-roundtrip-preserves-tool-call-ids
+#     1. chat-snapshot-message-area              (chat UI render path; now
+#                                                 also enforces a byte-
+#                                                 identical golden ratchet
+#                                                 inline — NXT-399)
+#     2. chat-snapshot-message-area-byte-identical-ratchet
+#                                                (NXT-399 — dedicated byte-
+#                                                 identical invariant ratchet
+#                                                 against the checked-in
+#                                                 amoebum/test/snapshots/
+#                                                 message-area.snap golden;
+#                                                 update via env var
+#                                                 AMOEBUM_UPDATE_SNAPSHOTS=1)
+#     3. conversation-roundtrip-preserves-tool-call-ids
 #                                                (conversation persistence)
-#     3. make-amoebum-context-populates-required-slots
+#     4. make-amoebum-context-populates-required-slots
 #                                                (pipeline context wiring)
-#     4. i210-restarts-round-trip                (tool restart semantics)
-#     5. cli-resume-by-id-is-deterministic       (session resume)
+#     5. i210-restarts-round-trip                (tool restart semantics)
+#     6. cli-resume-by-id-is-deterministic       (session resume)
 #
 #   Plus three load-bearing PTUI FiveAM tests so that regressions in
 #   PTUI's terminal-pane / chat rendering surfaces are caught at
 #   pre-commit time (NXT-299):
 #
-#     6. render-diff-single-change-uses-minimal-ops
+#     7. render-diff-single-change-uses-minimal-ops
 #                                                (differential rendering)
-#     7. width-classifies-ascii-wide-and-combining
+#     8. width-classifies-ascii-wide-and-combining
 #                                                (text / grapheme width)
-#     8. two-region-dock-fill-layout             (constraint layout)
+#     9. two-region-dock-fill-layout             (constraint layout)
 #
 #   The PTUI canary block can be skipped in emergencies by setting
 #   SKIP_PTUI_CANARY=1 in the environment.
@@ -102,6 +113,7 @@ sbcl --noinform --non-interactive \
                   (load (merge-pathnames \"ptui/test/constraints-test.lisp\"
                                          (truename \"$REPO_ROOT/\")))))))" \
   --eval "(let* ((amoebum-specs '((\"CHAT-SNAPSHOT-MESSAGE-AREA\"                   :amoebum/test)
+                                  (\"CHAT-SNAPSHOT-MESSAGE-AREA-BYTE-IDENTICAL-RATCHET\" :amoebum/test)
                                   (\"CONVERSATION-ROUNDTRIP-PRESERVES-TOOL-CALL-IDS\" :amoebum/test)
                                   (\"MAKE-AMOEBUM-CONTEXT-POPULATES-REQUIRED-SLOTS\"  :amoebum/test)
                                   (\"I210-RESTARTS-ROUND-TRIP\"                      :amoebum/test)
@@ -135,8 +147,13 @@ ELAPSED=$((END_TS - START_TS))
 
 echo ""
 if [ "$RC" -eq 0 ]; then
+    # NXT-399: explicit snapshot-ratchet marker so byte-identical drift
+    # of amoebum/test/snapshots/message-area.snap is visible in canary
+    # output even when the rest of the suite passes.
+    echo "regression-canary: SNAPSHOT-RATCHET PASS (chat-snapshot-message-area-byte-identical-ratchet vs amoebum/test/snapshots/message-area.snap)"
     echo "regression-canary: PASS (${ELAPSED}s)"
 else
+    echo "regression-canary: SNAPSHOT-RATCHET STATUS-UNKNOWN (rc=$RC; inspect FiveAM output above for AMOEBUM_SNAPSHOT_RATCHET_DRIFT/MISSING markers)"
     echo "regression-canary: FAIL rc=$RC (${ELAPSED}s)"
 fi
 
