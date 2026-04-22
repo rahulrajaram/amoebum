@@ -50,8 +50,15 @@
    (:file "src/agents")
    (:file "src/agents/personas")
    (:file "src/agent-activity")
-   (:file "src/extensions/manifest")
+   ;; NXT-386: extension subsystem split. Discovery loads first because
+   ;; manifest-metadata builders, permissions-prep, and the residual loader
+   ;; all consume its path/key helpers. The legacy extensions.lisp file owns
+   ;; the EXTENSION-LOAD-RECORD struct that the loader registers and that
+   ;; checkpoint.lisp reads.
    (:file "src/extensions")
+   (:file "src/extensions/discovery")
+   (:file "src/extensions/manifest")
+   (:file "src/extensions/permissions-prep")
    (:file "src/extensions/loader")
    (:file "src/checkpoint")
    (:file "src/sounds")

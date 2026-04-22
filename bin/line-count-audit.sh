@@ -97,7 +97,10 @@ EOF
       ;;
     extensions)
       cat <<'EOF'
-extensions|amoebum/src/extensions/loader.lisp|1189
+extensions|amoebum/src/extensions/loader.lisp|656
+extensions|amoebum/src/extensions/discovery.lisp|151
+extensions|amoebum/src/extensions/manifest.lisp|511
+extensions|amoebum/src/extensions/permissions-prep.lisp|310
 EOF
       ;;
     shell)
