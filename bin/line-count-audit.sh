@@ -85,7 +85,12 @@ EOF
       ;;
     policy)
       cat <<'EOF'
-policy|amoebum/src/plan-execution.lisp|1137
+policy|amoebum/src/plan-execution.lisp|200
+policy|amoebum/src/plan-execution-helpers.lisp|220
+policy|amoebum/src/plan-execution-rollback.lisp|130
+policy|amoebum/src/plan-execution-state-machine.lisp|400
+policy|amoebum/src/plan-execution-lifecycle.lisp|180
+policy|amoebum/src/plan-execution-loop.lisp|300
 policy|amoebum/src/permissions.lisp|860
 EOF
       ;;

@@ -45,8 +45,30 @@
    (:file "src/policy-types")
    (:file "src/plan-execution")
    (:file "src/plan-execution-output")
+   ;; NXT-415: helpers (status normalization, step lookup, git runner)
+   ;; extracted from src/plan-execution.lisp. Must load after the structs
+   ;; defined in src/plan-execution.lisp and before the modules that use
+   ;; %find-plan-execution-step / %safe-plan-execution-string.
+   (:file "src/plan-execution-helpers")
    (:file "src/plan-execution-context")
    (:file "src/plan-execution-effects")
+   ;; NXT-415: git rollback baseline + restore helpers extracted from
+   ;; src/plan-execution.lisp. Loaded after helpers (uses %plan-execution-run-git).
+   (:file "src/plan-execution-rollback")
+   ;; NXT-415: declarative (status, event) -> transition table extracted
+   ;; from src/plan-execution.lisp. Loaded after context/effects which
+   ;; provide %build-plan-transition-decision-context and the effect
+   ;; constructors used by transition handlers.
+   (:file "src/plan-execution-state-machine")
+   ;; NXT-415: public lifecycle entry points (start/pause/resume/abort/
+   ;; reset/initialize/elapsed/progress) extracted from src/plan-execution.lisp.
+   ;; Loaded after the state-machine and effects modules they delegate to.
+   (:file "src/plan-execution-lifecycle")
+   ;; NXT-415: restart-preserving execution loop + execute-approved-plan-steps
+   ;; coordinator extracted from src/plan-execution.lisp. Loaded last so
+   ;; lifecycle, state-machine, rollback, helpers, and effects are all
+   ;; available when the coordinator delegates into them.
+   (:file "src/plan-execution-loop")
    (:file "src/agents")
    (:file "src/agents/personas")
    (:file "src/agent-activity")
