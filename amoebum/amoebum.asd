@@ -114,6 +114,16 @@
    (:file "src/sandbox-os")
    (:file "src/asdf-extensions")
    (:file "src/compile-validation")
+   ;; NXT-395: deftool module split. Submodules load in dependency order
+   ;; (metadata/history/schema/coercion/expansion) before the residual
+   ;; `macros/deftool` facade so the macroexpansion sees every helper
+   ;; (%tool-name-string, rollback-tool, cl-type-to-json-schema,
+   ;; %coerce-tool-argument, ...) at load time.
+   (:file "src/macros/deftool/metadata")
+   (:file "src/macros/deftool/history")
+   (:file "src/macros/deftool/schema")
+   (:file "src/macros/deftool/coercion")
+   (:file "src/macros/deftool/expansion")
    (:file "src/macros/deftool")
    (:file "src/macros/defhook")
    ;; NXT-393: defkeys module split. Submodules load in dependency order
