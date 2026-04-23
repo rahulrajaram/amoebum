@@ -57,7 +57,7 @@ EOF
       ;;
 packages)
       cat <<'EOF'
-packages|amoebum/src/package.lisp|1319
+packages|amoebum/src/package.lisp|1321
 packages|amoebum/src/package-domains.lisp|204
 EOF
       ;;
