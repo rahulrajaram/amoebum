@@ -45,3 +45,45 @@ jobs:
           ./ptui/bin/test.sh
           ./ptui/bin/build.sh
           ./ptui/bin/compliance-gate.sh
+
+  amoebum-ratchets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sbcl ripgrep build-essential util-linux
+
+      - name: Ensure Quicklisp
+        run: ./ptui/bin/ensure-quicklisp.sh
+
+      - name: Strict line-count audit
+        run: ./bin/line-count-audit.sh --strict all
+
+  amoebum-focused-verify:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - worktrees
+          - state
+          - ui
+          - extensions
+          - shell
+          - macros
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sbcl ripgrep build-essential util-linux
+
+      - name: Ensure Quicklisp
+        run: ./ptui/bin/ensure-quicklisp.sh
+
+      - name: Focused verify (${{ matrix.profile }})
+        run: ./bin/amoebum-focused-verify.sh --no-overwatch ${{ matrix.profile }}
