@@ -34,7 +34,7 @@ PROFILES=(worktrees packages state policy ui extensions shell macros cycles)
 usage() {
   cat <<'EOF'
 Usage:
-  bin/amoebum-focused-verify.sh <profile>
+  bin/amoebum-focused-verify.sh <profile> [--suites SUITE1,SUITE2] [--no-overwatch]
   bin/amoebum-focused-verify.sh --list-profiles
 
 Profiles:
@@ -48,6 +48,11 @@ Profiles:
   macros     Macro expansion/validation seam checks.
   cycles     Package-import-cycle guardrail (NXT-397).
   all        Run every profile.
+
+Debug flags:
+  --suites CSV     Run only the given FiveAM suites for the selected profile.
+                   Skips the profile's extra build/audit commands.
+  --no-overwatch   Run SBCL directly even when overwatch is installed.
 EOF
 }
 
@@ -228,7 +233,7 @@ run_focused_suites() {
   echo "==> focused suites: ${suites} (profile=${PROFILE_NAME:-unknown})"
 
   local rc=0
-  if [[ -x "${overwatch_bin}" ]]; then
+  if (( FOCUSED_VERIFY_USE_OVERWATCH )) && [[ -x "${overwatch_bin}" ]]; then
     set +e
     timeout "${hard_timeout}" "${overwatch_bin}" run --profile generic --stream \
       --soft-timeout "${soft_timeout}" --silent-timeout "${silent_timeout}" \
@@ -259,6 +264,26 @@ run_focused_suites() {
 
   rm -f "${runner_script}" "${out_log}"
   trap - EXIT INT TERM
+}
+
+profile_debug_timeouts() {
+  local profile="$1"
+  case "${profile}" in
+    worktrees|packages|state|policy) printf '%s %s %s\n' 1200 1200 300 ;;
+    ui|extensions|shell|macros) printf '%s %s %s\n' 1800 1800 300 ;;
+    cycles|all) fail "--suites is not supported for profile ${profile}" ;;
+    *) fail "unknown profile: ${profile}" ;;
+  esac
+}
+
+run_debug_profile() {
+  local profile="$1"
+  local suites="$2"
+  local hard_timeout
+  local soft_timeout
+  local silent_timeout
+  read -r hard_timeout soft_timeout silent_timeout < <(profile_debug_timeouts "${profile}")
+  PROFILE_NAME="${profile}" run_focused_suites "${suites}" "${hard_timeout}" "${soft_timeout}" "${silent_timeout}"
 }
 
 verify_worktrees() {
@@ -344,26 +369,58 @@ verify_macros() {
   PROFILE_NAME=macros run_focused_suites "MACROEXPAND-GOLDEN-SUITE,DEFTOOL-TYPE-VALIDATION-SUITE,DEFTOOL-DANGEROUS-PERMISSION-SUITE,COMPILE-VALIDATION-CONDITIONS-SUITE,DEFHOOK-CROSS-REFERENCE-SUITE,ARGUMENT-PATTERN-DISPATCH-SUITE" 1800 1800 300
 }
 
-profile="${1:-}"
-case "${profile}" in
-  --help|-h)
-    usage
-    exit 0
-    ;;
-  --list-profiles)
-    if [[ $# -ne 1 ]]; then
+profile=""
+debug_suites=""
+list_only=0
+FOCUSED_VERIFY_USE_OVERWATCH=1
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --list-profiles)
+      list_only=1
+      ;;
+    --suites)
+      shift
+      [[ $# -gt 0 ]] || { usage >&2; exit 2; }
+      debug_suites="$1"
+      ;;
+    --no-overwatch)
+      FOCUSED_VERIFY_USE_OVERWATCH=0
+      ;;
+    -*)
       usage >&2
       exit 2
-    fi
-    list_profiles
-    exit 0
-    ;;
-  "") usage >&2; exit 2 ;;
-esac
+      ;;
+    *)
+      if [[ -n "${profile}" ]]; then
+        usage >&2
+        exit 2
+      fi
+      profile="$1"
+      ;;
+  esac
+  shift
+done
 
-if [[ $# -ne 1 ]]; then
-  usage >&2
-  exit 2
+if (( list_only )); then
+  if [[ -n "${profile}" || -n "${debug_suites}" || ${FOCUSED_VERIFY_USE_OVERWATCH} -eq 0 ]]; then
+    usage >&2
+    exit 2
+  fi
+  list_profiles
+  exit 0
+fi
+
+[[ -n "${profile}" ]] || { usage >&2; exit 2; }
+
+if [[ -n "${debug_suites}" ]]; then
+  run_debug_profile "${profile}" "${debug_suites}"
+  echo "AMOEBUM_FOCUSED_VERIFY_OK profile=${profile}"
+  exit 0
 fi
 
 case "${profile}" in

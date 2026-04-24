@@ -1,4 +1,4 @@
-.PHONY: build test test-ptui test-amoebum yarli-bootstrap-validate install-wrapper-validate check check-parens check-dist-ignore check-import-cycles check-package-export-goldens prepare-quicklisp-compat clean
+.PHONY: build test test-ptui test-amoebum yarli-bootstrap-validate install-wrapper-validate check check-parens check-dist-ignore check-import-cycles check-package-export-goldens check-readme-makefile prepare-quicklisp-compat clean
 
 REPO_ROOT := $(CURDIR)
 QUICKLISP_SETUP ?= $(HOME)/quicklisp/setup.lisp
@@ -89,10 +89,14 @@ check-package-export-goldens:
 	timeout 600 sbcl --noinform \
 	  --script amoebum/test/package-export-golden-test.lisp
 
+check-readme-makefile:
+	bash ./bin/check-readme-makefile.sh
+
 check:
 	$(MAKE) check-parens
 	$(MAKE) check-dist-ignore
 	$(MAKE) check-import-cycles
+	$(MAKE) check-readme-makefile
 	$(MAKE) test
 	$(MAKE) check-package-export-goldens
 	$(MAKE) build
