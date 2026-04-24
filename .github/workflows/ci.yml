@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install deps
         run: |
@@ -23,6 +25,17 @@ jobs:
           else
             echo "Skipping plan lint: IMPLEMENTATION_PLAN.md is not tracked in CI."
           fi
+
+      - name: Commit message quality gate
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          elif [ "${{ github.event_name }}" = "push" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            range="${{ github.event.before }}..${{ github.sha }}"
+          else
+            range="${{ github.sha }}^!"
+          fi
+          ./bin/check-commit-message-quality.sh --range "${range}"
 
       - name: Kernel gates
         run: |
