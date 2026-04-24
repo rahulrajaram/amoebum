@@ -221,6 +221,10 @@
    ;; %install-facade! moves *checkpoint-directory-override* from :amoebum
    ;; to :amoebum.sessions; the fixture references the post-install location.
    (:file "src/test-support/globals-fixture")
+   (:file "src/swarm/agents")
+   (:file "src/swarm/handoff-context")
+   (:file "src/swarm/user-handoff")
+   (:file "src/swarm/user-negotiation")
    (:file "src/swarm")
    (:file "src/widgets/swarm-panel")
    (:file "src/system-prompt")
