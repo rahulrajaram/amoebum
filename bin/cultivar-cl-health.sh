@@ -59,6 +59,14 @@ navigation_warning=${navigation_warning}
 EOF
 }
 
+write_doctor_log() {
+  local log_path="$1"
+  local doctor_output="$2"
+
+  mkdir -p "$(dirname "${log_path}")"
+  printf '%s\n' "${doctor_output}" > "${log_path}"
+}
+
 health_root="$(find_health_root)" || {
   echo "CULTIVAR_CL_HEALTH_FAIL reason=no_health_root_with_cultivar_index" >&2
   exit 1
@@ -67,7 +75,14 @@ health_root="$(find_health_root)" || {
 index_path="${health_root}/.agent/cultivar-index"
 status_report="${health_root}/.agent/cultivar-cl-health.status"
 doctor_log="${health_root}/.agent/cultivar-cl-health.doctor.txt"
+mirror_status_report=""
+mirror_doctor_log=""
 generated_at="$(date +%F)"
+
+if [[ "${REPO_ROOT}" != "${health_root}" ]]; then
+  mirror_status_report="${REPO_ROOT}/.agent/cultivar-cl-health.status"
+  mirror_doctor_log="${REPO_ROOT}/.agent/cultivar-cl-health.doctor.txt"
+fi
 
 if [[ ! -x "${CULTIVAR_BINARY_PATH}" ]]; then
   write_status_report "${status_report}" "${generated_at}" "fail" "missing" "UNKNOWN" "127" \
@@ -82,8 +97,10 @@ doctor_output="$("${CULTIVAR_BINARY_PATH}" doctor --index "${index_path}" 2>&1)"
 doctor_exit=$?
 set -e
 
-mkdir -p "$(dirname "${doctor_log}")"
-printf '%s\n' "${doctor_output}" > "${doctor_log}"
+write_doctor_log "${doctor_log}" "${doctor_output}"
+if [[ -n "${mirror_doctor_log}" ]]; then
+  write_doctor_log "${mirror_doctor_log}" "${doctor_output}"
+fi
 
 index_health_summary="$(printf '%s\n' "${doctor_output}" | sed -n 's/^  Index health summary: //p' | head -n1)"
 if [[ -z "${index_health_summary}" ]]; then
@@ -113,6 +130,9 @@ elif printf '%s\n' "${doctor_output}" | grep -Fq "snapshot.sqlite... NOT FOUND";
 fi
 
 write_status_report "${status_report}" "${generated_at}" "${status}" "${reference_mode}" "${index_health_summary}" "${doctor_exit}" "${summary}" "${navigation_warning}"
+if [[ -n "${mirror_status_report}" ]]; then
+  write_status_report "${mirror_status_report}" "${generated_at}" "${status}" "${reference_mode}" "${index_health_summary}" "${doctor_exit}" "${summary}" "${navigation_warning}"
+fi
 
 if [[ "${status}" == "fail" ]]; then
   echo "CULTIVAR_CL_HEALTH_FAIL status=${status} mode=${reference_mode} index_health=${index_health_summary} root=${health_root} report=${status_report} doctor_log=${doctor_log}" >&2
