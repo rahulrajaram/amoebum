@@ -80,6 +80,11 @@ EOF
       cat <<'EOF'
 state|amoebum/src/conversation.lisp|1236
 state|amoebum/src/checkpoint.lisp|1667
+state|amoebum/src/swarm.lisp|11
+state|amoebum/src/swarm/agents.lisp|448
+state|amoebum/src/swarm/handoff-context.lisp|423
+state|amoebum/src/swarm/user-handoff.lisp|566
+state|amoebum/src/swarm/user-negotiation.lisp|132
 state|amoebum/src/memory.lisp|33
 state|amoebum/src/memory/backend.lisp|261
 state|amoebum/src/memory/file-store.lisp|429
