@@ -268,8 +268,13 @@
    ;; I297-I304: prompt-input must load before chat.lisp
    ;; because chat.lisp calls chat-panel-handle-input-key defined here
    (:file "src/ui/panels/prompt-input")
-   ;; NXT-278: chat-ui-state struct + low-level state helpers extracted
-   ;; from chat.lisp. Must load immediately before src/ui/chat.
+   ;; NXT-431: chat-state split. Load defaults first, then the dedicated
+   ;; conversation-entry coercion, slash-descriptor, and snapshot-metadata
+   ;; helpers before the residual coordinator facade.
+   (:file "src/ui/chat-state/state-defaults")
+   (:file "src/ui/chat-state/slash-command-descriptors")
+   (:file "src/ui/chat-state/conversation-entry")
+   (:file "src/ui/chat-state/snapshot-metadata")
    (:file "src/ui/chat-state")
    ;; NXT-428: status/output, tool-completion ordering, and event-ingestion
    ;; helpers now load before the residual chat-stream coordinator.
