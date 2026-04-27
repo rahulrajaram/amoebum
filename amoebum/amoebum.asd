@@ -218,6 +218,14 @@
    (:file "src/tools/edit-validation")
    (:file "src/tools/shell-env")
    (:file "src/tools/shell-safety")
+   ;; NXT-436: git module split — shared runtime helpers load before the
+   ;; focused status/diff/commit/pr modules, and the residual `tools/git`
+   ;; file now only publishes the public deftool facade.
+   (:file "src/tools/git/runtime")
+   (:file "src/tools/git/status")
+   (:file "src/tools/git/diff")
+   (:file "src/tools/git/commit")
+   (:file "src/tools/git/pr")
    (:file "src/tools/git")
    (:file "src/tools/lsp")
    (:file "src/conversation-export")
