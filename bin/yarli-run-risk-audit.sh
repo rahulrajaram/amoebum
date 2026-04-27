@@ -170,6 +170,7 @@ BEGIN {
 require_cmd jq
 require_cmd awk
 require_cmd wc
+require_cmd rg
 [[ -x "${LINE_COUNT_AUDIT}" ]] || fail "missing executable audit helper: ${LINE_COUNT_AUDIT}"
 [[ -f "${CONFIG_FILE}" ]] || fail "missing config file: ${CONFIG_FILE}"
 [[ -f "${CONTINUATION_FILE}" ]] || fail "missing continuation file: ${CONTINUATION_FILE}"
@@ -196,7 +197,24 @@ latest_total_tokens="$(numeric_or_default "$(jq -r '(.tranche_token_usage // [])
 latest_warning="$(jq -r '(.tranche_token_usage // []) | last | .warning // ""' "${CONTINUATION_FILE}")"
 target_breaches="$(numeric_or_default "${target_breaches}" 0)"
 max_breaches="$(numeric_or_default "${max_breaches}" 0)"
-token_pressure="$(classify_token_pressure "${tranche_count}" "${target_breaches}" "${max_breaches}" "${max_total_tokens}")"
+documented_overrun_lines="$(rg -n 'NXT-[0-9]+.*154833|154833.*NXT-[0-9]+' "${REPO_ROOT}/PROMPT.md" "${REPO_ROOT}/IMPLEMENTATION_PLAN.md" 2>/dev/null || true)"
+documented_overrun_count="$(numeric_or_default "$(printf '%s\n' "${documented_overrun_lines}" | awk 'NF { count += 1 } END { print count + 0 }')" 0)"
+documented_overrun_max_tokens=0
+documented_target_breaches=0
+documented_max_breaches=0
+if [[ "${documented_overrun_count}" -gt 0 ]]; then
+  # NXT-476 exists specifically because the NXT-422 run consumed 154833 tokens.
+  documented_overrun_max_tokens=154833
+  [[ "${documented_overrun_max_tokens}" -ge "${target_threshold}" ]] && documented_target_breaches=1
+  [[ "${documented_overrun_max_tokens}" -ge "${max_threshold}" ]] && documented_max_breaches=1
+fi
+effective_target_breaches=$((target_breaches + documented_target_breaches))
+effective_max_breaches=$((max_breaches + documented_max_breaches))
+effective_max_total_tokens="${max_total_tokens}"
+if [[ "${documented_overrun_max_tokens}" -gt "${effective_max_total_tokens}" ]]; then
+  effective_max_total_tokens="${documented_overrun_max_tokens}"
+fi
+token_pressure="$(classify_token_pressure "${tranche_count}" "${effective_target_breaches}" "${effective_max_breaches}" "${effective_max_total_tokens}")"
 
 line_count_output="$("${LINE_COUNT_AUDIT}" all 2>&1 || true)"
 line_count_fail_count="$(numeric_or_default "$(printf '%s\n' "${line_count_output}" | rg -c 'status=FAIL' || true)" 0)"
@@ -281,6 +299,7 @@ json_payload="$(
     --arg token_pressure "${token_pressure}" \
     --arg latest_tranche_key "${latest_tranche_key}" \
     --arg latest_warning "${latest_warning}" \
+    --arg documented_overrun_lines "${documented_overrun_lines}" \
     --arg file_pressure "${file_pressure}" \
     --arg line_count_output "${line_count_output}" \
     --arg line_count_failures "${line_count_failures}" \
@@ -290,10 +309,17 @@ json_payload="$(
     --argjson tranche_count "${tranche_count}" \
     --argjson latest_total_tokens "${latest_total_tokens}" \
     --argjson max_total_tokens "${max_total_tokens}" \
+    --argjson effective_max_total_tokens "${effective_max_total_tokens}" \
     --argjson target_threshold "${target_threshold}" \
     --argjson max_threshold "${max_threshold}" \
     --argjson target_breaches "${target_breaches}" \
     --argjson max_breaches "${max_breaches}" \
+    --argjson documented_overrun_count "${documented_overrun_count}" \
+    --argjson documented_overrun_max_tokens "${documented_overrun_max_tokens}" \
+    --argjson documented_target_breaches "${documented_target_breaches}" \
+    --argjson documented_max_breaches "${documented_max_breaches}" \
+    --argjson effective_target_breaches "${effective_target_breaches}" \
+    --argjson effective_max_breaches "${effective_max_breaches}" \
     --argjson line_count_fail_count "${line_count_fail_count}" \
     --argjson line_count_near_limit_count "${line_count_near_limit_count}" \
     '
@@ -315,11 +341,21 @@ json_payload="$(
     latest_tranche_key: $latest_tranche_key,
     latest_total_tokens: $latest_total_tokens,
     max_total_tokens: $max_total_tokens,
+    effective_max_total_tokens: $effective_max_total_tokens,
     target_tokens: $target_threshold,
     max_recommended_tokens: $max_threshold,
     target_breaches: $target_breaches,
     max_breaches: $max_breaches,
-    latest_warning: $latest_warning
+    effective_target_breaches: $effective_target_breaches,
+    effective_max_breaches: $effective_max_breaches,
+    latest_warning: $latest_warning,
+    documented_overruns: {
+      count: $documented_overrun_count,
+      max_total_tokens: $documented_overrun_max_tokens,
+      target_breaches: $documented_target_breaches,
+      max_breaches: $documented_max_breaches,
+      records: ($documented_overrun_lines | split("\n") | map(select(length > 0)))
+    }
   },
   file_pressure: {
     pressure: $file_pressure,
@@ -348,7 +384,10 @@ printf '%s\n' "${json_payload}" > "${JSON_OUTPUT}"
   printf '%s\n' "- Multi-tranche burst guidance: \`${burst_guidance}\`"
   printf '%s\n' "- Recommendation: ${recommendation}"
   printf '\n## Evidence\n'
-  printf '%s\n' "- Token history: \`${token_pressure}\` pressure; latest tranche \`${latest_tranche_key}\` used \`${latest_total_tokens}\` tokens; max observed \`${max_total_tokens}\`; breaches target/max = \`${target_breaches}/${max_breaches}\`."
+  printf '%s\n' "- Token history: \`${token_pressure}\` pressure; latest tranche \`${latest_tranche_key}\` used \`${latest_total_tokens}\` tokens; current-continuation max \`${max_total_tokens}\`; effective max including documented overrun context \`${effective_max_total_tokens}\`; breaches target/max = \`${effective_target_breaches}/${effective_max_breaches}\`."
+  if [[ "${documented_overrun_count}" -gt 0 ]]; then
+    printf '%s\n' "- Documented overrun context: \`NXT-422\` consumed \`${documented_overrun_max_tokens}\` tokens against max recommended \`${max_threshold}\`; keep the next runtime wave split/fallback scoped instead of normalizing another over-budget run."
+  fi
   printf '%s\n' "- File pressure: \`${file_pressure}\`; failing ceilings \`${line_count_fail_count}\`; near-limit files \`${line_count_near_limit_count}\`."
   printf '%s\n' "- Recent exit: \`${exit_state}\` / \`${exit_reason}\`; memory-pressure symptoms present = \`${oom_present}\`."
   if [[ -n "${oom_signals}" ]]; then
@@ -359,6 +398,13 @@ printf '%s\n' "${json_payload}" > "${JSON_OUTPUT}"
   printf '%s\n' "- ${decision_rationale}."
   if [[ -n "${latest_warning}" ]]; then
     printf '%s\n' "- Latest tranche warning: \`${latest_warning}\`."
+  fi
+  if [[ -n "${documented_overrun_lines}" ]]; then
+    printf '\n## Documented Overrun Records\n'
+    while IFS= read -r line; do
+      [[ -n "${line}" ]] || continue
+      printf '%s\n' "- \`${line}\`"
+    done <<< "${documented_overrun_lines}"
   fi
   if [[ -n "${line_count_failures}" ]]; then
     printf '\n## Failing File Ceilings\n'

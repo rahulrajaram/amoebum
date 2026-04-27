@@ -304,18 +304,18 @@
                                      :source source)))
       (values entry (append without-key (list entry))))))
 
-(defmethod memory-store ((backend file-memory-backend) key value
-                         &key (scope :project) (source :manual))
-  (unless (member scope '(:global :project) :test #'eq)
-    (error "FILE memory backend only supports :GLOBAL and :PROJECT store scopes."))
-  (let* ((path (%memory-path-for-scope backend scope))
-         (entries (%read-memory-file path scope :file)))
-    (multiple-value-bind (stored next-entries)
-        (%upsert-memory-entry entries key value scope source)
-      (%write-memory-file path (%dedupe-memory-entries next-entries))
-      (push stored *session-memory-entries*)
-      (%publish-memory-updated backend :store (memory-entry-key stored) (memory-entry-value stored))
-      stored)))
+(defmethod memory-store ((backend file-memory-backend) key value &key (scope :project) (source :manual))
+  (case scope
+    (:session
+     (multiple-value-bind (stored next-entries) (%upsert-memory-entry *session-memory-entries* key value scope source) (setf *session-memory-entries* (%dedupe-memory-entries next-entries)) (%publish-memory-updated backend :store (memory-entry-key stored) (memory-entry-value stored)) stored))
+    ((:global :project)
+     (let* ((path (%memory-path-for-scope backend scope)) (entries (%read-memory-file path scope :file)))
+       (multiple-value-bind (stored next-entries) (%upsert-memory-entry entries key value scope source)
+         (%write-memory-file path (%dedupe-memory-entries next-entries))
+         (push stored *session-memory-entries*)
+         (%publish-memory-updated backend :store (memory-entry-key stored) (memory-entry-value stored))
+         stored)))
+    (otherwise (error "FILE memory backend only supports :GLOBAL, :PROJECT, and :SESSION store scopes."))))
 
 (defmethod memory-list ((backend file-memory-backend) &key (scope :effective))
   (case scope

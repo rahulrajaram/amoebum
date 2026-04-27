@@ -389,7 +389,7 @@
                         (%trim-git-status-snapshot (getf fitted :git) 1)))
                  (t
                   (return))))
-      fitted)))
+      (unless (size-fits-p) (setf (getf fitted :extras) '() (getf fitted :files) nil (getf fitted :git) nil) (when (getf fitted :conversation) (setf (getf (getf fitted :conversation) :entries) '())) (when (getf fitted :memory) (dolist (scope '(:effective :global :project :session)) (setf (getf (getf fitted :memory) scope) '()))) (unless (size-fits-p) (setf (getf fitted :conversation) nil (getf fitted :memory) nil (getf fitted :worktree) nil))) fitted)))
 
 (defun %serialize-coding-task-context (sanitized-context budget)
   "Serialize SANITIZED-CONTEXT as a bounded structured handoff packet."

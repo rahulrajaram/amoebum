@@ -705,6 +705,30 @@ Returns T if reset was performed, NIL otherwise."
                             "Streaming request failed."))))
   nil)
 
+(defun %token-stream-drain-event-starts-stream-p (kind)
+  (member kind
+          '(:text-delta
+            :chunk
+            :reasoning
+            :tool-call-delta
+            :tool-call-started
+            :tool-call-argument-complete
+            :tool-call-result)
+          :test #'eq))
+
+(defun %token-stream-ensure-running-for-drain-event! (stream-state kind)
+  (when (and (%token-stream-drain-event-starts-stream-p kind)
+             (eq (token-stream-state-status stream-state) :idle))
+    (%apply-token-stream-updates!
+     stream-state
+     (%compute-token-stream-transition stream-state
+                                       :start
+                                       :target-message-index nil
+                                       :budget-warning-threshold-percent
+                                       +stream-budget-warning-threshold-percent+
+                                       :budget-abort-threshold-percent
+                                       +stream-budget-abort-threshold-percent+))))
+
 (defun %token-stream-run-worker (stream-state worker-fn)
   (handler-case
       (progn
@@ -762,6 +786,7 @@ Returns T if reset was performed, NIL otherwise."
       (ptui.runtime.queue:queue-pop-all (token-stream-state-events stream-state))
     (dolist (event events)
       (let ((kind (or (getf event :type) (getf event :kind))))
+        (%token-stream-ensure-running-for-drain-event! stream-state kind)
         (case kind
           ((:text-delta :chunk)
            (%apply-token-stream-updates!
