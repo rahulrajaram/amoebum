@@ -78,7 +78,12 @@ EOF
       ;;
     state)
       cat <<'EOF'
-state|amoebum/src/conversation.lisp|1236
+state|amoebum/src/conversation.lisp|6
+state|amoebum/src/conversation/state.lisp|306
+state|amoebum/src/conversation/codec.lisp|170
+state|amoebum/src/conversation/forks.lisp|294
+state|amoebum/src/conversation/load.lisp|227
+state|amoebum/src/conversation/history.lisp|243
 state|amoebum/src/checkpoint.lisp|1667
 state|amoebum/src/swarm.lisp|11
 state|amoebum/src/swarm/agents.lisp|448

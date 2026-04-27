@@ -38,6 +38,11 @@
    (:file "src/provider-factory")
    (:file "src/ui/provider-dashboard")
    (:file "src/context")
+   (:file "src/conversation/state")
+   (:file "src/conversation/codec")
+   (:file "src/conversation/forks")
+   (:file "src/conversation/load")
+   (:file "src/conversation/history")
    (:file "src/conversation")
    ;; NXT-388: memory.lisp decomposed into backend / file-store /
    ;; haake-adapter / haake-transfer / commands behind the residual facade.

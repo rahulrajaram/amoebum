@@ -8,8 +8,8 @@ REPO_QUICKLISP_SETUP="${REPO_ROOT}/ptui/.tools/quicklisp/setup.lisp"
 QUICKLISP_SETUP="${QUICKLISP_SETUP:-${REPO_QUICKLISP_SETUP}}"
 QUICKLISP_SETUP_CANDIDATES=("${QUICKLISP_SETUP}" "${REPO_QUICKLISP_SETUP}" "${HOME}/quicklisp/setup.lisp")
 
-if [[ -x "${ENSURE_QUICKLISP}" ]]; then
-  "${ENSURE_QUICKLISP}" >/dev/null
+if [[ -x "${ENSURE_QUICKLISP}" && ! -f "${QUICKLISP_SETUP}" ]]; then
+  "${ENSURE_QUICKLISP}"
 fi
 
 if [[ ! -f "${QUICKLISP_SETUP}" ]]; then

@@ -208,7 +208,10 @@ run_focused_suites() {
   fi
 
   [[ -f "${quicklisp_setup}" ]] || fail "quicklisp setup not found at ${quicklisp_setup}"
-  command -v sbcl >/dev/null 2>&1 || fail "sbcl not found on PATH"
+  if ! sbcl_path="$(command -v sbcl 2>&1)"; then
+    fail "sbcl not found on PATH"
+  fi
+  [[ -n "${sbcl_path}" ]] || fail "sbcl not found on PATH"
 
   local runner_script
   runner_script="$(write_focused_suites_runner)"
