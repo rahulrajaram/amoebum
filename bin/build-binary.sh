@@ -7,8 +7,22 @@ ENSURE_QUICKLISP="${REPO_ROOT}/ptui/bin/ensure-quicklisp.sh"
 REPO_QUICKLISP_SETUP="${REPO_ROOT}/ptui/.tools/quicklisp/setup.lisp"
 QUICKLISP_SETUP="${QUICKLISP_SETUP:-${REPO_QUICKLISP_SETUP}}"
 QUICKLISP_SETUP_CANDIDATES=("${QUICKLISP_SETUP}" "${REPO_QUICKLISP_SETUP}" "${HOME}/quicklisp/setup.lisp")
+TMP_ROOT="${REPO_ROOT}/.tmp"
 
-if [[ -x "${ENSURE_QUICKLISP}" && ! -f "${QUICKLISP_SETUP}" ]]; then
+mkdir -p "${TMP_ROOT}"
+export TMPDIR="${TMPDIR:-${TMP_ROOT}}"
+
+if [[ -z "${HOME:-}" || ! -w "${HOME:-/nonexistent}" ]]; then
+  export HOME="${TMP_ROOT}/home"
+fi
+mkdir -p "${HOME}"
+
+if [[ -z "${XDG_CACHE_HOME:-}" || ! -w "${XDG_CACHE_HOME:-/nonexistent}" ]]; then
+  export XDG_CACHE_HOME="${TMP_ROOT}/xdg-cache"
+fi
+mkdir -p "${XDG_CACHE_HOME}"
+
+if [[ -x "${ENSURE_QUICKLISP}" ]]; then
   "${ENSURE_QUICKLISP}"
 fi
 

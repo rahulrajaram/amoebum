@@ -98,6 +98,16 @@
    ;; reload-user-extensions and reads loader-owned discovery helpers.
    (:file "src/extensions/hot-reload")
    (:file "src/checkpoint")
+   ;; NXT-426: checkpoint.lisp split into shared facade + dedicated
+   ;; paths/codec/snapshots/session/image/auto modules. Load order keeps
+   ;; shared structs/globals first, then path helpers, codecs, snapshot/session
+   ;; restore-save flows, image runtime, and finally auto-checkpoint policy.
+   (:file "src/checkpoint/paths")
+   (:file "src/checkpoint/codec")
+   (:file "src/checkpoint/snapshots")
+   (:file "src/checkpoint/session")
+   (:file "src/checkpoint/image")
+   (:file "src/checkpoint/auto")
    (:file "src/sounds")
    (:file "src/sounds/backend")
    (:file "src/voice/tts")
@@ -304,7 +314,7 @@
    (:file "test/self-modify-smoke-test")
    (:file "test/self-modify-test")
    (:file "test/sandbox-limits-test")
-   (:file "test/image-smoke-test")
+   (:file "test/image-smoke-suite")
    (:file "test/asdf-extensions-smoke-test")
    (:file "test/profiler-smoke-test")
    (:file "test/profiling-dashboard-test")

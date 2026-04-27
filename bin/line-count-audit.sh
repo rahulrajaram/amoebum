@@ -84,7 +84,13 @@ state|amoebum/src/conversation/codec.lisp|170
 state|amoebum/src/conversation/forks.lisp|294
 state|amoebum/src/conversation/load.lisp|227
 state|amoebum/src/conversation/history.lisp|243
-state|amoebum/src/checkpoint.lisp|1667
+state|amoebum/src/checkpoint.lisp|20
+state|amoebum/src/checkpoint/paths.lisp|144
+state|amoebum/src/checkpoint/codec.lisp|567
+state|amoebum/src/checkpoint/snapshots.lisp|140
+state|amoebum/src/checkpoint/session.lisp|361
+state|amoebum/src/checkpoint/image.lisp|372
+state|amoebum/src/checkpoint/auto.lisp|37
 state|amoebum/src/swarm.lisp|11
 state|amoebum/src/swarm/agents.lisp|448
 state|amoebum/src/swarm/handoff-context.lisp|423

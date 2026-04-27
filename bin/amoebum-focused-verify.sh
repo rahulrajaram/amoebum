@@ -65,6 +65,28 @@ fail() {
   exit 1
 }
 
+ensure_tmpdir() {
+  local candidate="${TMPDIR:-${REPO_ROOT}/.tmp}"
+  mkdir -p "${candidate}"
+  printf '%s\n' "${candidate}"
+}
+
+ensure_runtime_env() {
+  local tmp_root
+  tmp_root="$(ensure_tmpdir)"
+  export TMPDIR="${tmp_root}"
+
+  if [[ -z "${HOME:-}" || ! -w "${HOME:-/nonexistent}" ]]; then
+    export HOME="${tmp_root}/home"
+  fi
+  mkdir -p "${HOME}"
+
+  if [[ -z "${XDG_CACHE_HOME:-}" || ! -w "${XDG_CACHE_HOME:-/nonexistent}" ]]; then
+    export XDG_CACHE_HOME="${tmp_root}/xdg-cache"
+  fi
+  mkdir -p "${XDG_CACHE_HOME}"
+}
+
 run_cmd() {
   echo "==> $*"
   (
@@ -106,7 +128,7 @@ run_plan_validate() {
 # actually executes on Debian SBCL 2.2.9.
 write_focused_suites_runner() {
   local tmpfile
-  tmpfile="$(mktemp -t amoebum-focused-XXXXXX.lisp)"
+  tmpfile="$(mktemp "$(ensure_tmpdir)/amoebum-focused-XXXXXX.lisp")"
   cat > "${tmpfile}" <<'LISP'
 (labels ((split-comma-separated (text)
            (let ((items '())
@@ -216,7 +238,7 @@ run_focused_suites() {
   local runner_script
   runner_script="$(write_focused_suites_runner)"
   local out_log
-  out_log="$(mktemp -t amoebum-focused-out-XXXXXX.log)"
+  out_log="$(mktemp "$(ensure_tmpdir)/amoebum-focused-out-XXXXXX.log")"
   # shellcheck disable=SC2064
   trap "rm -f '${runner_script}' '${out_log}'" EXIT INT TERM
 
@@ -417,6 +439,8 @@ if (( list_only )); then
   list_profiles
   exit 0
 fi
+
+ensure_runtime_env
 
 [[ -n "${profile}" ]] || { usage >&2; exit 2; }
 

@@ -4,7 +4,33 @@
   (unless repo-root
     (error "Unable to resolve repository root from ~S" smoke-file))
 
-  (load (merge-pathnames #P"ptui/.tools/quicklisp/setup.lisp" repo-root))
+  #+sbcl
+  (let ((home-root (merge-pathnames #P".tmp/home/" repo-root))
+        (cache-root (merge-pathnames #P".tmp/xdg-cache/" repo-root))
+        (tmp-root (merge-pathnames #P".tmp/" repo-root)))
+    (ensure-directories-exist home-root)
+    (ensure-directories-exist cache-root)
+    (ensure-directories-exist tmp-root)
+    (ignore-errors
+      (require :sb-posix)
+      (let ((setenv-sym (find-symbol "SETENV" "SB-POSIX")))
+        (when setenv-sym
+          (let ((setenv (symbol-function setenv-sym)))
+            (funcall setenv "HOME" (namestring home-root) 1)
+            (funcall setenv "XDG_CACHE_HOME" (namestring cache-root) 1)
+            (funcall setenv "TMPDIR" (namestring tmp-root) 1))))))
+
+  (let* ((local-quicklisp (merge-pathnames #P"ptui/.tools/quicklisp/setup.lisp" repo-root))
+         (fallback-root #P"/home/rahul/Documents/amoebum/")
+         (fallback-quicklisp (merge-pathnames #P"ptui/.tools/quicklisp/setup.lisp" fallback-root))
+         (quicklisp-setup
+           (cond
+             ((probe-file fallback-quicklisp) fallback-quicklisp)
+             ((probe-file local-quicklisp) local-quicklisp)
+             (t (error "Unable to locate quicklisp setup at ~A or ~A."
+                       local-quicklisp
+                       fallback-quicklisp)))))
+    (load quicklisp-setup))
   (require :asdf)
 
   (let* ((asdf-pkg (or (find-package "ASDF")
