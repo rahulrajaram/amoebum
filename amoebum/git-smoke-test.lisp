@@ -1,10 +1,18 @@
 (let* ((smoke-file (or *load-truename* *compile-file-truename*))
        (amoebum-dir (and smoke-file (make-pathname :name nil :type nil :defaults smoke-file)))
-       (repo-root (and amoebum-dir (truename (merge-pathnames #P"../" amoebum-dir)))))
+       (repo-root (and amoebum-dir (truename (merge-pathnames #P"../" amoebum-dir))))
+       (quicklisp-path
+         (or (let ((env-path #+sbcl (sb-ext:posix-getenv "QUICKLISP_SETUP")
+                             #-sbcl nil))
+               (and env-path
+                    (probe-file env-path)))
+             (probe-file (merge-pathnames #P"ptui/.tools/quicklisp/setup.lisp" repo-root)))))
   (unless repo-root
     (error "Unable to resolve repository root from ~S" smoke-file))
+  (unless quicklisp-path
+    (error "Unable to resolve Quicklisp setup from QUICKLISP_SETUP or repo-local fallback."))
 
-  (load (merge-pathnames #P"ptui/.tools/quicklisp/setup.lisp" repo-root))
+  (load quicklisp-path)
   (require :asdf)
 
   (let* ((asdf-pkg (or (find-package "ASDF")

@@ -340,6 +340,7 @@
    (:file "test/write-safety-test")
    (:file "test/edit-validation-test")
    (:file "test/json-cli-contract-test")
+   (:file "test/git-workflow-test")
    (:file "test/entry-spine-test")
    (:file "test/review-workflow-test")
    (:file "test/multimodal-chat-test")

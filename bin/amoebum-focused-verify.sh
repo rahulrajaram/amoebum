@@ -29,7 +29,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-PROFILES=(worktrees packages state policy ui extensions shell macros cycles)
+PROFILES=(worktrees packages state policy control-plane ui extensions shell macros cycles)
 
 usage() {
   cat <<'EOF'
@@ -42,6 +42,7 @@ Profiles:
   packages   Package/load-order seam checks (incl. NXT-398 export goldens).
   state      Conversation/checkpoint seam checks.
   policy     Plan-execution/permissions seam checks.
+  control-plane  Pipeline/git/web/config/review seam checks.
   ui         UI streaming/chat-render seam checks.
   extensions Extension loader/runtime seam checks.
   shell      Shell runtime/permission seam checks.
@@ -294,7 +295,7 @@ run_focused_suites() {
 profile_debug_timeouts() {
   local profile="$1"
   case "${profile}" in
-    worktrees|packages|state|policy) printf '%s %s %s\n' 1200 1200 300 ;;
+    worktrees|packages|state|policy|control-plane) printf '%s %s %s\n' 1200 1200 300 ;;
     ui|extensions|shell|macros) printf '%s %s %s\n' 1800 1800 300 ;;
     cycles|all) fail "--suites is not supported for profile ${profile}" ;;
     *) fail "unknown profile: ${profile}" ;;
@@ -359,6 +360,14 @@ verify_state() {
 
 verify_policy() {
   PROFILE_NAME=policy run_focused_suites "PLAN-EXECUTION-UNIT-SUITE,PLAN-EXECUTION-TRANSITION-TABLE-SUITE,PERMISSIONS-UNIT-SUITE,PERMISSION-PATH-NORMALIZATION-SUITE,PERMISSION-PATH-MEMORY-SUITE,PERMISSION-ARGUMENT-GRANULARITY-SUITE" 1200 1200 300
+}
+
+verify_control_plane() {
+  PROFILE_NAME=control-plane run_focused_suites "PIPELINE-UNIT-SUITE,PIPELINE-CONTEXT-SUITE" 1200 1200 300
+  PROFILE_NAME=control-plane run_focused_suites "GIT-WORKFLOW-SUITE" 1200 1200 300
+  PROFILE_NAME=control-plane run_focused_suites "REVIEW-WORKFLOW-SUITE" 1200 1200 300
+  PROFILE_NAME=control-plane run_focused_suites "CONFIG-LOADER-SUITE,CONFIG-VALIDATION-SUITE" 1200 1200 300
+  PROFILE_NAME=control-plane run_focused_suites "WEB-FETCH-ORCHESTRATION-SUITE,WEB-SEARCH-POLICY-SUITE" 1200 1200 300
 }
 
 verify_ui() {
@@ -455,6 +464,7 @@ case "${profile}" in
   packages) verify_packages ;;
   state) verify_state ;;
   policy) verify_policy ;;
+  control-plane) verify_control_plane ;;
   ui) verify_ui ;;
   extensions) verify_extensions ;;
   shell) verify_shell ;;
@@ -466,6 +476,7 @@ case "${profile}" in
     verify_packages
     verify_state
     verify_policy
+    verify_control_plane
     verify_ui
     verify_extensions
     verify_shell
