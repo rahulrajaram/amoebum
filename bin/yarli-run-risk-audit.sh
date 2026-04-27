@@ -10,6 +10,7 @@ JSON_OUTPUT="${STATE_DIR}/run-risk-audit.json"
 MARKDOWN_OUTPUT="${REPORT_DIR}/yarli-run-risk-audit.md"
 LINE_COUNT_AUDIT="${SCRIPT_DIR}/line-count-audit.sh"
 CONFIG_FILE="${REPO_ROOT}/yarli.toml"
+HARD_STOP_TOKEN_THRESHOLD=200000
 
 usage() {
   cat <<'EOF'
@@ -162,6 +163,79 @@ BEGIN {
 }'
 }
 
+extract_documented_token_run_records() {
+  awk '
+function emit(key, tokens, raw) {
+  if (key != "" && tokens ~ /^[0-9]+$/) {
+    printf "%s|%s|%s:%s:%s\n", key, tokens, FILENAME, FNR, raw
+  }
+}
+{
+  raw = $0
+  rest = $0
+  while (match(rest, /NXT-[0-9]+/)) {
+    key_start = RSTART
+    key_length = RLENGTH
+    key = substr(rest, key_start, key_length)
+    after = substr(rest, key_start + key_length)
+    if (match(after, /NXT-[0-9]+/)) {
+      after = substr(after, 1, RSTART - 1)
+    }
+    token = ""
+    if (match(after, /(consumed|used)[^0-9`]*`?[0-9][0-9][0-9][0-9][0-9][0-9]*`?[[:space:]]+tokens/)) {
+      segment = substr(after, RSTART, RLENGTH)
+      if (match(segment, /[0-9][0-9][0-9][0-9][0-9][0-9]*/)) {
+        token = substr(segment, RSTART, RLENGTH)
+      }
+    }
+    emit(key, token, raw)
+    rest = substr(rest, key_start + key_length)
+  }
+}
+' "$@"
+}
+
+dedupe_token_run_records() {
+  awk -F'|' '
+NF >= 3 && $1 != "" {
+  if (!seen_order[$1]++) {
+    order[++count] = $1
+  }
+  records[$1] = $0
+}
+END {
+  for (i = 1; i <= count; i++) {
+    print records[order[i]]
+  }
+}
+'
+}
+
+evaluate_hard_stop_token_runs() {
+  local threshold="$1"
+  awk -F'|' -v threshold="${threshold}" '
+NF >= 3 && $1 != "" {
+  count += 1
+  keys[count] = $1
+  totals[count] = $2 + 0
+  records[count] = $0
+}
+END {
+  triggered = "false"
+  if (count >= 2 && totals[count - 1] >= threshold && totals[count] >= threshold) {
+    triggered = "true"
+  }
+  printf "%s|%d|%s|%d|%s|%d\n",
+    triggered,
+    count,
+    (count >= 2 ? keys[count - 1] : ""),
+    (count >= 2 ? totals[count - 1] : 0),
+    (count >= 1 ? keys[count] : ""),
+    (count >= 1 ? totals[count] : 0)
+}
+'
+}
+
 [[ "${1:-}" =~ ^(--help|-h)$ ]] && {
   usage
   exit 0
@@ -197,6 +271,31 @@ latest_total_tokens="$(numeric_or_default "$(jq -r '(.tranche_token_usage // [])
 latest_warning="$(jq -r '(.tranche_token_usage // []) | last | .warning // ""' "${CONTINUATION_FILE}")"
 target_breaches="$(numeric_or_default "${target_breaches}" 0)"
 max_breaches="$(numeric_or_default "${max_breaches}" 0)"
+current_token_run_records="$(jq -r '(.tranche_token_usage // [])[]? | select(.tranche_key != null) | "\(.tranche_key)|\(.total_tokens // 0)|.yarli/continuation.json:tranche_token_usage:\(.tranche_key)"' "${CONTINUATION_FILE}")"
+documented_token_run_records="$(extract_documented_token_run_records "${REPO_ROOT}/IMPLEMENTATION_PLAN.md" "${REPO_ROOT}/PROMPT.md" 2>/dev/null || true)"
+recent_token_run_records="$(
+  {
+    printf '%s\n' "${documented_token_run_records}"
+    printf '%s\n' "${current_token_run_records}"
+  } | dedupe_token_run_records
+)"
+hard_stop_evidence="$(printf '%s\n' "${recent_token_run_records}" | evaluate_hard_stop_token_runs "${HARD_STOP_TOKEN_THRESHOLD}")"
+hard_stop_triggered="${hard_stop_evidence%%|*}"
+rest="${hard_stop_evidence#*|}"
+recent_token_run_count="${rest%%|*}"
+rest="${rest#*|}"
+hard_stop_previous_tranche_key="${rest%%|*}"
+rest="${rest#*|}"
+hard_stop_previous_total_tokens="${rest%%|*}"
+rest="${rest#*|}"
+hard_stop_latest_tranche_key="${rest%%|*}"
+rest="${rest#*|}"
+hard_stop_latest_total_tokens="${rest}"
+recent_token_run_count="$(numeric_or_default "${recent_token_run_count}" 0)"
+hard_stop_previous_total_tokens="$(numeric_or_default "${hard_stop_previous_total_tokens}" 0)"
+hard_stop_latest_total_tokens="$(numeric_or_default "${hard_stop_latest_total_tokens}" 0)"
+hard_stop_previous_record="$(printf '%s\n' "${recent_token_run_records}" | awk -F'|' -v key="${hard_stop_previous_tranche_key}" '$1 == key { record = $0 } END { print record }')"
+hard_stop_latest_record="$(printf '%s\n' "${recent_token_run_records}" | awk -F'|' -v key="${hard_stop_latest_tranche_key}" '$1 == key { record = $0 } END { print record }')"
 documented_overrun_lines="$(rg -n 'NXT-[0-9]+.*154833|154833.*NXT-[0-9]+' "${REPO_ROOT}/PROMPT.md" "${REPO_ROOT}/IMPLEMENTATION_PLAN.md" 2>/dev/null || true)"
 documented_overrun_count="$(numeric_or_default "$(printf '%s\n' "${documented_overrun_lines}" | awk 'NF { count += 1 } END { print count + 0 }')" 0)"
 documented_overrun_max_tokens=0
@@ -284,6 +383,20 @@ elif [[ "${continuation_class}" == "single-tranche-only" ]]; then
   recommendation="Continue with one tranche at a time and avoid grouped or bursty follow-on runs until the pressure drops."
 fi
 
+fresh_launch_guidance="allow-fresh-launch"
+if [[ "${overall_risk}" == "high" || "${burst_guidance}" == "block" ]]; then
+  fresh_launch_guidance="manual-review-before-fresh-launch"
+fi
+
+if [[ "${hard_stop_triggered}" == "true" ]]; then
+  overall_risk="high"
+  continuation_class="hard-stop"
+  burst_guidance="block"
+  fresh_launch_guidance="do-not-fresh-launch"
+  decision_rationale="two consecutive recent tranche runs exceeded ${HARD_STOP_TOKEN_THRESHOLD} tokens (${hard_stop_previous_tranche_key}=${hard_stop_previous_total_tokens}, ${hard_stop_latest_tranche_key}=${hard_stop_latest_total_tokens}); do not fresh-launch another run until scope is reduced and the token pattern is reviewed"
+  recommendation="Hard stop: do not fresh-launch another Yarli run until the consecutive >${HARD_STOP_TOKEN_THRESHOLD}-token tranche pattern is reviewed and the next scope is reduced."
+fi
+
 json_payload="$(
   jq -n \
     --arg generated_at "${generated_at}" \
@@ -294,12 +407,19 @@ json_payload="$(
     --arg overall_risk "${overall_risk}" \
     --arg continuation_class "${continuation_class}" \
     --arg burst_guidance "${burst_guidance}" \
+    --arg fresh_launch_guidance "${fresh_launch_guidance}" \
     --arg decision_rationale "${decision_rationale}" \
     --arg recommendation "${recommendation}" \
     --arg token_pressure "${token_pressure}" \
     --arg latest_tranche_key "${latest_tranche_key}" \
     --arg latest_warning "${latest_warning}" \
     --arg documented_overrun_lines "${documented_overrun_lines}" \
+    --arg recent_token_run_records "${recent_token_run_records}" \
+    --arg hard_stop_triggered "${hard_stop_triggered}" \
+    --arg hard_stop_previous_tranche_key "${hard_stop_previous_tranche_key}" \
+    --arg hard_stop_latest_tranche_key "${hard_stop_latest_tranche_key}" \
+    --arg hard_stop_previous_record "${hard_stop_previous_record}" \
+    --arg hard_stop_latest_record "${hard_stop_latest_record}" \
     --arg file_pressure "${file_pressure}" \
     --arg line_count_output "${line_count_output}" \
     --arg line_count_failures "${line_count_failures}" \
@@ -320,6 +440,10 @@ json_payload="$(
     --argjson documented_max_breaches "${documented_max_breaches}" \
     --argjson effective_target_breaches "${effective_target_breaches}" \
     --argjson effective_max_breaches "${effective_max_breaches}" \
+    --argjson hard_stop_token_threshold "${HARD_STOP_TOKEN_THRESHOLD}" \
+    --argjson recent_token_run_count "${recent_token_run_count}" \
+    --argjson hard_stop_previous_total_tokens "${hard_stop_previous_total_tokens}" \
+    --argjson hard_stop_latest_total_tokens "${hard_stop_latest_total_tokens}" \
     --argjson line_count_fail_count "${line_count_fail_count}" \
     --argjson line_count_near_limit_count "${line_count_near_limit_count}" \
     '
@@ -330,6 +454,7 @@ json_payload="$(
   overall_risk: $overall_risk,
   continuation_class: $continuation_class,
   burst_guidance: $burst_guidance,
+  fresh_launch_guidance: $fresh_launch_guidance,
   decision_rationale: $decision_rationale,
   recommendation: $recommendation,
   config: {
@@ -349,6 +474,17 @@ json_payload="$(
     effective_target_breaches: $effective_target_breaches,
     effective_max_breaches: $effective_max_breaches,
     latest_warning: $latest_warning,
+    hard_stop: {
+      triggered: ($hard_stop_triggered == "true"),
+      threshold_tokens: $hard_stop_token_threshold,
+      recent_token_run_count: $recent_token_run_count,
+      previous_tranche_key: $hard_stop_previous_tranche_key,
+      previous_total_tokens: $hard_stop_previous_total_tokens,
+      latest_tranche_key: $hard_stop_latest_tranche_key,
+      latest_total_tokens: $hard_stop_latest_total_tokens,
+      consecutive_records: ([$hard_stop_previous_record, $hard_stop_latest_record] | map(select(length > 0))),
+      recent_records: ($recent_token_run_records | split("\n") | map(select(length > 0)))
+    },
     documented_overruns: {
       count: $documented_overrun_count,
       max_total_tokens: $documented_overrun_max_tokens,
@@ -382,9 +518,13 @@ printf '%s\n' "${json_payload}" > "${JSON_OUTPUT}"
   printf '%s\n' "- Overall risk: \`${overall_risk}\`"
   printf '%s\n' "- Continuation class: \`${continuation_class}\`"
   printf '%s\n' "- Multi-tranche burst guidance: \`${burst_guidance}\`"
+  printf '%s\n' "- Fresh-launch guidance: \`${fresh_launch_guidance}\`"
   printf '%s\n' "- Recommendation: ${recommendation}"
   printf '\n## Evidence\n'
   printf '%s\n' "- Token history: \`${token_pressure}\` pressure; latest tranche \`${latest_tranche_key}\` used \`${latest_total_tokens}\` tokens; current-continuation max \`${max_total_tokens}\`; effective max including documented overrun context \`${effective_max_total_tokens}\`; breaches target/max = \`${effective_target_breaches}/${effective_max_breaches}\`."
+  if [[ "${hard_stop_triggered}" == "true" ]]; then
+    printf '%s\n' "- Hard-stop token gate: last two known tranche-run token records exceed \`${HARD_STOP_TOKEN_THRESHOLD}\` tokens: \`${hard_stop_previous_tranche_key}\` used \`${hard_stop_previous_total_tokens}\`, then \`${hard_stop_latest_tranche_key}\` used \`${hard_stop_latest_total_tokens}\`."
+  fi
   if [[ "${documented_overrun_count}" -gt 0 ]]; then
     printf '%s\n' "- Documented overrun context: \`NXT-422\` consumed \`${documented_overrun_max_tokens}\` tokens against max recommended \`${max_threshold}\`; keep the next runtime wave split/fallback scoped instead of normalizing another over-budget run."
   fi
@@ -398,6 +538,11 @@ printf '%s\n' "${json_payload}" > "${JSON_OUTPUT}"
   printf '%s\n' "- ${decision_rationale}."
   if [[ -n "${latest_warning}" ]]; then
     printf '%s\n' "- Latest tranche warning: \`${latest_warning}\`."
+  fi
+  if [[ "${hard_stop_triggered}" == "true" ]]; then
+    printf '\n## Hard-Stop Records\n'
+    printf '%s\n' "- \`${hard_stop_previous_record}\`"
+    printf '%s\n' "- \`${hard_stop_latest_record}\`"
   fi
   if [[ -n "${documented_overrun_lines}" ]]; then
     printf '\n## Documented Overrun Records\n'
@@ -418,10 +563,11 @@ printf '%s\n' "${json_payload}" > "${JSON_OUTPUT}"
   printf '%s\n' "- Continuation source: \`${CONTINUATION_FILE}\`"
 } > "${MARKDOWN_OUTPUT}"
 
-printf 'YARLI_RUN_RISK_AUDIT_OK overall=%s continuation=%s burst=%s token_pressure=%s file_pressure=%s oom_symptoms=%s report=%s json=%s\n' \
+printf 'YARLI_RUN_RISK_AUDIT_OK overall=%s continuation=%s burst=%s fresh_launch=%s token_pressure=%s file_pressure=%s oom_symptoms=%s report=%s json=%s\n' \
   "${overall_risk}" \
   "${continuation_class}" \
   "${burst_guidance}" \
+  "${fresh_launch_guidance}" \
   "${token_pressure}" \
   "${file_pressure}" \
   "${oom_present}" \

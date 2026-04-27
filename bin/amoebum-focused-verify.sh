@@ -96,6 +96,21 @@ run_cmd() {
   )
 }
 
+warmup_control_plane_quicklisp() {
+  local quicklisp_setup="$1"
+
+  [[ "${PROFILE_NAME:-unknown}" == "control-plane" ]] || return 0
+  [[ "${FOCUSED_VERIFY_QUICKLISP_WARMED:-0}" == "1" ]] && return 0
+
+  echo "==> quicklisp warmup: control-plane focused-suite dependencies"
+  timeout 600 sbcl --noinform --non-interactive \
+    --load "${quicklisp_setup}" \
+    --eval "(ql:quickload (quote (:alexandria :dexador :jonathan :usocket :babel :cl-ppcre :fiveam :ironclad :cl-json :uuid :local-time :split-sequence :cffi :bordeaux-threads :cl-yaml)) :silent t)" \
+    --eval "(quit)"
+
+  FOCUSED_VERIFY_QUICKLISP_WARMED=1
+}
+
 find_plan_root() {
   if [[ -f "${REPO_ROOT}/IMPLEMENTATION_PLAN.md" && -f "${REPO_ROOT}/PROMPT.md" ]]; then
     printf '%s\n' "${REPO_ROOT}"
@@ -235,6 +250,8 @@ run_focused_suites() {
     fail "sbcl not found on PATH"
   fi
   [[ -n "${sbcl_path}" ]] || fail "sbcl not found on PATH"
+
+  warmup_control_plane_quicklisp "${quicklisp_setup}"
 
   local runner_script
   runner_script="$(write_focused_suites_runner)"
