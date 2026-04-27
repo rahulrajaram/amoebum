@@ -204,7 +204,15 @@
    (:file "src/tools/read-orchestration")
    (:file "src/tools/search")
    (:file "src/tools/search-orchestration")
+   ;; NXT-438: web module split — shared helpers load before the focused
+   ;; cache/summary/search/fetch modules so the public tool response shapes,
+   ;; timeout defaults, domain-policy filters, and fetch cache TTL behavior
+   ;; remain stable behind dedicated internals.
    (:file "src/tools/web")
+   (:file "src/tools/web/cache")
+   (:file "src/tools/web/summary")
+   (:file "src/tools/web/search")
+   (:file "src/tools/web/fetch")
    ;; NXT-390: shell module split — env/runtime/background submodules load
    ;; before the residual `tools/shell` facade so the deftool form can call
    ;; the extracted helpers (%normalize-*, %prepare-shell-runtime, %persist-
