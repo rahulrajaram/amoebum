@@ -271,9 +271,13 @@
    ;; NXT-278: chat-ui-state struct + low-level state helpers extracted
    ;; from chat.lisp. Must load immediately before src/ui/chat.
    (:file "src/ui/chat-state")
-   ;; NXT-279: chat streaming subsystem (event handlers, tool-call
-   ;; tracking/execution, budget enforcement) extracted from chat.lisp.
-   ;; Must load immediately after src/ui/chat-state and before src/ui/chat.
+   ;; NXT-428: status/output, tool-completion ordering, and event-ingestion
+   ;; helpers now load before the residual chat-stream coordinator.
+   (:file "src/ui/chat-stream/status-output")
+   (:file "src/ui/chat-stream/tool-completion")
+   (:file "src/ui/chat-stream/stream-events")
+   ;; NXT-279/NXT-428: residual chat streaming coordinator. Must load
+   ;; immediately after the chat-stream helper modules and before src/ui/chat.
    (:file "src/ui/chat-stream")
    (:file "src/ui/chat-render/transcript")
    (:file "src/ui/chat-render/stream-overlays")
