@@ -387,6 +387,7 @@
    (:file "test/worker-supervisor-test")
    (:file "test/overwatch-backend-test")
    (:file "test/event-journal-test")
+   (:file "test/event-journal-diagnostics-test")
    (:file "test/worker-retry-test")
    (:file "test/worker-fanout-test")
    (:file "test/worktree-runtime-test")
@@ -407,6 +408,7 @@
    (:file "test/extension-cli-test")
    (:file "test/model-routing-test")
    (:file "test/streaming-step-test")
+   (:file "test/stream-completion-ordering-test")
    (:file "test/token-stream-transition-table-test")
    (:file "test/plan-execution-transition-table-test")
    (:file "test/plan-execution-unit-test")
@@ -416,6 +418,7 @@
    (:file "test/checkpoint-rotation-test")
    (:file "test/state-serialization-test")
    (:file "test/user-coordination-test")
+   (:file "test/user-handoff-regression-test")
    (:file "test/usdt-probe-test")
    ;; TUI appearance snapshot tests
    (:file "test/input-appearance-test")
