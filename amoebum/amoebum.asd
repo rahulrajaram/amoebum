@@ -116,6 +116,13 @@
    (:file "src/permissions-command")
    (:file "src/permissions-path")
    (:file "src/permissions")
+   ;; NXT-440: residual permissions facade owns the rule struct, command/
+   ;; path helpers, and dangerous-command catalogue. The four submodules
+   ;; below load after it and own narrower clusters.
+   (:file "src/permissions/cache")
+   (:file "src/permissions/history")
+   (:file "src/permissions/session-memory")
+   (:file "src/permissions/plan-mode")
    (:file "src/permissions-rules")
    (:file "src/permissions-evaluation")
    (:file "src/commands-core-builtins")
