@@ -173,7 +173,11 @@
   :depends-on ("ptui/views" "ptui/hooks" "ptui/constraints" "ptui/app")
   :serial t
   :components
-  ((:file "src/ui/panel")
+  ((:file "src/ui/panel/sizing")
+   (:file "src/ui/panel/layout")
+   (:file "src/ui/panel/events")
+   (:file "src/ui/panel/render")
+   (:file "src/ui/panel")
    (:file "src/ui/definition-loader/schema")
    (:file "src/ui/definition-loader/parse" :depends-on ("src/ui/definition-loader/schema"))
    (:file "src/ui/definition-loader/validate" :depends-on ("src/ui/definition-loader/schema"))
@@ -281,6 +285,10 @@
    (:file "src/ui/app")
    (:file "src/views/primitives")
    (:file "src/views/paint")
+   (:file "src/ui/panel/sizing")
+   (:file "src/ui/panel/layout")
+   (:file "src/ui/panel/events")
+   (:file "src/ui/panel/render")
    (:file "src/ui/panel")
    (:file "src/ui/definition-loader/schema")
    (:file "src/ui/definition-loader/parse")
