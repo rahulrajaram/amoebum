@@ -561,6 +561,13 @@ printf '%s\n' "${json_payload}" > "${JSON_OUTPUT}"
   printf '\n## Artifacts\n'
   printf '%s\n' "- JSON summary: \`${JSON_OUTPUT}\`"
   printf '%s\n' "- Continuation source: \`${CONTINUATION_FILE}\`"
+  postmortem_index="${REPO_ROOT}/.agent/token-postmortems/INDEX.md"
+  if [[ -f "${postmortem_index}" ]]; then
+    postmortem_count="$(grep -cE '^\| NXT-' "${postmortem_index}" 2>/dev/null || printf '0')"
+    printf '%s\n' "- Token-budget postmortems (${postmortem_count}): \`${postmortem_index}\`"
+  else
+    printf '%s\n' "- Token-budget postmortems: not yet generated; run \`bin/yarli-token-postmortem.sh\` to refresh"
+  fi
 } > "${MARKDOWN_OUTPUT}"
 
 printf 'YARLI_RUN_RISK_AUDIT_OK overall=%s continuation=%s burst=%s fresh_launch=%s token_pressure=%s file_pressure=%s oom_symptoms=%s report=%s json=%s\n' \
