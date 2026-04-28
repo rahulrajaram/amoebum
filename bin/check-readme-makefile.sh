@@ -139,6 +139,18 @@ expected_line_for_target() {
       require_line "${target}" "${dry_run_text}" "(asdf:test-system :amoebum/test)"
       printf '%s\n' '`make test-amoebum` runs `ptui/bin/ensure-quicklisp.sh`, clears `tmp/amoebum-test-failures.log`, and then `sbcl --noinform --non-interactive` to load/test `:amoebum/test`.'
       ;;
+    test-pseudopod)
+      require_line "${target}" "${dry_run_text}" "ptui/bin/ensure-quicklisp.sh >/dev/null"
+      require_line "${target}" "${dry_run_text}" "sbcl --noinform --non-interactive"
+      require_line "${target}" "${dry_run_text}" "(asdf:test-system :pseudopod/test)"
+      printf '%s\n' '`make test-pseudopod` runs `ptui/bin/ensure-quicklisp.sh` and then `sbcl --noinform --non-interactive` to load/test `:pseudopod/test`. Focused dependency-layer entrypoint for provider/streaming/tool/file CRUD coverage; expected to be invoked by tranches that touch `pseudopod/src/` without rebuilding the broader amoebum suite.'
+      ;;
+    test-sw4rm-sdk)
+      require_line "${target}" "${dry_run_text}" "ptui/bin/ensure-quicklisp.sh >/dev/null"
+      require_line "${target}" "${dry_run_text}" "sbcl --noinform --non-interactive"
+      require_line "${target}" "${dry_run_text}" "(asdf:test-system :sw4rm-sdk/tests)"
+      printf '%s\n' '`make test-sw4rm-sdk` runs `ptui/bin/ensure-quicklisp.sh` and then `sbcl --noinform --non-interactive` to load/test `:sw4rm-sdk/tests`. Focused entrypoint for handoff/negotiation/workflow/policy coverage in the local-mode SW4RM fork.'
+      ;;
     test)
       for command in "${dry_run_lines[@]}"; do
         [[ "${command}" == make\ * ]] || continue
@@ -235,6 +247,8 @@ main() {
   local -a targets=(
     "test-ptui"
     "test-amoebum"
+    "test-pseudopod"
+    "test-sw4rm-sdk"
     "test"
     "check-dist-ignore"
     "check-import-cycles"
