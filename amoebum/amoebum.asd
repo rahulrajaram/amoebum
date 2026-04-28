@@ -304,8 +304,16 @@
    ;; NXT-279/NXT-428: residual chat streaming coordinator. Must load
    ;; immediately after the chat-stream helper modules and before src/ui/chat.
    (:file "src/ui/chat-stream")
+   ;; NXT-545: split chat-render residual into widgets/scrollback/layout
+   ;; submodules. widgets and scrollback load before transcript so the
+   ;; transcript module can reference %chat-template-cell and
+   ;; %compute-scroll-offset; layout loads after stream-overlays since it
+   ;; only consumes plan-mode state.
+   (:file "src/ui/chat-render/widgets")
+   (:file "src/ui/chat-render/scrollback")
    (:file "src/ui/chat-render/transcript")
    (:file "src/ui/chat-render/stream-overlays")
+   (:file "src/ui/chat-render/layout")
    ;; NXT-280: chat rendering subsystem extracted from chat.lisp.
    ;; Must load immediately after src/ui/chat-stream and before src/ui/chat.
    (:file "src/ui/chat-render")
