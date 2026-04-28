@@ -310,7 +310,16 @@
    ;; Must load immediately after src/ui/chat-stream and before src/ui/chat.
    (:file "src/ui/chat-render")
    ;; NXT-281: chat input/editing subsystem extracted from chat.lisp.
+   ;; NXT-543: further split into state/render/history/events submodules
+   ;; loaded before the residual facade. State owns text/grapheme
+   ;; helpers; render owns wrapped-line geometry; history owns fuzzy /
+   ;; history picker apply; events owns slash-command actions, key
+   ;; handler tables, and the runtime dispatcher used by chat-input.lisp.
    ;; Must load immediately after src/ui/chat-render and before src/ui/chat.
+   (:file "src/ui/chat-input/state")
+   (:file "src/ui/chat-input/render")
+   (:file "src/ui/chat-input/history")
+   (:file "src/ui/chat-input/events")
    (:file "src/ui/chat-input")
    (:file "src/ui/chat")
    ;; I297-I304: defpanel sub-panels extracted from chat.lisp
