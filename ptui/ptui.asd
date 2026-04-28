@@ -174,7 +174,15 @@
   :serial t
   :components
   ((:file "src/ui/panel")
-   (:file "src/ui/definition-loader")))
+   (:file "src/ui/definition-loader/schema")
+   (:file "src/ui/definition-loader/parse" :depends-on ("src/ui/definition-loader/schema"))
+   (:file "src/ui/definition-loader/validate" :depends-on ("src/ui/definition-loader/schema"))
+   (:file "src/ui/definition-loader/resolve" :depends-on ("src/ui/definition-loader/schema"
+                                                          "src/ui/definition-loader/parse"))
+   (:file "src/ui/definition-loader" :depends-on ("src/ui/definition-loader/schema"
+                                                  "src/ui/definition-loader/parse"
+                                                  "src/ui/definition-loader/validate"
+                                                  "src/ui/definition-loader/resolve"))))
 
 (asdf:defsystem "ptui/api"
   :description "PTUI public consumer API re-export"
@@ -274,6 +282,10 @@
    (:file "src/views/primitives")
    (:file "src/views/paint")
    (:file "src/ui/panel")
+   (:file "src/ui/definition-loader/schema")
+   (:file "src/ui/definition-loader/parse")
+   (:file "src/ui/definition-loader/validate")
+   (:file "src/ui/definition-loader/resolve")
    (:file "src/ui/definition-loader")
    (:file "src/api")))
 
