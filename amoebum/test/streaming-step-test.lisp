@@ -325,6 +325,82 @@
     (amoebum::%clear-stream-tool-tracking! state)
     (is (= 0 (amoebum:stream-event-journal-count journal)))))
 
+(test stream-tool-call-result-uses-preview-key-to-complete-pending-entry
+  "Tool results should settle the preview entry selected during execution."
+  (let* ((chat-state (amoebum.ui:make-chat-ui-state
+                      :stream-runner nil
+                      :stream-client (pseudopod:make-client :api-key "stub")))
+         (preview-key "preview:glob-files:0")
+         (table (amoebum.ui:chat-ui-state-stream-tool-calls chat-state))
+         (entry (list :key preview-key
+                      :tool-name "glob-files"
+                      :tool-call-id "glob-files:0"
+                      :arguments "{\"pattern\":\"*\"}"
+                      :executed-p t
+                      :completed-p nil)))
+    (setf (gethash preview-key table) entry)
+    (amoebum::%set-tool-call-result!
+     chat-state
+     (list :kind :tool-call-result
+           :tool-call (pseudopod:make-tool-call
+                       :id "glob-files:0"
+                       :name "glob-files"
+                       :arguments "{}")
+           :preview-key preview-key
+           :result "{\"count\":3}"))
+    (let ((stored (gethash preview-key table)))
+      (is (getf stored :completed-p))
+      (is (string= "{\"count\":3}" (or (getf stored :result) ""))))
+    (is-false (amoebum::%stream-tool-call-completion-pending-p chat-state))))
+
+(test stream-tool-call-transition-events-publish-once
+  "Started/argument-complete signals should publish once even if the provider duplicates them."
+  (let* ((bus (amoebum:make-event-bus :capacity 32))
+         (stream-state (amoebum:make-token-stream-state))
+         (chat-state (amoebum.ui:make-chat-ui-state
+                      :stream-runner nil
+                      :stream-client (pseudopod:make-client :api-key "stub")
+                      :stream-state stream-state
+                      :status-bar-state (amoebum.ui:make-status-bar-state
+                                         :event-bus bus
+                                         :model-name "stub-model"
+                                         :branch-name "master")))
+         (tool-call (pseudopod:make-tool-call
+                     :id "glob-files:0"
+                     :name "glob-files"
+                     :arguments "{\"pattern\":\"*\"}"))
+         (started-events 0)
+         (argument-events 0)
+         (execute-calls 0)
+         (original-execute-fn (symbol-function 'amoebum::%execute-stream-tool-call!)))
+    (unwind-protect
+        (progn
+          (amoebum:subscribe bus
+                             amoebum:+event-type-tool-call-started+
+                             (lambda (_event)
+                               (declare (ignore _event))
+                               (incf started-events)))
+          (amoebum:subscribe bus
+                             amoebum:+event-type-tool-call-argument-complete+
+                             (lambda (_event)
+                               (declare (ignore _event))
+                               (incf argument-events)))
+          (setf (symbol-function 'amoebum::%execute-stream-tool-call!)
+                (lambda (_chat-state _event)
+                  (declare (ignore _chat-state _event))
+                  (incf execute-calls)
+                  nil))
+          (amoebum:token-stream-emit-tool-call-started stream-state tool-call)
+          (amoebum:token-stream-emit-tool-call-started stream-state tool-call)
+          (amoebum:token-stream-emit-tool-call-argument-complete stream-state tool-call)
+          (amoebum:token-stream-emit-tool-call-argument-complete stream-state tool-call)
+          (amoebum::%drain-stream-events chat-state)
+          (is (= started-events 1))
+          (is (= argument-events 1))
+          (is (= execute-calls 1)))
+      (setf (symbol-function 'amoebum::%execute-stream-tool-call!) original-execute-fn))))
+
+
 ;;; --- NXT-143: token-stream-state snapshot slot ---
 
 (test token-stream-state-carries-snapshot-slot
@@ -345,8 +421,11 @@
 ;;; orchestration funnels chunks into the token-stream state.
 ;;; ----------------------------------------------------------------------------
 
+(def-suite streaming-provider-runtime-suite :in amoebum-suite)
+(in-suite streaming-provider-runtime-suite)
+
 (test streaming-step-provider-runtime-coverage-stream-pseudopod-chat
-  "STREAMING-STEP-SUITE must exercise the provider-runtime stream-pseudopod-chat surface."
+  "STREAMING-PROVIDER-RUNTIME-SUITE must exercise the provider-runtime stream-pseudopod-chat surface."
   (let ((stream-state (amoebum:make-token-stream-state))
         (events '()))
     (let ((original-stream-chat-completion
@@ -378,51 +457,63 @@
                events))
     (is (>= (amoebum::token-stream-state-chunk-count stream-state) 2))))
 
+(in-suite streaming-step-suite)
+
 (test stream-cancel-recovery-restores-input-focus-and-status
   "Cancelling a live stream should return control to the chat input and publish a cancelled status."
-  (let ((*default-pathname-defaults*
-          (pathname "/home/rahul/Documents/amoebum/"))
-        (amoebum::*current-config* nil))
-    (let* ((state (%safe-make-chat-ui-state :branch-name "test/stream-cancel"))
-           (runtime (amoebum::chat-ui-state-runtime state))
-           (stream-state (amoebum::chat-ui-state-stream-state state))
-           (status-state (amoebum::chat-ui-state-status-bar-state state)))
-      (amoebum:chat-ui-add-message state "user" "cancel this stream")
-      (amoebum:chat-ui-add-message state "assistant" "" :partial t)
-      (amoebum::%apply-token-stream-updates!
-       stream-state
-       (list :status :running
-             :started-ms (ptui.util.time:monotonic-ms)
-             :ended-ms 0
-             :token-count 0
-             :chunk-count 0
-             :target-message-index 1
-             :cancel-requested-p nil
-             :error-message nil
-             :budget-warning-emitted-p nil
-             :aborted-p nil
-             :abort-reason nil))
-      (amoebum:token-stream-emit-chunk stream-state "partial answer")
-      (amoebum:token-stream-request-cancel stream-state)
-      (amoebum:token-stream-mark-cancelled stream-state)
-      (amoebum::%drain-stream-events state)
-      (amoebum::%publish-status-bar-stream-summary-if-needed state)
-      (is-false (amoebum:token-stream-active-p stream-state))
-      (is (eq :cancelled
-              (getf (amoebum:token-stream-progress-summary stream-state) :status)))
-      (is-true (amoebum::chat-panel-handle-input-key state :text "x" 48)
-               "Expected text input handling to resume after stream cancellation.")
-      (is (string= "x" (amoebum::chat-ui-state-input-text state)))
-      (%safe-render-chat-ui state :cols 84 :rows 24)
-      (let ((order (ptui.ui.runtime:runtime-focus-order runtime))
-            (focus (ptui.ui.runtime:runtime-focus-id runtime))
-            (status-line (amoebum.ui:status-bar-line status-state)))
-        (is-true (member :chat-input order :test #'equal)
-                 "Expected :chat-input in focus order after stream cancellation. Got: ~S"
-                 order)
-        (is (equal :chat-input focus)
-            "Expected focus to stabilize on :chat-input after cancellation. Got: ~S"
-            focus)
-        (is (search "stream cancelled" status-line :test #'char-equal)
-            "Expected cancelled status-bar summary after cancellation. Got: ~S"
-            status-line)))))
+  (let* ((checkpoint-dir (%make-temp-directory "stream-cancel-checkpoints"))
+         (old-root-checkpoint-override amoebum::*checkpoint-directory-override*)
+         (old-checkpoint-override amoebum.sessions:*checkpoint-directory-override*)
+         (*default-pathname-defaults*
+           (pathname "/home/rahul/Documents/amoebum/"))
+         (amoebum::*current-config* nil))
+    (unwind-protect
+        (progn
+          (setf amoebum::*checkpoint-directory-override* checkpoint-dir
+                amoebum.sessions:*checkpoint-directory-override* checkpoint-dir)
+          (let* ((state (%safe-make-chat-ui-state :branch-name "test/stream-cancel"))
+                 (runtime (amoebum::chat-ui-state-runtime state))
+                 (stream-state (amoebum::chat-ui-state-stream-state state))
+                 (status-state (amoebum::chat-ui-state-status-bar-state state)))
+            (amoebum:chat-ui-add-message state "user" "cancel this stream")
+            (amoebum:chat-ui-add-message state "assistant" "" :partial t)
+            (amoebum::%apply-token-stream-updates!
+             stream-state
+             (list :status :running
+                   :started-ms (ptui.util.time:monotonic-ms)
+                   :ended-ms 0
+                   :token-count 0
+                   :chunk-count 0
+                   :target-message-index 1
+                   :cancel-requested-p nil
+                   :error-message nil
+                   :budget-warning-emitted-p nil
+                   :aborted-p nil
+                   :abort-reason nil))
+            (amoebum:token-stream-emit-chunk stream-state "partial answer")
+            (amoebum:token-stream-request-cancel stream-state)
+            (amoebum:token-stream-mark-cancelled stream-state)
+            (amoebum::%drain-stream-events state)
+            (amoebum::%publish-status-bar-stream-summary-if-needed state)
+            (is-false (amoebum:token-stream-active-p stream-state))
+            (is (eq :cancelled
+                    (getf (amoebum:token-stream-progress-summary stream-state) :status)))
+            (is-true (amoebum::chat-panel-handle-input-key state :text "x" 48)
+                     "Expected text input handling to resume after stream cancellation.")
+            (is (string= "x" (amoebum::chat-ui-state-input-text state)))
+            (%safe-render-chat-ui state :cols 84 :rows 24)
+            (let ((order (ptui.ui.runtime:runtime-focus-order runtime))
+                  (focus (ptui.ui.runtime:runtime-focus-id runtime))
+                  (status-line (amoebum.ui:status-bar-line status-state)))
+              (is-true (member :chat-input order :test #'equal)
+                       "Expected :chat-input in focus order after stream cancellation. Got: ~S"
+                       order)
+              (is (equal :chat-input focus)
+                  "Expected focus to stabilize on :chat-input after cancellation. Got: ~S"
+                  focus)
+              (is (search "stream cancelled" status-line :test #'char-equal)
+                  "Expected cancelled status-bar summary after cancellation. Got: ~S"
+                  status-line)))))
+      (setf amoebum::*checkpoint-directory-override* old-root-checkpoint-override
+            amoebum.sessions:*checkpoint-directory-override* old-checkpoint-override)
+      (%delete-directory-tree-safe checkpoint-dir)))

@@ -57,7 +57,7 @@ EOF
       ;;
 packages)
       cat <<'EOF'
-packages|amoebum/src/package.lisp|1319
+packages|amoebum/src/package.lisp|1321
 packages|amoebum/src/package-domains.lisp|204
 EOF
       ;;
@@ -78,8 +78,24 @@ EOF
       ;;
     state)
       cat <<'EOF'
-state|amoebum/src/conversation.lisp|1236
-state|amoebum/src/checkpoint.lisp|1667
+state|amoebum/src/conversation.lisp|6
+state|amoebum/src/conversation/state.lisp|306
+state|amoebum/src/conversation/codec.lisp|170
+state|amoebum/src/conversation/forks.lisp|294
+state|amoebum/src/conversation/load.lisp|227
+state|amoebum/src/conversation/history.lisp|243
+state|amoebum/src/checkpoint.lisp|20
+state|amoebum/src/checkpoint/paths.lisp|144
+state|amoebum/src/checkpoint/codec.lisp|567
+state|amoebum/src/checkpoint/snapshots.lisp|140
+state|amoebum/src/checkpoint/session.lisp|361
+state|amoebum/src/checkpoint/image.lisp|372
+state|amoebum/src/checkpoint/auto.lisp|37
+state|amoebum/src/swarm.lisp|11
+state|amoebum/src/swarm/agents.lisp|448
+state|amoebum/src/swarm/handoff-context.lisp|423
+state|amoebum/src/swarm/user-handoff.lisp|566
+state|amoebum/src/swarm/user-negotiation.lisp|132
 state|amoebum/src/memory.lisp|33
 state|amoebum/src/memory/backend.lisp|261
 state|amoebum/src/memory/file-store.lisp|429
@@ -103,6 +119,11 @@ EOF
       cat <<'EOF'
 ui|amoebum/src/ui/streaming.lisp|1888
 ui|amoebum/src/ui/chat-render.lisp|1786
+ui|amoebum/src/ui/chat-state.lisp|402
+ui|amoebum/src/ui/chat-state/state-defaults.lisp|309
+ui|amoebum/src/ui/chat-state/conversation-entry.lisp|160
+ui|amoebum/src/ui/chat-state/slash-command-descriptors.lisp|35
+ui|amoebum/src/ui/chat-state/snapshot-metadata.lisp|234
 EOF
       ;;
     extensions)

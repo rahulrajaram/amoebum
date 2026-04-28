@@ -29,12 +29,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-PROFILES=(worktrees packages state policy ui extensions shell macros cycles)
+PROFILES=(worktrees packages state policy control-plane ui extensions shell macros cycles)
 
 usage() {
   cat <<'EOF'
 Usage:
-  bin/amoebum-focused-verify.sh <profile>
+  bin/amoebum-focused-verify.sh <profile> [--suites SUITE1,SUITE2] [--no-overwatch]
   bin/amoebum-focused-verify.sh --list-profiles
 
 Profiles:
@@ -42,12 +42,18 @@ Profiles:
   packages   Package/load-order seam checks (incl. NXT-398 export goldens).
   state      Conversation/checkpoint seam checks.
   policy     Plan-execution/permissions seam checks.
+  control-plane  Pipeline/git/web/config/review seam checks.
   ui         UI streaming/chat-render seam checks.
   extensions Extension loader/runtime seam checks.
   shell      Shell runtime/permission seam checks.
   macros     Macro expansion/validation seam checks.
   cycles     Package-import-cycle guardrail (NXT-397).
   all        Run every profile.
+
+Debug flags:
+  --suites CSV     Run only the given FiveAM suites for the selected profile.
+                   Skips the profile's extra build/audit commands.
+  --no-overwatch   Run SBCL directly even when overwatch is installed.
 EOF
 }
 
@@ -60,12 +66,49 @@ fail() {
   exit 1
 }
 
+ensure_tmpdir() {
+  local candidate="${TMPDIR:-${REPO_ROOT}/.tmp}"
+  mkdir -p "${candidate}"
+  printf '%s\n' "${candidate}"
+}
+
+ensure_runtime_env() {
+  local tmp_root
+  tmp_root="$(ensure_tmpdir)"
+  export TMPDIR="${tmp_root}"
+
+  if [[ -z "${HOME:-}" || ! -w "${HOME:-/nonexistent}" ]]; then
+    export HOME="${tmp_root}/home"
+  fi
+  mkdir -p "${HOME}"
+
+  if [[ -z "${XDG_CACHE_HOME:-}" || ! -w "${XDG_CACHE_HOME:-/nonexistent}" ]]; then
+    export XDG_CACHE_HOME="${tmp_root}/xdg-cache"
+  fi
+  mkdir -p "${XDG_CACHE_HOME}"
+}
+
 run_cmd() {
   echo "==> $*"
   (
     cd "${REPO_ROOT}"
     "$@"
   )
+}
+
+warmup_control_plane_quicklisp() {
+  local quicklisp_setup="$1"
+
+  [[ "${PROFILE_NAME:-unknown}" == "control-plane" ]] || return 0
+  [[ "${FOCUSED_VERIFY_QUICKLISP_WARMED:-0}" == "1" ]] && return 0
+
+  echo "==> quicklisp warmup: control-plane focused-suite dependencies"
+  timeout 600 sbcl --noinform --non-interactive \
+    --load "${quicklisp_setup}" \
+    --eval "(ql:quickload (quote (:alexandria :dexador :jonathan :usocket :babel :cl-ppcre :fiveam :ironclad :cl-json :uuid :local-time :split-sequence :cffi :bordeaux-threads :cl-yaml)) :silent t)" \
+    --eval "(quit)"
+
+  FOCUSED_VERIFY_QUICKLISP_WARMED=1
 }
 
 find_plan_root() {
@@ -101,7 +144,7 @@ run_plan_validate() {
 # actually executes on Debian SBCL 2.2.9.
 write_focused_suites_runner() {
   local tmpfile
-  tmpfile="$(mktemp -t amoebum-focused-XXXXXX.lisp)"
+  tmpfile="$(mktemp "$(ensure_tmpdir)/amoebum-focused-XXXXXX.lisp")"
   cat > "${tmpfile}" <<'LISP'
 (labels ((split-comma-separated (text)
            (let ((items '())
@@ -203,12 +246,17 @@ run_focused_suites() {
   fi
 
   [[ -f "${quicklisp_setup}" ]] || fail "quicklisp setup not found at ${quicklisp_setup}"
-  command -v sbcl >/dev/null 2>&1 || fail "sbcl not found on PATH"
+  if ! sbcl_path="$(command -v sbcl 2>&1)"; then
+    fail "sbcl not found on PATH"
+  fi
+  [[ -n "${sbcl_path}" ]] || fail "sbcl not found on PATH"
+
+  warmup_control_plane_quicklisp "${quicklisp_setup}"
 
   local runner_script
   runner_script="$(write_focused_suites_runner)"
   local out_log
-  out_log="$(mktemp -t amoebum-focused-out-XXXXXX.log)"
+  out_log="$(mktemp "$(ensure_tmpdir)/amoebum-focused-out-XXXXXX.log")"
   # shellcheck disable=SC2064
   trap "rm -f '${runner_script}' '${out_log}'" EXIT INT TERM
 
@@ -228,7 +276,7 @@ run_focused_suites() {
   echo "==> focused suites: ${suites} (profile=${PROFILE_NAME:-unknown})"
 
   local rc=0
-  if [[ -x "${overwatch_bin}" ]]; then
+  if (( FOCUSED_VERIFY_USE_OVERWATCH )) && [[ -x "${overwatch_bin}" ]]; then
     set +e
     timeout "${hard_timeout}" "${overwatch_bin}" run --profile generic --stream \
       --soft-timeout "${soft_timeout}" --silent-timeout "${silent_timeout}" \
@@ -261,8 +309,28 @@ run_focused_suites() {
   trap - EXIT INT TERM
 }
 
+profile_debug_timeouts() {
+  local profile="$1"
+  case "${profile}" in
+    worktrees|packages|state|policy|control-plane) printf '%s %s %s\n' 1200 1200 300 ;;
+    ui|extensions|shell|macros) printf '%s %s %s\n' 1800 1800 300 ;;
+    cycles|all) fail "--suites is not supported for profile ${profile}" ;;
+    *) fail "unknown profile: ${profile}" ;;
+  esac
+}
+
+run_debug_profile() {
+  local profile="$1"
+  local suites="$2"
+  local hard_timeout
+  local soft_timeout
+  local silent_timeout
+  read -r hard_timeout soft_timeout silent_timeout < <(profile_debug_timeouts "${profile}")
+  PROFILE_NAME="${profile}" run_focused_suites "${suites}" "${hard_timeout}" "${soft_timeout}" "${silent_timeout}"
+}
+
 verify_worktrees() {
-  PROFILE_NAME=worktrees run_focused_suites "WORKTREE-RUNTIME-SUITE,WORKER-SUPERVISOR-SUITE,SWARM-EXECUTION-SEMANTICS-SUITE,WORKER-DASHBOARD-SUITE" 1200 1200 300
+  PROFILE_NAME=worktrees run_focused_suites "WORKTREE-RUNTIME-SUITE,WORKER-SUPERVISOR-SUITE,SWARM-EXECUTION-SEMANTICS-SUITE,WORKER-DASHBOARD-SUITE,USER-HANDOFF-REGRESSION-SUITE" 1200 1200 300
   run_cmd timeout 240 make build
 }
 
@@ -311,6 +379,14 @@ verify_policy() {
   PROFILE_NAME=policy run_focused_suites "PLAN-EXECUTION-UNIT-SUITE,PLAN-EXECUTION-TRANSITION-TABLE-SUITE,PERMISSIONS-UNIT-SUITE,PERMISSION-PATH-NORMALIZATION-SUITE,PERMISSION-PATH-MEMORY-SUITE,PERMISSION-ARGUMENT-GRANULARITY-SUITE" 1200 1200 300
 }
 
+verify_control_plane() {
+  PROFILE_NAME=control-plane run_focused_suites "PIPELINE-UNIT-SUITE,PIPELINE-CONTEXT-SUITE" 1200 1200 300
+  PROFILE_NAME=control-plane run_focused_suites "GIT-WORKFLOW-SUITE" 1200 1200 300
+  PROFILE_NAME=control-plane run_focused_suites "REVIEW-WORKFLOW-SUITE" 1200 1200 300
+  PROFILE_NAME=control-plane run_focused_suites "CONFIG-LOADER-SUITE,CONFIG-VALIDATION-SUITE" 1200 1200 300
+  PROFILE_NAME=control-plane run_focused_suites "WEB-FETCH-ORCHESTRATION-SUITE,WEB-SEARCH-POLICY-SUITE" 1200 1200 300
+}
+
 verify_ui() {
   run_cmd timeout 120 ./bin/check-import-cycles.sh
   # NXT-416: STREAMING-BUDGET-SUITE was previously listed here, but the
@@ -323,7 +399,7 @@ verify_ui() {
   # EVENT-HOOKS-SUITE, LLM-HOOKS-SUITE,
   # PERMISSION-PATH-IDENTITY-EDGE-CASE-SUITE, TTS-SUITE,
   # WEBHOOK-NOTIFICATION-SUITE — none referenced by any profile here.)
-  PROFILE_NAME=ui run_focused_suites "STREAMING-STEP-SUITE,INCREMENTAL-MARKDOWN-SUITE,CHAT-SNAPSHOT-SUITE,APPROVAL-DIALOG-GUARD-SUITE,KEYBOARD-NAV-SUITE" 1800 1800 300
+  PROFILE_NAME=ui run_focused_suites "STREAMING-STEP-SUITE,STREAM-COMPLETION-ORDERING-SUITE,EVENT-JOURNAL-DIAGNOSTICS-SUITE,INCREMENTAL-MARKDOWN-SUITE,CHAT-SNAPSHOT-SUITE,APPROVAL-DIALOG-GUARD-SUITE,KEYBOARD-NAV-SUITE" 1800 1800 300
   # NXT-400: per-submodule streaming coverage gate. The harness emits one
   # STREAMING_COVERAGE_<MODULE>_OK verdict per intended ui/streaming submodule
   # (token-state, markdown, provider-runtime, event-journal) and only then
@@ -344,26 +420,60 @@ verify_macros() {
   PROFILE_NAME=macros run_focused_suites "MACROEXPAND-GOLDEN-SUITE,DEFTOOL-TYPE-VALIDATION-SUITE,DEFTOOL-DANGEROUS-PERMISSION-SUITE,COMPILE-VALIDATION-CONDITIONS-SUITE,DEFHOOK-CROSS-REFERENCE-SUITE,ARGUMENT-PATTERN-DISPATCH-SUITE" 1800 1800 300
 }
 
-profile="${1:-}"
-case "${profile}" in
-  --help|-h)
-    usage
-    exit 0
-    ;;
-  --list-profiles)
-    if [[ $# -ne 1 ]]; then
+profile=""
+debug_suites=""
+list_only=0
+FOCUSED_VERIFY_USE_OVERWATCH=1
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --list-profiles)
+      list_only=1
+      ;;
+    --suites)
+      shift
+      [[ $# -gt 0 ]] || { usage >&2; exit 2; }
+      debug_suites="$1"
+      ;;
+    --no-overwatch)
+      FOCUSED_VERIFY_USE_OVERWATCH=0
+      ;;
+    -*)
       usage >&2
       exit 2
-    fi
-    list_profiles
-    exit 0
-    ;;
-  "") usage >&2; exit 2 ;;
-esac
+      ;;
+    *)
+      if [[ -n "${profile}" ]]; then
+        usage >&2
+        exit 2
+      fi
+      profile="$1"
+      ;;
+  esac
+  shift
+done
 
-if [[ $# -ne 1 ]]; then
-  usage >&2
-  exit 2
+if (( list_only )); then
+  if [[ -n "${profile}" || -n "${debug_suites}" || ${FOCUSED_VERIFY_USE_OVERWATCH} -eq 0 ]]; then
+    usage >&2
+    exit 2
+  fi
+  list_profiles
+  exit 0
+fi
+
+ensure_runtime_env
+
+[[ -n "${profile}" ]] || { usage >&2; exit 2; }
+
+if [[ -n "${debug_suites}" ]]; then
+  run_debug_profile "${profile}" "${debug_suites}"
+  echo "AMOEBUM_FOCUSED_VERIFY_OK profile=${profile}"
+  exit 0
 fi
 
 case "${profile}" in
@@ -371,6 +481,7 @@ case "${profile}" in
   packages) verify_packages ;;
   state) verify_state ;;
   policy) verify_policy ;;
+  control-plane) verify_control_plane ;;
   ui) verify_ui ;;
   extensions) verify_extensions ;;
   shell) verify_shell ;;
@@ -382,6 +493,7 @@ case "${profile}" in
     verify_packages
     verify_state
     verify_policy
+    verify_control_plane
     verify_ui
     verify_extensions
     verify_shell

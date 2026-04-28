@@ -10,17 +10,37 @@ DIST_URL="$(sed -n '1p' "${ROOT_DIR}/deps/quicklisp-dist.txt")"
 
 mkdir -p "${TOOLS_DIR}"
 
+TMP_ROOT="${ROOT_DIR}/.tmp"
+mkdir -p "${TMP_ROOT}"
+export TMPDIR="${TMPDIR:-${TMP_ROOT}}"
+
+if [[ -z "${HOME:-}" || ! -w "${HOME:-/nonexistent}" ]]; then
+  export HOME="${TMP_ROOT}/home"
+fi
+mkdir -p "${HOME}"
+
+if [[ -z "${XDG_CACHE_HOME:-}" || ! -w "${XDG_CACHE_HOME:-/nonexistent}" ]]; then
+  export XDG_CACHE_HOME="${TMP_ROOT}/xdg-cache"
+fi
+mkdir -p "${XDG_CACHE_HOME}"
+
+NULL_SINK="/dev/null"
+if ! : >"${NULL_SINK}" 2>"${TMP_ROOT}/null-check.log"; then
+  NULL_SINK="${TOOLS_DIR}/null.sink"
+  : >"${NULL_SINK}"
+fi
+
 LOCKFILE="${TOOLS_DIR}/quicklisp.lock"
-if command -v flock >/dev/null 2>&1; then
+if command -v flock >"${NULL_SINK}" 2>&1; then
   exec 9>"${LOCKFILE}"
   flock 9
 else
   # Best-effort lock for environments without flock.
   LOCKDIR="${TOOLS_DIR}/quicklisp.lock.d"
-  while ! mkdir "${LOCKDIR}" 2>/dev/null; do
+  while ! mkdir "${LOCKDIR}" 2>"${NULL_SINK}"; do
     sleep 0.1
   done
-  trap 'rmdir "${LOCKDIR}" >/dev/null 2>&1 || true' EXIT
+  trap 'rmdir "${LOCKDIR}" >"'"${NULL_SINK}"'" 2>&1 || true' EXIT
 fi
 
 if [[ ! -f "${QL_SETUP}" ]]; then

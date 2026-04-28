@@ -206,16 +206,21 @@ Post-run memory sync:
 
 ## Local Build and Check Commands
 
-1. `make test-ptui` runs PTUI tests through ASDF.
-2. `make test-amoebum` runs Amoebum tests through ASDF.
-3. `make test` runs `test-ptui` then `test-amoebum`.
-4. `make check-dist-ignore` verifies `dist/` is ignored and still gitignored.
-5. `make check-import-cycles` runs `bin/check-import-cycles.sh` (NXT-397) and refuses to build if any directed cycle exists in the amoebum package import graph. Also runs automatically as a `make build` prerequisite.
-6. `make check-package-export-goldens` (NXT-398) diffs the live `:amoebum` and per-subsystem external-symbol lists against the checked-in goldens under `amoebum/test/snapshots/package-exports/`. Run with `AMOEBUM_UPDATE_SNAPSHOTS=1` to refresh the goldens after a deliberate facade change.
-7. `make check` runs `check-parens`, `check-dist-ignore`, `check-import-cycles`, `test`, `check-package-export-goldens`, and `build`, in that order.
-8. `make build` uses `bin/build-binary.sh` and resolves `QUICKLISP_SETUP` with fallback.
-9. `make yarli-bootstrap-validate` recreates local `.yarli/tranches.toml` when needed and validates it with Yarli.
-10. `./bin/yarli-local-state-regression.sh` exercises the missing-tranches bootstrap and repo-wrapper help-path smoke cases.
+This numbered list is machine-checked by `make check-readme-makefile` against `make --dry-run` output.
+
+1. `make test-ptui` runs `ptui/bin/ensure-quicklisp.sh` and then `sbcl --noinform --non-interactive` to load/test `:ptui/tests`.
+2. `make test-amoebum` runs `ptui/bin/ensure-quicklisp.sh`, clears `tmp/amoebum-test-failures.log`, and then `sbcl --noinform --non-interactive` to load/test `:amoebum/test`.
+3. `make test-pseudopod` runs `ptui/bin/ensure-quicklisp.sh` and then `sbcl --noinform --non-interactive` to load/test `:pseudopod/test`. Focused dependency-layer entrypoint for provider/streaming/tool/file CRUD coverage; expected to be invoked by tranches that touch `pseudopod/src/` without rebuilding the broader amoebum suite.
+4. `make test-sw4rm-sdk` runs `ptui/bin/ensure-quicklisp.sh` and then `sbcl --noinform --non-interactive` to load/test `:sw4rm-sdk/tests`. Focused entrypoint for handoff/negotiation/workflow/policy coverage in the local-mode SW4RM fork.
+5. `make test` runs `make test-ptui` and `make test-amoebum`.
+6. `make check-dist-ignore` runs `./bin/check-dist-ignore.sh`.
+7. `make check-import-cycles` runs `bin/check-import-cycles.sh`. It also runs automatically as a `make build` prerequisite.
+8. `make check-package-export-goldens` runs `timeout 600 sbcl --noinform --script amoebum/test/package-export-golden-test.lisp`.
+9. `make check-readme-makefile` runs `./bin/check-readme-makefile.sh` to compare this section against `make --dry-run` target bodies.
+10. `make check` runs `make check-parens`, `make check-dist-ignore`, `make check-import-cycles`, `make check-readme-makefile`, `make test`, `make check-package-export-goldens`, and `make build`, in that order.
+11. `make build` runs `bin/check-import-cycles.sh` and `bin/build-binary.sh`.
+12. `make yarli-bootstrap-validate` changes into repo root, runs `./bin/yarli-bootstrap-local-state.sh`, and then runs `yarli plan validate`.
+13. `./bin/yarli-local-state-regression.sh` exercises the missing-tranches bootstrap and repo-wrapper help-path smoke cases.
 
 Guard script:
 

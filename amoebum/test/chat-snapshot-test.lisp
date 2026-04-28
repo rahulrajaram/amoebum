@@ -246,6 +246,23 @@ guaranteed to exercise the same render path."
          (buffer (%render-chat-ui state :cols 84 :rows 20)))
     (%assert-chat-snapshot buffer "empty-state")))
 
+(test history-picker-candidate-line-preserves-slash-command-entry-text
+  (let* ((entry (amoebum.sessions:make-conversation-history-entry
+                 :role "user"
+                 :content "/providers on"
+                 :timestamp 1714132800))
+         (line (amoebum::%history-picker-candidate-line entry 7)))
+    (is (search "/providers on" line :test #'char=))
+    (is (search "[USER]" line :test #'char=))))
+
+(test tool-json-display-text-renders-nested-payload-body
+  (let ((payload (make-hash-table :test #'equal))
+        (nested (make-hash-table :test #'equal)))
+    (setf (gethash "body" nested) "summary line")
+    (setf (gethash "payload" payload) nested)
+    (is (string= "summary line"
+                 (amoebum::%tool-json-display-text payload)))))
+
 (test chat-snapshot-exit-warning-row
   (let* ((state (%snapshot-chat-state
                  :status-bar-state (%snapshot-status-bar-state :branch-name "feat/chat-snapshot")))

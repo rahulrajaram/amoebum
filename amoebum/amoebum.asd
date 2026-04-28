@@ -38,6 +38,11 @@
    (:file "src/provider-factory")
    (:file "src/ui/provider-dashboard")
    (:file "src/context")
+   (:file "src/conversation/state")
+   (:file "src/conversation/codec")
+   (:file "src/conversation/forks")
+   (:file "src/conversation/load")
+   (:file "src/conversation/history")
    (:file "src/conversation")
    ;; NXT-388: memory.lisp decomposed into backend / file-store /
    ;; haake-adapter / haake-transfer / commands behind the residual facade.
@@ -93,6 +98,16 @@
    ;; reload-user-extensions and reads loader-owned discovery helpers.
    (:file "src/extensions/hot-reload")
    (:file "src/checkpoint")
+   ;; NXT-426: checkpoint.lisp split into shared facade + dedicated
+   ;; paths/codec/snapshots/session/image/auto modules. Load order keeps
+   ;; shared structs/globals first, then path helpers, codecs, snapshot/session
+   ;; restore-save flows, image runtime, and finally auto-checkpoint policy.
+   (:file "src/checkpoint/paths")
+   (:file "src/checkpoint/codec")
+   (:file "src/checkpoint/snapshots")
+   (:file "src/checkpoint/session")
+   (:file "src/checkpoint/image")
+   (:file "src/checkpoint/auto")
    (:file "src/sounds")
    (:file "src/sounds/backend")
    (:file "src/voice/tts")
@@ -101,6 +116,13 @@
    (:file "src/permissions-command")
    (:file "src/permissions-path")
    (:file "src/permissions")
+   ;; NXT-440: residual permissions facade owns the rule struct, command/
+   ;; path helpers, and dangerous-command catalogue. The four submodules
+   ;; below load after it and own narrower clusters.
+   (:file "src/permissions/cache")
+   (:file "src/permissions/history")
+   (:file "src/permissions/session-memory")
+   (:file "src/permissions/plan-mode")
    (:file "src/permissions-rules")
    (:file "src/permissions-evaluation")
    (:file "src/commands-core-builtins")
@@ -114,6 +136,16 @@
    (:file "src/sandbox-os")
    (:file "src/asdf-extensions")
    (:file "src/compile-validation")
+   ;; NXT-395: deftool module split. Submodules load in dependency order
+   ;; (metadata/history/schema/coercion/expansion) before the residual
+   ;; `macros/deftool` facade so the macroexpansion sees every helper
+   ;; (%tool-name-string, rollback-tool, cl-type-to-json-schema,
+   ;; %coerce-tool-argument, ...) at load time.
+   (:file "src/macros/deftool/metadata")
+   (:file "src/macros/deftool/history")
+   (:file "src/macros/deftool/schema")
+   (:file "src/macros/deftool/coercion")
+   (:file "src/macros/deftool/expansion")
    (:file "src/macros/deftool")
    (:file "src/macros/defhook")
    ;; NXT-393: defkeys module split. Submodules load in dependency order
@@ -170,12 +202,24 @@
    (:file "src/commands/heap")
    (:file "src/commands")
    (:file "src/commands-registry")
+   (:file "src/pipeline/context")
+   (:file "src/pipeline/recovery")
+   (:file "src/pipeline/events")
+   (:file "src/pipeline/execution")
    (:file "src/pipeline")
    (:file "src/tools/files")
    (:file "src/tools/read-orchestration")
    (:file "src/tools/search")
    (:file "src/tools/search-orchestration")
+   ;; NXT-438: web module split — shared helpers load before the focused
+   ;; cache/summary/search/fetch modules so the public tool response shapes,
+   ;; timeout defaults, domain-policy filters, and fetch cache TTL behavior
+   ;; remain stable behind dedicated internals.
    (:file "src/tools/web")
+   (:file "src/tools/web/cache")
+   (:file "src/tools/web/summary")
+   (:file "src/tools/web/search")
+   (:file "src/tools/web/fetch")
    ;; NXT-390: shell module split — env/runtime/background submodules load
    ;; before the residual `tools/shell` facade so the deftool form can call
    ;; the extracted helpers (%normalize-*, %prepare-shell-runtime, %persist-
@@ -189,6 +233,14 @@
    (:file "src/tools/edit-validation")
    (:file "src/tools/shell-env")
    (:file "src/tools/shell-safety")
+   ;; NXT-436: git module split — shared runtime helpers load before the
+   ;; focused status/diff/commit/pr modules, and the residual `tools/git`
+   ;; file now only publishes the public deftool facade.
+   (:file "src/tools/git/runtime")
+   (:file "src/tools/git/status")
+   (:file "src/tools/git/diff")
+   (:file "src/tools/git/commit")
+   (:file "src/tools/git/pr")
    (:file "src/tools/git")
    (:file "src/tools/lsp")
    (:file "src/conversation-export")
@@ -211,6 +263,10 @@
    ;; %install-facade! moves *checkpoint-directory-override* from :amoebum
    ;; to :amoebum.sessions; the fixture references the post-install location.
    (:file "src/test-support/globals-fixture")
+   (:file "src/swarm/agents")
+   (:file "src/swarm/handoff-context")
+   (:file "src/swarm/user-handoff")
+   (:file "src/swarm/user-negotiation")
    (:file "src/swarm")
    (:file "src/widgets/swarm-panel")
    (:file "src/system-prompt")
@@ -239,20 +295,46 @@
    ;; I297-I304: prompt-input must load before chat.lisp
    ;; because chat.lisp calls chat-panel-handle-input-key defined here
    (:file "src/ui/panels/prompt-input")
-   ;; NXT-278: chat-ui-state struct + low-level state helpers extracted
-   ;; from chat.lisp. Must load immediately before src/ui/chat.
+   ;; NXT-431: chat-state split. Load defaults first, then the dedicated
+   ;; conversation-entry coercion, slash-descriptor, and snapshot-metadata
+   ;; helpers before the residual coordinator facade.
+   (:file "src/ui/chat-state/state-defaults")
+   (:file "src/ui/chat-state/slash-command-descriptors")
+   (:file "src/ui/chat-state/conversation-entry")
+   (:file "src/ui/chat-state/snapshot-metadata")
    (:file "src/ui/chat-state")
-   ;; NXT-279: chat streaming subsystem (event handlers, tool-call
-   ;; tracking/execution, budget enforcement) extracted from chat.lisp.
-   ;; Must load immediately after src/ui/chat-state and before src/ui/chat.
+   ;; NXT-428: status/output, tool-completion ordering, and event-ingestion
+   ;; helpers now load before the residual chat-stream coordinator.
+   (:file "src/ui/chat-stream/status-output")
+   (:file "src/ui/chat-stream/tool-completion")
+   (:file "src/ui/chat-stream/stream-events")
+   ;; NXT-279/NXT-428: residual chat streaming coordinator. Must load
+   ;; immediately after the chat-stream helper modules and before src/ui/chat.
    (:file "src/ui/chat-stream")
+   ;; NXT-545: split chat-render residual into widgets/scrollback/layout
+   ;; submodules. widgets and scrollback load before transcript so the
+   ;; transcript module can reference %chat-template-cell and
+   ;; %compute-scroll-offset; layout loads after stream-overlays since it
+   ;; only consumes plan-mode state.
+   (:file "src/ui/chat-render/widgets")
+   (:file "src/ui/chat-render/scrollback")
    (:file "src/ui/chat-render/transcript")
    (:file "src/ui/chat-render/stream-overlays")
+   (:file "src/ui/chat-render/layout")
    ;; NXT-280: chat rendering subsystem extracted from chat.lisp.
    ;; Must load immediately after src/ui/chat-stream and before src/ui/chat.
    (:file "src/ui/chat-render")
    ;; NXT-281: chat input/editing subsystem extracted from chat.lisp.
+   ;; NXT-543: further split into state/render/history/events submodules
+   ;; loaded before the residual facade. State owns text/grapheme
+   ;; helpers; render owns wrapped-line geometry; history owns fuzzy /
+   ;; history picker apply; events owns slash-command actions, key
+   ;; handler tables, and the runtime dispatcher used by chat-input.lisp.
    ;; Must load immediately after src/ui/chat-render and before src/ui/chat.
+   (:file "src/ui/chat-input/state")
+   (:file "src/ui/chat-input/render")
+   (:file "src/ui/chat-input/history")
+   (:file "src/ui/chat-input/events")
    (:file "src/ui/chat-input")
    (:file "src/ui/chat")
    ;; I297-I304: defpanel sub-panels extracted from chat.lisp
@@ -285,7 +367,7 @@
    (:file "test/self-modify-smoke-test")
    (:file "test/self-modify-test")
    (:file "test/sandbox-limits-test")
-   (:file "test/image-smoke-test")
+   (:file "test/image-smoke-suite")
    (:file "test/asdf-extensions-smoke-test")
    (:file "test/profiler-smoke-test")
    (:file "test/profiling-dashboard-test")
@@ -302,6 +384,7 @@
    (:file "test/write-safety-test")
    (:file "test/edit-validation-test")
    (:file "test/json-cli-contract-test")
+   (:file "test/git-workflow-test")
    (:file "test/entry-spine-test")
    (:file "test/review-workflow-test")
    (:file "test/multimodal-chat-test")
@@ -354,6 +437,7 @@
    (:file "test/worker-supervisor-test")
    (:file "test/overwatch-backend-test")
    (:file "test/event-journal-test")
+   (:file "test/event-journal-diagnostics-test")
    (:file "test/worker-retry-test")
    (:file "test/worker-fanout-test")
    (:file "test/worktree-runtime-test")
@@ -374,6 +458,7 @@
    (:file "test/extension-cli-test")
    (:file "test/model-routing-test")
    (:file "test/streaming-step-test")
+   (:file "test/stream-completion-ordering-test")
    (:file "test/token-stream-transition-table-test")
    (:file "test/plan-execution-transition-table-test")
    (:file "test/plan-execution-unit-test")
@@ -383,6 +468,7 @@
    (:file "test/checkpoint-rotation-test")
    (:file "test/state-serialization-test")
    (:file "test/user-coordination-test")
+   (:file "test/user-handoff-regression-test")
    (:file "test/usdt-probe-test")
    ;; TUI appearance snapshot tests
    (:file "test/input-appearance-test")

@@ -101,12 +101,16 @@
         (#\Tab (write-string "\\t" out))
         (otherwise (write-char c out))))))
 
+(defun %journal-event-type-string (event-type)
+  "Return a stable package-neutral event type label for JSONL."
+  (substitute #\- #\: (symbol-name event-type)))
+
 (defun %journal-serialize-event (event)
   "Serialize an event to a single JSON line."
   (format nil "{\"seq\":~D,\"ts\":~D,\"type\":\"~A\",\"source\":\"~A\",\"severity\":\"~A\",\"payload\":\"~A\"}"
           (event-seq event)
           (event-timestamp event)
-          (%journal-escape-string (symbol-name (event-type event)))
+          (%journal-escape-string (%journal-event-type-string (event-type event)))
           (%journal-escape-string (princ-to-string (event-source event)))
           (%journal-escape-string (symbol-name (event-severity event)))
           (%journal-escape-string

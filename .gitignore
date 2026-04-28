@@ -1,7 +1,8 @@
 .agent/
 .amoebum/
 .claude/
-.githooks/
+.githooks/*
+!.githooks/commit-msg
 .ralph/
 .yarl/
 .yarli/

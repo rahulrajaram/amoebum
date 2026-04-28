@@ -92,7 +92,13 @@ if [[ $# -gt 0 ]]; then
   exit 2
 fi
 
-command -v sbcl >/dev/null 2>&1 || fail "sbcl not found on PATH"
+if ! sbcl_path="$(command -v sbcl 2>&1)"; then
+  fail "sbcl not found on PATH"
+fi
+
+if [[ -z "${sbcl_path}" ]]; then
+  fail "sbcl not found on PATH"
+fi
 
 # Verify all package files exist before invoking SBCL — keeps error
 # reporting in bash where we can format it consistently.

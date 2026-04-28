@@ -15,7 +15,10 @@
 (defun %yaml-theme-render-snapshot ()
   "Render an empty chat UI and return its serialized snapshot."
   (let* ((*default-pathname-defaults*
-           (pathname "/home/rahul/Documents/amoebum/"))
+           (uiop:ensure-directory-pathname
+            (or (ignore-errors (uiop:getcwd))
+                *default-pathname-defaults*)))
+         (amoebum::*session-persistence-enabled* nil)
          (amoebum::*current-config* nil)
          (event-bus (amoebum:make-event-bus :capacity 16))
          (state (amoebum.ui:make-chat-ui-state

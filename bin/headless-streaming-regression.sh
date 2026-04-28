@@ -7,6 +7,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+TMPDIR="${REPO_ROOT}/tmp"
+mkdir -p "${TMPDIR}"
+export TMPDIR
 
 MODE=""
 BINARY="${REPO_ROOT}/dist/amoebum"
@@ -60,7 +63,7 @@ die() {
 
 need_command() {
   local name="$1"
-  command -v "$name" >/dev/null 2>&1 || die "Required command not found: $name"
+  command -v "$name" >/dev/stdout || die "Required command not found: $name"
 }
 
 json_escape_file_list() {
@@ -135,13 +138,13 @@ emit_verdict() {
 
   stdout_json='{}'
   if [[ -n "$stdout_file" && -f "$stdout_file" ]]; then
-    stdout_json="$(jq -Rsc 'split("\n") | map(try fromjson catch empty) | map(select(type=="object")) | last // {}' "$stdout_file" 2>/dev/null || echo '{}')"
+    stdout_json="$(jq -Rsc 'split("\n") | map(try fromjson catch empty) | map(select(type=="object")) | last // {}' "$stdout_file" || echo '{}')"
   fi
 
-  stdout_ok="$(jq -r '.ok // false' <<<"$stdout_json" 2>/dev/null || echo "false")"
-  stdout_output="$(jq -r '.output // ""' <<<"$stdout_json" 2>/dev/null || echo "")"
-  stdout_error="$(jq -r '.error // ""' <<<"$stdout_json" 2>/dev/null || echo "")"
-  stdout_action="$(jq -r '.action // ""' <<<"$stdout_json" 2>/dev/null || echo "")"
+  stdout_ok="$(jq -r '.ok // false' <<<"$stdout_json" || echo "false")"
+  stdout_output="$(jq -r '.output // ""' <<<"$stdout_json" || echo "")"
+  stdout_error="$(jq -r '.error // ""' <<<"$stdout_json" || echo "")"
+  stdout_action="$(jq -r '.action // ""' <<<"$stdout_json" || echo "")"
 
   saw_stream_progress=0
   [[ "$stream_progress_count" -gt 0 ]] && saw_stream_progress=1
@@ -367,7 +370,7 @@ run_mode() {
 ## Suite mapping (intentionally pinned — do not silently re-route):
 ##   token-state      -> TOKEN-STREAM-TRANSITION-TABLE-SUITE
 ##   markdown         -> INCREMENTAL-MARKDOWN-SUITE
-##   provider-runtime -> STREAMING-STEP-SUITE
+##   provider-runtime -> STREAMING-PROVIDER-RUNTIME-SUITE
 ##   event-journal    -> STREAM-HOOKS-SUITE
 ## ---------------------------------------------------------------------------
 
@@ -397,10 +400,13 @@ run_focused_streaming_suite() {
   local log_file="$2"
   local quicklisp_setup
   quicklisp_setup="$(resolve_quicklisp_setup)" || die "quicklisp setup not found (set QUICKLISP_SETUP=...)"
-  command -v sbcl >/dev/null 2>&1 || die "sbcl not found on PATH"
+  command -v sbcl >/dev/stdout || die "sbcl not found on PATH"
 
   local helper_lisp
+  local cache_root
   helper_lisp="$(mktemp -t headless-streaming-suite-XXXXXX.lisp)"
+  cache_root="${REPO_ROOT}/tmp/headless-streaming-cache"
+  mkdir -p "${cache_root}"
   cat >"${helper_lisp}" <<LISP
 (let* ((argv (or #+sbcl sb-ext:*posix-argv* #-sbcl nil))
        (suite-spec (or (and argv (second argv)) ""))
@@ -441,6 +447,7 @@ LISP
 
   local exit_code=0
   set +e
+  XDG_CACHE_HOME="${cache_root}" \
   sbcl --noinform --non-interactive --load "${helper_lisp}" \
     "${suite_name}" "${REPO_ROOT}" "${quicklisp_setup}" \
     >"${log_file}" 2>&1
@@ -531,18 +538,18 @@ self_test_mode() {
   "$0" --analyze \
     --journal-file "${fixture_dir}/silent-completion.jsonl" \
     --verdict-out "${out_dir}/silent.json" \
-    --allow-silent >/dev/null
-  jq -e '.outcome == "silent-completion" and .contract_valid == false' "${out_dir}/silent.json" >/dev/null
+    --allow-silent >"${out_dir}/silent.log"
+  jq -e '.outcome == "silent-completion" and .contract_valid == false' "${out_dir}/silent.json" >"${out_dir}/silent-jq.log"
 
   "$0" --analyze \
     --journal-file "${fixture_dir}/healthy-tool-continuation.jsonl" \
-    --verdict-out "${out_dir}/healthy.json" >/dev/null
-  jq -e '.outcome == "tool-continuation" and .contract_valid == true' "${out_dir}/healthy.json" >/dev/null
+    --verdict-out "${out_dir}/healthy.json" >"${out_dir}/healthy.log"
+  jq -e '.outcome == "tool-continuation" and .contract_valid == true' "${out_dir}/healthy.json" >"${out_dir}/healthy-jq.log"
 
   "$0" --analyze \
     --journal-file "${fixture_dir}/explicit-error.jsonl" \
-    --verdict-out "${out_dir}/error.json" >/dev/null
-  jq -e '.outcome == "explicit-error" and .contract_valid == true' "${out_dir}/error.json" >/dev/null
+    --verdict-out "${out_dir}/error.json" >"${out_dir}/error.log"
+  jq -e '.outcome == "explicit-error" and .contract_valid == true' "${out_dir}/error.json" >"${out_dir}/error-jq.log"
 
   ## --- NXT-400: per-submodule streaming coverage gates ---------------------
   ## Suite mapping is intentionally pinned. Adding a new ui/streaming/*
@@ -550,7 +557,7 @@ self_test_mode() {
   local submodule_specs=(
     "token-state|TOKEN-STREAM-TRANSITION-TABLE-SUITE|STREAMING_COVERAGE_TOKEN_STATE"
     "markdown|INCREMENTAL-MARKDOWN-SUITE|STREAMING_COVERAGE_MARKDOWN"
-    "provider-runtime|STREAMING-STEP-SUITE|STREAMING_COVERAGE_PROVIDER_RUNTIME"
+    "provider-runtime|STREAMING-PROVIDER-RUNTIME-SUITE|STREAMING_COVERAGE_PROVIDER_RUNTIME"
     "event-journal|STREAM-HOOKS-SUITE|STREAMING_COVERAGE_EVENT_JOURNAL"
   )
 

@@ -8,6 +8,8 @@
 #   3. A real invocation backgrounds the cultivar index build and returns
 #      quickly (so commit latency is unchanged). The background process
 #      writes to .agent/cultivar-index/post-commit.log.
+#   4. An unavailable explicit CULTIVAR_BIN records visible skip evidence
+#      instead of silently no-oping.
 #
 # Usage:
 #   ./bin/post-commit-smoke.sh
@@ -18,9 +20,30 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HOOK="$REPO_ROOT/.githooks/post-commit"
 INDEX_DIR="$REPO_ROOT/.agent/cultivar-index"
 LOG_FILE="$INDEX_DIR/post-commit.log"
+FALLBACK_CULTIVAR_BIN="/home/rahul/Documents/cultivar/target/release/cultivar"
 
 pass() { echo "  PASS: $*"; }
 fail() { echo "  FAIL: $*" >&2; exit 1; }
+
+resolve_expected_cultivar_bin() {
+  if [ -n "${CULTIVAR_BIN:-}" ]; then
+    if [ -x "$CULTIVAR_BIN" ]; then
+      printf '%s\n' "$CULTIVAR_BIN"
+    fi
+    return 0
+  fi
+
+  local path_bin
+  path_bin="$(command -v cultivar 2>/dev/null || true)"
+  if [ -n "$path_bin" ] && [ -x "$path_bin" ]; then
+    printf '%s\n' "$path_bin"
+    return 0
+  fi
+
+  if [ -x "$FALLBACK_CULTIVAR_BIN" ]; then
+    printf '%s\n' "$FALLBACK_CULTIVAR_BIN"
+  fi
+}
 
 echo "[smoke] post-commit hook: $HOOK"
 
@@ -53,6 +76,10 @@ if ! echo "$DRY_OUT" | grep -q -- "--languages"; then
 fi
 if ! echo "$DRY_OUT" | grep -q "commonlisp"; then
   fail "dry run missing commonlisp language"
+fi
+EXPECTED_BIN="$(resolve_expected_cultivar_bin)"
+if [ -n "$EXPECTED_BIN" ] && ! echo "$DRY_OUT" | grep -q "$EXPECTED_BIN"; then
+  fail "dry run did not use resolved cultivar binary: $EXPECTED_BIN"
 fi
 pass "dry run prints intended command"
 
@@ -87,10 +114,10 @@ if [ -f "$LOG_FILE" ]; then
   if [ "$AFTER_SIZE" -gt "$BEFORE_SIZE" ]; then
     pass "background process wrote to $LOG_FILE (size ${BEFORE_SIZE} -> ${AFTER_SIZE})"
   else
-    # Not fatal: cultivar binary may be missing on this host, in which case
-    # the hook returns 0 silently. That is a valid path.
-    if [ ! -x "${CULTIVAR_BIN:-/home/rahul/Documents/cultivar/target/release/cultivar}" ]; then
-      pass "cultivar binary absent — hook correctly no-op'd"
+    # Not fatal: cultivar may be missing on this host, in which case the hook
+    # returns 0 after recording skip evidence. That is a valid path.
+    if [ -z "$(resolve_expected_cultivar_bin)" ]; then
+      pass "cultivar binary absent — hook correctly skipped"
     else
       echo "  WARN: log file did not grow; background reindex may not have started yet" >&2
     fi
@@ -98,6 +125,26 @@ if [ -f "$LOG_FILE" ]; then
 else
   pass "no log file yet (cultivar binary likely absent)"
 fi
+
+# (d) Explicitly unavailable binary should leave visible skip evidence.
+echo "[smoke] verifying missing-binary skip evidence"
+SKIP_BEFORE_SIZE=0
+if [ -f "$LOG_FILE" ]; then
+  SKIP_BEFORE_SIZE=$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
+fi
+MISSING_BIN="$REPO_ROOT/.agent/missing-cultivar-for-post-commit-smoke"
+CULTIVAR_BIN="$MISSING_BIN" _CULTIVAR_POST_COMMIT_GUARD= "$HOOK"
+SKIP_AFTER_SIZE=$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
+if [ "$SKIP_AFTER_SIZE" -le "$SKIP_BEFORE_SIZE" ]; then
+  fail "missing-binary path did not write skip evidence to $LOG_FILE"
+fi
+if ! tail -n 8 "$LOG_FILE" | grep -q "post-commit reindex skipped"; then
+  fail "skip evidence missing skipped marker"
+fi
+if ! tail -n 8 "$LOG_FILE" | grep -q "not executable"; then
+  fail "skip evidence missing not-executable reason"
+fi
+pass "missing-binary path records visible skip evidence"
 
 echo "[smoke] all checks passed"
 exit 0
