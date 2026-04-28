@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# .githooks/commit-msg — validate commit message format and reject vague
+# auto-commit subjects locally instead of relying on CI to catch them.
+# Called by the dispatcher in .git/hooks/commit-msg.
+set -euo pipefail
+
+COMMITHOOKS_DIR="${COMMITHOOKS_DIR:-$(git rev-parse --git-dir)}"
+COMMIT_MSG_FILE="${1:-}"
+
+# Allow override for one-off intentional bypasses (NXT-541 explicit gate).
+if [[ "${COMMIT_MESSAGE_QUALITY_BYPASS:-0}" == "1" ]]; then
+  exit 0
+fi
+
+# Conventional Commits format check from the local lib (sourced for the
+# helper functions; the function call below performs the actual validation).
+# shellcheck source=/dev/null
+source "$COMMITHOOKS_DIR/lib/common.sh"
+# shellcheck source=/dev/null
+source "$COMMITHOOKS_DIR/lib/commit-msg.sh"
+if [[ -n "${COMMIT_MSG_FILE}" ]] && declare -F commithooks_validate_conventional_commit >/dev/null; then
+  commithooks_validate_conventional_commit "${COMMIT_MSG_FILE}" || exit $?
+fi
+
+# NXT-541: reject vague yarli/Codex auto-commit subjects matching the
+# pattern that previously slipped through (e.g. 'feat(web): update web').
+# The shared script lives at bin/check-commit-message-quality.sh.
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+QUALITY_GATE="${REPO_ROOT}/bin/check-commit-message-quality.sh"
+if [[ -n "${COMMIT_MSG_FILE}" && -x "${QUALITY_GATE}" ]]; then
+  "${QUALITY_GATE}" --file "${COMMIT_MSG_FILE}" || exit $?
+fi
