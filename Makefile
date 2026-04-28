@@ -1,4 +1,4 @@
-.PHONY: build test test-ptui test-amoebum yarli-bootstrap-validate install-wrapper-validate check check-parens check-dist-ignore check-import-cycles check-package-export-goldens check-readme-makefile prepare-quicklisp-compat clean
+.PHONY: build test test-ptui test-amoebum test-pseudopod test-sw4rm-sdk yarli-bootstrap-validate install-wrapper-validate check check-parens check-dist-ignore check-import-cycles check-package-export-goldens check-readme-makefile prepare-quicklisp-compat clean
 
 REPO_ROOT := $(CURDIR)
 QUICKLISP_SETUP ?= $(HOME)/quicklisp/setup.lisp
@@ -64,6 +64,33 @@ test-amoebum: prepare-quicklisp-compat
                        (asdf:load-asd (truename \"$(REPO_ROOT)/ptui/ptui.asd\")) \
 	                       (asdf:load-asd (truename \"$(REPO_ROOT)/amoebum/amoebum.asd\")) \
 	                       (asdf:test-system :amoebum/test)))"
+
+# NXT-560: focused Pseudopod test entrypoint so dependency-layer tranches
+# (NXT-460, NXT-547) can verify provider/streaming/tool/file behavior
+# without running the broader test-amoebum bundle.
+test-pseudopod: prepare-quicklisp-compat
+	sbcl --noinform --non-interactive \
+	  --eval "(require :asdf)" \
+	  --eval "(let ((*compile-verbose* nil) (*load-verbose* nil)) \
+                     (handler-bind ((warning (lambda (c) (muffle-warning c)))) \
+                       (load \"$(QUICKLISP_SETUP_RESOLVED)\") \
+                       (setf asdf:*compile-file-warnings-behaviour* :ignore) \
+                       (asdf:load-asd (truename \"$(REPO_ROOT)/pseudopod/pseudopod.asd\")) \
+                       (asdf:test-system :pseudopod/test)))"
+
+# NXT-560: focused SW4RM SDK test entrypoint so coordination tranches
+# (NXT-466, NXT-467) can verify handoff/negotiation/workflow/policy
+# behavior without rebuilding the full amoebum test surface.
+test-sw4rm-sdk: prepare-quicklisp-compat
+	sbcl --noinform --non-interactive \
+	  --eval "(require :asdf)" \
+	  --eval "(let ((*compile-verbose* nil) (*load-verbose* nil)) \
+                     (handler-bind ((warning (lambda (c) (muffle-warning c)))) \
+                       (load \"$(QUICKLISP_SETUP_RESOLVED)\") \
+                       (setf asdf:*compile-file-warnings-behaviour* :ignore) \
+                       (asdf:load-asd (truename \"$(REPO_ROOT)/pseudopod/pseudopod.asd\")) \
+                       (asdf:load-asd (truename \"$(REPO_ROOT)/sw4rm-sdk/sw4rm-sdk.asd\")) \
+                       (asdf:test-system :sw4rm-sdk/tests)))"
 
 yarli-bootstrap-validate:
 	cd "$(REPO_ROOT)" && \
