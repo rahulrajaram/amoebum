@@ -234,17 +234,19 @@ if [[ "${mode}" == "applied" ]]; then
   export YARLI_REWRITE_MAPPING="${mapping_file}"
   export FILTER_BRANCH_SQUELCH_WARNING=1
 
+  # NOTE: git filter-branch invokes --msg-filter via POSIX sh, not bash, so
+  # this script must stick to portable shell syntax (no [[ ... ]]).
   git filter-branch --force --msg-filter '
     sha=$GIT_COMMIT
     new_subject="$(awk -F"\t" -v want="$sha" "\$1==want { print \$2; exit }" "$YARLI_REWRITE_MAPPING")"
-    if [[ -n "$new_subject" ]]; then
+    if [ -n "$new_subject" ]; then
       printf "%s\n" "$new_subject"
       # Drop original first line (the vague subject), keep the rest.
       tail -n +2
     else
       cat
     fi
-  ' "${range}" >/dev/null 2>&1 || fail "git filter-branch failed"
+  ' "${range}" || fail "git filter-branch failed"
 
   printf '\nApplied rewrites for %d commits via git filter-branch.\n' "${count}"
 fi
