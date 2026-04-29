@@ -131,6 +131,9 @@
     (picker-state (%chat-sync-fuzzy-picker! chat-state) :deps (chat-state))
     (picker-active-p (fuzzy-picker-state-active-p picker-state)
       :deps ((fuzzy-picker-state-active-p picker-state)))
+    (repl-state (chat-ui-state-repl-panel-state chat-state) :deps (chat-state))
+    (repl-active-p (repl-state-active-p repl-state)
+      :deps ((repl-state-active-p repl-state)))
     (tree-state (%ensure-chat-tree-browser-state chat-state) :deps (chat-state))
     (tree-active-p (and (typep tree-state 'tree-browser-state)
                         (tree-browser-state-active-p tree-state))
@@ -215,6 +218,8 @@
       (picker :fixed (%chat-panel-fixed-height :picker 8)
         :when (%chat-panel-layout-visible-p :picker picker-active-p)
         (make-fuzzy-picker-widget picker-state))
+      (repl :fixed (%chat-panel-fixed-height :repl 12) :when repl-active-p
+        (make-repl-panel-widget repl-state))
       (input :fixed (%chat-panel-fixed-height :input 3)
         (ptui.components.prompt-box:make-prompt-box-widget
          (chat-ui-state-input-text chat-state)
@@ -250,6 +255,15 @@
       (:pgdn (chat-panel-handle-fuzzy-picker-key chat-state :pgdn))
       (:escape (chat-panel-handle-fuzzy-picker-key chat-state :escape))
       (:enter (chat-panel-handle-fuzzy-picker-key chat-state :enter)))
+    (:mode :repl :when repl-active-p
+      (:enter (chat-panel-handle-repl-key chat-state :enter nil inner-width))
+      (:escape (chat-panel-handle-repl-key chat-state :escape nil inner-width))
+      (:backspace (chat-panel-handle-repl-key chat-state :backspace nil inner-width))
+      (:ctrl-u (chat-panel-handle-repl-key chat-state :ctrl-u nil inner-width))
+      (:text (chat-panel-handle-repl-key
+               chat-state :text
+               (ptui.core.events:key-event-text? ptui.ui.panel::event)
+               inner-width)))
     (:mode :handoff :when (and handoff-visible-p
                                (zerop (length (chat-ui-state-input-text chat-state))))
       (:up (worktree-handoff-dashboard-move-selection -1))
@@ -280,6 +294,7 @@
       (:ctrl-p (chat-panel-handle-input-key chat-state :ctrl-p nil inner-width))
       (:ctrl-n (chat-panel-handle-input-key chat-state :ctrl-n nil inner-width))
       (:ctrl-r (chat-panel-handle-input-key chat-state :ctrl-r nil inner-width))
+      (:ctrl-g (repl-state-toggle! repl-state))
       (:ctrl-a (chat-panel-handle-input-key chat-state :ctrl-a nil inner-width))
       (:ctrl-e (chat-panel-handle-input-key chat-state :ctrl-e nil inner-width))
       (:left (chat-panel-handle-input-key chat-state :left nil inner-width))

@@ -307,6 +307,10 @@
    (:file "src/ui/hot-patch-watcher")
    (:file "src/ui/demo")
    (:file "src/ui/status-bar")
+   ;; NXT-575: REPL panel state — pure-CL struct + sandboxed-eval submit
+   ;; helper. Must load BEFORE chat-state/state-defaults so the chat-ui-state
+   ;; slot (`repl-panel-state`) can declare `:type repl-state`.
+   (:file "src/ui/repl-panel-state")
    ;; I297-I304: prompt-input must load before chat.lisp
    ;; because chat.lisp calls chat-panel-handle-input-key defined here
    (:file "src/ui/panels/prompt-input")
@@ -359,6 +363,10 @@
    (:file "src/ui/panels/tree-browser")
    (:file "src/ui/panels/stream-effects")
    (:file "src/ui/panels/chat-status-bar")
+   ;; NXT-575: REPL panel widget + key handler. Loads before chat-panel
+   ;; because chat-panel.lisp references make-repl-panel-widget and
+   ;; chat-panel-handle-repl-key in its :layout/:keys blocks.
+   (:file "src/ui/panels/repl-panel")
    (:file "src/ui/panels/chat-panel")
    (:file "src/main"))
   :in-order-to ((asdf:test-op (asdf:test-op "amoebum/test"))))
@@ -433,6 +441,8 @@
    (:file "test/repo-surface-test")
    (:file "test/api-facade-test")
    (:file "test/memory-command-test")
+   ;; NXT-575: REPL panel state regression suite.
+   (:file "test/repl-panel-state-test")
    ;; NXT-577: /deftool slash-command regression suite.
    (:file "test/deftool-command-test")
    ;; NXT-582: /save-image, /load-image, /list-images slash-commands.
