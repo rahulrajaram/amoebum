@@ -1,0 +1,3 @@
+# Line-count override file for bin/line-count-ratchet.sh
+# Each line: <relative-path> <new-baseline>
+# Raise a baseline only after deliberate review of why the file grew.
