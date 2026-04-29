@@ -450,6 +450,38 @@ or before runtime routing has a focused target."
       (otherwise
        nil))))
 
+(defun %chat-ui-yaml-reload-modal-active-p (chat-state)
+  "Return T when any modal mode is active that should block the YAML reload key.
+Mirrors the modal predicates used by chat-panel's defpanel `(:mode ...)` clauses."
+  (let* ((approval-state (chat-ui-state-approval-dialog-state chat-state))
+         (picker-state (chat-ui-state-fuzzy-picker-state chat-state))
+         (tree-state (chat-ui-state-tree-browser-state chat-state)))
+    (or (and approval-state (approval-dialog-state-active-p approval-state))
+        (and picker-state (fuzzy-picker-state-active-p picker-state))
+        (and (typep tree-state 'tree-browser-state)
+             (tree-browser-state-active-p tree-state))
+        (chat-ui-state-history-search-active-p chat-state))))
+
+(defun %chat-ui-yaml-reload-key-active-p (chat-state key text)
+  "Return T when KEY is a single-char :text event matching the configured
+yaml-theme-reload-key, the prompt is empty, and no modal mode is active.
+This mirrors the existing default-mode pattern that only consumes a key on
+empty input (see chat-panel.lisp :up/:down handling)."
+  (and (eq key :text)
+       (stringp text)
+       (= 1 (length text))
+       (string= text (yaml-theme-reload-key))
+       (zerop (length (chat-ui-state-input-text chat-state)))
+       (not (%chat-ui-yaml-reload-modal-active-p chat-state))))
+
+(defun %chat-ui-handle-yaml-reload-key (context key text)
+  "Intercept the YAML reload key. Returns :consume on a successful intercept,
+NIL otherwise so the caller falls through to the normal text-insertion path."
+  (let ((chat-state (getf context :chat-state)))
+    (when (%chat-ui-yaml-reload-key-active-p chat-state key text)
+      (%chat-handle-yaml-reload-key! chat-state)
+      :consume)))
+
 (defun %chat-ui-handle-key-event (chat-state runtime event route)
   (checkpoint-mark-activity)
   (%chat-mark-activity)
@@ -462,6 +494,7 @@ or before runtime routing has a focused target."
        :consume)
       ((%chat-ui-handle-page-scroll-key context key)
        :consume)
+      ((%chat-ui-handle-yaml-reload-key context key text))
       (t
        (let* ((handler-name (gethash key *chat-ui-key-handlers*))
               (handler (and handler-name (symbol-function handler-name))))

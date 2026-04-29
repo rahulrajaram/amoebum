@@ -209,7 +209,7 @@ Returns (values reloaded-p theme-name-or-status)."
                            :source :yaml-theme-loader
                            :message "YAML theme file changed, reloading with layout/behavior..."
                            :details (list :path *yaml-theme-source-path*))
-        (let ((result (multiple-value-list 
+        (let ((result (multiple-value-list
                        (load-yaml-theme :cli-path *yaml-theme-source-path*))))
           ;; Re-apply layout/behavior after reload
           (when (first result)
@@ -221,3 +221,35 @@ Returns (values reloaded-p theme-name-or-status)."
                                               :behavior-p (not (null *yaml-behavior-loaded*)))))
           (values-list result)))
       (values nil :no-change)))
+
+;;; ----------------------------------------------------------------------------
+;;; NXT-586: Operator-driven reload key handler
+;;; ----------------------------------------------------------------------------
+
+(defun %chat-handle-yaml-reload-key! (chat-state)
+  "Reload YAML theme/layout from disk if the source file has changed.
+Re-applies the layout to CHAT-STATE and emits a system message toast.
+Returns T if a reload happened, NIL if no change or no source path."
+  (multiple-value-bind (reloaded-p status)
+      (reload-yaml-theme-with-layout-if-changed)
+    (declare (ignore status))
+    (cond
+      (reloaded-p
+       (apply-yaml-layout-to-chat chat-state)
+       (let ((path (or *yaml-theme-source-path* "<unknown>")))
+         (chat-ui-add-message
+          chat-state
+          "system"
+          (format nil "YAML layout reloaded from ~A" path))
+         (log-runtime-event :level :info
+                            :kind "yaml-theme-reloaded-by-key"
+                            :source :chat-input
+                            :message "Operator pressed reload key"
+                            :details (list :path path)))
+       t)
+      (t
+       (chat-ui-add-message
+        chat-state
+        "system"
+        "YAML layout: no change")
+       nil))))

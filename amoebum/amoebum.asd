@@ -510,7 +510,10 @@
    (:file "test/import-cycles-test")
    ;; NXT-585: lock in chat-panel YAML resolver behavior so future
    ;; refactors cannot silently break the parsed-but-respected pipeline.
-   (:file "test/yaml-layout-resolver-test"))
+   (:file "test/yaml-layout-resolver-test")
+   ;; NXT-586: lock in YAML reload-key dispatch — default key, modal
+   ;; guard, and the %chat-handle-yaml-reload-key! helper.
+   (:file "test/yaml-theme-reload-key-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (unless (uiop:symbol-call :amoebum/test :run-all)
