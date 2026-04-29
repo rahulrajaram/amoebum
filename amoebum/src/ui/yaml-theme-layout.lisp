@@ -268,32 +268,44 @@ Returns T if a reload happened, NIL if no change or no source path."
        nil))))
 
 ;;; ----------------------------------------------------------------------------
-;;; NXT-587: File watcher — poll loaded YAML source mtime and publish on change
+;;; NXT-587 / NXT-597: YAML file watcher — adopt the generic primitive from
+;;; `src/fp/file-watcher.lisp`. The primitive owns mtime detection + event
+;;; publish; this caller layers the YAML-specific reload side effect.
 ;;; ----------------------------------------------------------------------------
 
+(defparameter *yaml-theme-file-watcher* nil
+  "Lazily constructed file-watcher for *yaml-theme-source-path*.")
+
+(defun %yaml-theme-ensure-watcher (event-bus)
+  "Return a watcher whose paths/bus match the current YAML state."
+  (let ((path *yaml-theme-source-path*))
+    (when (or (null *yaml-theme-file-watcher*)
+              (not (equal (file-watcher-paths *yaml-theme-file-watcher*)
+                          (list path)))
+              (not (eq (file-watcher-event-bus *yaml-theme-file-watcher*)
+                       event-bus)))
+      (setf *yaml-theme-file-watcher*
+            (start-watcher
+             (make-watcher :id "yaml-theme"
+                           :paths (list path)
+                           :event-type +event-type-yaml-theme-file-changed+
+                           :event-bus event-bus
+                           :debounce-ms 0
+                           :on-error :log)))
+      (when *yaml-theme-last-modified*
+        (setf (gethash (namestring (pathname path))
+                       (file-watcher-last-mtimes *yaml-theme-file-watcher*))
+              *yaml-theme-last-modified*)))
+    *yaml-theme-file-watcher*))
+
 (defun %yaml-theme-poll-and-publish-if-changed (chat-state &key (event-bus *event-bus*))
-  "Poll the loaded YAML source path's mtime; on change, publish a
-+EVENT-TYPE-YAML-THEME-FILE-CHANGED+ event on EVENT-BUS and call
-%chat-handle-yaml-reload-key! with :trigger :watcher.
-
-The reload helper (%chat-handle-yaml-reload-key!) already invokes
-RELOAD-YAML-THEME-WITH-LAYOUT-IF-CHANGED, emits the toast, and writes
-a runtime log event — so this watcher's only added responsibility is
-publishing the bus event for observability and downstream subscribers
-(metrics, future hot-patch sibling). No separate event-bus subscriber
-is needed to drive the reload itself.
-
-Returns T when a reload was triggered, NIL otherwise (no source path,
-no change, or no event bus). Designed to run safely from a per-frame
-idle hook: a single FILE-WRITE-DATE syscall when YAML is loaded."
+  "Per-frame poll: when the YAML source mtime advances, the primitive
+publishes +EVENT-TYPE-YAML-THEME-FILE-CHANGED+ on EVENT-BUS and we
+delegate the reload (toast + log + layout re-apply) to
+%chat-handle-yaml-reload-key! with :trigger :watcher."
   (when (and *yaml-theme-source-path*
              (yaml-theme-needs-reload-p)
              event-bus)
-    (publish event-bus
-             +event-type-yaml-theme-file-changed+
-             :source :yaml-theme-watcher
-             :severity :info
-             :payload (list :path *yaml-theme-source-path*
-                            :detected-at (get-universal-time)))
+    (poll-watcher-once (%yaml-theme-ensure-watcher event-bus))
     (%chat-handle-yaml-reload-key! chat-state :trigger :watcher)
     t))

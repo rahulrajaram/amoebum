@@ -115,8 +115,13 @@ returns T and publishes +EVENT-TYPE-YAML-THEME-FILE-CHANGED+ on the bus."
                            :test #'eq)))
                (is (not (null yaml-event)))
                (when yaml-event
+                 ;; NXT-597: payload is now a frozen `file-changed-payload`
+                 ;; struct produced by the generic file-watcher primitive
+                 ;; rather than an ad-hoc plist.
                  (let ((payload (amoebum::event-payload yaml-event)))
-                   (is (equal path (getf payload :path)))))))
+                   (is (typep payload 'amoebum::file-changed-payload))
+                   (is (equal (namestring path)
+                              (amoebum::file-changed-path payload)))))))
         (ignore-errors (delete-file path))))))
 
 (test watcher-no-event-when-mtime-unchanged

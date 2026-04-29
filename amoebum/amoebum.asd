@@ -24,6 +24,11 @@
    (:file "src/events")
    (:file "src/events/types")
    (:file "src/events/filters")
+   ;; NXT-597: generic polling file-watcher primitive shared by the
+   ;; YAML-theme reload watcher (NXT-587) and the upcoming hot-patch
+   ;; watcher (NXT-576). Loads after events because it publishes typed
+   ;; events on the bus.
+   (:file "src/fp/file-watcher")
    (:file "src/config")
    (:file "src/config/loader")
    (:file "src/worktrees")
@@ -525,7 +530,10 @@
    (:file "test/yaml-theme-reload-key-test")
    ;; NXT-587: lock in YAML source file watcher — mtime poll, event publish,
    ;; reload delegation via :trigger :watcher.
-   (:file "test/yaml-theme-file-watcher-test"))
+   (:file "test/yaml-theme-file-watcher-test")
+   ;; NXT-597: generic file-watcher primitive — mtime detect, debounce,
+   ;; status lifecycle, on-error :log resilience.
+   (:file "test/file-watcher-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (unless (uiop:symbol-call :amoebum/test :run-all)

@@ -12,7 +12,15 @@
 # NXT-587: Tier 3 of YAML layout parity — added the inline file watcher
 # (`%yaml-theme-poll-and-publish-if-changed`) plus a `:trigger` keyword
 # threaded through `%chat-handle-yaml-reload-key!` so operator vs watcher
-# reloads emit distinct toasts/log lines. The NXT-593 memo bars adding a
-# generic primitive under amoebum/src/fp/, so the watcher stays inline
-# alongside the existing reload helper. New baseline = 299 (current) + 25.
+# reloads emit distinct toasts/log lines. New baseline = 299 (current) + 25.
+#
+# NXT-597: NXT-593 (decision memo, 2026-04-29) reversed the earlier
+# "no generic primitive" stance once the third call site was confirmed.
+# The inline watcher was extracted into `amoebum/src/fp/file-watcher.lisp`
+# and yaml-theme-layout now owns only a small lazy-cache helper plus a
+# `poll-watcher-once` delegation. Net file delta is +12 (current = 311)
+# because the cache machinery (struct-validity check, lazy init, mtime
+# seeding) replaced a bare inline `publish` call. Baseline stays at 324
+# — well above current 311 — to leave headroom for follow-up tightening
+# rather than churn the override now.
 amoebum/src/ui/yaml-theme-layout.lisp 324
