@@ -35,6 +35,8 @@
 (defparameter +event-type-ide-context-dropped+ (%event-type-keyword "ide-context:dropped"))
 (defparameter +event-type-watch-triggered+ (%event-type-keyword "watch:triggered"))
 (defparameter +event-type-nudge-triggered+ (%event-type-keyword "nudge:triggered"))
+(defparameter +event-type-yaml-theme-file-changed+
+  (%event-type-keyword "yaml-theme:file-changed"))
 
 (defparameter +core-event-types+
   (list +event-type-tool-invoked+
@@ -65,7 +67,8 @@
         +event-type-ide-context-truncated+
         +event-type-ide-context-dropped+
         +event-type-watch-triggered+
-        +event-type-nudge-triggered+))
+        +event-type-nudge-triggered+
+        +event-type-yaml-theme-file-changed+))
 
 (defparameter *event-bus* nil)
 

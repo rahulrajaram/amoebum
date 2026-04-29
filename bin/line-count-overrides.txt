@@ -8,4 +8,11 @@
 # keeps reload-related code in one place per the file's existing
 # section-comment structure rather than splitting across files. New
 # baseline = 255 (current) + 25 headroom.
-amoebum/src/ui/yaml-theme-layout.lisp 280
+#
+# NXT-587: Tier 3 of YAML layout parity — added the inline file watcher
+# (`%yaml-theme-poll-and-publish-if-changed`) plus a `:trigger` keyword
+# threaded through `%chat-handle-yaml-reload-key!` so operator vs watcher
+# reloads emit distinct toasts/log lines. The NXT-593 memo bars adding a
+# generic primitive under amoebum/src/fp/, so the watcher stays inline
+# alongside the existing reload helper. New baseline = 299 (current) + 25.
+amoebum/src/ui/yaml-theme-layout.lisp 324

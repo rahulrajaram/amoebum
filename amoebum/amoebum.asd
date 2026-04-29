@@ -513,7 +513,10 @@
    (:file "test/yaml-layout-resolver-test")
    ;; NXT-586: lock in YAML reload-key dispatch — default key, modal
    ;; guard, and the %chat-handle-yaml-reload-key! helper.
-   (:file "test/yaml-theme-reload-key-test"))
+   (:file "test/yaml-theme-reload-key-test")
+   ;; NXT-587: lock in YAML source file watcher — mtime poll, event publish,
+   ;; reload delegation via :trigger :watcher.
+   (:file "test/yaml-theme-file-watcher-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (unless (uiop:symbol-call :amoebum/test :run-all)

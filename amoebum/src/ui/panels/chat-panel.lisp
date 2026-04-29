@@ -170,6 +170,10 @@
       :deps (chat-state))
     (idle-hooks (%run-chat-idle-hooks-if-needed)
       :deps ())
+    (yaml-theme-watcher
+      (when *yaml-theme-source-path*
+        (%yaml-theme-poll-and-publish-if-changed chat-state))
+      :deps (chat-state))
     (auto-checkpoint
       (progn
         (maybe-auto-checkpoint
