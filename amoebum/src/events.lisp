@@ -37,6 +37,8 @@
 (defparameter +event-type-nudge-triggered+ (%event-type-keyword "nudge:triggered"))
 (defparameter +event-type-yaml-theme-file-changed+
   (%event-type-keyword "yaml-theme:file-changed"))
+(defparameter +event-type-extension-reloaded+
+  (%event-type-keyword "extension:reloaded"))
 
 (defparameter +core-event-types+
   (list +event-type-tool-invoked+
@@ -68,7 +70,8 @@
         +event-type-ide-context-dropped+
         +event-type-watch-triggered+
         +event-type-nudge-triggered+
-        +event-type-yaml-theme-file-changed+))
+        +event-type-yaml-theme-file-changed+
+        +event-type-extension-reloaded+))
 
 (defparameter *event-bus* nil)
 

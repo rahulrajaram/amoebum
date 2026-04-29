@@ -174,6 +174,9 @@
       (when *yaml-theme-source-path*
         (%yaml-theme-poll-and-publish-if-changed chat-state))
       :deps (chat-state))
+    (hot-patch-watcher
+      (hot-patch-poll-once chat-state)
+      :deps (chat-state))
     (auto-checkpoint
       (progn
         (maybe-auto-checkpoint

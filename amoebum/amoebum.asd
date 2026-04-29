@@ -300,6 +300,11 @@
    (:file "src/ui/layout-yaml")
    (:file "src/ui/yaml-theme-loader")
    (:file "src/ui/yaml-theme-layout")
+   ;; NXT-576: hot-patch flow — file-watcher under amoebum/src + ~/.amoebum/extensions
+   ;; that reloads changed .lisp files and toasts the chat. Loads after
+   ;; yaml-theme-layout because it follows the same per-frame poll pattern
+   ;; and will be wired into chat-panel's :effects block.
+   (:file "src/ui/hot-patch-watcher")
    (:file "src/ui/demo")
    (:file "src/ui/status-bar")
    ;; I297-I304: prompt-input must load before chat.lisp
@@ -533,7 +538,10 @@
    (:file "test/yaml-theme-file-watcher-test")
    ;; NXT-597: generic file-watcher primitive — mtime detect, debounce,
    ;; status lifecycle, on-error :log resilience.
-   (:file "test/file-watcher-test"))
+   (:file "test/file-watcher-test")
+   ;; NXT-576: hot-patch watcher — path discovery, reload, failure
+   ;; handling, toast emission, and event-bus drain semantics.
+   (:file "test/hot-patch-watcher-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (unless (uiop:symbol-call :amoebum/test :run-all)
