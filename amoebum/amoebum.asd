@@ -200,6 +200,9 @@
    (:file "src/commands/hooks")
    (:file "src/commands/permissions")
    (:file "src/commands/heap")
+   ;; NXT-582: /save-image, /load-image, /list-images. Wraps the
+   ;; image-snapshot infrastructure in src/checkpoint/image.lisp.
+   (:file "src/commands/image")
    (:file "src/commands")
    (:file "src/commands-registry")
    (:file "src/pipeline/context")
@@ -418,6 +421,8 @@
    (:file "test/repo-surface-test")
    (:file "test/api-facade-test")
    (:file "test/memory-command-test")
+   ;; NXT-582: /save-image, /load-image, /list-images slash-commands.
+   (:file "test/image-command-test")
    (:file "test/approval-dialog-guard-test")
    (:file "test/desktop-notification-test")
 	   (:file "test/stream-hooks-test")

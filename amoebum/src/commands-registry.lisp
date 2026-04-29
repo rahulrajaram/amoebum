@@ -5,6 +5,8 @@
   (register-memory-slash-commands)
   (register-agent-slash-commands)
   (register-extension-slash-commands)
+  ;; NXT-582: /save-image, /load-image, /list-images.
+  (register-image-slash-commands)
   (register-session-slash-commands)
   (register-hook-slash-commands)
   (register-notification-slash-commands)
