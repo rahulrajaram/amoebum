@@ -24,3 +24,16 @@
 # — well above current 311 — to leave headroom for follow-up tightening
 # rather than churn the override now.
 amoebum/src/ui/yaml-theme-layout.lisp 324
+
+# NXT-588: Wired YAML `padding`, `focusable`, and `focus-order` through the
+# chat-panel by reusing PTUI's existing primitives — make-box-widget for
+# padding (ptui/src/widgets/core.lisp:88) and runtime focus-cycle for
+# focusable propagation (ptui/src/ui/runtime.lisp:295). Added four
+# resolvers (%chat-panel-padding-spec, %chat-panel-region-focusable-p,
+# %chat-panel-region-focus-order, %chat-panel-region-id), one wrap helper
+# (%chat-panel-wrap-padding), one focus re-tagger (%chat-panel-mark-focusable),
+# and applied %chat-panel-wrap-padding around each layout child. Net delta
+# is ~73 lines (343 -> 416). Baseline = 440 to leave 25 lines of headroom
+# for follow-up tightening (the wrap-padding cond could fold once we
+# extract the box-with-focus combination into a single helper).
+amoebum/src/ui/panels/chat-panel.lisp 440

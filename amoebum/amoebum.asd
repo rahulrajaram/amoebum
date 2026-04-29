@@ -540,6 +540,10 @@
    ;; NXT-585: lock in chat-panel YAML resolver behavior so future
    ;; refactors cannot silently break the parsed-but-respected pipeline.
    (:file "test/yaml-layout-resolver-test")
+   ;; NXT-588: lock in YAML padding + focus resolver helpers
+   ;; (%chat-panel-padding-spec, %chat-panel-region-focusable-p,
+   ;; %chat-panel-region-focus-order, %chat-panel-wrap-padding).
+   (:file "test/yaml-layout-padding-focus-test")
    ;; NXT-586: lock in YAML reload-key dispatch — default key, modal
    ;; guard, and the %chat-handle-yaml-reload-key! helper.
    (:file "test/yaml-theme-reload-key-test")

@@ -53,6 +53,66 @@
         (or (yaml-layout-child-fill-weight child) default)
         default)))
 
+(defun %chat-panel-padding-spec (region-key &optional (layout *yaml-layout-loaded*))
+  "Return YAML padding (top right bottom left) for REGION-KEY, or NIL.
+NIL means 'no wrap' — the existing zero-padding default."
+  (let* ((child (%chat-panel-layout-child region-key layout))
+         (padding (and child (yaml-layout-child-padding child)))
+         (insets (and padding (%yaml-inset-to-padding padding))))
+    (and insets
+         (some #'plusp insets)
+         insets)))
+
+(defun %chat-panel-region-focusable-p (region-key &optional (layout *yaml-layout-loaded*))
+  "Return T if YAML declares this region focusable; NIL otherwise."
+  (let ((child (%chat-panel-layout-child region-key layout)))
+    (and child (yaml-layout-child-focusable child))))
+
+(defun %chat-panel-region-focus-order (region-key &optional (layout *yaml-layout-loaded*))
+  "Return the YAML focus-order integer for REGION-KEY, or NIL."
+  (let ((child (%chat-panel-layout-child region-key layout)))
+    (and child (yaml-layout-child-focus-order child))))
+
+(defun %chat-panel-region-id (region-key)
+  "Stable PTUI focus-id symbol for REGION-KEY (e.g. :history -> :chat-history)."
+  (intern (format nil "CHAT-~A" (symbol-name region-key)) :keyword))
+
+(defun %chat-panel-mark-focusable (element)
+  "Return a copy of ELEMENT with focusablep=t. PTUI's make-box-widget does not
+expose a :focusablep initarg (see ptui/src/widgets/core.lisp:88), so we re-tag
+the constructed element via make-element. This is a read-only borrow of PTUI's
+public element API; it does not mutate ELEMENT."
+  (ptui.ui.elements:make-element
+   (ptui.ui.elements:ui-element-type element)
+   :id (ptui.ui.elements:ui-element-id element)
+   :key (ptui.ui.elements:ui-element-key element)
+   :props (ptui.ui.elements:ui-element-props element)
+   :children (ptui.ui.elements:ui-element-children element)
+   :focusablep t))
+
+(defun %chat-panel-wrap-padding (widget region-key &optional (layout *yaml-layout-loaded*))
+  "Wrap WIDGET in a make-box-widget if YAML padding is non-zero for REGION-KEY.
+When the YAML declares the region focusable, additionally mark the wrapper
+focusable so PTUI's collect-focus-order picks it up. Pass-through when no
+padding and no focusable hint is specified, preserving the snapshot baseline."
+  (let ((padding (%chat-panel-padding-spec region-key layout))
+        (focusablep (%chat-panel-region-focusable-p region-key layout)))
+    (cond
+      (padding
+       (let ((box (ptui.widgets.core:make-box-widget
+                   widget
+                   :id (%chat-panel-region-id region-key)
+                   :padding padding)))
+         (if focusablep
+             (%chat-panel-mark-focusable box)
+             box)))
+      (focusablep
+       ;; No padding requested but region is focusable — mark the underlying
+       ;; widget so the PTUI runtime collects it for the focus cycle.
+       (%chat-panel-mark-focusable widget))
+      (t
+       widget))))
+
 (defun %chat-panel-prompt-border-style (&optional (layout *yaml-layout-loaded*))
   "Return the prompt box border style requested by the loaded YAML layout."
   (let* ((child (%chat-panel-layout-child :input layout))
@@ -198,45 +258,55 @@
     (:column
       (provider :fixed (%chat-panel-fixed-height :provider 5)
         :when (%chat-panel-layout-visible-p :provider provider-visible-p)
-        (provider-health-panel
-         (list :entries (provider-health-entries)
-               :updated-at (provider-health-last-updated-at))))
+        (%chat-panel-wrap-padding
+         (provider-health-panel
+          (list :entries (provider-health-entries)
+                :updated-at (provider-health-last-updated-at)))
+         :provider))
       (tree :fixed (%chat-panel-fixed-height :tree 10)
         :when (%chat-panel-layout-visible-p :tree tree-active-p)
-        (make-tree-browser-widget tree-state))
+        (%chat-panel-wrap-padding (make-tree-browser-widget tree-state) :tree))
       (plan :fixed (%chat-panel-fixed-height :plan 12)
         :when (%chat-panel-layout-visible-p :plan plan-active-p)
-        plan-widget)
+        (%chat-panel-wrap-padding plan-widget :plan))
       (handoff :fixed (%chat-panel-fixed-height :handoff 8)
         :when (%chat-panel-layout-visible-p :handoff handoff-visible-p)
-        (worktree-handoff-dashboard (list :limit 4)))
+        (%chat-panel-wrap-padding (worktree-handoff-dashboard (list :limit 4)) :handoff))
       (history :flex (%chat-panel-flex-weight :history 1)
-        (build-message-history-widget chat-state inner-width history-viewport-height))
+        (%chat-panel-wrap-padding
+         (build-message-history-widget chat-state inner-width history-viewport-height)
+         :history))
       (approval :fixed (%chat-panel-fixed-height :approval 8)
         :when (%chat-panel-layout-visible-p :approval approval-active-p)
-        (%chat-approval-dialog-widget chat-state approval-state))
+        (%chat-panel-wrap-padding
+         (%chat-approval-dialog-widget chat-state approval-state)
+         :approval))
       (picker :fixed (%chat-panel-fixed-height :picker 8)
         :when (%chat-panel-layout-visible-p :picker picker-active-p)
-        (make-fuzzy-picker-widget picker-state))
+        (%chat-panel-wrap-padding (make-fuzzy-picker-widget picker-state) :picker))
       (repl :fixed (%chat-panel-fixed-height :repl 12) :when repl-active-p
         (make-repl-panel-widget repl-state))
       (input :fixed (%chat-panel-fixed-height :input 3)
-        (ptui.components.prompt-box:make-prompt-box-widget
-         (chat-ui-state-input-text chat-state)
-         :id :chat-input
-         :min-width 18
-         :max-width inner-width
-         :min-rows (%chat-panel-input-content-rows)
-         :max-rows (%chat-panel-input-content-rows)
-         :scroll-offset (chat-ui-state-prompt-scroll-offset chat-state)
-         :cursor-position (chat-ui-state-cursor-position chat-state)
-         :cursor-visible-p t
-         :border-style (%chat-panel-prompt-border-style)))
+        (%chat-panel-wrap-padding
+         (ptui.components.prompt-box:make-prompt-box-widget
+          (chat-ui-state-input-text chat-state)
+          :id :chat-input
+          :min-width 18
+          :max-width inner-width
+          :min-rows (%chat-panel-input-content-rows)
+          :max-rows (%chat-panel-input-content-rows)
+          :scroll-offset (chat-ui-state-prompt-scroll-offset chat-state)
+          :cursor-position (chat-ui-state-cursor-position chat-state)
+          :cursor-visible-p t
+          :border-style (%chat-panel-prompt-border-style))
+         :input))
       (status :fixed (%chat-panel-fixed-height :status 1)
-        (build-chat-status-bar-widget
-         chat-state
-         inner-width
-         :exit-warning-active-p exit-warning-active-p))))
+        (%chat-panel-wrap-padding
+         (build-chat-status-bar-widget
+          chat-state
+          inner-width
+          :exit-warning-active-p exit-warning-active-p)
+         :status))))
   (:keys
     (:mode :approval :when approval-active-p
       (:up (approval-dialog-handle-key! approval-state :up))
@@ -290,6 +360,12 @@
       (:backspace (chat-panel-handle-input-key chat-state :backspace nil inner-width))
       (:delete (chat-panel-handle-input-key chat-state :delete nil inner-width))
       (:ctrl-j (chat-panel-handle-input-key chat-state :ctrl-j nil inner-width))
+      ;; :tab — when the prompt is empty and YAML has declared focusable
+      ;; regions, ptui.ui.runtime:route-event already advances focus before
+      ;; this handler sees the event (runtime.lisp:314-318). When no
+      ;; focusables are declared, the runtime no-ops and we fall through to
+      ;; the existing autocomplete handler. NXT-588: explicit fall-through
+      ;; preserves both behaviors without double-cycling focus.
       (:tab (chat-panel-handle-input-key chat-state :tab nil inner-width))
       (:ctrl-p (chat-panel-handle-input-key chat-state :ctrl-p nil inner-width))
       (:ctrl-n (chat-panel-handle-input-key chat-state :ctrl-n nil inner-width))
