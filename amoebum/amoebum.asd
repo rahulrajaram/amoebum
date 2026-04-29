@@ -507,7 +507,10 @@
    ;; NXT-233: TUI scale / stress tests
    (:file "test/scroll-scale-test")
    ;; NXT-397: Package-import-cycle guardrail mirror in FiveAM.
-   (:file "test/import-cycles-test"))
+   (:file "test/import-cycles-test")
+   ;; NXT-585: lock in chat-panel YAML resolver behavior so future
+   ;; refactors cannot silently break the parsed-but-respected pipeline.
+   (:file "test/yaml-layout-resolver-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (unless (uiop:symbol-call :amoebum/test :run-all)
