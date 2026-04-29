@@ -203,6 +203,8 @@
    ;; NXT-582: /save-image, /load-image, /list-images. Wraps the
    ;; image-snapshot infrastructure in src/checkpoint/image.lisp.
    (:file "src/commands/image")
+   ;; NXT-577: /deftool registers a new tool in *toolset* live from chat.
+   (:file "src/commands/deftool")
    (:file "src/commands")
    (:file "src/commands-registry")
    (:file "src/pipeline/context")
@@ -421,6 +423,8 @@
    (:file "test/repo-surface-test")
    (:file "test/api-facade-test")
    (:file "test/memory-command-test")
+   ;; NXT-577: /deftool slash-command regression suite.
+   (:file "test/deftool-command-test")
    ;; NXT-582: /save-image, /load-image, /list-images slash-commands.
    (:file "test/image-command-test")
    (:file "test/approval-dialog-guard-test")

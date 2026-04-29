@@ -3,6 +3,8 @@
 (defun register-builtin-slash-commands ()
   (register-core-slash-commands)
   (register-memory-slash-commands)
+  ;; NXT-577: /deftool registers a new tool in *toolset* live from chat.
+  (register-deftool-slash-command)
   (register-agent-slash-commands)
   (register-extension-slash-commands)
   ;; NXT-582: /save-image, /load-image, /list-images.
