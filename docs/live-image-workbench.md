@@ -23,7 +23,8 @@ differentiation has landed.
 
 ```bash
 cd /path/to/amoebum
-make run-amoebum   # or whatever the project's launch target is
+make build               # builds dist/amoebum (skip if already built and source is unchanged)
+./dist/amoebum           # launches the chat TUI
 ```
 
 You land in the chat TUI with the input prompt focused. You can drive
