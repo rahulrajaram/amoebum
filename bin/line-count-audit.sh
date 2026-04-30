@@ -120,7 +120,7 @@ EOF
 ui|amoebum/src/ui/streaming.lisp|1888
 ui|amoebum/src/ui/chat-render.lisp|1786
 ui|amoebum/src/ui/chat-state.lisp|402
-ui|amoebum/src/ui/chat-state/state-defaults.lisp|309
+ui|amoebum/src/ui/chat-state/state-defaults.lisp|311
 ui|amoebum/src/ui/chat-state/conversation-entry.lisp|160
 ui|amoebum/src/ui/chat-state/slash-command-descriptors.lisp|35
 ui|amoebum/src/ui/chat-state/snapshot-metadata.lisp|234
