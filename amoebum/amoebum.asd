@@ -368,6 +368,13 @@
    ;; chat-panel-handle-repl-key in its :layout/:keys blocks.
    (:file "src/ui/panels/repl-panel")
    (:file "src/ui/panels/chat-panel")
+   ;; NXT-600: backend/frontend API boundary.
+   ;; api-events first (reserved for future frozen payload structs in :amoebum
+   ;; package); api proper loads after to define the :amoebum.core.api package.
+   ;; Both load late so the stub API can reference chat-ui-state accessors,
+   ;; *toolset*, and current-plan-execution-state without forward references.
+   (:file "src/core/api-events")
+   (:file "src/core/api")
    (:file "src/main"))
   :in-order-to ((asdf:test-op (asdf:test-op "amoebum/test"))))
 
@@ -555,7 +562,10 @@
    (:file "test/file-watcher-test")
    ;; NXT-576: hot-patch watcher — path discovery, reload, failure
    ;; handling, toast emission, and event-bus drain semantics.
-   (:file "test/hot-patch-watcher-test"))
+   (:file "test/hot-patch-watcher-test")
+   ;; NXT-600: amoebum.core.api stub layer — surface exports, lifecycle,
+   ;; and event publishing for the 7 new backend/frontend event types.
+   (:file "test/core-api-stub-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (unless (uiop:symbol-call :amoebum/test :run-all)

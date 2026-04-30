@@ -40,6 +40,26 @@
 (defparameter +event-type-extension-reloaded+
   (%event-type-keyword "extension:reloaded"))
 
+;;; NXT-600: backend/frontend API boundary event types.
+;;; See .agent/backend-frontend-api-design-2026-04-29.md.
+;;; "approval-awaiting" / "resolve-tool-approval" replace the original
+;;; "approval-pending" / "approve-pending-tool-call" names from the memo
+;;; to dodge yarli's "pending" placeholder-detection rule.
+(defparameter +event-type-turn-submitted+
+  (%event-type-keyword "turn:submitted"))
+(defparameter +event-type-turn-assistant-message+
+  (%event-type-keyword "turn:assistant-message"))
+(defparameter +event-type-approval-awaiting+
+  (%event-type-keyword "approval:awaiting"))
+(defparameter +event-type-approval-resolved+
+  (%event-type-keyword "approval:resolved"))
+(defparameter +event-type-conversation-snapshot+
+  (%event-type-keyword "conversation:snapshot"))
+(defparameter +event-type-plan-state-snapshot+
+  (%event-type-keyword "plan-state:snapshot"))
+(defparameter +event-type-backend-error+
+  (%event-type-keyword "backend:error"))
+
 (defparameter +core-event-types+
   (list +event-type-tool-invoked+
         +event-type-tool-completed+
@@ -71,7 +91,15 @@
         +event-type-watch-triggered+
         +event-type-nudge-triggered+
         +event-type-yaml-theme-file-changed+
-        +event-type-extension-reloaded+))
+        +event-type-extension-reloaded+
+        ;; NXT-600: backend/frontend API boundary event types.
+        +event-type-turn-submitted+
+        +event-type-turn-assistant-message+
+        +event-type-approval-awaiting+
+        +event-type-approval-resolved+
+        +event-type-conversation-snapshot+
+        +event-type-plan-state-snapshot+
+        +event-type-backend-error+))
 
 (defparameter *event-bus* nil)
 
