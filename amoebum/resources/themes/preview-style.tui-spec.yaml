@@ -1,0 +1,84 @@
+# preview-style.tui-spec.yaml
+#
+# Amoebum-tuned variant of ptui/examples/preview-test.tui-spec.yaml.
+# Suppresses amoebum-specific overlays so the chat composition reduces to
+# the reference example's three regions: history + prompt + status.
+#
+# Trade-off: provider-dashboard, tree-browser, plan-view, worktree-handoff,
+# fuzzy-picker, and approval-dialog are hidden permanently. The
+# approval-dialog suppression in particular means tool-approval requests
+# are silently auto-rejected (or whatever amoebum's no-overlay fallback
+# does) — only use this layout when you do not need interactive approvals.
+#
+# Launch:
+#   ./dist/amoebum --theme-yaml amoebum/resources/themes/preview-style.tui-spec.yaml
+
+layout:
+  children:
+    - name: provider-dashboard
+      visible: false
+    - name: tree-browser
+      visible: false
+    - name: plan-view
+      visible: false
+    - name: worktree-handoff
+      visible: false
+    - name: message-history
+      height: fill
+      overflow-y: scroll
+      scroll-follow: true
+      scroll-bar: auto
+      padding: [0, 1]
+    - name: approval-dialog
+      visible: false
+    - name: fuzzy-picker
+      visible: false
+    - name: input-prompt
+      height: 3
+      border: single
+      focusable: true
+      focus-order: 1
+    - name: status-bar
+      height: 1
+
+palette:
+  bg:        "16 18 24"
+  surface:   "30 36 100"
+  code-bg:   "36 42 54"
+  border:    "58 70 86"
+  meta:      "116 124 138"
+  text:      "220 226 236"
+  muted:     "160 170 186"
+  amber:     "224 175 104"
+  blue:      "122 162 247"
+  cyan:      "125 207 255"
+  green:     "158 206 106"
+  yellow:    "240 198 116"
+  rose:      "242 143 173"
+  red:       "220 50 47"
+  steel:     "109 140 189"
+
+roles:
+  user-label:       { fg: amber,  bold: true }
+  assistant-label:  { fg: blue,   bold: true }
+  tool-label:       { fg: cyan,   bold: true }
+  user:             { fg: text }
+  assistant:        { fg: text }
+  tool:             { fg: cyan }
+  system:           { fg: muted }
+  heading:          { fg: blue,   bold: true }
+  inline-code:      { fg: text,   bg: code-bg }
+  code-body:        { fg: text }
+  code-fence:       { fg: border, dim: true }
+  status-bar:       { fg: muted,  bg: surface }
+  context-ok:       { fg: green,  bg: surface, bold: true }
+  context-warn:     { fg: yellow, bg: surface, bold: true }
+  context-danger:   { fg: rose,   bg: surface, bold: true }
+  prompt-border:    { fg: steel }
+
+behavior:
+  scroll:
+    page-step: 6
+    follow-output: true
+  keys:
+    reload: "r"

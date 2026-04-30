@@ -433,6 +433,9 @@
         ((= b0 18)  ; Ctrl-R
          (%emit-key-event parser :ctrl-r :ctrlp t)
          1)
+        ((= b0 7)   ; Ctrl-G — NXT-575 REPL toggle
+         (%emit-key-event parser :ctrl-g :ctrlp t)
+         1)
         (t
          (multiple-value-bind (codepoint consumed status)
              (%decode-utf8-codepoint pending)

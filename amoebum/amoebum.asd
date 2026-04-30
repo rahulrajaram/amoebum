@@ -24,6 +24,11 @@
    (:file "src/events")
    (:file "src/events/types")
    (:file "src/events/filters")
+   ;; NXT-597: generic polling file-watcher primitive shared by the
+   ;; YAML-theme reload watcher (NXT-587) and the upcoming hot-patch
+   ;; watcher (NXT-576). Loads after events because it publishes typed
+   ;; events on the bus.
+   (:file "src/fp/file-watcher")
    (:file "src/config")
    (:file "src/config/loader")
    (:file "src/worktrees")
@@ -200,6 +205,11 @@
    (:file "src/commands/hooks")
    (:file "src/commands/permissions")
    (:file "src/commands/heap")
+   ;; NXT-582: /save-image, /load-image, /list-images. Wraps the
+   ;; image-snapshot infrastructure in src/checkpoint/image.lisp.
+   (:file "src/commands/image")
+   ;; NXT-577: /deftool registers a new tool in *toolset* live from chat.
+   (:file "src/commands/deftool")
    (:file "src/commands")
    (:file "src/commands-registry")
    (:file "src/pipeline/context")
@@ -290,8 +300,17 @@
    (:file "src/ui/layout-yaml")
    (:file "src/ui/yaml-theme-loader")
    (:file "src/ui/yaml-theme-layout")
+   ;; NXT-576: hot-patch flow — file-watcher under amoebum/src + ~/.amoebum/extensions
+   ;; that reloads changed .lisp files and toasts the chat. Loads after
+   ;; yaml-theme-layout because it follows the same per-frame poll pattern
+   ;; and will be wired into chat-panel's :effects block.
+   (:file "src/ui/hot-patch-watcher")
    (:file "src/ui/demo")
    (:file "src/ui/status-bar")
+   ;; NXT-575: REPL panel state — pure-CL struct + sandboxed-eval submit
+   ;; helper. Must load BEFORE chat-state/state-defaults so the chat-ui-state
+   ;; slot (`repl-panel-state`) can declare `:type repl-state`.
+   (:file "src/ui/repl-panel-state")
    ;; I297-I304: prompt-input must load before chat.lisp
    ;; because chat.lisp calls chat-panel-handle-input-key defined here
    (:file "src/ui/panels/prompt-input")
@@ -344,7 +363,18 @@
    (:file "src/ui/panels/tree-browser")
    (:file "src/ui/panels/stream-effects")
    (:file "src/ui/panels/chat-status-bar")
+   ;; NXT-575: REPL panel widget + key handler. Loads before chat-panel
+   ;; because chat-panel.lisp references make-repl-panel-widget and
+   ;; chat-panel-handle-repl-key in its :layout/:keys blocks.
+   (:file "src/ui/panels/repl-panel")
    (:file "src/ui/panels/chat-panel")
+   ;; NXT-600: backend/frontend API boundary.
+   ;; api-events first (reserved for future frozen payload structs in :amoebum
+   ;; package); api proper loads after to define the :amoebum.core.api package.
+   ;; Both load late so the stub API can reference chat-ui-state accessors,
+   ;; *toolset*, and current-plan-execution-state without forward references.
+   (:file "src/core/api-events")
+   (:file "src/core/api")
    (:file "src/main"))
   :in-order-to ((asdf:test-op (asdf:test-op "amoebum/test"))))
 
@@ -418,6 +448,12 @@
    (:file "test/repo-surface-test")
    (:file "test/api-facade-test")
    (:file "test/memory-command-test")
+   ;; NXT-575: REPL panel state regression suite.
+   (:file "test/repl-panel-state-test")
+   ;; NXT-577: /deftool slash-command regression suite.
+   (:file "test/deftool-command-test")
+   ;; NXT-582: /save-image, /load-image, /list-images slash-commands.
+   (:file "test/image-command-test")
    (:file "test/approval-dialog-guard-test")
    (:file "test/desktop-notification-test")
 	   (:file "test/stream-hooks-test")
@@ -507,7 +543,29 @@
    ;; NXT-233: TUI scale / stress tests
    (:file "test/scroll-scale-test")
    ;; NXT-397: Package-import-cycle guardrail mirror in FiveAM.
-   (:file "test/import-cycles-test"))
+   (:file "test/import-cycles-test")
+   ;; NXT-585: lock in chat-panel YAML resolver behavior so future
+   ;; refactors cannot silently break the parsed-but-respected pipeline.
+   (:file "test/yaml-layout-resolver-test")
+   ;; NXT-588: lock in YAML padding + focus resolver helpers
+   ;; (%chat-panel-padding-spec, %chat-panel-region-focusable-p,
+   ;; %chat-panel-region-focus-order, %chat-panel-wrap-padding).
+   (:file "test/yaml-layout-padding-focus-test")
+   ;; NXT-586: lock in YAML reload-key dispatch — default key, modal
+   ;; guard, and the %chat-handle-yaml-reload-key! helper.
+   (:file "test/yaml-theme-reload-key-test")
+   ;; NXT-587: lock in YAML source file watcher — mtime poll, event publish,
+   ;; reload delegation via :trigger :watcher.
+   (:file "test/yaml-theme-file-watcher-test")
+   ;; NXT-597: generic file-watcher primitive — mtime detect, debounce,
+   ;; status lifecycle, on-error :log resilience.
+   (:file "test/file-watcher-test")
+   ;; NXT-576: hot-patch watcher — path discovery, reload, failure
+   ;; handling, toast emission, and event-bus drain semantics.
+   (:file "test/hot-patch-watcher-test")
+   ;; NXT-600: amoebum.core.api stub layer — surface exports, lifecycle,
+   ;; and event publishing for the 7 new backend/frontend event types.
+   (:file "test/core-api-stub-test"))
   :perform (asdf:test-op (op c)
              (declare (ignore op c))
              (unless (uiop:symbol-call :amoebum/test :run-all)

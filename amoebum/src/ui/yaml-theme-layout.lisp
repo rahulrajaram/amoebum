@@ -209,7 +209,7 @@ Returns (values reloaded-p theme-name-or-status)."
                            :source :yaml-theme-loader
                            :message "YAML theme file changed, reloading with layout/behavior..."
                            :details (list :path *yaml-theme-source-path*))
-        (let ((result (multiple-value-list 
+        (let ((result (multiple-value-list
                        (load-yaml-theme :cli-path *yaml-theme-source-path*))))
           ;; Re-apply layout/behavior after reload
           (when (first result)
@@ -221,3 +221,91 @@ Returns (values reloaded-p theme-name-or-status)."
                                               :behavior-p (not (null *yaml-behavior-loaded*)))))
           (values-list result)))
       (values nil :no-change)))
+
+;;; ----------------------------------------------------------------------------
+;;; NXT-586: Operator-driven reload key handler
+;;; ----------------------------------------------------------------------------
+
+(defun %chat-handle-yaml-reload-key! (chat-state &key (trigger :operator))
+  "Reload YAML theme/layout from disk if the source file has changed.
+Re-applies the layout to CHAT-STATE and emits a system message toast.
+TRIGGER is :operator (key press, default) or :watcher (file mtime changed).
+Returns T if a reload happened, NIL if no change or no source path."
+  (multiple-value-bind (reloaded-p status)
+      (reload-yaml-theme-with-layout-if-changed)
+    (declare (ignore status))
+    (cond
+      (reloaded-p
+       (apply-yaml-layout-to-chat chat-state)
+       (let ((path (or *yaml-theme-source-path* "<unknown>")))
+         (chat-ui-add-message
+          chat-state
+          "system"
+          (if (eq trigger :watcher)
+              (format nil
+                      "YAML layout auto-reloaded from ~A (file changed on disk)"
+                      path)
+              (format nil "YAML layout reloaded from ~A" path)))
+         (log-runtime-event :level :info
+                            :kind "yaml-theme-reloaded-by-key"
+                            :source (if (eq trigger :watcher)
+                                        :yaml-theme-watcher
+                                        :chat-input)
+                            :message (if (eq trigger :watcher)
+                                         "Watcher detected YAML file change"
+                                         "Operator pressed reload key")
+                            :details (list :path path :trigger trigger)))
+       t)
+      (t
+       ;; Only emit a "no change" toast when the operator actively pressed the
+       ;; key. The watcher polls every frame; a toast on every no-op would be
+       ;; noise.
+       (when (eq trigger :operator)
+         (chat-ui-add-message
+          chat-state
+          "system"
+          "YAML layout: no change"))
+       nil))))
+
+;;; ----------------------------------------------------------------------------
+;;; NXT-587 / NXT-597: YAML file watcher — adopt the generic primitive from
+;;; `src/fp/file-watcher.lisp`. The primitive owns mtime detection + event
+;;; publish; this caller layers the YAML-specific reload side effect.
+;;; ----------------------------------------------------------------------------
+
+(defparameter *yaml-theme-file-watcher* nil
+  "Lazily constructed file-watcher for *yaml-theme-source-path*.")
+
+(defun %yaml-theme-ensure-watcher (event-bus)
+  "Return a watcher whose paths/bus match the current YAML state."
+  (let ((path *yaml-theme-source-path*))
+    (when (or (null *yaml-theme-file-watcher*)
+              (not (equal (file-watcher-paths *yaml-theme-file-watcher*)
+                          (list path)))
+              (not (eq (file-watcher-event-bus *yaml-theme-file-watcher*)
+                       event-bus)))
+      (setf *yaml-theme-file-watcher*
+            (start-watcher
+             (make-watcher :id "yaml-theme"
+                           :paths (list path)
+                           :event-type +event-type-yaml-theme-file-changed+
+                           :event-bus event-bus
+                           :debounce-ms 0
+                           :on-error :log)))
+      (when *yaml-theme-last-modified*
+        (setf (gethash (namestring (pathname path))
+                       (file-watcher-last-mtimes *yaml-theme-file-watcher*))
+              *yaml-theme-last-modified*)))
+    *yaml-theme-file-watcher*))
+
+(defun %yaml-theme-poll-and-publish-if-changed (chat-state &key (event-bus *event-bus*))
+  "Per-frame poll: when the YAML source mtime advances, the primitive
+publishes +EVENT-TYPE-YAML-THEME-FILE-CHANGED+ on EVENT-BUS and we
+delegate the reload (toast + log + layout re-apply) to
+%chat-handle-yaml-reload-key! with :trigger :watcher."
+  (when (and *yaml-theme-source-path*
+             (yaml-theme-needs-reload-p)
+             event-bus)
+    (poll-watcher-once (%yaml-theme-ensure-watcher event-bus))
+    (%chat-handle-yaml-reload-key! chat-state :trigger :watcher)
+    t))

@@ -42,3 +42,8 @@
    (list "Alpha" "Beta" "Gamma" "Delta" "Epsilon"
          "Zeta" "Eta" "Theta" "Iota" "Kappa")
    "Panel Demo"))
+
+;; The defapp macro above generates RUN-PANEL-DEMO-APP. The exported
+;; entrypoint contract is RUN-PANEL-DEMO, so adapt.
+(defun run-panel-demo (&rest args)
+  (apply #'run-panel-demo-app args))
